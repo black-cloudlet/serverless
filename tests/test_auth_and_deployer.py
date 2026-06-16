@@ -27,6 +27,51 @@ def test_principal_non_admin_scope():
     assert p.can_access_group("team-b") is False
 
 
+def _settings_with_api_key(raw_key, groups, admin_groups=()):
+    import hashlib
+
+    from app.core.config import ApiKey
+
+    return Settings(
+        auth_enabled=True,
+        sso=SSOConfig(admin_groups=list(admin_groups)),
+        api_keys=[
+            ApiKey(
+                name="ci-bot",
+                sha256=hashlib.sha256(raw_key.encode()).hexdigest(),
+                groups=groups,
+            )
+        ],
+    )
+
+
+def test_authenticate_api_key_match_and_admin():
+    from app.auth.apikey import authenticate_api_key
+
+    settings = _settings_with_api_key("s3cret", ["team-a", "platform-admins"], ["platform-admins"])
+    p = authenticate_api_key("s3cret", settings)
+    assert p.username == "ci-bot"
+    assert p.groups == ["team-a", "platform-admins"]
+    assert p.is_admin is True
+    assert authenticate_api_key("wrong", settings) is None
+
+
+def test_require_auth_via_api_key_header():
+    from types import SimpleNamespace
+
+    from app.auth.deps import require_auth
+    from app.core.errors import UnauthenticatedError
+
+    settings = _settings_with_api_key("s3cret", ["team-a"])
+    req = SimpleNamespace(headers={"X-API-Key": "s3cret"})
+    p = require_auth(req, settings, validator=None)  # validator unused for API key
+    assert p.username == "ci-bot" and p.groups == ["team-a"]
+
+    bad = SimpleNamespace(headers={"X-API-Key": "nope"})
+    with pytest.raises(UnauthenticatedError):
+        require_auth(bad, settings, validator=None)
+
+
 def test_aggregate_all_ok():
     statuses = [SiteStatus(site="a", status="Ready"), SiteStatus(site="b", status="Ready")]
     assert aggregate(statuses, "Ready") == "Ready"

@@ -58,6 +58,18 @@ class SSOConfig(BaseModel):
     jwks_cache_seconds: int = 3600
 
 
+class ApiKey(BaseModel):
+    """A static, platform-issued API key for a non-OIDC service account.
+
+    Only the **sha256 hash** of the key is stored (hex); the raw key is never
+    persisted. Each key maps to an identity and SSO groups for authorization.
+    """
+
+    name: str
+    sha256: str
+    groups: list[str] = Field(default_factory=list)
+
+
 class RegistryConfig(BaseModel):
     """Internal (mirrored) container registry."""
 
@@ -90,6 +102,9 @@ class Settings(BaseSettings):
     sso: SSOConfig = Field(default_factory=SSOConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
+    # Static API keys (sha256-hashed) for non-OIDC service accounts. From Vault
+    # via ESO. env: SERVERLESS_API_KEYS (JSON list).
+    api_keys: list[ApiKey] = Field(default_factory=list)
 
     @property
     def client_cert_path(self) -> str:

@@ -69,6 +69,12 @@ externalSecrets:
   refreshInterval: 1h
   vaultPath: serverless/api
 
+# Static API keys for non-OIDC service accounts. When enabled, the JSON list of
+# {name, sha256, groups} is fetched from Vault into SERVERLESS_API_KEYS.
+apiKeys:
+  enabled: false
+  vaultProperty: api_keys
+
 resources:
   requests:
     cpu: 100m

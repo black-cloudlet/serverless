@@ -447,6 +447,18 @@ sequenceDiagram
 - The API is a **resource server**: it validates JWTs offline using **JWKS** fetched from
   the internal SSO realm (cached, no per-request round trip).
 - Validated: signature, `iss`, `aud`, `exp`/`nbf`.
+- This covers both **users** (authorization-code flow) and **machines/service accounts**
+  (client-credentials grant) — any client with a valid SSO bearer token authenticates the
+  same way.
+
+#### Static API keys (non-OIDC service accounts)
+
+For service accounts that **cannot** do OIDC, the API also accepts a **static API key** in the
+`X-API-Key` header (checked before the JWT path). Keys are platform-issued and stored in Vault
+(projected via ESO into `SERVERLESS_API_KEYS`) as `{name, sha256, groups}` — only the
+**sha256 hash** is stored, and matching is constant-time. A matching key yields a Principal
+whose `groups` drive the **same** group-based authorization as OIDC users. Enable via Helm
+`apiKeys.enabled`.
 
 #### Auth as an internal component (not a separate microservice)
 
@@ -920,6 +932,7 @@ Serverless/
 │   │   └── logging.py
 │   ├── auth/                        # self-contained auth component (all OIDC interaction)
 │   │   ├── oidc.py                  # SSO discovery + JWKS fetch/cache, token validation
+│   │   ├── apikey.py               # static API-key auth (X-API-Key) for service accounts
 │   │   ├── claims.py               # claims → group mapping, admin/tenant policy
 │   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
 │   ├── routers/
