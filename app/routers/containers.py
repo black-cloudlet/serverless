@@ -7,7 +7,7 @@ from fastapi import APIRouter, Response
 from app.auth.deps import CurrentUser
 from app.dependencies import WorkloadDep
 from app.models.common import WorkloadResponse
-from app.models.container import ContainerCreate
+from app.models.container import ContainerCreate, ContainerUpdate
 
 router = APIRouter(prefix="/api/v1/containers", tags=["containers"])
 
@@ -17,6 +17,19 @@ async def create_container(
     spec: ContainerCreate, user: CurrentUser, svc: WorkloadDep, response: Response
 ) -> WorkloadResponse:
     body, code = await svc.create_container(spec, user)
+    response.status_code = code
+    return body
+
+
+@router.put("/{name}", response_model=WorkloadResponse)
+async def update_container(
+    name: str,
+    spec: ContainerUpdate,
+    user: CurrentUser,
+    svc: WorkloadDep,
+    response: Response,
+) -> WorkloadResponse:
+    body, code = await svc.update_container(name, spec, user)
     response.status_code = code
     return body
 

@@ -683,12 +683,12 @@ are JSON. Times are RFC 3339 UTC.
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git, deploy to both sites). |
 | `GET` | `/api/v1/functions` | List caller's functions (label-scoped). |
 | `GET` | `/api/v1/functions/{name}` | Get one function (spec + per-site status). |
-| `PATCH` | `/api/v1/functions/{name}` | Update env/scaling/mounts (and optionally rebuild). |
+| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). |
 | `DELETE` | `/api/v1/functions/{name}` | Delete the function in both sites. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload (deploy image to both sites). |
 | `GET` | `/api/v1/containers` | List caller's containers (label-scoped). |
 | `GET` | `/api/v1/containers/{name}` | Get one container (spec + per-site status). |
-| `PATCH` | `/api/v1/containers/{name}` | Update env/scaling/mounts/image. |
+| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). |
 | `DELETE` | `/api/v1/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/{type}/{name}/status` | Per-site readiness, URLs, revision info. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
@@ -710,7 +710,15 @@ are JSON. Times are RFC 3339 UTC.
 
 > **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
 > workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
-> changes go through the update endpoints.
+> changes go through the `PUT` endpoints.
+>
+> **`PUT` is a full replace** of the mutable spec (env/files/scaling/hostname; image for
+> containers — defaults to the current image if omitted) and **404s** if the workload
+> doesn't exist. Function code changes are not done via `PUT` (no git inputs); recreate.
+>
+> **Typed endpoints are offering-scoped:** `/functions/{name}` only acts on a function and
+> `/containers/{name}` only on a container — a name that is the other offering returns 404.
+> (The OpenShift object name stays `{name}-{group}`; the offering is a label, not in the name.)
 
 ### Shared sub-schemas
 

@@ -26,8 +26,10 @@ class ContainerCreate(BaseModel):
 
 
 class ContainerUpdate(BaseModel):
+    """Full replace of the mutable spec; image defaults to the current one."""
+
     image: str | None = None
-    env: list[EnvVar] | None = None
-    files: list[FileMount] | None = None
-    scaling: Scaling | None = None
+    env: list[EnvVar] = Field(default_factory=list)
+    files: list[FileMount] = Field(default_factory=list)
+    scaling: Scaling = Field(default_factory=Scaling)
     hostname: Hostname | None = None

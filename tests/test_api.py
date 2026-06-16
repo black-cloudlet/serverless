@@ -37,6 +37,31 @@ class FakeWorkloads:
             sites=[SiteStatus(site="site-a", status="Ready")],
         )
 
+    async def update_container(self, name, spec, user):
+        return (
+            WorkloadResponse(
+                name=name,
+                type="container",
+                url="https://x.serverless.example.com",
+                overallStatus="Ready",
+                image=spec.image or "kept:1",
+                sites=[SiteStatus(site="site-a", status="Ready")],
+            ),
+            200,
+        )
+
+    async def update_function(self, name, spec, user):
+        return (
+            WorkloadResponse(
+                name=name,
+                type="function",
+                url="https://x.serverless.example.com",
+                overallStatus="Ready",
+                sites=[SiteStatus(site="site-a", status="Ready")],
+            ),
+            200,
+        )
+
 
 class FakeResources:
     async def create(self, rtype, spec, user):
@@ -94,6 +119,21 @@ def test_get_function(client):
     r = client.get("/api/v1/functions/foo")
     assert r.status_code == 200
     assert r.json()["name"] == "foo"
+
+
+def test_update_container(client):
+    r = client.put(
+        "/api/v1/containers/orders-api",
+        json={"image": "registry.internal/team/orders:2", "scaling": {"minScale": 1}},
+    )
+    assert r.status_code == 200
+    assert r.json()["image"] == "registry.internal/team/orders:2"
+
+
+def test_update_function(client):
+    r = client.put("/api/v1/functions/foo", json={"env": [{"name": "X", "value": "1"}]})
+    assert r.status_code == 200
+    assert r.json()["type"] == "function"
 
 
 def test_create_secret(client):

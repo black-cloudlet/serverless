@@ -167,3 +167,41 @@ async def test_workload_already_exists_conflicts():
         await svc._assert_workload_absent(
             "app", "app-team", svc._deployer.resolve_targets(None)
         )
+
+
+def _ksvc(offering, image="reg/x:1", group="team"):
+    from app.models.common import LABEL_GROUP, LABEL_OFFERING
+
+    return {
+        "metadata": {"name": "app-team", "labels": {LABEL_GROUP: group, LABEL_OFFERING: offering}},
+        "spec": {"template": {"spec": {"containers": [{"image": image}]}}},
+    }
+
+
+async def test_load_existing_returns_image():
+    from app.auth.claims import Principal
+
+    svc = _workload_service(
+        {
+            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("caas")}),
+            "site-b": _FakeCluster("site-b", existing={"app-team": _ksvc("caas")}),
+        }
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    existing = await svc._load_existing("app", "caas", user)
+    assert existing["image"] == "reg/x:1"
+
+
+async def test_load_existing_offering_mismatch_404():
+    from app.auth.claims import Principal
+    from app.core.errors import NotFoundError
+
+    svc = _workload_service(
+        {
+            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("caas")}),
+            "site-b": _FakeCluster("site-b"),
+        }
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(NotFoundError):
+        await svc._load_existing("app", "faas", user)  # it's a caas

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Response
 from app.auth.deps import CurrentUser
 from app.dependencies import WorkloadDep
 from app.models.common import WorkloadResponse
-from app.models.function import FunctionCreate
+from app.models.function import FunctionCreate, FunctionUpdate
 
 router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
 
@@ -17,6 +17,19 @@ async def create_function(
     spec: FunctionCreate, user: CurrentUser, svc: WorkloadDep, response: Response
 ) -> WorkloadResponse:
     body, code = await svc.create_function(spec, user)
+    response.status_code = code
+    return body
+
+
+@router.put("/{name}", response_model=WorkloadResponse)
+async def update_function(
+    name: str,
+    spec: FunctionUpdate,
+    user: CurrentUser,
+    svc: WorkloadDep,
+    response: Response,
+) -> WorkloadResponse:
+    body, code = await svc.update_function(name, spec, user)
     response.status_code = code
     return body
 

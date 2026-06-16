@@ -28,8 +28,9 @@ class FunctionCreate(BaseModel):
 
 
 class FunctionUpdate(BaseModel):
-    env: list[EnvVar] | None = None
-    files: list[FileMount] | None = None
-    scaling: Scaling | None = None
+    """Full replace of the mutable spec (config only; code changes go via create)."""
+
+    env: list[EnvVar] = Field(default_factory=list)
+    files: list[FileMount] = Field(default_factory=list)
+    scaling: Scaling = Field(default_factory=Scaling)
     hostname: Hostname | None = None
-    rebuild: bool = False
