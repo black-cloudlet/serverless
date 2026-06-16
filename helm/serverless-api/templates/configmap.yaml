@@ -9,5 +9,9 @@ metadata:
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
-  SERVERLESS_SITES: |-
-    [{{- range $i, $z := .Values.sites }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}"}{{- end }}]
+  # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
+  {{- $sites := list }}
+  {{- range .Values.sites }}
+  {{- $sites = append $sites (dict "name" .name "api_server" .apiServer "namespace" .namespace) }}
+  {{- end }}
+  SERVERLESS_SITES: {{ toJson $sites | quote }}
