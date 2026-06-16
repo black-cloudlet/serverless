@@ -18,15 +18,13 @@ class SiteConfig(BaseModel):
 
     A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
     *cluster* (e.g. ``central-0``) reachable at ``api_server`` (e.g.
-    ``https://api.central-0.{base_domain}:6443``). Only the endpoint and
-    namespace are per-site — the client certificate and CA bundle are global
-    (the same identity/CA is valid in every cluster).
+    ``https://api.central-0.{base_domain}:6443``). The client certificate, CA
+    bundle, and workloads namespace are global (the same in every cluster).
     """
 
     name: str  # site/region, e.g. "central"
     api_server: str
     cluster: str | None = None  # cluster instance name, e.g. "central-0"
-    namespace: str = "serverless-workloads"
 
 
 class CABundleConfig(BaseModel):
@@ -109,6 +107,9 @@ class Settings(BaseSettings):
     cluster_read_timeout: float = 15.0
     # Backstop for a whole per-site operation (covers several sequential calls).
     site_op_timeout: float = 60.0
+
+    # Namespace (same in every cluster) where the API creates workloads.
+    workloads_namespace: str = "serverless-workloads"
 
     sso: SSOConfig = Field(default_factory=SSOConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.auth.claims import Principal
-from app.core.config import Settings, SiteConfig
+from app.core.config import Settings
 from app.core.errors import (
     ConflictError,
     ForbiddenError,
@@ -305,7 +305,7 @@ class WorkloadService:
             name=oname, group=group, owner=user.username, offering=offering, host=host
         )
 
-        def apply(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+        def apply(cluster: Cluster) -> SiteStatus:
             for manifest in backing:
                 cluster.apply(manifest)
             if pull_secret_manifest:
@@ -341,7 +341,7 @@ class WorkloadService:
         oname = object_name(name, user.primary_group)
         holder: dict = {}
 
-        def fetch(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+        def fetch(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)
@@ -356,11 +356,11 @@ class WorkloadService:
         return holder
 
     async def _assert_host_available(
-        self, host: str, oname: str, targets: list[SiteConfig]
+        self, host: str, oname: str, targets: list[Cluster]
     ) -> None:
         """Raise ConflictError if `host` is a DomainMapping owned by another workload."""
 
-        def check(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+        def check(cluster: Cluster) -> SiteStatus:
             try:
                 existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
             except Exception:
@@ -375,11 +375,11 @@ class WorkloadService:
             raise ConflictError(f"hostname '{host}' is already assigned")
 
     async def _assert_workload_absent(
-        self, name: str, oname: str, targets: list[SiteConfig]
+        self, name: str, oname: str, targets: list[Cluster]
     ) -> None:
         """Raise ConflictError if a workload named `oname` already exists (create only)."""
 
-        def probe(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+        def probe(cluster: Cluster) -> SiteStatus:
             try:
                 cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
                 return SiteStatus(site=cluster.name, status="Exists")
@@ -398,7 +398,7 @@ class WorkloadService:
         oname = object_name(name, user.primary_group)
         host_holder: dict[str, str] = {}
 
-        def fetch(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+        def fetch(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)
@@ -429,7 +429,7 @@ class WorkloadService:
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
         oname = object_name(name, user.primary_group)
 
-        def remove(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+        def remove(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)

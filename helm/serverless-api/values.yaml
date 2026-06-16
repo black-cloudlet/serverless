@@ -42,11 +42,9 @@ sites:
   - name: central                 # site/region
     cluster: central-0            # cluster instance
     apiServer: https://api.central-0.example.com:6443
-    namespace: serverless-workloads
   - name: south
     cluster: south-0
     apiServer: https://api.south-0.example.com:6443
-    namespace: serverless-workloads
 
 # cert-manager client certificate (CN = DNS name, ACME-issued). docs §6.3
 # Same identity is valid in every cluster; mounted at mountPath as tls.crt/tls.key.

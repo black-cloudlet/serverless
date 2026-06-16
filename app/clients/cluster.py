@@ -1,19 +1,22 @@
-"""``Cluster`` — the single wrapper around the Kubernetes/OpenShift client.
+"""``Cluster`` — the single runtime object per OpenShift cluster.
 
-One instance represents one site (one OpenShift cluster). It fully encapsulates
-the ``kubernetes`` library: nobody outside this module imports ``kubernetes`` or
-passes raw apiVersion/kind strings — callers use the :class:`ResourceKind` enum.
+One instance represents one site/cluster. It holds that site's :class:`SiteConfig`
+and pulls the shared bits (client cert, CA bundle, timeouts, workloads namespace)
+from :class:`Settings`, so the rest of the app works with ``Cluster`` only — never
+``SiteConfig`` directly. It fully encapsulates the ``kubernetes`` library: nobody
+outside this module imports ``kubernetes`` or passes raw apiVersion/kind strings —
+callers use the :class:`ResourceKind` enum.
 
-Authentication uses the site's cert-manager-issued client certificate
-(CN = serverless-api.clients.{base_domain}) over mTLS, or the in-cluster service
-account for the API's local cluster (docs §6.3).
+Authentication uses the global cert-manager client certificate over mTLS
+(CN = serverless-api.clients.{base_domain}); the same identity/CA is valid in
+every cluster (docs §6.3).
 """
 
 from __future__ import annotations
 
 from enum import Enum
 
-from app.core.config import SiteConfig
+from app.core.config import Settings, SiteConfig
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,37 +40,31 @@ class ResourceKind(Enum):
 
 
 class Cluster:
-    """A connection to one OpenShift cluster, scoped to its workloads namespace.
+    """One OpenShift cluster. Holds its SiteConfig; reads shared bits from Settings."""
 
-    Always authenticates with the global cert-manager client certificate over
-    mTLS (the same identity/CA is valid in every cluster).
-    """
+    FIELD_MANAGER = "serverless-api"
 
-    def __init__(
-        self,
-        config: SiteConfig,
-        *,
-        client_cert_path: str,
-        client_key_path: str,
-        ca_path: str,
-        request_timeout: tuple[float, float] | None = None,
-    ):
+    def __init__(self, config: SiteConfig, settings: Settings):
         self._config = config
-        self._client_cert_path = client_cert_path
-        self._client_key_path = client_key_path
-        self._ca_path = ca_path
-        # (connect, read) seconds, passed to every API call so an unreachable
-        # cluster fails fast instead of blocking the worker thread.
-        self._timeout = request_timeout
+        self._settings = settings
         self._dynamic = None
 
+    # -- identity / config ------------------------------------------------
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # site/region name
         return self._config.name
 
     @property
-    def namespace(self) -> str:
-        return self._config.namespace
+    def cluster(self) -> str | None:  # cluster instance name, e.g. central-0
+        return self._config.cluster
+
+    @property
+    def api_server(self) -> str:
+        return self._config.api_server
+
+    @property
+    def namespace(self) -> str:  # workloads namespace (global)
+        return self._settings.workloads_namespace
 
     # -- connection -------------------------------------------------------
     def _client(self):
@@ -79,9 +76,9 @@ class Cluster:
 
         cfg = client.Configuration()
         cfg.host = self._config.api_server
-        cfg.ssl_ca_cert = self._ca_path
-        cfg.cert_file = self._client_cert_path
-        cfg.key_file = self._client_key_path
+        cfg.ssl_ca_cert = self._settings.ca_bundle.path
+        cfg.cert_file = self._settings.client_cert_path
+        cfg.key_file = self._settings.client_key_path
         api = client.ApiClient(cfg)
 
         self._dynamic = DynamicClient(api)
@@ -94,9 +91,14 @@ class Cluster:
         return namespace or self.namespace
 
     def _opts(self) -> dict:
-        return {"_request_timeout": self._timeout} if self._timeout else {}
-
-    FIELD_MANAGER = "serverless-api"
+        # (connect, read) timeout on every call so an unreachable cluster fails
+        # fast instead of blocking the worker thread.
+        return {
+            "_request_timeout": (
+                self._settings.cluster_connect_timeout,
+                self._settings.cluster_read_timeout,
+            )
+        }
 
     # -- operations -------------------------------------------------------
     def apply(self, manifest: dict, namespace: str | None = None) -> dict:

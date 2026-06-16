@@ -12,6 +12,6 @@ data:
   # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
   {{- $sites := list }}
   {{- range .Values.sites }}
-  {{- $sites = append $sites (dict "name" .name "cluster" .cluster "api_server" .apiServer "namespace" .namespace) }}
+  {{- $sites = append $sites (dict "name" .name "cluster" .cluster "api_server" .apiServer) }}
   {{- end }}
   SERVERLESS_SITES: {{ toJson $sites | quote }}

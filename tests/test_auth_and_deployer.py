@@ -123,10 +123,10 @@ def test_resolve_targets_unknown_site():
 async def test_fanout_captures_per_site_errors():
     d = Deployer(_settings_with_sites())
 
-    def fn(client, site):
-        if site.name == "site-b":
+    def fn(cluster):
+        if cluster.name == "site-b":
             raise RuntimeError("kaboom")
-        return SiteStatus(site=site.name, status="Ready")
+        return SiteStatus(site=cluster.name, status="Ready")
 
     statuses = await d.fanout(d.resolve_targets(None), fn)
     by_site = {s.site: s for s in statuses}
@@ -140,10 +140,10 @@ async def test_fanout_times_out_unreachable_site():
     d = Deployer(_settings_with_sites())
     d._op_timeout = 0.05  # tighten for the test
 
-    def fn(client, site):
-        if site.name == "site-b":
+    def fn(cluster):
+        if cluster.name == "site-b":
             time.sleep(0.5)  # simulate an unreachable/slow cluster
-        return SiteStatus(site=site.name, status="Ready")
+        return SiteStatus(site=cluster.name, status="Ready")
 
     statuses = await d.fanout(d.resolve_targets(None), fn)
     by_site = {s.site: s for s in statuses}
@@ -172,7 +172,7 @@ def _workload_service(clusters):
 
     settings = _settings_with_sites()
     d = Deployer(settings)
-    d.cluster = lambda site: clusters[site.name]  # inject fakes
+    d._clusters = clusters  # inject fakes (name -> _FakeCluster)
     return WorkloadService(settings, d, FuncBuilder(settings))
 
 

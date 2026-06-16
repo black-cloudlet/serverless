@@ -300,12 +300,13 @@ both clusters **trust the same CA** and the workload **Route host is identical i
 each site is a full, independent replica; a DNS record forwards end-user traffic to the
 active site.
 
-The **client certificate and CA bundle are global** (the same identity/CA is valid in every
-cluster), so a site profile is just its endpoint and namespace. The `routeDomain`, client
-cert directory, and CA bundle are shared config:
+The **client certificate, CA bundle, and workloads namespace are global** (the same in every
+cluster), so a site profile is just its name, cluster, and endpoint. The `routeDomain`,
+`workloadsNamespace`, client cert directory, and CA bundle are shared config:
 
 ```yaml
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
+workloadsNamespace: serverless-workloads  # where the API creates workloads (global)
 clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
 caBundle:                                 # OpenShift-injected, global
   configMap: trusted-ca-bundle
@@ -315,11 +316,9 @@ sites:
   - name: central                          # site/region
     cluster: central-0                     # cluster instance
     apiServer: https://api.central-0.example.com:6443
-    namespace: serverless-workloads        # separate from the API's namespace
   - name: south
     cluster: south-0
     apiServer: https://api.south-0.example.com:6443
-    namespace: serverless-workloads
 ```
 
 > The API always authenticates with the **client certificate** (no in-cluster/ServiceAccount
