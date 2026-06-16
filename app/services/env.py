@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.models.common import EnvVar, ValueFrom
+from app.models.common import EnvVar
 from app.services import resources as res
+from app.services.ksvc import ContainerEnv
 
 
 @dataclass
 class ResolvedEnv:
-    env: list[EnvVar]  # transformed env to put on the container
+    env: list[ContainerEnv]  # resolved container env entries
     backing: list[dict] = field(default_factory=list)  # Secret manifest(s) to create
 
 
@@ -28,21 +29,18 @@ def resolve_env(
 ) -> ResolvedEnv:
     secret_name = env_secret_name(workload)
     secret_data: dict[str, str] = {}
-    transformed: list[EnvVar] = []
+    resolved: list[ContainerEnv] = []
 
     for e in env:
         if e.secret:
-            secret_data[e.name] = e.value or ""
-            transformed.append(
-                EnvVar(
-                    name=e.name,
-                    valueFrom=ValueFrom(secret=secret_name, key=e.name),
-                )
+            secret_data[e.name] = e.value
+            resolved.append(
+                ContainerEnv(name=e.name, secret_ref=(secret_name, e.name))
             )
         else:
-            transformed.append(e)
+            resolved.append(ContainerEnv(name=e.name, value=e.value))
 
     backing: list[dict] = []
     if secret_data:
         backing.append(res.build_secret(secret_name, group, owner, secret_data))
-    return ResolvedEnv(env=transformed, backing=backing)
+    return ResolvedEnv(env=resolved, backing=backing)

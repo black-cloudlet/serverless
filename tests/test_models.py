@@ -23,10 +23,12 @@ def test_unsupported_runtime_rejected():
         FunctionCreate(name="x", gitUrl="g", gitToken="t", runtime="ruby")
 
 
-def test_envvar_requires_exactly_one_source():
+def test_envvar_requires_value():
     with pytest.raises(ValidationError):
         EnvVar(name="X")
-    EnvVar(name="X", value="1")
+    e = EnvVar(name="X", value="1")
+    assert e.secret is False
+    assert EnvVar(name="X", value="1", secret=True).secret is True
 
 
 def test_filemount_inline_xor_source():

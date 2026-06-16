@@ -26,33 +26,16 @@ def validate_name(name: str) -> str:
     return name
 
 
-class ValueFrom(BaseModel):
-    secret: str | None = None
-    configmap: str | None = None
-    key: str
-
-
 class EnvVar(BaseModel):
-    """An environment variable.
+    """An environment variable: ``name`` + ``value``.
 
-    - ``value`` — a literal value set inline on the container.
-    - ``value`` + ``secret: true`` — the API stores the value in a Kubernetes
-      Secret and the container reads it via a secretKeyRef (value never inline).
-    - ``valueFrom`` — reference an existing Secret/ConfigMap key.
+    With ``secret: true`` the API stores the value in a Kubernetes Secret and the
+    container reads it via a secretKeyRef (the value is never inline on the KSVC).
     """
 
     name: str
-    value: str | None = None
-    valueFrom: ValueFrom | None = None
+    value: str
     secret: bool = False
-
-    @model_validator(mode="after")
-    def _one_of(self) -> "EnvVar":
-        if (self.value is None) == (self.valueFrom is None):
-            raise ValueError("env var requires exactly one of 'value' or 'valueFrom'")
-        if self.secret and self.value is None:
-            raise ValueError("a secret env var requires an inline 'value'")
-        return self
 
 
 class FileMount(BaseModel):

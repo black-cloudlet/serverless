@@ -2,24 +2,38 @@
 
 from __future__ import annotations
 
-from app.models.common import EnvVar, Scaling
+from dataclasses import dataclass
+
+from app.models.common import Scaling
 from app.services.files import VolumeSpec
 from app.services.labels import ownership_labels
 
 KSVC_API = "serving.knative.dev/v1"
 
 
-def _env(env: list[EnvVar]) -> list[dict]:
+@dataclass
+class ContainerEnv:
+    """Resolved container env entry: a literal value or a secretKeyRef.
+
+    This is the internal representation produced by ``services.env.resolve_env``;
+    the public API only accepts ``name``/``value``/``secret``.
+    """
+
+    name: str
+    value: str | None = None
+    secret_ref: tuple[str, str] | None = None  # (secret_name, key)
+
+
+def _env(env: list[ContainerEnv]) -> list[dict]:
     out: list[dict] = []
     for e in env:
-        if e.value is not None:
+        if e.secret_ref is not None:
+            name, key = e.secret_ref
+            out.append(
+                {"name": e.name, "valueFrom": {"secretKeyRef": {"name": name, "key": key}}}
+            )
+        else:
             out.append({"name": e.name, "value": e.value})
-        elif e.valueFrom is not None:
-            if e.valueFrom.secret:
-                ref = {"secretKeyRef": {"name": e.valueFrom.secret, "key": e.valueFrom.key}}
-            else:
-                ref = {"configMapKeyRef": {"name": e.valueFrom.configmap, "key": e.valueFrom.key}}
-            out.append({"name": e.name, "valueFrom": ref})
     return out
 
 
@@ -47,7 +61,7 @@ def build_ksvc(
     owner: str,
     image: str,
     offering: str,
-    env: list[EnvVar],
+    env: list[ContainerEnv],
     volumes: list[VolumeSpec],
     scaling: Scaling,
     pull_secret: str | None = None,

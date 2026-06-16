@@ -273,7 +273,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 
 | Capability | How it maps to Knative |
 |------------|------------------------|
-| **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). `valueFrom` may also reference an existing Secret/ConfigMap key. |
+| **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` — users cannot reference arbitrary existing cluster Secrets/ConfigMaps. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads file content and its `mountPath`** (or references an existing API-managed resource). The **API itself creates** the backing `ConfigMap` (or `Secret` when `secret: true`) from that data (**not** via ESO), labels it to the owning group, and mounts each file at its path. Users can **read these back through the API** (see §7.3 and §10). |
 | **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `target` (concurrency), and `containerConcurrency`. Scale-to-zero is the default when `min-scale=0`. |
 
@@ -674,10 +674,9 @@ are JSON. Times are RFC 3339 UTC.
 // Workload shared fields (used by both functions and containers)
 {
   "name": "orders-api",                 // DNS-1123, required
-  "env": [                              // optional
+  "env": [                              // optional; each entry is name + value
     { "name": "LOG_LEVEL", "value": "info" },                       // inline
-    { "name": "DB_PASSWORD", "value": "s3cret", "secret": true },   // -> API-created Secret {workload}-env
-    { "name": "API_KEY", "valueFrom": { "secret": "orders-db", "key": "key" } }  // existing ref
+    { "name": "DB_PASSWORD", "value": "s3cret", "secret": true }    // -> API-created Secret {workload}-env
   ],
   "files": [                            // optional: files to load into the workload
     // (a) inline upload — the API creates the backing ConfigMap/Secret (§7.3)

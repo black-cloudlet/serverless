@@ -4,12 +4,12 @@ from app.models.common import (
     EnvVar,
     FileMount,
     Scaling,
-    ValueFrom,
 )
 from app.services import ksvc as ksvc_svc
 from app.services import resources as res
 from app.services import route as route_svc
 from app.services import secrets as secret_svc
+from app.services.ksvc import ContainerEnv
 from app.services.env import env_secret_name, resolve_env
 from app.services.files import resolve_files
 
@@ -22,7 +22,7 @@ def test_build_ksvc_basic():
         owner="alice",
         image="reg/x:1",
         offering="caas",
-        env=[EnvVar(name="LOG", value="info")],
+        env=[ContainerEnv(name="LOG", value="info")],
         volumes=files.volumes,
         scaling=Scaling(minScale=1, maxScale=3, targetConcurrency=50),
         pull_secret="app-pull",
@@ -37,14 +37,14 @@ def test_build_ksvc_basic():
     assert spec["containers"][0]["env"] == [{"name": "LOG", "value": "info"}]
 
 
-def test_build_ksvc_env_valuefrom():
+def test_build_ksvc_env_secret_ref():
     m = ksvc_svc.build_ksvc(
         name="app",
         group="t",
         owner="o",
         image="i",
         offering="faas",
-        env=[EnvVar(name="P", valueFrom=ValueFrom(secret="s", key="k"))],
+        env=[ContainerEnv(name="P", secret_ref=("s", "k"))],
         volumes=[],
         scaling=Scaling(),
     )
@@ -123,6 +123,7 @@ def test_resolve_env_plain_only_no_secret():
     resolved = resolve_env("app", "team", "o", [EnvVar(name="LOG", value="info")])
     assert resolved.backing == []
     assert resolved.env[0].value == "info"
+    assert resolved.env[0].secret_ref is None
 
 
 def test_resolve_env_secret_creates_secret_and_rewrites_ref():
@@ -141,16 +142,9 @@ def test_resolve_env_secret_creates_secret_and_rewrites_ref():
     assert sec["metadata"]["name"] == env_secret_name("app")
     assert base64.b64decode(sec["data"]["DB_PASSWORD"]).decode() == "s3cret"
 
-    # plain env untouched; secret env rewritten to a secretKeyRef
+    # plain env stays a literal; secret env becomes a secretKeyRef
     by_name = {e.name: e for e in resolved.env}
     assert by_name["LOG"].value == "info"
+    assert by_name["LOG"].secret_ref is None
     assert by_name["DB_PASSWORD"].value is None
-    assert by_name["DB_PASSWORD"].valueFrom.secret == env_secret_name("app")
-    assert by_name["DB_PASSWORD"].valueFrom.key == "DB_PASSWORD"
-
-
-def test_secret_env_requires_value():
-    import pytest
-
-    with pytest.raises(Exception):
-        EnvVar(name="X", secret=True)
+    assert by_name["DB_PASSWORD"].secret_ref == (env_secret_name("app"), "DB_PASSWORD")
