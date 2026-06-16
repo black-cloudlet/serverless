@@ -1,0 +1,31 @@
+# Non-secret application config. Decoupled from the Deployment so sites/SSO/etc.
+# can change without editing the pod spec. Secrets come from ESO (envFrom secretRef).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serverless-api-config
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  SERVERLESS_AUTH_ENABLED: "true"
+  SERVERLESS_ROUTE_DOMAIN: {{ .Values.routeDomain | quote }}
+  SERVERLESS_REGISTRY__URL: {{ .Values.registry.url | quote }}
+  SERVERLESS_SSO__ISSUER: {{ .Values.sso.issuer | quote }}
+  SERVERLESS_SSO__AUDIENCE: {{ .Values.sso.audience | quote }}
+  SERVERLESS_SSO__JWKS_URL: {{ .Values.sso.jwksUrl | quote }}
+  SERVERLESS_SSO__GROUPS_CLAIM: {{ .Values.sso.groupsClaim | quote }}
+  SERVERLESS_SSO__ADMIN_GROUPS: {{ toJson .Values.sso.adminGroups | quote }}
+  # Where the cert-manager client cert is mounted (global, all sites).
+  SERVERLESS_CLIENT_CERT_DIR: {{ .Values.clientCert.mountPath | quote }}
+  # Trusted CA bundle: CONFIG_MAP is needed to mount it into workload KSVCs;
+  # KEY/MOUNT_PATH give the file path the API uses as the k8s-client CA.
+  SERVERLESS_CA_BUNDLE__CONFIG_MAP: {{ .Values.caBundle.configMap | quote }}
+  SERVERLESS_CA_BUNDLE__KEY: {{ .Values.caBundle.key | quote }}
+  SERVERLESS_CA_BUNDLE__MOUNT_PATH: {{ .Values.caBundle.mountPath | quote }}
+  # Make outbound TLS (SSO/registry/git) trust the internal CA too.
+  SSL_CERT_FILE: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+  REQUESTS_CA_BUNDLE: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+  # Sites (endpoint + namespace only; cert/CA are global). Non-secret.
+  SERVERLESS_SITES: |-
+    [{{- range $i, $z := .Values.sites }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}"}{{- end }}]

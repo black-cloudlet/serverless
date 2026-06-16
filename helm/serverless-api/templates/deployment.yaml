@@ -24,44 +24,11 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8080
-          env:
-            - name: SERVERLESS_AUTH_ENABLED
-              value: "true"
-            - name: SERVERLESS_ROUTE_DOMAIN
-              value: {{ .Values.routeDomain | quote }}
-            - name: SERVERLESS_REGISTRY__URL
-              value: {{ .Values.registry.url | quote }}
-            - name: SERVERLESS_SSO__ISSUER
-              value: {{ .Values.sso.issuer | quote }}
-            - name: SERVERLESS_SSO__AUDIENCE
-              value: {{ .Values.sso.audience | quote }}
-            - name: SERVERLESS_SSO__JWKS_URL
-              value: {{ .Values.sso.jwksUrl | quote }}
-            - name: SERVERLESS_SSO__GROUPS_CLAIM
-              value: {{ .Values.sso.groupsClaim | quote }}
-            - name: SERVERLESS_SSO__ADMIN_GROUPS
-              value: {{ toJson .Values.sso.adminGroups | quote }}
-            # Where the cert-manager client cert is mounted (global, all sites).
-            - name: SERVERLESS_CLIENT_CERT_DIR
-              value: {{ .Values.clientCert.mountPath | quote }}
-            # Trusted CA bundle (used as the k8s-client CA and process trust).
-            - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
-              value: {{ .Values.caBundle.configMap | quote }}
-            - name: SERVERLESS_CA_BUNDLE__KEY
-              value: {{ .Values.caBundle.key | quote }}
-            - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
-              value: {{ .Values.caBundle.mountPath | quote }}
-            # Make outbound TLS (SSO/registry/git) trust the internal CA too.
-            - name: SSL_CERT_FILE
-              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
-            - name: REQUESTS_CA_BUNDLE
-              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
-            - name: SERVERLESS_SITES
-              value: |-
-                [{{- range $i, $z := .Values.sites }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}"}{{- end }}]
           envFrom:
+            - configMapRef:
+                name: serverless-api-config     # non-secret config (incl. SERVERLESS_SITES)
             - secretRef:
-                name: serverless-api-secrets
+                name: serverless-api-secrets    # ESO-projected secrets
           volumeMounts:
             - name: client-cert
               mountPath: {{ .Values.clientCert.mountPath }}
