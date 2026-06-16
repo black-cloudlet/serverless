@@ -847,11 +847,11 @@ Response `202 Accepted`: same envelope as the FaaS response (`type: "container"`
 
 The API is the backend for a **ServiceNow** frontend; the design accommodates that:
 
-- **Authentication — forward the end-user token.** ServiceNow obtains the user's **RHBK
+- **Authentication — forward the end-user token.** ServiceNow obtains the user's **SSO
   (OIDC) access token** (OAuth authorization-code / on-behalf-of) and sends it as the
   `Authorization: Bearer` header. The JWT carries the real user and `groups`, so the API's
   group-based authz (§6.2) works unchanged — actions are attributed to the actual requester.
-  Configure ServiceNow as an OAuth client of RHBK whose tokens carry `aud = serverless-api`.
+  Configure ServiceNow as an OAuth client of the SSO whose tokens carry `aud = serverless-api`.
 - **CORS.** When a ServiceNow Service Portal widget calls the API **from the browser**, set
   `SERVERLESS_CORS_ALLOW_ORIGINS` (Helm `corsAllowOrigins`) to the ServiceNow instance
   origin(s); the API enables CORS (preflight + `Authorization` header) only then. Server-side
@@ -940,7 +940,7 @@ Serverless/
 │   │   └── logging.py
 │   ├── auth/                        # self-contained auth component (all OIDC interaction)
 │   │   ├── oidc.py                  # SSO discovery + JWKS fetch/cache, token validation
-│   │   ├── apikey.py               # static API-key auth (X-API-Key) for service accounts
+│   │   ├── apikey.py               # static admin API-key auth (opaque Authorization: Bearer)
 │   │   ├── claims.py               # claims → group mapping, admin/tenant policy
 │   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
 │   ├── routers/

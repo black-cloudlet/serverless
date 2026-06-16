@@ -1,7 +1,5 @@
 """API routing tests with auth and services stubbed (no cluster needed)."""
 
-from datetime import datetime, timezone
-
 import pytest
 from fastapi.testclient import TestClient
 

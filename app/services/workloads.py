@@ -350,9 +350,7 @@ class WorkloadService:
                 holder["image"] = image
             return SiteStatus(site=cluster.name, status="Present")
 
-        statuses = await self._deployer.fanout(
-            self._deployer.resolve_targets(None), fetch
-        )
+        await self._deployer.fanout(self._deployer.resolve_targets(None), fetch)
         if "image" not in holder:
             raise NotFoundError(f"{offering} workload '{name}' not found")
         return holder

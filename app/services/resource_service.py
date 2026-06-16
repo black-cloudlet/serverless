@@ -6,6 +6,7 @@ to every site, and readable back by the owning group.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 from app.auth.claims import Principal
@@ -65,7 +66,9 @@ class ResourceService:
         statuses: list[SiteStatus] = []
         for site in targets:
             try:
-                fetched = self._deployer.cluster(site).get(kind, name)
+                fetched = await asyncio.to_thread(
+                    self._deployer.cluster(site).get, kind, name
+                )
                 self._assert_access(fetched, user)
                 obj = obj or fetched
                 statuses.append(SiteStatus(site=site.name, status="Present"))
@@ -93,8 +96,8 @@ class ResourceService:
         names: set[str] = set()
         for site in self._deployer.resolve_targets(None):
             try:
-                items = self._deployer.cluster(site).list(
-                    kind, label_selector=selector
+                items = await asyncio.to_thread(
+                    self._deployer.cluster(site).list, kind, label_selector=selector
                 )
                 names.update(i["metadata"]["name"] for i in items)
             except Exception:  # noqa: BLE001 - skip unreachable site in listing
@@ -107,9 +110,9 @@ class ResourceService:
         for site in self._deployer.resolve_targets(None):
             cluster = self._deployer.cluster(site)
             try:
-                obj = cluster.get(kind, name)
+                obj = await asyncio.to_thread(cluster.get, kind, name)
                 self._assert_access(obj, user)
-                cluster.delete(kind, name)
+                await asyncio.to_thread(cluster.delete, kind, name)
                 deleted = True
             except ForbiddenError:
                 raise
