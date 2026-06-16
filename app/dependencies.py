@@ -10,7 +10,6 @@ from fastapi import Depends
 from app.core.config import get_settings
 from app.services.builder import FuncBuilder
 from app.services.deployer import Deployer
-from app.services.resource_service import ResourceService
 from app.services.workloads import WorkloadService
 
 
@@ -25,10 +24,4 @@ def get_workload_service() -> WorkloadService:
     return WorkloadService(settings, get_deployer(), FuncBuilder(settings))
 
 
-@lru_cache
-def get_resource_service() -> ResourceService:
-    return ResourceService(get_settings(), get_deployer())
-
-
 WorkloadDep = Annotated[WorkloadService, Depends(get_workload_service)]
-ResourceDep = Annotated[ResourceService, Depends(get_resource_service)]

@@ -587,37 +587,19 @@ flowchart LR
 
 ### 7.3 Customer config & secret mounts (API-managed, **not ESO**)
 
-When a user wants to mount config files or secret values **into their function/container**,
-those are **created and managed by the API itself** — **not** through ESO/Vault.
+When a user wants config files or secret values **inside their function/container**, those
+are **created and managed by the API itself from the deploy request** — **not** through
+ESO/Vault. There are no separate secret/config endpoints; they are derived inline from the
+workload spec:
 
-```mermaid
-flowchart LR
-    U["User (FaaS/CaaS request)"]
-    API["FastAPI API"]
-    SEC["Kubernetes Secret / ConfigMap<br/>(labeled to group, both clusters)"]
-    KSVC["Workload (KSVC) volumeMount / envFrom"]
+- **`env` with `secret: true`** → values aggregated into a single **`{workload}-env`**
+  Kubernetes Secret; the container reads each via a `secretKeyRef` (§3.3).
+- **`files`** → non-secret files aggregated into one **`{workload}-files`** ConfigMap and
+  secret files into one **`{workload}-files`** Secret, mounted per file via `subPath` (§3.3).
 
-    U -->|"create / update config or secret data"| API
-    API -->|"create labeled Secret/ConfigMap"| SEC
-    SEC --> KSVC
-    U -->|"GET (read back)"| API
-    API -->|"read by name, group-scoped"| SEC
-```
-
-- The API takes the user-supplied data and creates a Kubernetes **`Secret`** (for secret
-  mounts) or **`ConfigMap`** (for config files) in the **workload namespace of both
-  clusters**, stamped with the standard ownership labels (§6.2:
-  `serverless.platform/group`, `managed-by`, `owner`).
-- The workload references them via the `files` field (mounted at a `mountPath`) or `env`
-  (`valueFrom`/`envFrom`). Inline uploads in `files` cause the API to create the backing
-  resource automatically.
-- **Read-back:** users can **retrieve their own config/secret resources through the API**
-  (group-scoped — a caller only sees resources labeled with their group(s); see §10).
-  Whether secret *values* are returned in clear or redacted by default is a configurable
-  policy (see §13).
-- **Lifecycle:** these resources are owned by the tenant group, kept consistent across both
-  clusters by the API, and cleaned up when explicitly deleted or when the owning workload is
-  deleted. **They never touch Vault or ESO.**
+All are created in the **workload namespace of both clusters**, stamped with the ownership
+labels (§6.2), kept consistent by the API, and cleaned up with the workload. **They never
+touch Vault or ESO.**
 
 ---
 
@@ -720,21 +702,11 @@ are JSON. Times are RFC 3339 UTC.
 | `DELETE` | `/api/v1/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/{type}/{name}/status` | Per-site readiness, URLs, revision info. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
-| `POST` | `/api/v1/secrets` | Create a workload **secret** (API-managed, not ESO); applied to both clusters. |
-| `GET` | `/api/v1/secrets` | List caller's secrets (label-scoped; values redacted). |
-| `GET` | `/api/v1/secrets/{name}` | **Read back** one secret (values per policy — redacted by default). |
-| `PUT` | `/api/v1/secrets/{name}` | Update a secret's data in both clusters. |
-| `DELETE` | `/api/v1/secrets/{name}` | Delete the secret in both clusters. |
-| `POST` | `/api/v1/configs` | Create a workload **config file / ConfigMap**; applied to both clusters. |
-| `GET` | `/api/v1/configs` | List caller's configs (label-scoped). |
-| `GET` | `/api/v1/configs/{name}` | **Read back** one config (full data). |
-| `PUT` | `/api/v1/configs/{name}` | Update a config in both clusters. |
-| `DELETE` | `/api/v1/configs/{name}` | Delete the config in both clusters. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
-> `secrets` and `configs` are **created and owned by the API** (§7.3), referenced from a
-> workload's `files`/`env`, and are **readable back by their owning group** — they do
-> **not** flow through ESO/Vault.
+> Workload secrets and config files are **not** separate endpoints — they are derived
+> **inline** from the deploy request (`env` with `secret: true`, and `files`) and created by
+> the API as `{workload}-env` / `{workload}-files` objects (§3.3, §7.3).
 
 > **Async (submit + poll).** `POST`/`PUT` validate synchronously (so the caller gets
 > immediate `400`/`404`/`409`), then **return `202 Accepted`** with `overallStatus: "Pending"`
@@ -860,42 +832,6 @@ The API is the backend for a **ServiceNow** frontend; the design accommodates th
   the ServiceNow workflow polls `GET {statusUrl}` until `Ready`/`Degraded`. This avoids
   ServiceNow REST timeouts on slow FaaS builds and matches its long-running-task patterns.
 
-### Workload secrets & configs (API-managed — `POST /api/v1/secrets`, `/api/v1/configs`)
-
-The API creates these directly (§7.3) and the user can read them back. They are then
-referenced from a workload's `files`/`env`.
-
-```json
-// POST /api/v1/secrets
-{
-  "name": "orders-tls",
-  "data": { "tls.crt": "<base64>", "tls.key": "<base64>" }
-}
-```
-
-```json
-// POST /api/v1/configs
-{
-  "name": "orders-config",
-  "data": { "app.yaml": "log_level: info\nfeature_x: true\n" }
-}
-```
-
-Response `201 Created` (per-site applied; secret values redacted in responses by default):
-
-```json
-{
-  "name": "orders-tls",
-  "type": "secret",
-  "keys": ["tls.crt", "tls.key"],
-  "sites": [
-    { "site": "site-a", "status": "Applied" },
-    { "site": "site-b", "status": "Applied" }
-  ],
-  "overallStatus": "Applied"
-}
-```
-
 ### Error model
 
 Standard envelope for all non-2xx responses:
@@ -946,23 +882,24 @@ Serverless/
 │   ├── routers/
 │   │   ├── functions.py             # FaaS endpoints
 │   │   ├── containers.py            # CaaS endpoints
-│   │   ├── resources.py             # API-managed workload secrets & configs (§7.3)
 │   │   └── health.py
 │   ├── models/                      # Pydantic request/response schemas
-│   │   ├── common.py                # env, scaling, files, site status
+│   │   ├── common.py                # env, files, scaling, site status, labels
 │   │   ├── function.py
-│   │   ├── container.py
-│   │   └── resource.py              # secret/config create/read-back schemas
+│   │   └── container.py
 │   ├── services/                    # business logic
+│   │   ├── workloads.py             # build-once / deploy-both orchestration
 │   │   ├── deployer.py              # multi-site fan-out + status aggregation
 │   │   ├── builder.py               # FaaS build via func/buildpacks
 │   │   ├── ksvc.py                  # KSVC manifest construction
-│   │   ├── route.py                 # OpenShift Route construction
-│   │   ├── resources.py             # CRUD + read-back of API-managed Secret/ConfigMap (§7.3)
-│   │   └── secrets.py               # imagePullSecret / transient credential handling
+│   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
+│   │   ├── env.py                   # env resolution (+ {workload}-env Secret)
+│   │   ├── files.py                 # file resolution (+ {workload}-files CM/Secret)
+│   │   ├── resources.py             # Secret/ConfigMap manifest builders
+│   │   ├── secrets.py               # imagePullSecret builder
+│   │   └── labels.py                # ownership / workload labels
 │   └── clients/
-│       ├── cluster.py               # Cluster: wraps the k8s library for one site (mTLS cert)
-│       └── registry.py
+│       └── cluster.py               # Cluster: wraps the k8s library for one site (mTLS cert)
 ├── helm/
 │   └── serverless-api/
 │       ├── Chart.yaml
@@ -1213,7 +1150,6 @@ spec:
 |------|-------|
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
 | **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Degraded, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
-| **Secret read-back policy** | For API-managed workload secrets (§7.3), decide the default on `GET /api/v1/secrets/{name}`: redact values, return masked, or return clear to the owning group — plus whether reads are audited. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
 | **Observability** | Centralized logging/metrics/tracing for tenant workloads (and the `/logs` endpoint backing store) to be designed. |
 | **Audit logging** | Who deployed/changed/deleted what — likely required for enterprise/compliance. |

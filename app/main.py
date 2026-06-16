@@ -9,8 +9,8 @@ from app import __version__
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
-from app.dependencies import get_resource_service, get_workload_service
-from app.routers import containers, functions, health, resources
+from app.dependencies import get_workload_service
+from app.routers import containers, functions, health
 
 
 def create_app() -> FastAPI:
@@ -36,12 +36,10 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(functions.router)
     app.include_router(containers.router)
-    app.include_router(resources.router)
 
-    # Build the service singletons (and thus the per-site Cluster objects) at
+    # Build the service singleton (and thus the per-site Cluster objects) at
     # startup from config, rather than lazily on the first request.
     get_workload_service()
-    get_resource_service()
     return app
 
 
