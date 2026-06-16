@@ -45,29 +45,29 @@ def _settings_with_api_key(raw_key, groups, admin_groups=()):
     )
 
 
-def test_authenticate_api_key_match_and_admin():
+def test_authenticate_api_key_is_admin():
     from app.auth.apikey import authenticate_api_key
 
-    settings = _settings_with_api_key("s3cret", ["team-a", "platform-admins"], ["platform-admins"])
+    settings = _settings_with_api_key("s3cret", ["platform-admins"], ["platform-admins"])
     p = authenticate_api_key("s3cret", settings)
     assert p.username == "ci-bot"
-    assert p.groups == ["team-a", "platform-admins"]
-    assert p.is_admin is True
+    assert p.is_admin is True  # API keys are admin-only
     assert authenticate_api_key("wrong", settings) is None
 
 
-def test_require_auth_via_api_key_header():
+def test_require_auth_via_bearer_api_key():
     from types import SimpleNamespace
 
     from app.auth.deps import require_auth
     from app.core.errors import UnauthenticatedError
 
-    settings = _settings_with_api_key("s3cret", ["team-a"])
-    req = SimpleNamespace(headers={"X-API-Key": "s3cret"})
-    p = require_auth(req, settings, validator=None)  # validator unused for API key
-    assert p.username == "ci-bot" and p.groups == ["team-a"]
+    settings = _settings_with_api_key("opaque-s3cret", ["platform-admins"])
+    # Opaque token in the standard Authorization: Bearer header.
+    req = SimpleNamespace(headers={"Authorization": "Bearer opaque-s3cret"})
+    p = require_auth(req, settings, validator=None)  # validator unused for opaque key
+    assert p.username == "ci-bot" and p.is_admin is True
 
-    bad = SimpleNamespace(headers={"X-API-Key": "nope"})
+    bad = SimpleNamespace(headers={"Authorization": "Bearer nope"})
     with pytest.raises(UnauthenticatedError):
         require_auth(bad, settings, validator=None)
 

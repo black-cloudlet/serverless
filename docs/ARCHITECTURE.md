@@ -451,14 +451,15 @@ sequenceDiagram
   (client-credentials grant) — any client with a valid SSO bearer token authenticates the
   same way.
 
-#### Static API keys (non-OIDC service accounts)
+#### Static API keys (admin/operator automation, non-OIDC)
 
-For service accounts that **cannot** do OIDC, the API also accepts a **static API key** in the
-`X-API-Key` header (checked before the JWT path). Keys are platform-issued and stored in Vault
+For **admin** automation that can't do OIDC, the API also accepts a **static API key** in the
+**same `Authorization: Bearer <key>` header**. The API distinguishes the two by shape: a
+structural JWT (`header.payload.signature`) is validated as an OIDC token; an opaque token is
+matched against the configured API keys. Keys are platform-issued and stored in Vault
 (projected via ESO into `SERVERLESS_API_KEYS`) as `{name, sha256, groups}` — only the
-**sha256 hash** is stored, and matching is constant-time. A matching key yields a Principal
-whose `groups` drive the **same** group-based authorization as OIDC users. Enable via Helm
-`apiKeys.enabled`.
+**sha256 hash** is stored, matched constant-time. A matching key yields an **admin** Principal
+(API keys are admin-only; regular users go through OIDC). Enable via Helm `apiKeys.enabled`.
 
 #### Auth as an internal component (not a separate microservice)
 

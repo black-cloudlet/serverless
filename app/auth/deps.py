@@ -9,11 +9,9 @@ from fastapi import Depends, Request
 
 from app.auth.apikey import authenticate_api_key
 from app.auth.claims import Principal, principal_from_claims
-from app.auth.oidc import TokenValidator
+from app.auth.oidc import TokenValidator, looks_like_jwt
 from app.core.config import Settings, get_settings
 from app.core.errors import ForbiddenError, UnauthenticatedError
-
-API_KEY_HEADER = "X-API-Key"
 
 
 @lru_cache
@@ -44,21 +42,19 @@ def require_auth(
             subject="dev", username="dev", groups=["dev"], is_admin=True
         )
 
-    # Static API key (service accounts that can't do OIDC) takes precedence.
-    api_key = request.headers.get(API_KEY_HEADER)
-    if api_key:
-        principal = authenticate_api_key(api_key, settings)
-        if principal is None:
-            raise UnauthenticatedError("Invalid API key.")
+    token = _bearer_token(request)
+
+    # A structural JWT -> OIDC user/service token; otherwise an opaque admin API key.
+    if looks_like_jwt(token):
+        claims = validator.validate(token)
+        principal = principal_from_claims(claims, settings.sso)
         if not principal.groups:
-            raise ForbiddenError("API key has no group membership.")
+            raise ForbiddenError("Token has no group membership.")
         return principal
 
-    # Otherwise an OIDC (RHBK) bearer JWT.
-    claims = validator.validate(_bearer_token(request))
-    principal = principal_from_claims(claims, settings.sso)
-    if not principal.groups:
-        raise ForbiddenError("Token has no group membership.")
+    principal = authenticate_api_key(token, settings)
+    if principal is None:
+        raise UnauthenticatedError("Invalid bearer token.")
     return principal
 
 

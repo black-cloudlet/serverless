@@ -11,6 +11,15 @@ from app.core.config import SSOConfig
 from app.core.errors import UnauthenticatedError
 
 
+def looks_like_jwt(token: str) -> bool:
+    """True if the bearer token is structurally a JWT (vs an opaque API key)."""
+    try:
+        jwt.get_unverified_header(token)
+        return True
+    except jwt.PyJWTError:
+        return False
+
+
 class TokenValidator:
     """Validates SSO-issued JWTs offline against cached JWKS.
 
