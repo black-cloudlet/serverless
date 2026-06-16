@@ -11,6 +11,11 @@ replicaCount: 2
 # This deployment's site (one Application per cluster). Used to label/annotate.
 siteName: site-a
 
+# Namespaces created by this chart, guarded against ArgoCD delete/prune.
+namespaces:
+  api: serverless-api               # where the API runs
+  workloads: serverless-workloads   # where the API creates functions/containers
+
 # Single platform wildcard domain (docs §5).
 routeDomain: serverless.example.com
 

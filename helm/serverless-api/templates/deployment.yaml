@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: serverless-api
+  namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 spec:

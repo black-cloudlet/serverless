@@ -610,12 +610,15 @@ flowchart LR
     ARGO --> ESOC
 ```
 
-- **Helm chart (this repo)** templates: `Deployment`, `Service`, `Route` (for the API
-  itself), `Role`/`RoleBinding` (bound to the client-cert CN user), cert-manager
-  `Certificate` (per site), ESO **`ExternalSecret`** (referencing the pre-existing
-  `ClusterSecretStore`), and `values.yaml` describing the site profiles. It does **not**
-  ship a SecretStore, and the API pod runs as the namespace `default` ServiceAccount
-  (cluster auth is the client certificate, not the SA token).
+- **Helm chart (this repo)** templates: two `Namespace`s (`serverless-api` for the API and
+  `serverless-workloads` for customer workloads, both annotated
+  `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
+  them), `Deployment`, `Service`, `Route` (for the API itself), `Role`/`RoleBinding` (bound to
+  the client-cert CN user, in the workloads namespace), cert-manager `Certificate` (per site),
+  ESO **`ExternalSecret`** (referencing the pre-existing `ClusterSecretStore`), and
+  `values.yaml` describing the site profiles. It does **not** ship a SecretStore, and the API
+  pod runs as the namespace `default` ServiceAccount (cluster auth is the client certificate,
+  not the SA token).
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
   site**, each pointing at this repo's chart with a per-site values file. Sync waves order
   Secrets/RBAC before the Deployment; health checks gate rollout.
@@ -860,6 +863,7 @@ Serverless/
 │       ├── Chart.yaml
 │       ├── values.yaml              # site profiles, image refs, SSO, registry
 │       └── templates/
+│           ├── namespaces.yaml      # serverless-api + serverless-workloads (ArgoCD Delete=false,Prune=false)
 │           ├── deployment.yaml
 │           ├── service.yaml
 │           ├── route.yaml
@@ -951,7 +955,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: serverless-api-site-a-client
-  namespace: serverless-system
+  namespace: serverless-api
 spec:
   secretName: site-a-client                       # mounted into the API pod
   commonName: serverless-api.clients.example.com  # DNS name => Kubernetes username
@@ -1011,7 +1015,7 @@ apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
   name: serverless-api-secrets
-  namespace: serverless-system
+  namespace: serverless-api
 spec:
   refreshInterval: 1h
   secretStoreRef:
@@ -1062,10 +1066,10 @@ spec:
             - "{{valuesFile}}"
       destination:
         server: "{{cluster}}"        # deploy the API into each cluster (active/active)
-        namespace: serverless-system
+        namespace: serverless-api
       syncPolicy:
         automated: { prune: true, selfHeal: true }
-        syncOptions: [ "CreateNamespace=true" ]
+        syncOptions: [ "CreateNamespace=false" ]
 ```
 
 ---
