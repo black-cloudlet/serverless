@@ -80,3 +80,65 @@ async def test_fanout_captures_per_site_errors():
     by_site = {s.site: s for s in statuses}
     assert by_site["site-a"].status == "Ready"
     assert by_site["site-b"].error == "kaboom"
+
+
+class _FakeCluster:
+    def __init__(self, name, existing=None):
+        self.name = name
+        self._existing = existing or {}
+
+    def get(self, kind, name, namespace=None):
+        from app.core.errors import NotFoundError as _NF
+
+        if name in self._existing:
+            return self._existing[name]
+        raise _NF(f"{name} not found")
+
+
+def _workload_service(clusters):
+    from app.services.builder import FuncBuilder
+    from app.services.workloads import WorkloadService
+
+    settings = _settings_with_sites()
+    d = Deployer(settings)
+    d.cluster = lambda site: clusters[site.name]  # inject fakes
+    return WorkloadService(settings, d, FuncBuilder(settings))
+
+
+async def test_host_available_when_unused():
+    svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
+    # no DomainMapping exists -> no raise
+    await svc._assert_host_available(
+        "app-team.serverless.example.com", "app-team", svc._deployer.resolve_targets(None)
+    )
+
+
+async def test_host_taken_by_other_workload_conflicts():
+    from app.core.errors import ConflictError
+    from app.models.common import LABEL_WORKLOAD
+
+    host = "shared.example.com"
+    dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}
+    svc = _workload_service(
+        {
+            "site-a": _FakeCluster("site-a", existing={host: dm}),
+            "site-b": _FakeCluster("site-b"),
+        }
+    )
+    with pytest.raises(ConflictError):
+        await svc._assert_host_available(host, "app-team", svc._deployer.resolve_targets(None))
+
+
+async def test_host_owned_by_same_workload_ok():
+    from app.models.common import LABEL_WORKLOAD
+
+    host = "app-team.serverless.example.com"
+    dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}}
+    svc = _workload_service(
+        {
+            "site-a": _FakeCluster("site-a", existing={host: dm}),
+            "site-b": _FakeCluster("site-b", existing={host: dm}),
+        }
+    )
+    # same owner -> update, no conflict
+    await svc._assert_host_available(host, "app-team", svc._deployer.resolve_targets(None))

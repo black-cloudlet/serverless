@@ -391,6 +391,16 @@ shouldn't see in the URL; and one wildcard domain means **one wildcard cert + on
 to manage. The offering (`faas`/`caas`) is tracked as a **label**, not in the host. The
 `{group}` prefix prevents collisions in the shared namespace and makes ownership obvious.
 
+**Object naming.** The OpenShift name of the workload (KSVC) and all its derived resources
+(`{workload}-env` Secret, `{workload}-files` ConfigMap/Secret, pull secret) is
+**`{name}-{group}`** — unique per tenant in the shared namespace.
+
+**Custom hostname.** A client may override the host with a `hostname` field. Because the
+`DomainMapping` name *is* the host, the API **validates the hostname is not already assigned**
+to another workload before deploying (checked across both sites); a clash returns **409
+Conflict**. The chosen host is recorded on the KSVC via the `serverless.platform/host`
+annotation so reads can report the URL.
+
 ```mermaid
 flowchart LR
     Ext["External client"] -->|HTTPS| DNS["DNS: *.serverless.{base_domain}<br/>→ active site"]
@@ -703,7 +713,9 @@ are JSON. Times are RFC 3339 UTC.
 ```jsonc
 // Workload shared fields (used by both functions and containers)
 {
-  "name": "orders-api",                 // DNS-1123, required
+  "name": "orders-api",                 // DNS-1123, required. OpenShift object name is {name}-{group}.
+  "hostname": "orders.example.com",     // optional custom host; default {name}-{group}.{route_domain}.
+                                        // must be a valid FQDN and not already assigned (else 409).
   "env": [                              // optional; each entry is name + value
     { "name": "LOG_LEVEL", "value": "info" },                       // inline
     { "name": "DB_PASSWORD", "value": "s3cret", "secret": true }    // -> API-created Secret {workload}-env
@@ -833,7 +845,7 @@ Standard envelope for all non-2xx responses:
 | `401` | `UNAUTHENTICATED` | Missing/invalid JWT. |
 | `403` | `FORBIDDEN` | Caller not in a required/owning group. |
 | `404` | `NOT_FOUND` | Workload not found in caller's group scope. |
-| `409` | `CONFLICT` | Name already exists for the group. |
+| `409` | `CONFLICT` | Name already exists for the group, or the requested `hostname` is already assigned. |
 | `207` | `SITE_PARTIAL_FAILURE` | One site failed (Degraded). |
 | `502` | `SITE_TOTAL_FAILURE` | Both sites failed. |
 | `500` | `INTERNAL` | Unexpected error. |
@@ -912,11 +924,14 @@ Serverless/
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: orders-api
+  name: orders-api-team        # {name}-{group}
   namespace: serverless-workloads
   labels:
     serverless.platform/group: team
+    serverless.platform/workload: orders-api-team
     serverless.platform/managed-by: serverless-api
+  annotations:
+    serverless.platform/host: orders-api-team.serverless.example.com
 spec:
   template:
     metadata:
@@ -957,11 +972,11 @@ metadata:
   namespace: serverless-workloads
   labels:
     serverless.platform/group: team
-    serverless.platform/workload: orders-api
+    serverless.platform/workload: orders-api-team
     serverless.platform/offering: caas
 spec:
   ref:
-    name: orders-api
+    name: orders-api-team        # the {name}-{group} KSVC
     kind: Service
     apiVersion: serving.knative.dev/v1
 ```

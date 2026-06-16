@@ -10,9 +10,16 @@ from datetime import datetime, timezone
 
 from app.auth.claims import Principal
 from app.core.config import Settings, SiteConfig
-from app.core.errors import ForbiddenError, NotFoundError, ServiceUnavailableError
+from app.core.errors import (
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
 from app.models.common import (
+    ANNOTATION_HOST,
     LABEL_GROUP,
+    LABEL_WORKLOAD,
     WorkloadResponse,
     SiteStatus,
 )
@@ -30,6 +37,11 @@ from app.clients.cluster import Cluster, ResourceKind
 
 OFFERING_FUNCTION = "faas"
 OFFERING_CONTAINER = "caas"
+
+
+def object_name(name: str, group: str) -> str:
+    """The OpenShift name of a workload and its derived resources: {name}-{group}."""
+    return f"{name}-{group}"
 
 
 def _ksvc_status(obj: dict) -> tuple[str, str | None]:
@@ -86,10 +98,11 @@ class WorkloadService:
         self, spec: ContainerCreate, user: Principal
     ) -> tuple[WorkloadResponse, int]:
         group = user.primary_group
-        pull_name = f"{spec.name}-pull"
+        oname = object_name(spec.name, group)
+        pull_name = f"{oname}-pull"
         pull = secret_svc.build_pull_secret(
             pull_name,
-            workload_labels(group, user.username, spec.name, OFFERING_CONTAINER),
+            workload_labels(group, user.username, oname, OFFERING_CONTAINER),
             self._settings.registry.url,
             spec.registryUsername,
             spec.registryToken,
@@ -117,25 +130,33 @@ class WorkloadService:
         pull_secret_manifest: dict | None,
     ) -> tuple[WorkloadResponse, int]:
         group = user.primary_group
+        oname = object_name(spec.name, group)
         targets = self._deployer.resolve_targets(spec.sites)
-        host = route_svc.host_for(spec.name, group, self._settings.route_domain)
+        host = spec.hostname or route_svc.host_for(
+            spec.name, group, self._settings.route_domain
+        )
 
-        resolved = resolve_files(spec.name, group, user.username, spec.files)
-        resolved_env = resolve_env(spec.name, group, user.username, spec.env)
+        # The DomainMapping name IS the host, so an idempotent apply would hijack
+        # another workload's mapping. Reject a host already owned by someone else.
+        await self._assert_host_available(host, oname, targets)
+
+        resolved = resolve_files(oname, group, user.username, spec.files)
+        resolved_env = resolve_env(oname, group, user.username, spec.env)
         backing = resolved.backing + resolved_env.backing
         ksvc = ksvc_svc.build_ksvc(
-            name=spec.name,
+            name=oname,
             group=group,
             owner=user.username,
             image=image,
             offering=offering,
+            host=host,
             env=resolved_env.env,
             volumes=resolved.volumes,
             scaling=spec.scaling,
             pull_secret=pull_secret_name,
         )
         mapping = route_svc.build_domain_mapping(
-            name=spec.name, group=group, owner=user.username, offering=offering, host=host
+            name=oname, group=group, owner=user.username, offering=offering, host=host
         )
 
         def apply(cluster: Cluster, site: SiteConfig) -> SiteStatus:
@@ -147,7 +168,7 @@ class WorkloadService:
             # DomainMapping exposes the custom host; the Serverless Operator
             # auto-creates the OpenShift Route for it.
             cluster.apply(mapping)
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, spec.name)
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             status, revision = _ksvc_status(obj)
             return SiteStatus(site=cluster.name, status=status, revision=revision)
 
@@ -163,15 +184,38 @@ class WorkloadService:
         )
         return body, status_code_for(overall, created=True)
 
+    async def _assert_host_available(
+        self, host: str, oname: str, targets: list[SiteConfig]
+    ) -> None:
+        """Raise ConflictError if `host` is a DomainMapping owned by another workload."""
+
+        def check(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+            try:
+                existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
+            except Exception:
+                return SiteStatus(site=cluster.name, status="Available")
+            labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
+            owner_workload = labels.get(LABEL_WORKLOAD)
+            status = "Available" if owner_workload == oname else "Taken"
+            return SiteStatus(site=cluster.name, status=status)
+
+        statuses = await self._deployer.fanout(targets, check)
+        if any(s.status == "Taken" for s in statuses):
+            raise ConflictError(f"hostname '{host}' is already assigned")
+
     # -- read / delete ---------------------------------------------------
     async def get(
         self, kind: str, name: str, user: Principal
     ) -> WorkloadResponse:
-        offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
+        oname = object_name(name, user.primary_group)
+        host_holder: dict[str, str] = {}
 
         def fetch(cluster: Cluster, site: SiteConfig) -> SiteStatus:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
+            annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+            if ANNOTATION_HOST in annotations:
+                host_holder["host"] = annotations[ANNOTATION_HOST]
             status, revision = _ksvc_status(obj)
             return SiteStatus(site=cluster.name, status=status, revision=revision)
 
@@ -179,8 +223,9 @@ class WorkloadService:
         statuses = await self._deployer.fanout(targets, fetch)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
-        group = user.primary_group
-        host = route_svc.host_for(name, group, self._settings.route_domain)
+        host = host_holder.get(
+            "host", route_svc.host_for(name, user.primary_group, self._settings.route_domain)
+        )
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
         return WorkloadResponse(
@@ -192,10 +237,12 @@ class WorkloadService:
         )
 
     async def delete(self, kind: str, name: str, user: Principal) -> None:
+        oname = object_name(name, user.primary_group)
+
         def remove(cluster: Cluster, site: SiteConfig) -> SiteStatus:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
-            cluster.delete(ResourceKind.KNATIVE_SERVICE, name)
+            cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
             return SiteStatus(site=cluster.name, status="Deleted")
 
         targets = self._deployer.resolve_targets(None)

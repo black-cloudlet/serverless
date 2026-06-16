@@ -16,7 +16,15 @@ LABEL_OFFERING = "serverless.platform/offering"
 LABEL_WORKLOAD = "serverless.platform/workload"
 MANAGED_BY_VALUE = "serverless-api"
 
+# Annotation recording the external host chosen for a workload (so reads can
+# report the URL without recomputing/guessing it).
+ANNOTATION_HOST = "serverless.platform/host"
+
 DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+# RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
+HOSTNAME = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
+)
 
 
 def validate_name(name: str) -> str:
@@ -25,6 +33,12 @@ def validate_name(name: str) -> str:
             "name must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
         )
     return name
+
+
+def validate_hostname(host: str) -> str:
+    if not HOSTNAME.match(host):
+        raise ValueError("hostname must be a valid lowercase DNS hostname (FQDN)")
+    return host
 
 
 class EnvVar(BaseModel):

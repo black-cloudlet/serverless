@@ -44,3 +44,22 @@ def test_filemount_requires_inline_content():
 def test_scaling_bounds():
     with pytest.raises(ValidationError):
         Scaling(minScale=5, maxScale=2)
+
+
+def test_optional_hostname_validated():
+    fn = FunctionCreate(
+        name="my-fn",
+        gitUrl="g",
+        gitToken="t",
+        runtime="python",
+        hostname="app.example.com",
+    )
+    assert fn.hostname == "app.example.com"
+    # default (no hostname) is allowed
+    assert FunctionCreate(name="x", gitUrl="g", gitToken="t", runtime="go").hostname is None
+    # invalid hostnames rejected
+    for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
+        with pytest.raises(ValidationError):
+            FunctionCreate(
+                name="x", gitUrl="g", gitToken="t", runtime="go", hostname=bad
+            )

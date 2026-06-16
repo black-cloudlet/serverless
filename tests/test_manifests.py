@@ -17,17 +17,20 @@ from app.services.files import resolve_files
 def test_build_ksvc_basic():
     files = resolve_files("app", "team", "alice", [])
     m = ksvc_svc.build_ksvc(
-        name="app",
+        name="app-team",
         group="team",
         owner="alice",
         image="reg/x:1",
         offering="caas",
+        host="app-team.serverless.example.com",
         env=[ContainerEnv(name="LOG", value="info")],
         volumes=files.volumes,
         scaling=Scaling(minScale=1, maxScale=3, targetConcurrency=50),
         pull_secret="app-pull",
     )
     assert m["apiVersion"] == "serving.knative.dev/v1"
+    assert m["metadata"]["name"] == "app-team"
+    assert m["metadata"]["annotations"]["serverless.platform/host"] == "app-team.serverless.example.com"
     assert m["metadata"]["labels"][LABEL_GROUP] == "team"
     tmpl = m["spec"]["template"]
     assert tmpl["metadata"]["annotations"]["autoscaling.knative.dev/min-scale"] == "1"
@@ -39,11 +42,12 @@ def test_build_ksvc_basic():
 
 def test_build_ksvc_env_secret_ref():
     m = ksvc_svc.build_ksvc(
-        name="app",
+        name="app-t",
         group="t",
         owner="o",
         image="i",
         offering="faas",
+        host="app-t.serverless.example.com",
         env=[ContainerEnv(name="P", secret_ref=("s", "k"))],
         volumes=[],
         scaling=Scaling(),
