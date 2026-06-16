@@ -137,21 +137,23 @@ flowchart TB
     DNSAPI --> APIA
     DNSAPI -. failover .-> APIB
 
-    APIA -->|validate JWT / JWKS| KC
-    APIA -->|create KSVC + Route (mTLS client cert)| KNA
-    APIA -->|create KSVC + Route (mTLS client cert)| KNB
-    APIA -->|pull/push images| REG
+    APIA -->|"validate JWT / JWKS"| KC
+    APIA -->|"create KSVC + Route (mTLS client cert)"| KNA
+    APIA -->|"create KSVC + Route (mTLS client cert)"| KNB
+    APIA -->|"pull/push images"| REG
     KNA --> REG
     KNB --> REG
 
-    V -. secrets .-> ESOA --> APIA
-    V -. secrets .-> ESOB --> APIB
-    CMA -. client cert CN=serverless-api.clients.{base_domain} .-> APIA
-    CMB -. client cert .-> APIB
-    GIT -. Helm sync .-> APIA
-    GIT -. Helm sync .-> APIB
+    V -. secrets .-> ESOA
+    ESOA --> APIA
+    V -. secrets .-> ESOB
+    ESOB --> APIB
+    CMA -. "client cert (CN serverless-api.clients.base_domain)" .-> APIA
+    CMB -. "client cert" .-> APIB
+    GIT -. "Helm sync" .-> APIA
+    GIT -. "Helm sync" .-> APIB
 
-    U -.->|workload traffic| DNSAPP
+    U -.->|"workload traffic"| DNSAPP
     DNSAPP --> RTA
     DNSAPP -. failover .-> RTB
 ```
