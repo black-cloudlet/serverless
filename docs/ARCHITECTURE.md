@@ -274,7 +274,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 | Capability | How it maps to Knative |
 |------------|------------------------|
 | **Environment variables** | `spec.template.spec.containers[0].env` (literal values) and `envFrom` (for whole ConfigMaps/Secrets). |
-| **Mount secrets / config files** | API materializes referenced `Secret`/`ConfigMap` (Secrets sourced via ESO where appropriate) and mounts them as `volumeMounts` at a requested path, or projects them as files. |
+| **Mount secrets / config files** | The **API itself creates** the backing `Secret`/`ConfigMap` directly from user-supplied data (**not** via ESO), labels it to the owning group, and mounts it as `volumeMounts` at the requested path (or projects individual keys as files). Users can **read these back through the API** (see §7.3 and §10). |
 | **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `target` (concurrency), and `containerConcurrency`. Scale-to-zero is the default when `min-scale=0`. |
 
 A canonical scaling sub-object in the API:
@@ -480,9 +480,17 @@ sequenceDiagram
 
 ## 7. Secrets Management
 
-**Principle: the API never persists secrets.** Two categories:
+**Principle: the API never persists *its own platform* secrets**, and **ESO is used only for
+those platform secrets** — never for customer workload data. There are three distinct
+categories:
 
-### 7.1 The API's own secrets — Vault → ESO → Kubernetes Secret
+| Category | Owner / mechanism | ESO? |
+|----------|-------------------|------|
+| 7.1 **API's own platform secrets** (RHBK client secret, client-cert material) | Vault → ESO `ExternalSecret` → K8s Secret | **Yes** |
+| 7.2 **Customer credentials** (git/registry tokens) | Supplied per-request, used transiently | No |
+| 7.3 **Customer config & secret mounts** (what the user wants inside their workload) | **Created and managed by the API directly**; readable back via the API | **No** |
+
+### 7.1 The API's own platform secrets — Vault → ESO → Kubernetes Secret
 
 The API needs, e.g., the RHBK client secret and per-zone client-cert material. These are
 stored in **Vault** and projected into the cluster by **ESO**.
@@ -518,6 +526,39 @@ flowchart LR
 - The API does **not** write these to its own datastore, logs, or Git. Where a credential
   must persist for the workload to run (the pull secret), it lives as a **scoped, labeled
   Kubernetes Secret** owned by the tenant group and is deleted when the workload is deleted.
+
+### 7.3 Customer config & secret mounts (API-managed, **not ESO**)
+
+When a user wants to mount config files or secret values **into their function/container**,
+those are **created and managed by the API itself** — **not** through ESO/Vault.
+
+```mermaid
+flowchart LR
+    U["User (FaaS/CaaS request)"]
+    API["FastAPI API"]
+    SEC["Kubernetes Secret / ConfigMap<br/>(labeled to group, both clusters)"]
+    KSVC["Workload (KSVC) volumeMount / envFrom"]
+
+    U -->|"create / update config or secret data"| API
+    API -->|"create labeled Secret/ConfigMap"| SEC
+    SEC --> KSVC
+    U -->|"GET (read back)"| API
+    API -->|"read by name, group-scoped"| SEC
+```
+
+- The API takes the user-supplied data and creates a Kubernetes **`Secret`** (for secret
+  mounts) or **`ConfigMap`** (for config files) in the **workload namespace of both
+  clusters**, stamped with the standard ownership labels (§6.2:
+  `serverless.platform/group`, `managed-by`, `owner`).
+- The workload references them by name in `configMounts` (mounted as files) or `env`
+  (`valueFrom`/`envFrom`).
+- **Read-back:** users can **retrieve their own config/secret resources through the API**
+  (group-scoped — a caller only sees resources labeled with their group(s); see §10).
+  Whether secret *values* are returned in clear or redacted by default is a configurable
+  policy (see §13).
+- **Lifecycle:** these resources are owned by the tenant group, kept consistent across both
+  clusters by the API, and cleaned up when explicitly deleted or when the owning workload is
+  deleted. **They never touch Vault or ESO.**
 
 ---
 
@@ -595,7 +636,21 @@ are JSON. Times are RFC 3339 UTC.
 | `DELETE` | `/api/v1/containers/{name}` | Delete the container in both zones. |
 | `GET` | `/api/v1/{type}/{name}/status` | Per-zone readiness, URLs, revision info. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per zone. |
+| `POST` | `/api/v1/secrets` | Create a workload **secret** (API-managed, not ESO); applied to both clusters. |
+| `GET` | `/api/v1/secrets` | List caller's secrets (label-scoped; values redacted). |
+| `GET` | `/api/v1/secrets/{name}` | **Read back** one secret (values per policy — redacted by default). |
+| `PUT` | `/api/v1/secrets/{name}` | Update a secret's data in both clusters. |
+| `DELETE` | `/api/v1/secrets/{name}` | Delete the secret in both clusters. |
+| `POST` | `/api/v1/configs` | Create a workload **config file / ConfigMap**; applied to both clusters. |
+| `GET` | `/api/v1/configs` | List caller's configs (label-scoped). |
+| `GET` | `/api/v1/configs/{name}` | **Read back** one config (full data). |
+| `PUT` | `/api/v1/configs/{name}` | Update a config in both clusters. |
+| `DELETE` | `/api/v1/configs/{name}` | Delete the config in both clusters. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
+
+> `secrets` and `configs` are **created and owned by the API** (§7.3), referenced from a
+> workload's `configMounts`/`env`, and are **readable back by their owning group** — they do
+> **not** flow through ESO/Vault.
 
 ### Shared sub-schemas
 
@@ -672,6 +727,42 @@ Request:
 Response `201 Created`: same envelope shape as the FaaS response (`type: "container"`,
 no `runtime`/`imageDigest` build fields; `image` echoed back).
 
+### Workload secrets & configs (API-managed — `POST /api/v1/secrets`, `/api/v1/configs`)
+
+The API creates these directly (§7.3) and the user can read them back. They are then
+referenced from a workload's `configMounts`/`env`.
+
+```json
+// POST /api/v1/secrets
+{
+  "name": "orders-tls",
+  "data": { "tls.crt": "<base64>", "tls.key": "<base64>" }
+}
+```
+
+```json
+// POST /api/v1/configs
+{
+  "name": "orders-config",
+  "data": { "app.yaml": "log_level: info\nfeature_x: true\n" }
+}
+```
+
+Response `201 Created` (per-zone applied; secret values redacted in responses by default):
+
+```json
+{
+  "name": "orders-tls",
+  "type": "secret",
+  "keys": ["tls.crt", "tls.key"],
+  "zones": [
+    { "zone": "zone-a", "status": "Applied" },
+    { "zone": "zone-b", "status": "Applied" }
+  ],
+  "overallStatus": "Applied"
+}
+```
+
 ### Error model
 
 Standard envelope for all non-2xx responses:
@@ -718,17 +809,20 @@ Serverless/
 │   ├── routers/
 │   │   ├── functions.py             # FaaS endpoints
 │   │   ├── containers.py            # CaaS endpoints
+│   │   ├── resources.py             # API-managed workload secrets & configs (§7.3)
 │   │   └── health.py
 │   ├── models/                      # Pydantic request/response schemas
 │   │   ├── common.py                # env, scaling, configMounts, zone status
 │   │   ├── function.py
-│   │   └── container.py
+│   │   ├── container.py
+│   │   └── resource.py              # secret/config create/read-back schemas
 │   ├── services/                    # business logic
 │   │   ├── deployer.py              # multi-zone fan-out + status aggregation
 │   │   ├── builder.py               # FaaS build via func/buildpacks
 │   │   ├── ksvc.py                  # KSVC manifest construction
 │   │   ├── route.py                 # OpenShift Route construction
-│   │   └── secrets.py               # imagePullSecret / mount handling (transient)
+│   │   ├── resources.py             # CRUD + read-back of API-managed Secret/ConfigMap (§7.3)
+│   │   └── secrets.py               # imagePullSecret / transient credential handling
 │   └── clients/
 │       ├── zone_client.py           # per-zone Kubernetes/OpenShift client (mTLS cert)
 │       └── registry.py
@@ -954,6 +1048,7 @@ spec:
 |------|-------|
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
 | **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint; confirm latency/firewall between sites and behavior when the peer is unreachable (the Degraded path covers this). |
+| **Secret read-back policy** | For API-managed workload secrets (§7.3), decide the default on `GET /api/v1/secrets/{name}`: redact values, return masked, or return clear to the owning group — plus whether reads are audited. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
 | **Observability** | Centralized logging/metrics/tracing for tenant workloads (and the `/logs` endpoint backing store) to be designed. |
 | **Audit logging** | Who deployed/changed/deleted what — likely required for enterprise/compliance. |
