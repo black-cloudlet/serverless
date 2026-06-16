@@ -207,7 +207,7 @@ flowchart LR
 | `gitToken` | yes | Repo access token; used only to clone, **never persisted** (see §7). |
 | `runtime` | yes | One of `python`, `go`, `javascript`. |
 | `name` | yes | Logical workload name (DNS-1123). |
-| `env`, `secrets`/`configMounts`, `scaling` | no | Shared capabilities, see §3.3. |
+| `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
 
 **Build flow (Knative Functions / buildpacks):**
 
@@ -258,7 +258,7 @@ sequenceDiagram
 | `registryUsername` | yes | Registry username. |
 | `registryToken` | yes | Registry access token; used to create an `imagePullSecret`, **not persisted** by the API. |
 | `name` | yes | Logical workload name (DNS-1123). |
-| `env`, `secrets`/`configMounts`, `scaling` | no | Shared capabilities, see §3.3. |
+| `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
 
 **Flow:**
 
@@ -274,7 +274,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 | Capability | How it maps to Knative |
 |------------|------------------------|
 | **Environment variables** | `spec.template.spec.containers[0].env` (literal values) and `envFrom` (for whole ConfigMaps/Secrets). |
-| **Mount secrets / config files** | The **API itself creates** the backing `Secret`/`ConfigMap` directly from user-supplied data (**not** via ESO), labels it to the owning group, and mounts it as `volumeMounts` at the requested path (or projects individual keys as files). Users can **read these back through the API** (see §7.3 and §10). |
+| **Files (config & secret mounts)** | Via the `files` field, a user **uploads file content and its `mountPath`** (or references an existing API-managed resource). The **API itself creates** the backing `ConfigMap` (or `Secret` when `secret: true`) from that data (**not** via ESO), labels it to the owning group, and mounts each file at its path. Users can **read these back through the API** (see §7.3 and §10). |
 | **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `target` (concurrency), and `containerConcurrency`. Scale-to-zero is the default when `min-scale=0`. |
 
 A canonical scaling sub-object in the API:
@@ -433,8 +433,23 @@ sequenceDiagram
 
 - The API is a **resource server**: it validates JWTs offline using **JWKS** fetched from
   the internal RHBK realm (cached, no per-request round trip).
-- Validated: signature, `iss`, `aud`, `exp`/`nbf`. Implemented as FastAPI dependencies
-  (e.g. a `require_auth` / `require_groups` dependency).
+- Validated: signature, `iss`, `aud`, `exp`/`nbf`.
+
+#### Auth as an internal component (not a separate microservice)
+
+All OIDC interaction is encapsulated in a **self-contained auth component inside the API**
+(the `app/auth/` package — see §11), **not** a separately-deployed microservice. Because
+token validation is **stateless** (verify signature against cached JWKS + read claims),
+there is no shared state to centralize; a standalone auth service would only add a network
+hop, another deployment to secure in both clusters, and a failure point. The component owns:
+
+- RHBK OIDC discovery + **JWKS fetch/cache** and **token validation** (`oidc.py`),
+- **claims → group** mapping and admin/tenant policy (`claims.py`),
+- the FastAPI **`require_auth` / `require_groups`** dependencies the routers use (`deps.py`).
+
+> If auth-at-the-edge is ever wanted (to keep tokens out of app code / defense-in-depth), the
+> OpenShift-native drop-ins are **oauth2-proxy** or **Authorino** as a sidecar/gateway — an
+> infra change, not an API rewrite. (See §13.)
 
 ### 6.2 Group-based authorization (tenancy)
 
@@ -550,8 +565,9 @@ flowchart LR
   mounts) or **`ConfigMap`** (for config files) in the **workload namespace of both
   clusters**, stamped with the standard ownership labels (§6.2:
   `serverless.platform/group`, `managed-by`, `owner`).
-- The workload references them by name in `configMounts` (mounted as files) or `env`
-  (`valueFrom`/`envFrom`).
+- The workload references them via the `files` field (mounted at a `mountPath`) or `env`
+  (`valueFrom`/`envFrom`). Inline uploads in `files` cause the API to create the backing
+  resource automatically.
 - **Read-back:** users can **retrieve their own config/secret resources through the API**
   (group-scoped — a caller only sees resources labeled with their group(s); see §10).
   Whether secret *values* are returned in clear or redacted by default is a configurable
@@ -649,7 +665,7 @@ are JSON. Times are RFC 3339 UTC.
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
 > `secrets` and `configs` are **created and owned by the API** (§7.3), referenced from a
-> workload's `configMounts`/`env`, and are **readable back by their owning group** — they do
+> workload's `files`/`env`, and are **readable back by their owning group** — they do
 > **not** flow through ESO/Vault.
 
 ### Shared sub-schemas
@@ -662,9 +678,12 @@ are JSON. Times are RFC 3339 UTC.
     { "name": "LOG_LEVEL", "value": "info" },
     { "name": "DB_PASSWORD", "valueFrom": { "secret": "orders-db", "key": "password" } }
   ],
-  "configMounts": [                     // optional: mount Secret/ConfigMap as files
-    { "source": "orders-config", "type": "configmap", "mountPath": "/etc/app" },
-    { "source": "orders-tls",    "type": "secret",    "mountPath": "/etc/tls" }
+  "files": [                            // optional: files to load into the workload
+    // (a) inline upload — the API creates the backing ConfigMap/Secret (§7.3)
+    { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false },
+    { "mountPath": "/etc/tls/tls.key",  "contentBase64": "<base64>",    "secret": true },
+    // (b) reference an existing API-managed resource by name
+    { "mountPath": "/etc/app", "source": "orders-config", "type": "configmap" }
   ],
   "scaling": {                          // optional, see 3.3
     "minScale": 0, "maxScale": 10,
@@ -719,7 +738,7 @@ Request:
   "registryUsername": "svc-team",
   "registryToken": "<registry-token>",
   "env": [ { "name": "LOG_LEVEL", "value": "info" } ],
-  "configMounts": [ { "source": "orders-config", "type": "configmap", "mountPath": "/etc/app" } ],
+  "files": [ { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false } ],
   "scaling": { "minScale": 1, "maxScale": 8, "targetConcurrency": 50 }
 }
 ```
@@ -730,7 +749,7 @@ no `runtime`/`imageDigest` build fields; `image` echoed back).
 ### Workload secrets & configs (API-managed — `POST /api/v1/secrets`, `/api/v1/configs`)
 
 The API creates these directly (§7.3) and the user can read them back. They are then
-referenced from a workload's `configMounts`/`env`.
+referenced from a workload's `files`/`env`.
 
 ```json
 // POST /api/v1/secrets
@@ -804,15 +823,18 @@ Serverless/
 │   ├── main.py                      # app factory, router registration, middleware
 │   ├── core/
 │   │   ├── config.py                # settings (zone profiles, RHBK, registry) via env/Secret
-│   │   ├── security.py              # OIDC/JWT validation, require_groups dependency
 │   │   └── logging.py
+│   ├── auth/                        # self-contained auth component (all OIDC interaction)
+│   │   ├── oidc.py                  # RHBK discovery + JWKS fetch/cache, token validation
+│   │   ├── claims.py               # claims → group mapping, admin/tenant policy
+│   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
 │   ├── routers/
 │   │   ├── functions.py             # FaaS endpoints
 │   │   ├── containers.py            # CaaS endpoints
 │   │   ├── resources.py             # API-managed workload secrets & configs (§7.3)
 │   │   └── health.py
 │   ├── models/                      # Pydantic request/response schemas
-│   │   ├── common.py                # env, scaling, configMounts, zone status
+│   │   ├── common.py                # env, scaling, files, zone status
 │   │   ├── function.py
 │   │   ├── container.py
 │   │   └── resource.py              # secret/config create/read-back schemas
