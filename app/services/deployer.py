@@ -25,6 +25,7 @@ SiteFn = Callable[[Cluster, SiteConfig], SiteStatus]
 class Deployer:
     def __init__(self, settings: Settings):
         self._settings = settings
+        self._op_timeout = settings.site_op_timeout
         # Build one Cluster per configured site up front (from config), so they
         # are not created per request. The k8s connection itself stays lazy
         # (established on first use) so startup doesn't fail if a site is down.
@@ -38,6 +39,10 @@ class Deployer:
             client_cert_path=self._settings.client_cert_path,
             client_key_path=self._settings.client_key_path,
             ca_path=self._settings.ca_bundle.path,
+            request_timeout=(
+                self._settings.cluster_connect_timeout,
+                self._settings.cluster_read_timeout,
+            ),
         )
 
     def cluster(self, site: SiteConfig) -> Cluster:
@@ -62,7 +67,19 @@ class Deployer:
     async def fanout(self, targets: list[SiteConfig], fn: SiteFn) -> list[SiteStatus]:
         async def run(site: SiteConfig) -> SiteStatus:
             try:
-                return await asyncio.to_thread(fn, self.cluster(site), site)
+                # Backstop: a down/slow site fails fast and is reported as an
+                # error rather than blocking the whole fan-out indefinitely.
+                return await asyncio.wait_for(
+                    asyncio.to_thread(fn, self.cluster(site), site),
+                    timeout=self._op_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("site %s operation timed out", site.name)
+                return SiteStatus(
+                    site=site.name,
+                    status="Timeout",
+                    error=f"site unreachable (timed out after {self._op_timeout}s)",
+                )
             except Exception as exc:  # noqa: BLE001 - surfaced as per-site error
                 logger.exception("site %s operation failed", site.name)
                 return SiteStatus(site=site.name, status="Failed", error=str(exc))

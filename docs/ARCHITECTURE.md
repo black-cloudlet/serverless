@@ -353,6 +353,12 @@ sites:
 | One site fails | `overallStatus = Degraded`, `207 Multi-Status`; the per-site object carries the error. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
 | Both sites fail | `overallStatus = Failed`, `502`; the API attempts best-effort cleanup of any partially-created resources. |
 
+- **An unavailable site does not freeze the API.** Per-site work runs concurrently in
+  threads; every cluster call has a **connect/read timeout** and each site has an overall
+  **operation timeout backstop**, so a down/slow site fails fast and is reported as
+  `Timeout`/`Degraded` (it doesn't block the healthy site or other requests). Health probes
+  never touch clusters. (See `cluster_connect_timeout` / `cluster_read_timeout` /
+  `site_op_timeout`.)
 - Operations are **idempotent** (apply/patch by name+group label), so a client can safely
   retry to heal a degraded deployment.
 - **Build once, deploy the same digest to both sites** (see §3.1) so the two sites are
@@ -1206,7 +1212,7 @@ spec:
 | Item | Notes |
 |------|-------|
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
-| **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint; confirm latency/firewall between sites and behavior when the peer is unreachable (the Degraded path covers this). |
+| **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Degraded, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
 | **Secret read-back policy** | For API-managed workload secrets (§7.3), decide the default on `GET /api/v1/secrets/{name}`: redact values, return masked, or return clear to the owning group — plus whether reads are audited. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
 | **Observability** | Centralized logging/metrics/tracing for tenant workloads (and the `/logs` endpoint backing store) to be designed. |

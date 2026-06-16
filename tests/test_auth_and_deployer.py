@@ -134,6 +134,25 @@ async def test_fanout_captures_per_site_errors():
     assert by_site["site-b"].error == "kaboom"
 
 
+async def test_fanout_times_out_unreachable_site():
+    import time
+
+    d = Deployer(_settings_with_sites())
+    d._op_timeout = 0.05  # tighten for the test
+
+    def fn(client, site):
+        if site.name == "site-b":
+            time.sleep(0.5)  # simulate an unreachable/slow cluster
+        return SiteStatus(site=site.name, status="Ready")
+
+    statuses = await d.fanout(d.resolve_targets(None), fn)
+    by_site = {s.site: s for s in statuses}
+    # the healthy site still returns; the slow one is reported, not blocking
+    assert by_site["site-a"].status == "Ready"
+    assert by_site["site-b"].status == "Timeout"
+    assert by_site["site-b"].error is not None
+
+
 class _FakeCluster:
     def __init__(self, name, existing=None):
         self.name = name

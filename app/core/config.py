@@ -99,6 +99,13 @@ class Settings(BaseSettings):
     # Trusted CA bundle (env: SERVERLESS_CA_BUNDLE__*).
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
 
+    # Per-call timeouts to a cluster's API server (seconds). Without these a down
+    # cluster would block a worker thread until the OS socket timeout.
+    cluster_connect_timeout: float = 5.0
+    cluster_read_timeout: float = 15.0
+    # Backstop for a whole per-site operation (covers several sequential calls).
+    site_op_timeout: float = 60.0
+
     sso: SSOConfig = Field(default_factory=SSOConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
