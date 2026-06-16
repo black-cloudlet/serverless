@@ -14,14 +14,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SiteConfig(BaseModel):
-    """Connection profile for one OpenShift cluster ("site").
+    """Connection profile for one site.
 
-    Only the endpoint and namespace are per-site — the client certificate and CA
-    bundle are global (the same identity/CA is valid in every cluster).
+    A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
+    *cluster* (e.g. ``central-0``) reachable at ``api_server`` (e.g.
+    ``https://api.central-0.{base_domain}:6443``). Only the endpoint and
+    namespace are per-site — the client certificate and CA bundle are global
+    (the same identity/CA is valid in every cluster).
     """
 
-    name: str
+    name: str  # site/region, e.g. "central"
     api_server: str
+    cluster: str | None = None  # cluster instance name, e.g. "central-0"
     namespace: str = "serverless-workloads"
 
 

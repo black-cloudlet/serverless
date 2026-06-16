@@ -39,11 +39,13 @@ registry:
 # Site connection profiles the API talks to (active/active, both clusters).
 # Only endpoint + namespace per site; the client cert and CA are global.
 sites:
-  - name: site-a
-    apiServer: https://api.site-a.internal:6443
+  - name: central                 # site/region
+    cluster: central-0            # cluster instance
+    apiServer: https://api.central-0.example.com:6443
     namespace: serverless-workloads
-  - name: site-b
-    apiServer: https://api.site-b.internal:6443
+  - name: south
+    cluster: south-0
+    apiServer: https://api.south-0.example.com:6443
     namespace: serverless-workloads
 
 # cert-manager client certificate (CN = DNS name, ACME-issued). docs §6.3

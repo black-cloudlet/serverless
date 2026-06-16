@@ -94,7 +94,7 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 | **KSVC** | A Knative `Service` custom resource (`serving.knative.dev/v1`). The top-level unit we create per workload. |
 | **Revision** | An immutable snapshot of a KSVC; created on each spec change. |
 | **Route (OpenShift)** | OpenShift `route.openshift.io/v1` object that exposes a service externally over HTTP(S). |
-| **Site** | One of the two independent OpenShift clusters the platform deploys to. |
+| **Site** | A region the platform deploys to (e.g. `central`, `south`); each runs one OpenShift **cluster** (e.g. `central-0`). |
 | **SSO** | Red Hat Build of Keycloak — the OIDC identity provider. |
 | **ESO** | External Secrets Operator — syncs secrets from Vault into Kubernetes Secrets. |
 | **Tenant / group** | An SSO (Keycloak) group; the unit of ownership and isolation. |
@@ -114,7 +114,7 @@ flowchart TB
     V[("HashiCorp Vault (existing)")]
     GIT[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
 
-    subgraph ZA["Site A — OpenShift Cluster A"]
+    subgraph ZA["Site central — cluster central-0"]
         APIA["FastAPI API (active/active)"]
         KNA["Knative Serving<br/>(workloads namespace)"]
         RTA["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
@@ -123,7 +123,7 @@ flowchart TB
         KNA --> RTA
     end
 
-    subgraph ZB["Site B — OpenShift Cluster B"]
+    subgraph ZB["Site south — cluster south-0"]
         APIB["FastAPI API (active/active)"]
         KNB["Knative Serving<br/>(workloads namespace)"]
         RTB["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
@@ -312,11 +312,13 @@ caBundle:                                 # OpenShift-injected, global
   key: ca-bundle.crt
   mountPath: /etc/serverless/trusted-ca
 sites:
-  - name: site-a
-    apiServer: https://api.site-a.internal:6443
+  - name: central                          # site/region
+    cluster: central-0                     # cluster instance
+    apiServer: https://api.central-0.example.com:6443
     namespace: serverless-workloads        # separate from the API's namespace
-  - name: site-b
-    apiServer: https://api.site-b.internal:6443
+  - name: south
+    cluster: south-0
+    apiServer: https://api.south-0.example.com:6443
     namespace: serverless-workloads
 ```
 
@@ -338,8 +340,8 @@ sites:
   "type": "container",
   "url": "https://orders-api-team.serverless.example.com",
   "sites": [
-    { "site": "site-a", "status": "Ready", "revision": "orders-api-00001" },
-    { "site": "site-b", "status": "Ready", "revision": "orders-api-00001" }
+    { "site": "central", "status": "Ready", "revision": "orders-api-00001" },
+    { "site": "south", "status": "Ready", "revision": "orders-api-00001" }
   ],
   "overallStatus": "Ready"
 }
@@ -747,7 +749,7 @@ are JSON. Times are RFC 3339 UTC.
     "minScale": 0, "maxScale": 10,
     "targetConcurrency": 100, "containerConcurrency": 0
   },
-  "sites": ["site-a", "site-b"]         // optional; default = all sites (HA)
+  "sites": ["central", "south"]         // optional; default = all sites (HA)
 }
 ```
 
@@ -790,8 +792,8 @@ Then `GET /api/v1/functions/image-resizer/status` once Ready:
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
   "sites": [
-    { "site": "site-a", "status": "Ready", "revision": "image-resizer-00001" },
-    { "site": "site-b", "status": "Ready", "revision": "image-resizer-00001" }
+    { "site": "central", "status": "Ready", "revision": "image-resizer-00001" },
+    { "site": "south", "status": "Ready", "revision": "image-resizer-00001" }
   ]
 }
 ```
@@ -840,9 +842,9 @@ Standard envelope for all non-2xx responses:
 {
   "error": {
     "code": "SITE_PARTIAL_FAILURE",
-    "message": "Deployment succeeded in site-a but failed in site-b.",
+    "message": "Deployment succeeded in central but failed in south.",
     "details": [
-      { "site": "site-b", "reason": "ImagePullBackOff", "message": "registry auth failed" }
+      { "site": "south", "reason": "ImagePullBackOff", "message": "registry auth failed" }
     ],
     "requestId": "b1c2..."
   }
@@ -1022,10 +1024,10 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: serverless-api-site-a-client
+  name: serverless-api-central-client
   namespace: serverless-api
 spec:
-  secretName: site-a-client                       # mounted into the API pod
+  secretName: central-client                       # mounted into the API pod
   commonName: serverless-api.clients.example.com  # DNS name => Kubernetes username
   dnsNames:
     - serverless-api.clients.example.com          # required for ACME issuance
@@ -1116,12 +1118,12 @@ spec:
   generators:
     - list:
         elements:
-          - site: site-a
-            cluster: https://api.site-a.internal:6443
-            valuesFile: values-site-a.yaml
-          - site: site-b
-            cluster: https://api.site-b.internal:6443
-            valuesFile: values-site-b.yaml
+          - site: central
+            cluster: https://api.central-0.example.com:6443
+            valuesFile: values-central.yaml
+          - site: south
+            cluster: https://api.south-0.example.com:6443
+            valuesFile: values-south.yaml
   template:
     metadata:
       name: "serverless-api-{{site}}"
