@@ -65,12 +65,10 @@ spec:
                   name: serverless-api-sites
                   key: SERVERLESS_SITES
           envFrom:
-            # Load each enabled ESO-projected Secret (keys must be valid env names).
+            # Load each ESO-projected Secret (keys must be valid env names).
             {{- range .Values.externalSecrets.secrets }}
-            {{- if eq (include "serverless-api.secretEnabled" .) "true" }}
             - secretRef:
                 name: {{ .name }}
-            {{- end }}
             {{- end }}
           volumeMounts:
             - name: client-cert

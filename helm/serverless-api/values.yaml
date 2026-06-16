@@ -64,9 +64,10 @@ caBundle:
   mountPath: /etc/serverless/trusted-ca
 
 # ESO: reference the PRE-EXISTING ClusterSecretStore; we ship ExternalSecret(s) only.
-# Each kind of data is its own Secret (separate rotation/exposure). Enabled
-# secrets are projected from Vault and loaded into the API via envFrom — so each
-# `secretKey` must be a valid environment variable name.
+# Each kind of data is its own Secret (separate rotation/exposure). Every listed
+# Secret is projected from Vault and loaded into the API via envFrom — so each
+# `secretKey` must be a valid environment variable name. Add an entry to create a
+# Secret; remove it to skip.
 externalSecrets:
   clusterSecretStore: vault-backend
   refreshInterval: 1h
@@ -77,13 +78,12 @@ externalSecrets:
         - secretKey: SSO_CLIENT_SECRET
           key: serverless/api
           property: sso_client_secret
-    # Admin API keys (JSON list of {name, sha256, groups}). Disabled by default.
-    - name: serverless-api-keys
-      enabled: false
-      data:
-        - secretKey: SERVERLESS_API_KEYS
-          key: serverless/api
-          property: api_keys
+    # Admin API keys — add this entry to enable (requires the Vault property):
+    # - name: serverless-api-keys
+    #   data:
+    #     - secretKey: SERVERLESS_API_KEYS
+    #       key: serverless/api
+    #       property: api_keys
 
 resources:
   requests:

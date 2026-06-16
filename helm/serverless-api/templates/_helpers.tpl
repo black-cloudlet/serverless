@@ -11,9 +11,3 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "serverless-api.clientCN" -}}
 serverless-api.clients.{{ .Values.clientCert.baseDomain }}
 {{- end -}}
-
-{{- /* Returns "true" unless a secret entry sets enabled: false (handles the
-       Helm `default`-on-false gotcha). Pass a secret entry as the context. */ -}}
-{{- define "serverless-api.secretEnabled" -}}
-{{- if hasKey . "enabled" }}{{- .enabled }}{{- else }}{{- true }}{{- end }}
-{{- end -}}
