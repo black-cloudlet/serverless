@@ -14,18 +14,34 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SiteConfig(BaseModel):
-    """Connection profile for one OpenShift cluster ("site")."""
+    """Connection profile for one OpenShift cluster ("site").
+
+    Only the endpoint and namespace are per-site — the client certificate and CA
+    bundle are global (the same identity/CA is valid in every cluster).
+    """
 
     name: str
     api_server: str
     namespace: str = "serverless-workloads"
-    # mTLS client identity (cert-manager Certificate, CN = serverless-api.clients.{base_domain})
-    client_cert_path: str | None = None
-    client_key_path: str | None = None
-    ca_path: str | None = None
-    # If true, use the in-cluster service account instead of the client cert
-    # (used by the local instance talking to its own cluster).
-    in_cluster: bool = False
+
+
+class CABundleConfig(BaseModel):
+    """The OpenShift-injected trusted CA bundle ConfigMap.
+
+    OpenShift populates a ConfigMap labelled
+    ``config.openshift.io/inject-trusted-cabundle: "true"`` with the cluster's
+    trusted CAs. We mount it into the API and every workload; it is the same for
+    every cluster, so the API's Kubernetes client also uses it to verify the API
+    servers.
+    """
+
+    config_map: str = "trusted-ca-bundle"
+    key: str = "ca-bundle.crt"
+    mount_path: str = "/etc/serverless/trusted-ca"
+
+    @property
+    def path(self) -> str:
+        return f"{self.mount_path.rstrip('/')}/{self.key}"
 
 
 class SSOConfig(BaseModel):
@@ -61,9 +77,23 @@ class Settings(BaseSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
+    # Directory holding the cert-manager client cert (tls.crt / tls.key), used to
+    # authenticate to every cluster (env: SERVERLESS_CLIENT_CERT_DIR).
+    client_cert_dir: str = "/etc/serverless/client"
+    # Trusted CA bundle (env: SERVERLESS_CA_BUNDLE__*).
+    ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
+
     sso: SSOConfig = Field(default_factory=SSOConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
+
+    @property
+    def client_cert_path(self) -> str:
+        return f"{self.client_cert_dir.rstrip('/')}/tls.crt"
+
+    @property
+    def client_key_path(self) -> str:
+        return f"{self.client_cert_dir.rstrip('/')}/tls.key"
 
     def site(self, name: str) -> SiteConfig | None:
         return next((z for z in self.sites if z.name == name), None)

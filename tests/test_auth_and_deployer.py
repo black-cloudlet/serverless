@@ -57,6 +57,13 @@ def _settings_with_sites():
     )
 
 
+def test_global_cert_and_ca_paths():
+    s = Settings(client_cert_dir="/etc/serverless/client")
+    assert s.client_cert_path == "/etc/serverless/client/tls.crt"
+    assert s.client_key_path == "/etc/serverless/client/tls.key"
+    assert s.ca_bundle.path == "/etc/serverless/trusted-ca/ca-bundle.crt"
+
+
 def test_resolve_targets_default_all():
     d = Deployer(_settings_with_sites())
     assert [z.name for z in d.resolve_targets(None)] == ["site-a", "site-b"]

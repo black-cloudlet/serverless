@@ -40,6 +40,27 @@ def test_build_ksvc_basic():
     assert spec["containers"][0]["env"] == [{"name": "LOG", "value": "info"}]
 
 
+def test_build_ksvc_mounts_ca_bundle():
+    m = ksvc_svc.build_ksvc(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="caas",
+        host="app-team.serverless.example.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        ca_config_map="trusted-ca-bundle",
+        ca_mount_path="/etc/serverless/trusted-ca",
+    )
+    spec = m["spec"]["template"]["spec"]
+    assert {"name": "trusted-ca", "configMap": {"name": "trusted-ca-bundle"}} in spec["volumes"]
+    mount = spec["containers"][0]["volumeMounts"][0]
+    assert mount["mountPath"] == "/etc/serverless/trusted-ca"
+    assert mount["readOnly"] is True
+
+
 def test_build_ksvc_env_secret_ref():
     m = ksvc_svc.build_ksvc(
         name="app-t",

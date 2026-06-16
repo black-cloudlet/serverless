@@ -37,10 +37,24 @@ class ResourceKind(Enum):
 
 
 class Cluster:
-    """A connection to one OpenShift cluster, scoped to its workloads namespace."""
+    """A connection to one OpenShift cluster, scoped to its workloads namespace.
 
-    def __init__(self, config: SiteConfig):
+    Always authenticates with the global cert-manager client certificate over
+    mTLS (the same identity/CA is valid in every cluster).
+    """
+
+    def __init__(
+        self,
+        config: SiteConfig,
+        *,
+        client_cert_path: str,
+        client_key_path: str,
+        ca_path: str,
+    ):
         self._config = config
+        self._client_cert_path = client_cert_path
+        self._client_key_path = client_key_path
+        self._ca_path = ca_path
         self._dynamic = None
 
     @property
@@ -56,19 +70,15 @@ class Cluster:
         if self._dynamic is not None:
             return self._dynamic
 
-        from kubernetes import client, config as kube_config
+        from kubernetes import client
         from kubernetes.dynamic import DynamicClient
 
-        if self._config.in_cluster:
-            kube_config.load_incluster_config()
-            api = client.ApiClient()
-        else:
-            cfg = client.Configuration()
-            cfg.host = self._config.api_server
-            cfg.ssl_ca_cert = self._config.ca_path
-            cfg.cert_file = self._config.client_cert_path
-            cfg.key_file = self._config.client_key_path
-            api = client.ApiClient(cfg)
+        cfg = client.Configuration()
+        cfg.host = self._config.api_server
+        cfg.ssl_ca_cert = self._ca_path
+        cfg.cert_file = self._client_cert_path
+        cfg.key_file = self._client_key_path
+        api = client.ApiClient(cfg)
 
         self._dynamic = DynamicClient(api)
         return self._dynamic

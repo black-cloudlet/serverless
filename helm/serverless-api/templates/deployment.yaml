@@ -41,15 +41,33 @@ spec:
               value: {{ .Values.sso.groupsClaim | quote }}
             - name: SERVERLESS_SSO__ADMIN_GROUPS
               value: {{ toJson .Values.sso.adminGroups | quote }}
+            # Where the cert-manager client cert is mounted (global, all sites).
+            - name: SERVERLESS_CLIENT_CERT_DIR
+              value: {{ .Values.clientCert.mountPath | quote }}
+            # Trusted CA bundle (used as the k8s-client CA and process trust).
+            - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
+              value: {{ .Values.caBundle.configMap | quote }}
+            - name: SERVERLESS_CA_BUNDLE__KEY
+              value: {{ .Values.caBundle.key | quote }}
+            - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
+              value: {{ .Values.caBundle.mountPath | quote }}
+            # Make outbound TLS (SSO/registry/git) trust the internal CA too.
+            - name: SSL_CERT_FILE
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+            - name: REQUESTS_CA_BUNDLE
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
             - name: SERVERLESS_SITES
               value: |-
-                [{{- range $i, $z := .Values.sites }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}","in_cluster":{{ $z.inCluster }},"client_cert_path":"/etc/serverless/client/tls.crt","client_key_path":"/etc/serverless/client/tls.key","ca_path":"/etc/serverless/client/ca.crt"}{{- end }}]
+                [{{- range $i, $z := .Values.sites }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}"}{{- end }}]
           envFrom:
             - secretRef:
                 name: serverless-api-secrets
           volumeMounts:
             - name: client-cert
-              mountPath: /etc/serverless/client
+              mountPath: {{ .Values.clientCert.mountPath }}
+              readOnly: true
+            - name: trusted-ca
+              mountPath: {{ .Values.caBundle.mountPath }}
               readOnly: true
           readinessProbe:
             httpGet:
@@ -64,4 +82,7 @@ spec:
       volumes:
         - name: client-cert
           secret:
-            secretName: serverless-api-client
+            secretName: {{ .Values.clientCert.secretName }}
+        - name: trusted-ca
+          configMap:
+            name: {{ .Values.caBundle.configMap }}

@@ -71,6 +71,8 @@ def build_ksvc(
     volumes: list[VolumeSpec],
     scaling: Scaling,
     pull_secret: str | None = None,
+    ca_config_map: str | None = None,
+    ca_mount_path: str | None = None,
 ) -> dict:
     annotations = {
         "autoscaling.knative.dev/min-scale": str(scaling.minScale),
@@ -79,6 +81,13 @@ def build_ksvc(
     }
     labels = workload_labels(group, owner, name, offering)
     vols, mounts = _volumes(volumes)
+
+    # Mount the trusted CA bundle so the workload trusts internal TLS.
+    if ca_config_map and ca_mount_path:
+        vols.append({"name": "trusted-ca", "configMap": {"name": ca_config_map}})
+        mounts.append(
+            {"name": "trusted-ca", "mountPath": ca_mount_path, "readOnly": True}
+        )
 
     container: dict = {"image": image}
     if env:

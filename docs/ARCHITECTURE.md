@@ -300,27 +300,29 @@ both clusters **trust the same CA** and the workload **Route host is identical i
 each site is a full, independent replica; a DNS record forwards end-user traffic to the
 active site.
 
-The API owns a **per-site connection profile** (note: a single shared `routeDomain` because
-the host is identical across clusters):
+The **client certificate and CA bundle are global** (the same identity/CA is valid in every
+cluster), so a site profile is just its endpoint and namespace. The `routeDomain`, client
+cert directory, and CA bundle are shared config:
 
 ```yaml
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
+clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
+caBundle:                                 # OpenShift-injected, global
+  configMap: trusted-ca-bundle
+  key: ca-bundle.crt
+  mountPath: /etc/serverless/trusted-ca
 sites:
   - name: site-a
     apiServer: https://api.site-a.internal:6443
-    caBundleConfigMapRef: sites-ca         # shared CA both clusters trust
-    clientCertSecretRef: site-a-client     # cert-manager Certificate, CN=serverless-api.clients.{base_domain}
     namespace: serverless-workloads        # separate from the API's namespace
   - name: site-b
     apiServer: https://api.site-b.internal:6443
-    caBundleConfigMapRef: sites-ca
-    clientCertSecretRef: site-b-client
     namespace: serverless-workloads
 ```
 
-> **Local vs. remote calls:** since the API runs in both clusters, an instance can talk to
-> its *local* cluster in-cluster and to the *peer* cluster over its external API endpoint.
-> Both paths use the same client certificate identity.
+> The API always authenticates with the **client certificate** (no in-cluster/ServiceAccount
+> path) — uniform whether it's talking to its local cluster or the peer over its external API
+> endpoint. Because `sites` carries no secrets, it can be sourced from a ConfigMap.
 
 ### Fan-out & status aggregation
 
@@ -507,8 +509,11 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   Knative `services`/`domainmappings`, `secrets`, `configmaps`, and read on `pods`/`events`.
   The API does **not** need `routes` permission — on OpenShift Serverless the operator
   creates the OpenShift Route automatically from the KSVC/DomainMapping.
-- The certificate's key/cert are mounted into the API pod and used to build the per-site
-  Kubernetes client (mutual TLS to the API server).
+- The cert is mounted **once** (global, not per-site) at `SERVERLESS_CLIENT_CERT_DIR`
+  (`tls.crt`/`tls.key`); the API uses it to authenticate to **every** cluster via mTLS. There
+  is no in-cluster/ServiceAccount fallback — always certificate-based.
+- The CA used to verify the API servers is the **trusted CA bundle** (§9), pointed at by
+  `SERVERLESS_CA_BUNDLE__*`; it is the same for every cluster.
 
 ---
 
@@ -665,7 +670,7 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 | **Python dependencies (the API)** | Build the API container against an **internal PyPI mirror** (e.g. Nexus/Artifactory) or vendored wheels; pin all versions. |
 | **Function dependencies (per runtime)** | Buildpacks must resolve language deps from internal mirrors (internal PyPI, Go module proxy/`GOPROXY`, npm registry mirror). Documented as a prerequisite for each runtime. |
 | **Base images** | Use mirrored UBI base images. |
-| **CA trust** | Internal Git, registry, Vault, SSO all use the internal CA; the API and build images must trust the internal CA bundle (mounted / baked in). |
+| **CA trust** | A ConfigMap labelled `config.openshift.io/inject-trusted-cabundle: "true"` is created in **both** namespaces; OpenShift auto-populates it with the cluster's trusted CAs. It is **mounted into the API and every FaaS/CaaS workload** (and exported via `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`) so all internal TLS (Git, registry, Vault, SSO, the cluster API) is trusted. Same bundle for every cluster. |
 | **cert-manager** | Issue client certs via **ACME against an internal ACME endpoint** (e.g. step-ca / internal CA exposing ACME) — not a public CA. Both clusters trust this CA, and the cert CN/SAN is the DNS name `serverless-api.clients.{base_domain}`. |
 | **Helm charts** | Hosted in an internal chart repo / Git; no public chart pulls. |
 
@@ -906,6 +911,7 @@ Serverless/
 │       ├── values.yaml              # site profiles, image refs, SSO, registry
 │       └── templates/
 │           ├── namespaces.yaml      # serverless-api + serverless-workloads (ArgoCD Delete=false,Prune=false)
+│           ├── ca-bundle.yaml       # inject-trusted-cabundle ConfigMap in both namespaces
 │           ├── deployment.yaml
 │           ├── service.yaml
 │           ├── route.yaml
@@ -963,10 +969,31 @@ spec:
           volumeMounts:
             - name: app-config
               mountPath: /etc/app
+            - name: trusted-ca           # injected CA bundle, mounted into every workload
+              mountPath: /etc/serverless/trusted-ca
+              readOnly: true
       volumes:
         - name: app-config
           configMap:
             name: orders-config
+        - name: trusted-ca
+          configMap:
+            name: trusted-ca-bundle
+```
+
+### 12.1a Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trusted-ca-bundle
+  namespace: serverless-workloads   # also created in serverless-api
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"   # OpenShift fills .data
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+# .data (ca-bundle.crt) is populated by OpenShift; configure ArgoCD to ignore it.
 ```
 
 ### 12.2 Knative DomainMapping (custom host; operator creates the Route)

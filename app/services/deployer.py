@@ -29,7 +29,12 @@ class Deployer:
 
     def cluster(self, site: SiteConfig) -> Cluster:
         if site.name not in self._clusters:
-            self._clusters[site.name] = Cluster(site)
+            self._clusters[site.name] = Cluster(
+                site,
+                client_cert_path=self._settings.client_cert_path,
+                client_key_path=self._settings.client_key_path,
+                ca_path=self._settings.ca_bundle.path,
+            )
         return self._clusters[site.name]
 
     def resolve_targets(self, requested: list[str] | None) -> list[SiteConfig]:

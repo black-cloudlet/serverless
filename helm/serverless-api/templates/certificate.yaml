@@ -2,12 +2,12 @@
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: serverless-api-client
+  name: {{ .Values.clientCert.secretName }}
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 spec:
-  secretName: serverless-api-client
+  secretName: {{ .Values.clientCert.secretName }}
   commonName: {{ include "serverless-api.clientCN" . }}
   dnsNames:
     - {{ include "serverless-api.clientCN" . }}

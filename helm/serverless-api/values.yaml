@@ -32,22 +32,31 @@ registry:
   url: registry.internal
 
 # Site connection profiles the API talks to (active/active, both clusters).
+# Only endpoint + namespace per site; the client cert and CA are global.
 sites:
   - name: site-a
     apiServer: https://api.site-a.internal:6443
     namespace: serverless-workloads
-    inCluster: false
   - name: site-b
     apiServer: https://api.site-b.internal:6443
     namespace: serverless-workloads
-    inCluster: false
 
 # cert-manager client certificate (CN = DNS name, ACME-issued). docs §6.3
+# Same identity is valid in every cluster; mounted at mountPath as tls.crt/tls.key.
 clientCert:
   baseDomain: example.com
+  secretName: serverless-api-client
+  mountPath: /etc/serverless/client
   issuerRef:
     name: internal-acme
     kind: ClusterIssuer
+
+# OpenShift-injected trusted CA bundle (same for every cluster). Created in both
+# namespaces and mounted into the API and every workload.
+caBundle:
+  configMap: trusted-ca-bundle
+  key: ca-bundle.crt
+  mountPath: /etc/serverless/trusted-ca
 
 # ESO: reference the PRE-EXISTING ClusterSecretStore; we ship ExternalSecret only.
 externalSecrets:

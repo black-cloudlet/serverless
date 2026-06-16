@@ -231,6 +231,8 @@ class WorkloadService:
             volumes=resolved.volumes,
             scaling=scaling,
             pull_secret=pull_secret_name,
+            ca_config_map=self._settings.ca_bundle.config_map,
+            ca_mount_path=self._settings.ca_bundle.mount_path,
         )
         mapping = route_svc.build_domain_mapping(
             name=oname, group=group, owner=user.username, offering=offering, host=host
