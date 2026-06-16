@@ -33,14 +33,25 @@ class ValueFrom(BaseModel):
 
 
 class EnvVar(BaseModel):
+    """An environment variable.
+
+    - ``value`` — a literal value set inline on the container.
+    - ``value`` + ``secret: true`` — the API stores the value in a Kubernetes
+      Secret and the container reads it via a secretKeyRef (value never inline).
+    - ``valueFrom`` — reference an existing Secret/ConfigMap key.
+    """
+
     name: str
     value: str | None = None
     valueFrom: ValueFrom | None = None
+    secret: bool = False
 
     @model_validator(mode="after")
     def _one_of(self) -> "EnvVar":
         if (self.value is None) == (self.valueFrom is None):
             raise ValueError("env var requires exactly one of 'value' or 'valueFrom'")
+        if self.secret and self.value is None:
+            raise ValueError("a secret env var requires an inline 'value'")
         return self
 
 

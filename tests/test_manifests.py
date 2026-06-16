@@ -10,6 +10,7 @@ from app.services import ksvc as ksvc_svc
 from app.services import resources as res
 from app.services import route as route_svc
 from app.services import secrets as secret_svc
+from app.services.env import env_secret_name, resolve_env
 from app.services.files import resolve_files
 
 
@@ -116,3 +117,40 @@ def test_build_secret_encodes_values():
 
     s = res.build_secret("n", "team", "o", {"k": "v"})
     assert base64.b64decode(s["data"]["k"]).decode() == "v"
+
+
+def test_resolve_env_plain_only_no_secret():
+    resolved = resolve_env("app", "team", "o", [EnvVar(name="LOG", value="info")])
+    assert resolved.backing == []
+    assert resolved.env[0].value == "info"
+
+
+def test_resolve_env_secret_creates_secret_and_rewrites_ref():
+    import base64
+
+    env = [
+        EnvVar(name="LOG", value="info"),
+        EnvVar(name="DB_PASSWORD", value="s3cret", secret=True),
+    ]
+    resolved = resolve_env("app", "team", "alice", env)
+
+    # one backing Secret holding the secret value
+    assert len(resolved.backing) == 1
+    sec = resolved.backing[0]
+    assert sec["kind"] == "Secret"
+    assert sec["metadata"]["name"] == env_secret_name("app")
+    assert base64.b64decode(sec["data"]["DB_PASSWORD"]).decode() == "s3cret"
+
+    # plain env untouched; secret env rewritten to a secretKeyRef
+    by_name = {e.name: e for e in resolved.env}
+    assert by_name["LOG"].value == "info"
+    assert by_name["DB_PASSWORD"].value is None
+    assert by_name["DB_PASSWORD"].valueFrom.secret == env_secret_name("app")
+    assert by_name["DB_PASSWORD"].valueFrom.key == "DB_PASSWORD"
+
+
+def test_secret_env_requires_value():
+    import pytest
+
+    with pytest.raises(Exception):
+        EnvVar(name="X", secret=True)

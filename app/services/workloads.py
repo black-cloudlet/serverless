@@ -23,6 +23,7 @@ from app.services import route as route_svc
 from app.services import secrets as secret_svc
 from app.services.builder import Builder, BuildRequest
 from app.services.deployer import Deployer, aggregate, status_code_for
+from app.services.env import resolve_env
 from app.services.files import resolve_files
 from app.clients.cluster import Cluster, ResourceKind
 
@@ -120,13 +121,15 @@ class WorkloadService:
         host = route_svc.host_for(spec.name, group, self._settings.route_domain)
 
         resolved = resolve_files(spec.name, group, user.username, spec.files)
+        resolved_env = resolve_env(spec.name, group, user.username, spec.env)
+        backing = resolved.backing + resolved_env.backing
         ksvc = ksvc_svc.build_ksvc(
             name=spec.name,
             group=group,
             owner=user.username,
             image=image,
             offering=offering,
-            env=spec.env,
+            env=resolved_env.env,
             volumes=resolved.volumes,
             scaling=spec.scaling,
             pull_secret=pull_secret_name,
@@ -144,8 +147,8 @@ class WorkloadService:
         )
 
         def apply(cluster: Cluster, site: SiteConfig) -> SiteStatus:
-            for backing in resolved.backing:
-                cluster.apply(backing)
+            for manifest in backing:
+                cluster.apply(manifest)
             if pull_secret_manifest:
                 cluster.apply(pull_secret_manifest)
             cluster.apply(ksvc)
