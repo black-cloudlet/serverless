@@ -21,7 +21,7 @@ class FunctionCreate(BaseModel):
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
-    zones: list[str] | None = None
+    sites: list[str] | None = None
 
 
 class FunctionUpdate(BaseModel):

@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field
 
-from app.models.common import ZoneStatus, validate_name
+from app.models.common import SiteStatus, validate_name
 
 Name = Annotated[str, AfterValidator(validate_name)]
 
@@ -21,6 +21,6 @@ class ResourceResponse(BaseModel):
     type: Literal["secret", "config"]
     keys: list[str]
     overallStatus: str
-    zones: list[ZoneStatus]
+    sites: list[SiteStatus]
     # Secret values are redacted by default; configs return data.
     data: dict[str, str] | None = None

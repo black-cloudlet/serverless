@@ -52,7 +52,7 @@ class FuncBuilder:
         return f"{registry}/{req.group}/{req.name}:{req.branch}"
 
     def build(self, req: BuildRequest) -> BuildResult:
-        # The build runs once and the resulting digest is deployed to every zone
+        # The build runs once and the resulting digest is deployed to every site
         # to guarantee parity (docs §4). Backend invocation (func/Tekton) is
         # configured per environment; see deploy docs.
         image = self.image_ref(req)

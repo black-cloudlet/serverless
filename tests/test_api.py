@@ -9,7 +9,7 @@ from app.auth.claims import Principal
 from app.auth.deps import require_auth
 from app.dependencies import get_resource_service, get_workload_service
 from app.main import create_app
-from app.models.common import WorkloadResponse, ZoneStatus
+from app.models.common import WorkloadResponse, SiteStatus
 from app.models.resource import ResourceResponse
 
 
@@ -22,7 +22,7 @@ class FakeWorkloads:
                 url=f"https://{spec.name}-{user.primary_group}.serverless.example.com",
                 overallStatus="Ready",
                 image=spec.image,
-                zones=[ZoneStatus(zone="zone-a", status="Ready")],
+                sites=[SiteStatus(site="site-a", status="Ready")],
                 createdAt=datetime.now(timezone.utc),
             ),
             201,
@@ -34,7 +34,7 @@ class FakeWorkloads:
             type=kind,
             url="https://x.serverless.example.com",
             overallStatus="Ready",
-            zones=[ZoneStatus(zone="zone-a", status="Ready")],
+            sites=[SiteStatus(site="site-a", status="Ready")],
         )
 
 
@@ -46,7 +46,7 @@ class FakeResources:
                 type=rtype,
                 keys=sorted(spec.data),
                 overallStatus="Applied",
-                zones=[ZoneStatus(zone="zone-a", status="Applied")],
+                sites=[SiteStatus(site="site-a", status="Applied")],
             ),
             201,
         )

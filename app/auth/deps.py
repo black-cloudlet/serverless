@@ -15,7 +15,7 @@ from app.core.errors import ForbiddenError, UnauthenticatedError
 
 @lru_cache
 def get_validator() -> TokenValidator:
-    return TokenValidator(get_settings().rhbk)
+    return TokenValidator(get_settings().sso)
 
 
 def _bearer_token(request: Request) -> str:
@@ -34,14 +34,14 @@ def require_auth(
     """Validate the bearer token and return the Principal.
 
     When ``auth_enabled`` is false (local dev only) a synthetic principal is
-    returned so the API is usable without a live RHBK.
+    returned so the API is usable without a live SSO.
     """
     if not settings.auth_enabled:
         return Principal(
             subject="dev", username="dev", groups=["dev"], is_admin=True
         )
     claims = validator.validate(_bearer_token(request))
-    principal = principal_from_claims(claims, settings.rhbk)
+    principal = principal_from_claims(claims, settings.sso)
     if not principal.groups:
         raise ForbiddenError("Token has no group membership.")
     return principal

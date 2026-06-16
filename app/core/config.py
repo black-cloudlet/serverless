@@ -2,7 +2,7 @@
 
 Configuration is environment-driven (12-factor); in production the values are
 projected from Vault via the External Secrets Operator (see docs/ARCHITECTURE.md §7).
-Zone connection profiles are supplied as a JSON list in ``SERVERLESS_ZONES``.
+Site connection profiles are supplied as a JSON list in ``SERVERLESS_SITES``.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class ZoneConfig(BaseModel):
-    """Connection profile for one OpenShift cluster ("zone")."""
+class SiteConfig(BaseModel):
+    """Connection profile for one OpenShift cluster ("site")."""
 
     name: str
     api_server: str
@@ -28,13 +28,13 @@ class ZoneConfig(BaseModel):
     in_cluster: bool = False
 
 
-class RHBKConfig(BaseModel):
-    """RHBK (Keycloak) OIDC settings used by the auth component."""
+class SSOConfig(BaseModel):
+    """SSO (Keycloak) OIDC settings used by the auth component."""
 
-    issuer: str = "https://rhbk.internal/realms/serverless"
+    issuer: str = "https://sso.internal/realms/serverless"
     audience: str = "serverless-api"
     jwks_url: str = (
-        "https://rhbk.internal/realms/serverless/protocol/openid-connect/certs"
+        "https://sso.internal/realms/serverless/protocol/openid-connect/certs"
     )
     groups_claim: str = "groups"
     admin_groups: list[str] = Field(default_factory=list)
@@ -61,16 +61,16 @@ class Settings(BaseSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
-    rhbk: RHBKConfig = Field(default_factory=RHBKConfig)
+    sso: SSOConfig = Field(default_factory=SSOConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
-    zones: list[ZoneConfig] = Field(default_factory=list)
+    sites: list[SiteConfig] = Field(default_factory=list)
 
-    def zone(self, name: str) -> ZoneConfig | None:
-        return next((z for z in self.zones if z.name == name), None)
+    def site(self, name: str) -> SiteConfig | None:
+        return next((z for z in self.sites if z.name == name), None)
 
     @property
-    def zone_names(self) -> list[str]:
-        return [z.name for z in self.zones]
+    def site_names(self) -> list[str]:
+        return [z.name for z in self.sites]
 
 
 @lru_cache

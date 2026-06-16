@@ -1,10 +1,10 @@
 """``Cluster`` — the single wrapper around the Kubernetes/OpenShift client.
 
-One instance represents one zone (one OpenShift cluster). It fully encapsulates
+One instance represents one site (one OpenShift cluster). It fully encapsulates
 the ``kubernetes`` library: nobody outside this module imports ``kubernetes`` or
 passes raw apiVersion/kind strings — callers use the :class:`ResourceKind` enum.
 
-Authentication uses the zone's cert-manager-issued client certificate
+Authentication uses the site's cert-manager-issued client certificate
 (CN = serverless-api.clients.{base_domain}) over mTLS, or the in-cluster service
 account for the API's local cluster (docs §6.3).
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from app.core.config import ZoneConfig
+from app.core.config import SiteConfig
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -40,7 +40,7 @@ class ResourceKind(Enum):
 class Cluster:
     """A connection to one OpenShift cluster, scoped to its workloads namespace."""
 
-    def __init__(self, config: ZoneConfig):
+    def __init__(self, config: SiteConfig):
         self._config = config
         self._dynamic = None
 

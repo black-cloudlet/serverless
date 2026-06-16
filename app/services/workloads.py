@@ -1,4 +1,4 @@
-"""Workload orchestration: build manifests once, fan out to all zones.
+"""Workload orchestration: build manifests once, fan out to all sites.
 
 Covers FaaS (build then deploy) and CaaS (deploy image), plus lookup/delete with
 group-scoped access control. See docs §3, §4, §6.2.
@@ -9,12 +9,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.auth.claims import Principal
-from app.core.config import Settings, ZoneConfig
+from app.core.config import Settings, SiteConfig
 from app.core.errors import ForbiddenError, NotFoundError, ServiceUnavailableError
 from app.models.common import (
     LABEL_GROUP,
     WorkloadResponse,
-    ZoneStatus,
+    SiteStatus,
 )
 from app.models.container import ContainerCreate
 from app.models.function import FunctionCreate
@@ -116,7 +116,7 @@ class WorkloadService:
         pull_secret_manifest: dict | None,
     ) -> tuple[WorkloadResponse, int]:
         group = user.primary_group
-        targets = self._deployer.resolve_targets(spec.zones)
+        targets = self._deployer.resolve_targets(spec.sites)
         host = route_svc.host_for(spec.name, group, self._settings.route_domain)
 
         resolved = resolve_files(spec.name, group, user.username, spec.files)
@@ -143,7 +143,7 @@ class WorkloadService:
             target_namespace=targets[0].namespace,
         )
 
-        def apply(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
+        def apply(cluster: Cluster, site: SiteConfig) -> SiteStatus:
             for backing in resolved.backing:
                 cluster.apply(backing)
             if pull_secret_manifest:
@@ -153,7 +153,7 @@ class WorkloadService:
             cluster.apply(route, namespace=route_svc.KOURIER_NAMESPACE)
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, spec.name)
             status, revision = _ksvc_status(obj)
-            return ZoneStatus(zone=cluster.name, status=status, revision=revision)
+            return SiteStatus(site=cluster.name, status=status, revision=revision)
 
         statuses = await self._deployer.fanout(targets, apply)
         overall = aggregate(statuses, success_label="Ready")
@@ -162,7 +162,7 @@ class WorkloadService:
             type="function",
             url=f"https://{host}",
             overallStatus=overall,
-            zones=statuses,
+            sites=statuses,
             createdAt=datetime.now(timezone.utc),
         )
         return body, status_code_for(overall, created=True)
@@ -173,11 +173,11 @@ class WorkloadService:
     ) -> WorkloadResponse:
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
 
-        def fetch(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
+        def fetch(cluster: Cluster, site: SiteConfig) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             self._assert_access(obj, user)
             status, revision = _ksvc_status(obj)
-            return ZoneStatus(zone=cluster.name, status=status, revision=revision)
+            return SiteStatus(site=cluster.name, status=status, revision=revision)
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, fetch)
@@ -192,15 +192,15 @@ class WorkloadService:
             type=kind,  # type: ignore[arg-type]
             url=f"https://{host}",
             overallStatus=overall,
-            zones=statuses,
+            sites=statuses,
         )
 
     async def delete(self, kind: str, name: str, user: Principal) -> None:
-        def remove(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
+        def remove(cluster: Cluster, site: SiteConfig) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             self._assert_access(obj, user)
             cluster.delete(ResourceKind.KNATIVE_SERVICE, name)
-            return ZoneStatus(zone=cluster.name, status="Deleted")
+            return SiteStatus(site=cluster.name, status="Deleted")
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, remove)

@@ -29,19 +29,19 @@ spec:
               value: {{ .Values.routeDomain | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
-            - name: SERVERLESS_RHBK__ISSUER
-              value: {{ .Values.rhbk.issuer | quote }}
-            - name: SERVERLESS_RHBK__AUDIENCE
-              value: {{ .Values.rhbk.audience | quote }}
-            - name: SERVERLESS_RHBK__JWKS_URL
-              value: {{ .Values.rhbk.jwksUrl | quote }}
-            - name: SERVERLESS_RHBK__GROUPS_CLAIM
-              value: {{ .Values.rhbk.groupsClaim | quote }}
-            - name: SERVERLESS_RHBK__ADMIN_GROUPS
-              value: {{ toJson .Values.rhbk.adminGroups | quote }}
-            - name: SERVERLESS_ZONES
+            - name: SERVERLESS_SSO__ISSUER
+              value: {{ .Values.sso.issuer | quote }}
+            - name: SERVERLESS_SSO__AUDIENCE
+              value: {{ .Values.sso.audience | quote }}
+            - name: SERVERLESS_SSO__JWKS_URL
+              value: {{ .Values.sso.jwksUrl | quote }}
+            - name: SERVERLESS_SSO__GROUPS_CLAIM
+              value: {{ .Values.sso.groupsClaim | quote }}
+            - name: SERVERLESS_SSO__ADMIN_GROUPS
+              value: {{ toJson .Values.sso.adminGroups | quote }}
+            - name: SERVERLESS_SITES
               value: |-
-                [{{- range $i, $z := .Values.zones }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}","in_cluster":{{ $z.inCluster }},"client_cert_path":"/etc/serverless/client/tls.crt","client_key_path":"/etc/serverless/client/tls.key","ca_path":"/etc/serverless/client/ca.crt"}{{- end }}]
+                [{{- range $i, $z := .Values.sites }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}","in_cluster":{{ $z.inCluster }},"client_cert_path":"/etc/serverless/client/tls.crt","client_key_path":"/etc/serverless/client/tls.key","ca_path":"/etc/serverless/client/ca.crt"}{{- end }}]
           envFrom:
             - secretRef:
                 name: serverless-api-secrets

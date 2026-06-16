@@ -84,8 +84,8 @@ class Scaling(BaseModel):
         return self
 
 
-class ZoneStatus(BaseModel):
-    zone: str
+class SiteStatus(BaseModel):
+    site: str
     status: str
     revision: str | None = None
     error: str | None = None
@@ -96,7 +96,7 @@ class WorkloadResponse(BaseModel):
     type: Literal["function", "container"]
     url: str
     overallStatus: str
-    zones: list[ZoneStatus]
+    sites: list[SiteStatus]
     runtime: str | None = None
     image: str | None = None
     imageDigest: str | None = None

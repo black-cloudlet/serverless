@@ -1,4 +1,4 @@
-"""RHBK OIDC token validation: JWKS fetch/cache + JWT verification."""
+"""SSO OIDC token validation: JWKS fetch/cache + JWT verification."""
 
 from __future__ import annotations
 
@@ -7,18 +7,18 @@ import time
 import jwt
 from jwt import PyJWKClient
 
-from app.core.config import RHBKConfig
+from app.core.config import SSOConfig
 from app.core.errors import UnauthenticatedError
 
 
 class TokenValidator:
-    """Validates RHBK-issued JWTs offline against cached JWKS.
+    """Validates SSO-issued JWTs offline against cached JWKS.
 
-    The signing keys are fetched from the internal RHBK realm and cached; no
+    The signing keys are fetched from the internal SSO realm and cached; no
     per-request round trip to the IdP is made.
     """
 
-    def __init__(self, config: RHBKConfig):
+    def __init__(self, config: SSOConfig):
         self._config = config
         self._jwk_client: PyJWKClient | None = None
         self._jwk_fetched_at: float = 0.0

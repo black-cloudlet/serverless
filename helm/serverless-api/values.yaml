@@ -1,5 +1,5 @@
 # Default values for serverless-api.
-# Per-zone overrides live in the central GitOps repo (values-zone-a.yaml, ...).
+# Per-site overrides live in the central GitOps repo (values-site-a.yaml, ...).
 
 image:
   repository: registry.internal/serverless/serverless-api
@@ -8,17 +8,17 @@ image:
 
 replicaCount: 2
 
-# This deployment's zone (one Application per cluster). Used to label/annotate.
-zoneName: zone-a
+# This deployment's site (one Application per cluster). Used to label/annotate.
+siteName: site-a
 
 # Single platform wildcard domain (docs §5).
 routeDomain: serverless.example.com
 
-# RHBK OIDC (docs §6). clientSecret comes from Vault via ESO, not here.
-rhbk:
-  issuer: https://rhbk.internal/realms/serverless
+# SSO OIDC (docs §6). clientSecret comes from Vault via ESO, not here.
+sso:
+  issuer: https://sso.internal/realms/serverless
   audience: serverless-api
-  jwksUrl: https://rhbk.internal/realms/serverless/protocol/openid-connect/certs
+  jwksUrl: https://sso.internal/realms/serverless/protocol/openid-connect/certs
   groupsClaim: groups
   adminGroups:
     - platform-admins
@@ -26,14 +26,14 @@ rhbk:
 registry:
   url: registry.internal
 
-# Zone connection profiles the API talks to (active/active, both clusters).
-zones:
-  - name: zone-a
-    apiServer: https://api.zone-a.internal:6443
+# Site connection profiles the API talks to (active/active, both clusters).
+sites:
+  - name: site-a
+    apiServer: https://api.site-a.internal:6443
     namespace: serverless-workloads
     inCluster: false
-  - name: zone-b
-    apiServer: https://api.zone-b.internal:6443
+  - name: site-b
+    apiServer: https://api.site-b.internal:6443
     namespace: serverless-workloads
     inCluster: false
 

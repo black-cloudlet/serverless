@@ -47,18 +47,18 @@ class ConflictError(APIError):
     code = "CONFLICT"
 
 
-class ZonePartialFailure(APIError):
-    """One zone failed; the deployment is Degraded."""
+class SitePartialFailure(APIError):
+    """One site failed; the deployment is Degraded."""
 
     status_code = 207
-    code = "ZONE_PARTIAL_FAILURE"
+    code = "SITE_PARTIAL_FAILURE"
 
 
-class ZoneTotalFailure(APIError):
-    """All zones failed."""
+class SiteTotalFailure(APIError):
+    """All sites failed."""
 
     status_code = 502
-    code = "ZONE_TOTAL_FAILURE"
+    code = "SITE_TOTAL_FAILURE"
 
 
 class ServiceUnavailableError(APIError):

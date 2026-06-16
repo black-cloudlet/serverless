@@ -9,7 +9,7 @@ exposed through a **Python / FastAPI** REST API.
 - **CaaS** — clients provide a container image plus registry credentials.
 - Both support **env vars**, **mounted secrets/config files**, and **scaling options**, and
   are exposed externally via **OpenShift Routes**.
-- Auth via **RHBK (Keycloak) OIDC** with **SSO group-based** authorization.
+- Auth via **SSO (Keycloak) OIDC** with **SSO group-based** authorization.
 - Deployed via **Helm + ArgoCD**; secrets sourced from **HashiCorp Vault** through the
   **External Secrets Operator**.
 - Designed for **two OpenShift clusters (active/active HA)** in an **airgapped** environment.
@@ -23,10 +23,10 @@ exposed through a **Python / FastAPI** REST API.
 
 ```
 app/        FastAPI application
-  auth/     self-contained OIDC auth component (RHBK)
+  auth/     self-contained OIDC auth component (SSO)
   models/   Pydantic request/response schemas
-  services/ pure manifest builders + multi-zone deployer + build/orchestration
-  clients/  per-zone Kubernetes/OpenShift client (mTLS client cert)
+  services/ pure manifest builders + multi-site deployer + build/orchestration
+  clients/  per-site Kubernetes/OpenShift client (mTLS client cert)
   routers/  FaaS / CaaS / resources / health endpoints
 helm/       Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
 tests/      unit + API tests
@@ -34,7 +34,7 @@ Containerfile
 ```
 
 The ArgoCD `ApplicationSet` is **not** in this repo — it lives in the central GitOps repo
-and renders `helm/serverless-api` once per zone (docs §8).
+and renders `helm/serverless-api` once per site (docs §8).
 
 ## Develop
 
@@ -54,6 +54,6 @@ SERVERLESS_AUTH_ENABLED=false uvicorn app.main:app --reload
 Configuration is environment-driven (`SERVERLESS_*`); see `.env.example`. In production the
 values are projected from Vault via the External Secrets Operator (docs §7).
 
-> **Status:** Application scaffold implemented (endpoints, auth, multi-zone deployer, manifest
+> **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
 > builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
 > (`func`/Tekton) is the remaining integration point — see `app/services/builder.py`.

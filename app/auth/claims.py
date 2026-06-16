@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.core.config import RHBKConfig
+from app.core.config import SSOConfig
 
 
 class Principal(BaseModel):
@@ -27,7 +27,7 @@ class Principal(BaseModel):
         return self.groups[0]
 
 
-def principal_from_claims(claims: dict, config: RHBKConfig) -> Principal:
+def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
     groups = claims.get(config.groups_claim, []) or []
     if isinstance(groups, str):
         groups = [groups]

@@ -16,7 +16,7 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 1. [Overview & Goals](#1-overview--goals)
 2. [High-Level Architecture](#2-high-level-architecture)
 3. [Core Service Offerings](#3-core-service-offerings)
-4. [Multi-Zone (Active/Active HA) Design](#4-multi-zone-activeactive-ha-design)
+4. [Multi-Site (Active/Active HA) Design](#4-multi-site-activeactive-ha-design)
 5. [Networking & Exposure](#5-networking--exposure)
 6. [Authentication & Authorization](#6-authentication--authorization)
 7. [Secrets Management](#7-secrets-management)
@@ -36,10 +36,10 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 | Deliverable | Architecture/design doc only (this document) |
 | FaaS build | **Knative Functions** (`func` + Cloud Native Buildpacks), mirrored builder images for airgap |
 | Cluster auth | **cert-manager `Certificate` CR** (shipped in Helm chart) → client TLS cert; **CN is a DNS name** `serverless-api.clients.{base_domain}` (ACME-issued); that name is the Kubernetes user, bound via RBAC |
-| Topology | **Two separate OpenShift clusters** ("zones") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
-| Zone selection | **Deploy to both zones on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless site (active/passive at the traffic layer, active/active at the deploy layer). |
+| Topology | **Two separate OpenShift clusters** ("sites") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
+| Site selection | **Deploy to both sites on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless site (active/passive at the traffic layer, active/active at the deploy layer). |
 | Tenancy | **Shared namespace, label-scoped**; SSO group → resource labels enforced by the API |
-| API authn | **RHBK (Red Hat Build of Keycloak) OIDC** in front of the API |
+| API authn | **SSO (Red Hat Build of Keycloak) OIDC** in front of the API |
 | API authz | Based on **SSO group membership** |
 | Secrets | **External Secrets Operator** — this repo ships **`ExternalSecret` only**, referencing a **pre-existing `ClusterSecretStore`** that points at **HashiCorp Vault** (API stores no secrets) |
 | Route domain | Single platform wildcard **`*.serverless.{base_domain}`**; host `{name}-{group}.serverless.{base_domain}` (offering tracked as a label, not in the host) |
@@ -74,7 +74,7 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 - One API call deploys the workload to **both clusters**; the API is itself HA across both.
 - Each workload exposed at a **single, cluster-independent Route host**, with DNS forwarding
   to the active site.
-- Strong authn (RHBK OIDC) and group-based authz.
+- Strong authn (SSO OIDC) and group-based authz.
 - No secrets stored by the API; all secrets sourced from Vault via ESO.
 - GitOps-managed (Helm + ArgoCD), reproducible, airgap-compatible.
 
@@ -94,8 +94,8 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 | **KSVC** | A Knative `Service` custom resource (`serving.knative.dev/v1`). The top-level unit we create per workload. |
 | **Revision** | An immutable snapshot of a KSVC; created on each spec change. |
 | **Route (OpenShift)** | OpenShift `route.openshift.io/v1` object that exposes a service externally over HTTP(S). |
-| **Zone** | One of the two independent OpenShift clusters the platform deploys to. |
-| **RHBK** | Red Hat Build of Keycloak — the OIDC identity provider. |
+| **Site** | One of the two independent OpenShift clusters the platform deploys to. |
+| **SSO** | Red Hat Build of Keycloak — the OIDC identity provider. |
 | **ESO** | External Secrets Operator — syncs secrets from Vault into Kubernetes Secrets. |
 | **Tenant / group** | An SSO (Keycloak) group; the unit of ownership and isolation. |
 | **`func`** | Knative Functions CLI / library used to build source into an OCI image via buildpacks. |
@@ -109,12 +109,12 @@ flowchart TB
     U["User / CI client"]
     DNSAPI["DNS: serverless-api.{base_domain}<br/>→ active API site"]
     DNSAPP["DNS: *.serverless.{base_domain}<br/>→ active workload site"]
-    KC["RHBK / Keycloak OIDC (internal)"]
+    KC["SSO / Keycloak OIDC (internal)"]
     REG[("Internal Container Registry<br/>(mirrored, airgapped)")]
     V[("HashiCorp Vault (existing)")]
     GIT[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
 
-    subgraph ZA["Zone A — OpenShift Cluster A"]
+    subgraph ZA["Site A — OpenShift Cluster A"]
         APIA["FastAPI API (active/active)"]
         KNA["Knative Serving<br/>(workloads namespace)"]
         RTA["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
@@ -123,7 +123,7 @@ flowchart TB
         KNA --> RTA
     end
 
-    subgraph ZB["Zone B — OpenShift Cluster B"]
+    subgraph ZB["Site B — OpenShift Cluster B"]
         APIB["FastAPI API (active/active)"]
         KNB["Knative Serving<br/>(workloads namespace)"]
         RTB["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
@@ -160,10 +160,10 @@ flowchart TB
 
 **Reading the diagram:**
 
-- The user authenticates against **RHBK** and calls the API via the **`serverless-api`
+- The user authenticates against **SSO** and calls the API via the **`serverless-api`
   DNS record**, which points at the **active API instance** (the API runs active/active on
   both clusters).
-- The serving API validates the token (JWKS from RHBK), authorizes on the user's **groups**,
+- The serving API validates the token (JWKS from SSO), authorizes on the user's **groups**,
   then **applies the KSVC + Route to both clusters** using each cluster's **client TLS cert**
   (CN `serverless-api.clients.{base_domain}`) for authentication.
 - Each workload gets the **same Route host in both clusters**; the
@@ -178,7 +178,7 @@ flowchart TB
 ## 3. Core Service Offerings
 
 Both offerings converge on the same primitive: **create/update a Knative `Service` (KSVC)
-in both zones**, then ensure an OpenShift Route exists. They differ only in how the runnable
+in both sites**, then ensure an OpenShift Route exists. They differ only in how the runnable
 **image** is produced.
 
 ```mermaid
@@ -191,9 +191,9 @@ flowchart LR
         IMG["Image ref + registry creds"] --> PS["Create imagePullSecret"]
         PS --> I2["Existing image in registry"]
     end
-    I1 --> KSVC["Knative Service (both zones)"]
+    I1 --> KSVC["Knative Service (both sites)"]
     I2 --> KSVC
-    KSVC --> RT["OpenShift Route (per zone)"]
+    KSVC --> RT["OpenShift Route (per site)"]
 ```
 
 ### 3.1 FaaS — Function as a Service
@@ -219,9 +219,9 @@ flowchart LR
 3. The resulting OCI image is pushed to the **internal container registry** under a
    deterministic tag, e.g. `registry.internal/<group>/<name>:<gitsha>`.
 4. The API then creates/updates the **KSVC** referencing that image (§3.3), in **both
-   zones**.
+   sites**.
 
-> The build runs once and the **same image digest** is deployed to both zones to guarantee
+> The build runs once and the **same image digest** is deployed to both sites to guarantee
 > bit-for-bit parity across the active/active pair.
 
 ```mermaid
@@ -231,21 +231,21 @@ sequenceDiagram
     participant API as FastAPI API
     participant Build as func / buildpacks (build job)
     participant Reg as Internal Registry
-    participant ZA as Zone A (Knative)
-    participant ZB as Zone B (Knative)
+    participant ZA as Site A (Knative)
+    participant ZB as Site B (Knative)
 
     U->>API: POST /api/v1/functions (git, runtime, ...)
     API->>API: AuthN (JWT) + AuthZ (group)
     API->>Build: build(gitUrl@branch, runtime)
     Build->>Reg: push image @digest
     Build-->>API: image digest
-    par Deploy to both zones (same digest)
+    par Deploy to both sites (same digest)
         API->>ZA: apply KSVC + ensure Route
         API->>ZB: apply KSVC + ensure Route
     end
     ZA-->>API: route URL A, status
     ZB-->>API: route URL B, status
-    API-->>U: 201 Created { zones: [A,B], urls, status }
+    API-->>U: 201 Created { sites: [A,B], urls, status }
 ```
 
 ### 3.2 CaaS — Container as a Service
@@ -263,9 +263,9 @@ sequenceDiagram
 **Flow:**
 
 1. The API creates a Kubernetes `kubernetes.io/dockerconfigjson` **imagePullSecret** from
-   the supplied credentials in each zone, **labeled** with the owning group (§6) and linked
+   the supplied credentials in each site, **labeled** with the owning group (§6) and linked
    to the KSVC's service account.
-2. The API creates/updates the **KSVC** referencing `image` in **both zones**.
+2. The API creates/updates the **KSVC** referencing `image` in **both sites**.
 
 ### 3.3 Shared capabilities (FaaS and CaaS)
 
@@ -292,29 +292,29 @@ A canonical scaling sub-object in the API:
 
 ---
 
-## 4. Multi-Zone (Active/Active HA) Design
+## 4. Multi-Site (Active/Active HA) Design
 
-The platform deploys **every** workload to **both** OpenShift clusters (Zone A and Zone B)
+The platform deploys **every** workload to **both** OpenShift clusters (Site A and Site B)
 on each create/update, and the **API itself runs active/active on both clusters**. Because
 both clusters **trust the same CA** and the workload **Route host is identical in both**,
-each zone is a full, independent replica; a DNS record forwards end-user traffic to the
+each site is a full, independent replica; a DNS record forwards end-user traffic to the
 active site.
 
-The API owns a **per-zone connection profile** (note: a single shared `routeDomain` because
+The API owns a **per-site connection profile** (note: a single shared `routeDomain` because
 the host is identical across clusters):
 
 ```yaml
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
-zones:
-  - name: zone-a
-    apiServer: https://api.zone-a.internal:6443
-    caBundleConfigMapRef: zones-ca         # shared CA both clusters trust
-    clientCertSecretRef: zone-a-client     # cert-manager Certificate, CN=serverless-api.clients.{base_domain}
+sites:
+  - name: site-a
+    apiServer: https://api.site-a.internal:6443
+    caBundleConfigMapRef: sites-ca         # shared CA both clusters trust
+    clientCertSecretRef: site-a-client     # cert-manager Certificate, CN=serverless-api.clients.{base_domain}
     namespace: serverless-workloads        # separate from the API's namespace
-  - name: zone-b
-    apiServer: https://api.zone-b.internal:6443
-    caBundleConfigMapRef: zones-ca
-    clientCertSecretRef: zone-b-client
+  - name: site-b
+    apiServer: https://api.site-b.internal:6443
+    caBundleConfigMapRef: sites-ca
+    clientCertSecretRef: site-b-client
     namespace: serverless-workloads
 ```
 
@@ -324,20 +324,20 @@ zones:
 
 ### Fan-out & status aggregation
 
-- The API holds **one Kubernetes client per zone** (built from that zone's client cert + the
+- The API holds **one Kubernetes client per site** (built from that site's client cert + the
   shared CA).
-- On deploy, it applies the KSVC + Route to both zones **concurrently** (async / thread
-  pool), then **aggregates** per-zone results. The workload `url` is the **same host** in
-  both zones; only the per-zone readiness differs:
+- On deploy, it applies the KSVC + Route to both sites **concurrently** (async / thread
+  pool), then **aggregates** per-site results. The workload `url` is the **same host** in
+  both sites; only the per-site readiness differs:
 
 ```json
 {
   "name": "orders-api",
   "type": "container",
   "url": "https://orders-api-team.serverless.example.com",
-  "zones": [
-    { "zone": "zone-a", "status": "Ready", "revision": "orders-api-00001" },
-    { "zone": "zone-b", "status": "Ready", "revision": "orders-api-00001" }
+  "sites": [
+    { "site": "site-a", "status": "Ready", "revision": "orders-api-00001" },
+    { "site": "site-b", "status": "Ready", "revision": "orders-api-00001" }
   ],
   "overallStatus": "Ready"
 }
@@ -347,13 +347,13 @@ zones:
 
 | Scenario | Behavior |
 |----------|----------|
-| Both zones succeed | `overallStatus = Ready`, `201`/`200`. |
-| One zone fails | `overallStatus = Degraded`, `207 Multi-Status`; the per-zone object carries the error. The succeeded zone is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
-| Both zones fail | `overallStatus = Failed`, `502`; the API attempts best-effort cleanup of any partially-created resources. |
+| Both sites succeed | `overallStatus = Ready`, `201`/`200`. |
+| One site fails | `overallStatus = Degraded`, `207 Multi-Status`; the per-site object carries the error. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
+| Both sites fail | `overallStatus = Failed`, `502`; the API attempts best-effort cleanup of any partially-created resources. |
 
 - Operations are **idempotent** (apply/patch by name+group label), so a client can safely
   retry to heal a degraded deployment.
-- **Build once, deploy the same digest to both zones** (see §3.1) so the two zones are
+- **Build once, deploy the same digest to both sites** (see §3.1) so the two sites are
   identical.
 
 > Cross-site traffic steering is handled by the **`*.serverless.{base_domain}` DNS record
@@ -404,18 +404,18 @@ flowchart LR
 
 Two distinct identities are involved:
 
-1. **End-user → API:** OIDC bearer token from **RHBK**.
+1. **End-user → API:** OIDC bearer token from **SSO**.
 2. **API → each cluster:** **client TLS certificate** issued by **cert-manager** (ACME),
    whose **CN is the DNS name `serverless-api.clients.{base_domain}`**; that name is the
    Kubernetes user, bound by RBAC.
 
-### 6.1 End-user authentication (RHBK OIDC)
+### 6.1 End-user authentication (SSO OIDC)
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as User / CI client
-    participant KC as RHBK (OIDC)
+    participant KC as SSO (OIDC)
     participant API as FastAPI API
 
     U->>KC: Authenticate (OIDC / client credentials)
@@ -432,7 +432,7 @@ sequenceDiagram
 ```
 
 - The API is a **resource server**: it validates JWTs offline using **JWKS** fetched from
-  the internal RHBK realm (cached, no per-request round trip).
+  the internal SSO realm (cached, no per-request round trip).
 - Validated: signature, `iss`, `aud`, `exp`/`nbf`.
 
 #### Auth as an internal component (not a separate microservice)
@@ -443,7 +443,7 @@ token validation is **stateless** (verify signature against cached JWKS + read c
 there is no shared state to centralize; a standalone auth service would only add a network
 hop, another deployment to secure in both clusters, and a failure point. The component owns:
 
-- RHBK OIDC discovery + **JWKS fetch/cache** and **token validation** (`oidc.py`),
+- SSO OIDC discovery + **JWKS fetch/cache** and **token validation** (`oidc.py`),
 - **claims → group** mapping and admin/tenant policy (`claims.py`),
 - the FastAPI **`require_auth` / `require_groups`** dependencies the routers use (`deps.py`).
 
@@ -479,16 +479,16 @@ hop, another deployment to secure in both clusters, and a failure point. The com
 
 ### 6.3 Cluster-side identity (cert-manager client cert + RBAC)
 
-- The Helm chart ships a cert-manager **`Certificate`** per zone, issued via **ACME** (an
+- The Helm chart ships a cert-manager **`Certificate`** per site, issued via **ACME** (an
   internal ACME endpoint in airgap). Because ACME requires the identity to be a DNS name, the
   cert's **CN/SAN is `serverless-api.clients.{base_domain}`** — and that DNS name is the
   **Kubernetes user**. OpenShift authenticates the client by that name. Both clusters
   **trust the same CA**, so the same identity is valid in either cluster.
-- Each zone has a **`Role` + `RoleBinding`** (in the **workload namespace**, which is
+- Each site has a **`Role` + `RoleBinding`** (in the **workload namespace**, which is
   separate from the API's own namespace) granting the user least-privilege CRUD on exactly
   the resources the API manages: Knative `services`, OpenShift `routes`, `secrets`,
   `configmaps`, `serviceaccounts`, and read on `pods`/`events` for status.
-- The certificate's key/cert are mounted into the API pod and used to build the per-zone
+- The certificate's key/cert are mounted into the API pod and used to build the per-site
   Kubernetes client (mutual TLS to the API server).
 
 ---
@@ -501,13 +501,13 @@ categories:
 
 | Category | Owner / mechanism | ESO? |
 |----------|-------------------|------|
-| 7.1 **API's own platform secrets** (RHBK client secret, client-cert material) | Vault → ESO `ExternalSecret` → K8s Secret | **Yes** |
+| 7.1 **API's own platform secrets** (SSO client secret, client-cert material) | Vault → ESO `ExternalSecret` → K8s Secret | **Yes** |
 | 7.2 **Customer credentials** (git/registry tokens) | Supplied per-request, used transiently | No |
 | 7.3 **Customer config & secret mounts** (what the user wants inside their workload) | **Created and managed by the API directly**; readable back via the API | **No** |
 
 ### 7.1 The API's own platform secrets — Vault → ESO → Kubernetes Secret
 
-The API needs, e.g., the RHBK client secret and per-zone client-cert material. These are
+The API needs, e.g., the SSO client secret and per-site client-cert material. These are
 stored in **Vault** and projected into the cluster by **ESO**.
 
 ```mermaid
@@ -537,7 +537,7 @@ flowchart LR
 - They are used **transiently**:
   - `gitToken` is injected into the build job only for the clone and discarded.
   - `registryToken` becomes a labeled `imagePullSecret` attached to the workload's service
-    account in each zone.
+    account in each site.
 - The API does **not** write these to its own datastore, logs, or Git. Where a credential
   must persist for the workload to run (the pull secret), it lives as a **scoped, labeled
   Kubernetes Secret** owned by the tenant group and is deleted when the workload is deleted.
@@ -589,7 +589,7 @@ flowchart LR
     GITAPP[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
     GITHELM[("This repo<br/>Helm chart + values")]
     ARGO["ArgoCD"]
-    subgraph Cluster["OpenShift — each zone (A and B)"]
+    subgraph Cluster["OpenShift — each site (A and B)"]
         DEP["Deployment: serverless-api (active/active)"]
         CERT["cert-manager Certificate (ACME)"]
         RBAC["Role / RoleBinding (CN user)"]
@@ -604,11 +604,11 @@ flowchart LR
 ```
 
 - **Helm chart (this repo)** templates: `Deployment`, `Service`, `Route` (for the API
-  itself), `ServiceAccount`, `Role`/`RoleBinding`, cert-manager `Certificate` (per zone),
+  itself), `ServiceAccount`, `Role`/`RoleBinding`, cert-manager `Certificate` (per site),
   ESO **`ExternalSecret`** (referencing the pre-existing `ClusterSecretStore`), and
-  `values.yaml` describing the zone profiles. It does **not** ship a SecretStore.
+  `values.yaml` describing the site profiles. It does **not** ship a SecretStore.
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
-  zone**, each pointing at this repo's chart with a per-zone values file. Sync waves order
+  site**, each pointing at this repo's chart with a per-site values file. Sync waves order
   Secrets/RBAC before the Deployment; health checks gate rollout.
 - All referenced images are the **internal mirrored** images (airgap, §9).
 
@@ -625,7 +625,7 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 | **Python dependencies (the API)** | Build the API container against an **internal PyPI mirror** (e.g. Nexus/Artifactory) or vendored wheels; pin all versions. |
 | **Function dependencies (per runtime)** | Buildpacks must resolve language deps from internal mirrors (internal PyPI, Go module proxy/`GOPROXY`, npm registry mirror). Documented as a prerequisite for each runtime. |
 | **Base images** | Use mirrored UBI base images. |
-| **CA trust** | Internal Git, registry, Vault, RHBK all use the internal CA; the API and build images must trust the internal CA bundle (mounted / baked in). |
+| **CA trust** | Internal Git, registry, Vault, SSO all use the internal CA; the API and build images must trust the internal CA bundle (mounted / baked in). |
 | **cert-manager** | Issue client certs via **ACME against an internal ACME endpoint** (e.g. step-ca / internal CA exposing ACME) — not a public CA. Both clusters trust this CA, and the cert CN/SAN is the DNS name `serverless-api.clients.{base_domain}`. |
 | **Helm charts** | Hosted in an internal chart repo / Git; no public chart pulls. |
 
@@ -633,25 +633,25 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 
 ## 10. REST API Specification
 
-Base path: `/api/v1`. All endpoints require a valid RHBK bearer token (§6). All responses
+Base path: `/api/v1`. All endpoints require a valid SSO bearer token (§6). All responses
 are JSON. Times are RFC 3339 UTC.
 
 ### Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git, deploy to both zones). |
+| `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git, deploy to both sites). |
 | `GET` | `/api/v1/functions` | List caller's functions (label-scoped). |
-| `GET` | `/api/v1/functions/{name}` | Get one function (spec + per-zone status). |
+| `GET` | `/api/v1/functions/{name}` | Get one function (spec + per-site status). |
 | `PATCH` | `/api/v1/functions/{name}` | Update env/scaling/mounts (and optionally rebuild). |
-| `DELETE` | `/api/v1/functions/{name}` | Delete the function in both zones. |
-| `POST` | `/api/v1/containers` | Create a CaaS workload (deploy image to both zones). |
+| `DELETE` | `/api/v1/functions/{name}` | Delete the function in both sites. |
+| `POST` | `/api/v1/containers` | Create a CaaS workload (deploy image to both sites). |
 | `GET` | `/api/v1/containers` | List caller's containers (label-scoped). |
-| `GET` | `/api/v1/containers/{name}` | Get one container (spec + per-zone status). |
+| `GET` | `/api/v1/containers/{name}` | Get one container (spec + per-site status). |
 | `PATCH` | `/api/v1/containers/{name}` | Update env/scaling/mounts/image. |
-| `DELETE` | `/api/v1/containers/{name}` | Delete the container in both zones. |
-| `GET` | `/api/v1/{type}/{name}/status` | Per-zone readiness, URLs, revision info. |
-| `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per zone. |
+| `DELETE` | `/api/v1/containers/{name}` | Delete the container in both sites. |
+| `GET` | `/api/v1/{type}/{name}/status` | Per-site readiness, URLs, revision info. |
+| `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
 | `POST` | `/api/v1/secrets` | Create a workload **secret** (API-managed, not ESO); applied to both clusters. |
 | `GET` | `/api/v1/secrets` | List caller's secrets (label-scoped; values redacted). |
 | `GET` | `/api/v1/secrets/{name}` | **Read back** one secret (values per policy — redacted by default). |
@@ -689,7 +689,7 @@ are JSON. Times are RFC 3339 UTC.
     "minScale": 0, "maxScale": 10,
     "targetConcurrency": 100, "containerConcurrency": 0
   },
-  "zones": ["zone-a", "zone-b"]         // optional; default = all zones (HA)
+  "sites": ["site-a", "site-b"]         // optional; default = all sites (HA)
 }
 ```
 
@@ -719,9 +719,9 @@ Response `201 Created`:
   "imageDigest": "registry.internal/team/image-resizer@sha256:abcd...",
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
-  "zones": [
-    { "zone": "zone-a", "status": "Ready", "revision": "image-resizer-00001" },
-    { "zone": "zone-b", "status": "Ready", "revision": "image-resizer-00001" }
+  "sites": [
+    { "site": "site-a", "status": "Ready", "revision": "image-resizer-00001" },
+    { "site": "site-b", "status": "Ready", "revision": "image-resizer-00001" }
   ],
   "createdAt": "2026-06-16T07:30:00Z"
 }
@@ -767,16 +767,16 @@ referenced from a workload's `files`/`env`.
 }
 ```
 
-Response `201 Created` (per-zone applied; secret values redacted in responses by default):
+Response `201 Created` (per-site applied; secret values redacted in responses by default):
 
 ```json
 {
   "name": "orders-tls",
   "type": "secret",
   "keys": ["tls.crt", "tls.key"],
-  "zones": [
-    { "zone": "zone-a", "status": "Applied" },
-    { "zone": "zone-b", "status": "Applied" }
+  "sites": [
+    { "site": "site-a", "status": "Applied" },
+    { "site": "site-b", "status": "Applied" }
   ],
   "overallStatus": "Applied"
 }
@@ -789,10 +789,10 @@ Standard envelope for all non-2xx responses:
 ```json
 {
   "error": {
-    "code": "ZONE_PARTIAL_FAILURE",
-    "message": "Deployment succeeded in zone-a but failed in zone-b.",
+    "code": "SITE_PARTIAL_FAILURE",
+    "message": "Deployment succeeded in site-a but failed in site-b.",
     "details": [
-      { "zone": "zone-b", "reason": "ImagePullBackOff", "message": "registry auth failed" }
+      { "site": "site-b", "reason": "ImagePullBackOff", "message": "registry auth failed" }
     ],
     "requestId": "b1c2..."
   }
@@ -806,8 +806,8 @@ Standard envelope for all non-2xx responses:
 | `403` | `FORBIDDEN` | Caller not in a required/owning group. |
 | `404` | `NOT_FOUND` | Workload not found in caller's group scope. |
 | `409` | `CONFLICT` | Name already exists for the group. |
-| `207` | `ZONE_PARTIAL_FAILURE` | One zone failed (Degraded). |
-| `502` | `ZONE_TOTAL_FAILURE` | Both zones failed. |
+| `207` | `SITE_PARTIAL_FAILURE` | One site failed (Degraded). |
+| `502` | `SITE_TOTAL_FAILURE` | Both sites failed. |
 | `500` | `INTERNAL` | Unexpected error. |
 
 ---
@@ -822,10 +822,10 @@ Serverless/
 ├── app/                             # FastAPI application
 │   ├── main.py                      # app factory, router registration, middleware
 │   ├── core/
-│   │   ├── config.py                # settings (zone profiles, RHBK, registry) via env/Secret
+│   │   ├── config.py                # settings (site profiles, SSO, registry) via env/Secret
 │   │   └── logging.py
 │   ├── auth/                        # self-contained auth component (all OIDC interaction)
-│   │   ├── oidc.py                  # RHBK discovery + JWKS fetch/cache, token validation
+│   │   ├── oidc.py                  # SSO discovery + JWKS fetch/cache, token validation
 │   │   ├── claims.py               # claims → group mapping, admin/tenant policy
 │   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
 │   ├── routers/
@@ -834,31 +834,31 @@ Serverless/
 │   │   ├── resources.py             # API-managed workload secrets & configs (§7.3)
 │   │   └── health.py
 │   ├── models/                      # Pydantic request/response schemas
-│   │   ├── common.py                # env, scaling, files, zone status
+│   │   ├── common.py                # env, scaling, files, site status
 │   │   ├── function.py
 │   │   ├── container.py
 │   │   └── resource.py              # secret/config create/read-back schemas
 │   ├── services/                    # business logic
-│   │   ├── deployer.py              # multi-zone fan-out + status aggregation
+│   │   ├── deployer.py              # multi-site fan-out + status aggregation
 │   │   ├── builder.py               # FaaS build via func/buildpacks
 │   │   ├── ksvc.py                  # KSVC manifest construction
 │   │   ├── route.py                 # OpenShift Route construction
 │   │   ├── resources.py             # CRUD + read-back of API-managed Secret/ConfigMap (§7.3)
 │   │   └── secrets.py               # imagePullSecret / transient credential handling
 │   └── clients/
-│       ├── cluster.py               # Cluster: wraps the k8s library for one zone (mTLS cert)
+│       ├── cluster.py               # Cluster: wraps the k8s library for one site (mTLS cert)
 │       └── registry.py
 ├── helm/
 │   └── serverless-api/
 │       ├── Chart.yaml
-│       ├── values.yaml              # zone profiles, image refs, RHBK, registry
+│       ├── values.yaml              # site profiles, image refs, SSO, registry
 │       └── templates/
 │           ├── deployment.yaml
 │           ├── service.yaml
 │           ├── route.yaml
 │           ├── serviceaccount.yaml
-│           ├── rbac.yaml            # Role/RoleBinding for the CN user (per zone)
-│           ├── certificate.yaml     # cert-manager Certificate (ACME, per zone)
+│           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site)
+│           ├── certificate.yaml     # cert-manager Certificate (ACME, per site)
 │           └── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
 │   # NOTE: no secretstore.yaml — the ClusterSecretStore already exists in the clusters.
 │   # NOTE: the ArgoCD ApplicationSet lives in a SEPARATE central GitOps repo, not here.
@@ -876,7 +876,7 @@ Serverless/
 
 ## 12. Sample Manifests
 
-> Illustrative only — final values are templated by Helm and parameterized per zone.
+> Illustrative only — final values are templated by Helm and parameterized per site.
 
 ### 12.1 Knative Service (KSVC)
 
@@ -926,7 +926,7 @@ metadata:
     serverless.platform/group: team
     serverless.platform/offering: caas   # offering tracked as a label, not in the host
 spec:
-  # Identical host in zone-a and zone-b; *.serverless.{base_domain} DNS forwards to active
+  # Identical host in site-a and site-b; *.serverless.{base_domain} DNS forwards to active
   host: orders-api-team.serverless.example.com
   to:
     kind: Service
@@ -944,10 +944,10 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: serverless-api-zone-a-client
+  name: serverless-api-site-a-client
   namespace: serverless-system
 spec:
-  secretName: zone-a-client                       # mounted into the API pod
+  secretName: site-a-client                       # mounted into the API pod
   commonName: serverless-api.clients.example.com  # DNS name => Kubernetes username
   dnsNames:
     - serverless-api.clients.example.com          # required for ACME issuance
@@ -958,7 +958,7 @@ spec:
     kind: ClusterIssuer
 ```
 
-### 12.4 RBAC for the CN user (per zone, shared workload namespace)
+### 12.4 RBAC for the CN user (per site, shared workload namespace)
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -1014,17 +1014,17 @@ spec:
   target:
     name: serverless-api-secrets   # consumed by the API via envFrom
   data:
-    - secretKey: rhbk-client-secret
+    - secretKey: sso-client-secret
       remoteRef:
         key: serverless/api
-        property: rhbk_client_secret
+        property: sso_client_secret
 ```
 
 ### 12.6 ArgoCD ApplicationSet — *reference only (lives in the separate GitOps repo)*
 
 > This manifest is **not** part of this repository. It is shown so the platform team can wire
 > this chart into the central GitOps repo's `ApplicationSet`, generating one Application per
-> zone that renders `helm/serverless-api` with a per-zone values file.
+> site that renders `helm/serverless-api` with a per-site values file.
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -1036,15 +1036,15 @@ spec:
   generators:
     - list:
         elements:
-          - zone: zone-a
-            cluster: https://api.zone-a.internal:6443
-            valuesFile: values-zone-a.yaml
-          - zone: zone-b
-            cluster: https://api.zone-b.internal:6443
-            valuesFile: values-zone-b.yaml
+          - site: site-a
+            cluster: https://api.site-a.internal:6443
+            valuesFile: values-site-a.yaml
+          - site: site-b
+            cluster: https://api.site-b.internal:6443
+            valuesFile: values-site-b.yaml
   template:
     metadata:
-      name: "serverless-api-{{zone}}"
+      name: "serverless-api-{{site}}"
     spec:
       project: serverless
       source:
