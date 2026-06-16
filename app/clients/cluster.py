@@ -96,25 +96,21 @@ class Cluster:
     def _opts(self) -> dict:
         return {"_request_timeout": self._timeout} if self._timeout else {}
 
+    FIELD_MANAGER = "serverless-api"
+
     # -- operations -------------------------------------------------------
     def apply(self, manifest: dict, namespace: str | None = None) -> dict:
-        """Create the object, or update it if it already exists (idempotent)."""
-        from kubernetes.dynamic.exceptions import NotFoundError
-
-        ns = self._ns(namespace)
-        opts = self._opts()
+        """Idempotent create-or-update via Kubernetes server-side apply."""
         res = self._resource(manifest["apiVersion"], manifest["kind"])
-        name = manifest["metadata"]["name"]
-        try:
-            res.get(name=name, namespace=ns, **opts)
-            return res.patch(
-                body=manifest,
-                namespace=ns,
-                content_type="application/merge-patch+json",
-                **opts,
-            ).to_dict()
-        except NotFoundError:
-            return res.create(body=manifest, namespace=ns, **opts).to_dict()
+        return self._client().server_side_apply(
+            res,
+            body=manifest,
+            name=manifest["metadata"]["name"],
+            namespace=self._ns(namespace),
+            field_manager=self.FIELD_MANAGER,
+            force_conflicts=True,
+            **self._opts(),
+        ).to_dict()
 
     def get(self, kind: ResourceKind, name: str, namespace: str | None = None) -> dict:
         return (

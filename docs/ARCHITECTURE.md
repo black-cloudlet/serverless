@@ -359,8 +359,8 @@ sites:
   `Timeout`/`Degraded` (it doesn't block the healthy site or other requests). Health probes
   never touch clusters. (See `cluster_connect_timeout` / `cluster_read_timeout` /
   `site_op_timeout`.)
-- Operations are **idempotent** (apply/patch by name+group label), so a client can safely
-  retry to heal a degraded deployment.
+- Operations are **idempotent** (Kubernetes **server-side apply** by object name), so a
+  client can safely retry to heal a degraded deployment.
 - **Build once, deploy the same digest to both sites** (see §3.1) so the two sites are
   identical.
 
