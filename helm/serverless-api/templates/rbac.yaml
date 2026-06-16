@@ -1,23 +1,20 @@
-# Least-privilege role for the client-cert user (CN = DNS name) in the
-# workloads namespace. docs §6.3 / §12.4
-{{- range .Values.sites }}
-{{- if eq .name $.Values.siteName }}
+# Least-privilege RBAC for the client-cert user (CN = DNS name). docs §6.3 / §12.4
+#  - workloads namespace: KSVC + DomainMapping + Secret + ConfigMap (+ read pods/events)
+#  - ingress namespace:   Route (it targets the kourier Service, which lives there)
+{{- $cn := include "serverless-api.clientCN" . -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: serverless-api-workloads
-  namespace: {{ .namespace }}
+  namespace: {{ .Values.namespaces.workloads }}
   labels:
-    {{- include "serverless-api.labels" $ | nindent 4 }}
+    {{- include "serverless-api.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["services", "domainmappings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["secrets", "configmaps", "serviceaccounts"]
+    resources: ["secrets", "configmaps"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods", "events"]
@@ -27,16 +24,42 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: serverless-api-workloads
-  namespace: {{ .namespace }}
+  namespace: {{ .Values.namespaces.workloads }}
   labels:
-    {{- include "serverless-api.labels" $ | nindent 4 }}
+    {{- include "serverless-api.labels" . | nindent 4 }}
 subjects:
   - kind: User
-    name: {{ include "serverless-api.clientCN" $ }}
+    name: {{ $cn }}
     apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: Role
   name: serverless-api-workloads
   apiGroup: rbac.authorization.k8s.io
-{{- end }}
-{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: serverless-api-routes
+  namespace: {{ .Values.ingressNamespace }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: serverless-api-routes
+  namespace: {{ .Values.ingressNamespace }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+subjects:
+  - kind: User
+    name: {{ $cn }}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: serverless-api-routes
+  apiGroup: rbac.authorization.k8s.io

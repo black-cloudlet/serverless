@@ -491,10 +491,12 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   cert's **CN/SAN is `serverless-api.clients.{base_domain}`** — and that DNS name is the
   **Kubernetes user**. OpenShift authenticates the client by that name. Both clusters
   **trust the same CA**, so the same identity is valid in either cluster.
-- Each site has a **`Role` + `RoleBinding`** (in the **workload namespace**, which is
-  separate from the API's own namespace) granting the user least-privilege CRUD on exactly
-  the resources the API manages: Knative `services`, OpenShift `routes`, `secrets`,
-  `configmaps`, `serviceaccounts`, and read on `pods`/`events` for status.
+- Each site grants the user least-privilege CRUD on exactly the resources the API manages,
+  via two `Role`/`RoleBinding` pairs: one in the **workload namespace**
+  (`serverless-workloads`) for Knative `services`/`domainmappings`, `secrets`, `configmaps`,
+  and read on `pods`/`events`; and one in the **Knative ingress namespace**
+  (`knative-serving-ingress`) for `routes` — since a workload's Route targets the kourier
+  Service that lives there.
 - The certificate's key/cert are mounted into the API pod and used to build the per-site
   Kubernetes client (mutual TLS to the API server).
 
@@ -978,13 +980,10 @@ metadata:
   namespace: serverless-workloads
 rules:
   - apiGroups: ["serving.knative.dev"]
-    resources: ["services"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
+    resources: ["services", "domainmappings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["secrets", "configmaps", "serviceaccounts"]
+    resources: ["secrets", "configmaps"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods", "events"]
@@ -1002,6 +1001,32 @@ subjects:
 roleRef:
   kind: Role
   name: serverless-api-workloads
+  apiGroup: rbac.authorization.k8s.io
+---
+# Routes are created in the Knative ingress (kourier) namespace, so the same
+# user needs a Role there too.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: serverless-api-routes
+  namespace: knative-serving-ingress
+rules:
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: serverless-api-routes
+  namespace: knative-serving-ingress
+subjects:
+  - kind: User
+    name: serverless-api.clients.example.com
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: serverless-api-routes
   apiGroup: rbac.authorization.k8s.io
 ```
 
