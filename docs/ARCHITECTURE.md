@@ -648,8 +648,9 @@ flowchart LR
   namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
   plain `env` on the Deployment), `Deployment`, `Service`, `Route` (for the API itself),
   `Role`/`RoleBinding` (bound to the client-cert CN user, in the workloads namespace),
-  cert-manager `Certificate`, ESO **`ExternalSecret`** (referencing the pre-existing
-  `ClusterSecretStore`), and `values.yaml` describing the site profiles. It does **not** ship a
+  cert-manager `Certificate`, **one ESO `ExternalSecret` per kind of data** (each its own
+  target Secret, referencing the pre-existing `ClusterSecretStore`; enabled ones `envFrom`'d
+  into the API), and `values.yaml` describing the site profiles. It does **not** ship a
   SecretStore, and the API pod runs as the namespace `default` ServiceAccount (cluster auth is
   the client certificate, not the SA token).
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
@@ -1131,11 +1132,16 @@ roleRef:
 > The `ClusterSecretStore` already exists in the clusters and is **not** shipped by this
 > repo. We deploy only the `ExternalSecret` below, referencing it by name.
 
+Each **kind** of data gets its own `ExternalSecret`/target Secret (separate rotation and
+exposure); the chart renders one per enabled entry in `externalSecrets.secrets` and the
+Deployment `envFrom`s each enabled Secret (so `secretKey`s must be valid env var names).
+
 ```yaml
+# e.g. the admin API-keys Secret (separate from the SSO secret)
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: serverless-api-secrets
+  name: serverless-api-keys
   namespace: serverless-api
 spec:
   refreshInterval: 1h
@@ -1143,12 +1149,12 @@ spec:
     name: vault-backend            # <-- name of the PRE-EXISTING ClusterSecretStore
     kind: ClusterSecretStore
   target:
-    name: serverless-api-secrets   # consumed by the API via envFrom
+    name: serverless-api-keys      # consumed by the API via envFrom
   data:
-    - secretKey: sso-client-secret
+    - secretKey: SERVERLESS_API_KEYS
       remoteRef:
         key: serverless/api
-        property: sso_client_secret
+        property: api_keys
 ```
 
 ### 12.6 ArgoCD ApplicationSet — *reference only (lives in the separate GitOps repo)*
