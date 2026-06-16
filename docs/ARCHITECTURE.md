@@ -630,14 +630,15 @@ flowchart LR
 - **Helm chart (this repo)** templates: two `Namespace`s (`serverless-api` for the API and
   `serverless-workloads` for customer workloads, both annotated
   `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
-  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-config`
-  **`ConfigMap`** holding all non-secret config (route domain, SSO, registry, cert/CA paths,
-  and **`SERVERLESS_SITES`**) consumed via `envFrom`, `Deployment`, `Service`, `Route` (for the
-  API itself), `Role`/`RoleBinding` (bound to the client-cert CN user, in the workloads
-  namespace), cert-manager `Certificate`, ESO **`ExternalSecret`** (referencing the
-  pre-existing `ClusterSecretStore`), and `values.yaml` describing the site profiles. It does
-  **not** ship a SecretStore, and the API pod runs as the namespace `default` ServiceAccount
-  (cluster auth is the client certificate, not the SA token).
+  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-sites`
+  **`ConfigMap`** holding just the OpenShift **sites data** (per-site API endpoint, name,
+  namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
+  plain `env` on the Deployment), `Deployment`, `Service`, `Route` (for the API itself),
+  `Role`/`RoleBinding` (bound to the client-cert CN user, in the workloads namespace),
+  cert-manager `Certificate`, ESO **`ExternalSecret`** (referencing the pre-existing
+  `ClusterSecretStore`), and `values.yaml` describing the site profiles. It does **not** ship a
+  SecretStore, and the API pod runs as the namespace `default` ServiceAccount (cluster auth is
+  the client certificate, not the SA token).
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
   site**, each pointing at this repo's chart with a per-site values file. Sync waves order
   Secrets/RBAC before the Deployment; health checks gate rollout.
@@ -914,7 +915,7 @@ Serverless/
 │       └── templates/
 │           ├── namespaces.yaml      # serverless-api + serverless-workloads (ArgoCD Delete=false,Prune=false)
 │           ├── ca-bundle.yaml       # inject-trusted-cabundle ConfigMap in both namespaces
-│           ├── configmap.yaml       # non-secret app config (incl. SERVERLESS_SITES), via envFrom
+│           ├── configmap.yaml       # sites data (SERVERLESS_SITES) -> loaded as an env var
 │           ├── deployment.yaml
 │           ├── service.yaml
 │           ├── route.yaml
