@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Awaitable, Callable
 
-from app.clients.zone_client import ZoneClient
+from app.clients.cluster import Cluster
 from app.core.config import Settings, ZoneConfig
 from app.core.errors import ValidationError, ZoneTotalFailure
 from app.core.logging import get_logger
@@ -18,19 +18,19 @@ from app.models.common import ZoneStatus
 
 logger = get_logger(__name__)
 
-# fn(client, zone) -> ZoneStatus  (may run blocking I/O; executed in a thread)
-ZoneFn = Callable[[ZoneClient, ZoneConfig], ZoneStatus]
+# fn(cluster, zone) -> ZoneStatus  (may run blocking I/O; executed in a thread)
+ZoneFn = Callable[[Cluster, ZoneConfig], ZoneStatus]
 
 
 class Deployer:
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._clients: dict[str, ZoneClient] = {}
+        self._clusters: dict[str, Cluster] = {}
 
-    def client(self, zone: ZoneConfig) -> ZoneClient:
-        if zone.name not in self._clients:
-            self._clients[zone.name] = ZoneClient(zone)
-        return self._clients[zone.name]
+    def cluster(self, zone: ZoneConfig) -> Cluster:
+        if zone.name not in self._clusters:
+            self._clusters[zone.name] = Cluster(zone)
+        return self._clusters[zone.name]
 
     def resolve_targets(self, requested: list[str] | None) -> list[ZoneConfig]:
         if not self._settings.zones:
@@ -48,7 +48,7 @@ class Deployer:
     async def fanout(self, targets: list[ZoneConfig], fn: ZoneFn) -> list[ZoneStatus]:
         async def run(zone: ZoneConfig) -> ZoneStatus:
             try:
-                return await asyncio.to_thread(fn, self.client(zone), zone)
+                return await asyncio.to_thread(fn, self.cluster(zone), zone)
             except Exception as exc:  # noqa: BLE001 - surfaced as per-zone error
                 logger.exception("zone %s operation failed", zone.name)
                 return ZoneStatus(zone=zone.name, status="Failed", error=str(exc))

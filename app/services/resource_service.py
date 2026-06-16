@@ -11,7 +11,7 @@ import base64
 from app.auth.claims import Principal
 from app.core.config import Settings, ZoneConfig
 from app.core.errors import ForbiddenError, NotFoundError
-from app.clients.zone_client import ZoneClient
+from app.clients.cluster import Cluster, ResourceKind
 from app.models.common import LABEL_GROUP, ZoneStatus
 from app.models.resource import ResourceCreate, ResourceResponse
 from app.services import resources as builders
@@ -19,7 +19,7 @@ from app.services.deployer import Deployer, aggregate
 from app.services.labels import group_selector
 
 REDACTED = "<redacted>"
-_KINDS = {"secret": "Secret", "config": "ConfigMap"}
+_KINDS = {"secret": ResourceKind.SECRET, "config": ResourceKind.CONFIG_MAP}
 
 
 class ResourceService:
@@ -27,7 +27,7 @@ class ResourceService:
         self._settings = settings
         self._deployer = deployer
 
-    def _kind(self, rtype: str) -> str:
+    def _kind(self, rtype: str) -> ResourceKind:
         return _KINDS[rtype]
 
     async def create(
@@ -41,9 +41,9 @@ class ResourceService:
                 spec.name, group, user.username, spec.data
             )
 
-        def apply(client: ZoneClient, zone: ZoneConfig) -> ZoneStatus:
-            client.apply(manifest, zone.namespace)
-            return ZoneStatus(zone=zone.name, status="Applied")
+        def apply(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
+            cluster.apply(manifest)
+            return ZoneStatus(zone=cluster.name, status="Applied")
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, apply)
@@ -66,9 +66,7 @@ class ResourceService:
         statuses: list[ZoneStatus] = []
         for zone in targets:
             try:
-                fetched = self._deployer.client(zone).get(
-                    "v1", kind, name, zone.namespace
-                )
+                fetched = self._deployer.cluster(zone).get(kind, name)
                 self._assert_access(fetched, user)
                 obj = obj or fetched
                 statuses.append(ZoneStatus(zone=zone.name, status="Present"))
@@ -96,8 +94,8 @@ class ResourceService:
         names: set[str] = set()
         for zone in self._deployer.resolve_targets(None):
             try:
-                items = self._deployer.client(zone).list(
-                    "v1", kind, zone.namespace, label_selector=selector
+                items = self._deployer.cluster(zone).list(
+                    kind, label_selector=selector
                 )
                 names.update(i["metadata"]["name"] for i in items)
             except Exception:  # noqa: BLE001 - skip unreachable zone in listing
@@ -108,11 +106,11 @@ class ResourceService:
         kind = self._kind(rtype)
         deleted = False
         for zone in self._deployer.resolve_targets(None):
-            client = self._deployer.client(zone)
+            cluster = self._deployer.cluster(zone)
             try:
-                obj = client.get("v1", kind, name, zone.namespace)
+                obj = cluster.get(kind, name)
                 self._assert_access(obj, user)
-                client.delete("v1", kind, name, zone.namespace)
+                cluster.delete(kind, name)
                 deleted = True
             except ForbiddenError:
                 raise

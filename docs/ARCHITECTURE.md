@@ -846,7 +846,7 @@ Serverless/
 │   │   ├── resources.py             # CRUD + read-back of API-managed Secret/ConfigMap (§7.3)
 │   │   └── secrets.py               # imagePullSecret / transient credential handling
 │   └── clients/
-│       ├── zone_client.py           # per-zone Kubernetes/OpenShift client (mTLS cert)
+│       ├── cluster.py               # Cluster: wraps the k8s library for one zone (mTLS cert)
 │       └── registry.py
 ├── helm/
 │   └── serverless-api/

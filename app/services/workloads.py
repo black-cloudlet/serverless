@@ -24,7 +24,7 @@ from app.services import secrets as secret_svc
 from app.services.builder import Builder, BuildRequest
 from app.services.deployer import Deployer, aggregate, status_code_for
 from app.services.files import resolve_files
-from app.clients.zone_client import ZoneClient
+from app.clients.cluster import Cluster, ResourceKind
 
 OFFERING_FUNCTION = "faas"
 OFFERING_CONTAINER = "caas"
@@ -143,18 +143,17 @@ class WorkloadService:
             target_namespace=targets[0].namespace,
         )
 
-        def apply(client: ZoneClient, zone: ZoneConfig) -> ZoneStatus:
-            ns = zone.namespace
+        def apply(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
             for backing in resolved.backing:
-                client.apply(backing, ns)
+                cluster.apply(backing)
             if pull_secret_manifest:
-                client.apply(pull_secret_manifest, ns)
-            client.apply(ksvc, ns)
-            client.apply(mapping, ns)
-            client.apply(route, route_svc.KOURIER_NAMESPACE)
-            obj = client.get(ksvc_svc.KSVC_API, "Service", spec.name, ns)
+                cluster.apply(pull_secret_manifest)
+            cluster.apply(ksvc)
+            cluster.apply(mapping)
+            cluster.apply(route, namespace=route_svc.KOURIER_NAMESPACE)
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, spec.name)
             status, revision = _ksvc_status(obj)
-            return ZoneStatus(zone=zone.name, status=status, revision=revision)
+            return ZoneStatus(zone=cluster.name, status=status, revision=revision)
 
         statuses = await self._deployer.fanout(targets, apply)
         overall = aggregate(statuses, success_label="Ready")
@@ -174,11 +173,11 @@ class WorkloadService:
     ) -> WorkloadResponse:
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
 
-        def fetch(client: ZoneClient, zone: ZoneConfig) -> ZoneStatus:
-            obj = client.get(ksvc_svc.KSVC_API, "Service", name, zone.namespace)
+        def fetch(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             self._assert_access(obj, user)
             status, revision = _ksvc_status(obj)
-            return ZoneStatus(zone=zone.name, status=status, revision=revision)
+            return ZoneStatus(zone=cluster.name, status=status, revision=revision)
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, fetch)
@@ -197,11 +196,11 @@ class WorkloadService:
         )
 
     async def delete(self, kind: str, name: str, user: Principal) -> None:
-        def remove(client: ZoneClient, zone: ZoneConfig) -> ZoneStatus:
-            obj = client.get(ksvc_svc.KSVC_API, "Service", name, zone.namespace)
+        def remove(cluster: Cluster, zone: ZoneConfig) -> ZoneStatus:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             self._assert_access(obj, user)
-            client.delete(ksvc_svc.KSVC_API, "Service", name, zone.namespace)
-            return ZoneStatus(zone=zone.name, status="Deleted")
+            cluster.delete(ResourceKind.KNATIVE_SERVICE, name)
+            return ZoneStatus(zone=cluster.name, status="Deleted")
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, remove)
