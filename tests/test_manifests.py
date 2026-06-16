@@ -96,23 +96,15 @@ def test_resolve_files_duplicate_key_rejected():
         resolve_files("app", "team", "alice", files)
 
 
-def test_host_and_route():
+def test_host_and_domain_mapping():
     host = route_svc.host_for("app", "team", "serverless.example.com")
     assert host == "app-team.serverless.example.com"
-    r = route_svc.build_route(
-        name="app",
-        group="team",
-        owner="o",
-        offering="caas",
-        host=host,
-        target_namespace="serverless-workloads",
-    )
-    assert r["spec"]["host"] == host
-    assert r["metadata"]["labels"][LABEL_OFFERING] == "caas"
     dm = route_svc.build_domain_mapping(
         name="app", group="team", owner="o", offering="caas", host=host
     )
+    assert dm["apiVersion"] == "serving.knative.dev/v1beta1"
     assert dm["metadata"]["name"] == host
+    assert dm["metadata"]["labels"][LABEL_OFFERING] == "caas"
     assert dm["spec"]["ref"]["name"] == "app"
 
 

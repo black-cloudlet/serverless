@@ -363,16 +363,17 @@ sites:
 
 ## 5. Networking & Exposure
 
-- Knative Serving already creates an internal `KService` URL via its ingress
-  (Kourier/OpenShift ingress). On top of that, **every workload is explicitly exposed with
-  an OpenShift `Route`** so exposure is uniform, predictable, and independent of Knative
-  ingress specifics.
-- The API ensures a Route in **each cluster with the *same host*** targeting that cluster's
-  Knative ingress for the KSVC. A **`*.serverless.{base_domain}` DNS record forwards to the
-  active site**, so a workload has one stable URL regardless of which cluster serves it.
-- **TLS:** Routes use `edge` termination by default (or `reencrypt` when the workload serves
-  TLS). Because the host is a custom platform domain (not the per-cluster `apps.*` domain),
-  it is covered by a **wildcard cert for `*.serverless.{base_domain}`** (ACME-issued).
+- This runs on **OpenShift Serverless** (the Operator-installed Knative). The Serverless
+  Operator's ingress controller **automatically creates the OpenShift `Route`** for each
+  Knative ingress — so the platform requirement "every workload is exposed via an OpenShift
+  Route" is satisfied **by the operator**, not by the API hand-creating Routes.
+- A bare KSVC would only get a Route under the **per-cluster** default domain (`apps.<cluster>`),
+  which differs between sites. To get **one stable, cluster-independent host**, the API creates
+  a **`DomainMapping`** for `{name}-{group}.serverless.{base_domain}` in **each** cluster; the
+  operator then provisions the Route for that host. A **`*.serverless.{base_domain}` DNS
+  record forwards to the active site**.
+- **TLS:** the custom host is covered by a **wildcard cert for `*.serverless.{base_domain}`**
+  (provided to the DomainMapping / ingress); the operator-created Route is `edge`-terminated.
 
 #### Route host convention (recommendation)
 
@@ -393,7 +394,7 @@ to manage. The offering (`faas`/`caas`) is tracked as a **label**, not in the ho
 ```mermaid
 flowchart LR
     Ext["External client"] -->|HTTPS| DNS["DNS: *.serverless.{base_domain}<br/>→ active site"]
-    DNS --> RT["OpenShift Route (same host in both clusters)<br/>{name}-{group}.serverless.{base_domain}"]
+    DNS --> RT["OpenShift Route (operator-created from DomainMapping)<br/>{name}-{group}.serverless.{base_domain}"]
     RT --> KIN["Knative ingress (Kourier)"]
     KIN --> KSVC["KSVC revision pods"]
 ```
@@ -491,12 +492,11 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   cert's **CN/SAN is `serverless-api.clients.{base_domain}`** — and that DNS name is the
   **Kubernetes user**. OpenShift authenticates the client by that name. Both clusters
   **trust the same CA**, so the same identity is valid in either cluster.
-- Each site grants the user least-privilege CRUD on exactly the resources the API manages,
-  via two `Role`/`RoleBinding` pairs: one in the **workload namespace**
-  (`serverless-workloads`) for Knative `services`/`domainmappings`, `secrets`, `configmaps`,
-  and read on `pods`/`events`; and one in the **Knative ingress namespace**
-  (`knative-serving-ingress`) for `routes` — since a workload's Route targets the kourier
-  Service that lives there.
+- Each site has one `Role`/`RoleBinding` (in the **workload namespace**,
+  `serverless-workloads`) granting least-privilege CRUD on exactly what the API manages:
+  Knative `services`/`domainmappings`, `secrets`, `configmaps`, and read on `pods`/`events`.
+  The API does **not** need `routes` permission — on OpenShift Serverless the operator
+  creates the OpenShift Route automatically from the KSVC/DomainMapping.
 - The certificate's key/cert are mounted into the API pod and used to build the per-site
   Kubernetes client (mutual TLS to the API server).
 
@@ -625,6 +625,22 @@ flowchart LR
   site**, each pointing at this repo's chart with a per-site values file. Sync waves order
   Secrets/RBAC before the Deployment; health checks gate rollout.
 - All referenced images are the **internal mirrored** images (airgap, §9).
+
+### Platform prerequisites (installed separately)
+
+This repo's chart **consumes** cluster capabilities that are installed and managed
+**elsewhere** (a separate platform/cluster-bootstrap GitOps repo), not by this chart:
+
+| Prerequisite | Provides | Install |
+|--------------|----------|---------|
+| **OpenShift Serverless Operator** | Knative Serving (`Service`/`DomainMapping` CRDs), kourier ingress in `knative-serving-ingress`, and **automatic OpenShift Route creation** for Knative ingresses | OLM `Subscription` → `KnativeServing` CR (mirrored for airgap via `oc-mirror`) |
+| **cert-manager** | issues the API's ACME client certificate (§6.3) | OLM (mirrored) |
+| **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (§7.1) | OLM (mirrored) |
+| **RHBK** | OIDC identity provider (§6.1) | platform-managed |
+
+On OpenShift you must use the **OpenShift Serverless Operator** — not an upstream/community
+or Helm-based Knative install. The chart assumes the operator's conventions (kourier in
+`knative-serving-ingress`, operator-managed Routes, the Knative CRDs).
 
 ---
 
@@ -926,28 +942,28 @@ spec:
             name: orders-config
 ```
 
-### 12.2 OpenShift Route (same host in BOTH clusters)
+### 12.2 Knative DomainMapping (custom host; operator creates the Route)
+
+> On OpenShift Serverless the API does **not** create an OpenShift Route. It creates a
+> `DomainMapping` for the custom host in each cluster, and the Serverless Operator
+> auto-provisions the corresponding Route. The host is identical in both clusters;
+> `*.serverless.{base_domain}` DNS forwards to the active site.
 
 ```yaml
-apiVersion: route.openshift.io/v1
-kind: Route
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
 metadata:
-  name: orders-api-team
+  name: orders-api-team.serverless.example.com   # the custom host
   namespace: serverless-workloads
   labels:
     serverless.platform/group: team
-    serverless.platform/offering: caas   # offering tracked as a label, not in the host
+    serverless.platform/workload: orders-api
+    serverless.platform/offering: caas
 spec:
-  # Identical host in site-a and site-b; *.serverless.{base_domain} DNS forwards to active
-  host: orders-api-team.serverless.example.com
-  to:
+  ref:
+    name: orders-api
     kind: Service
-    name: kourier            # Knative ingress service
-  port:
-    targetPort: http2
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
+    apiVersion: serving.knative.dev/v1
 ```
 
 ### 12.3 cert-manager Certificate (cluster client cert, CN = DNS name, ACME)
@@ -1001,32 +1017,6 @@ subjects:
 roleRef:
   kind: Role
   name: serverless-api-workloads
-  apiGroup: rbac.authorization.k8s.io
----
-# Routes are created in the Knative ingress (kourier) namespace, so the same
-# user needs a Role there too.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: serverless-api-routes
-  namespace: knative-serving-ingress
-rules:
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: serverless-api-routes
-  namespace: knative-serving-ingress
-subjects:
-  - kind: User
-    name: serverless-api.clients.example.com
-    apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: Role
-  name: serverless-api-routes
   apiGroup: rbac.authorization.k8s.io
 ```
 

@@ -24,7 +24,6 @@ class ResourceKind(Enum):
 
     KNATIVE_SERVICE = ("serving.knative.dev/v1", "Service")
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
-    ROUTE = ("route.openshift.io/v1", "Route")
     CONFIG_MAP = ("v1", "ConfigMap")
     SECRET = ("v1", "Secret")
 

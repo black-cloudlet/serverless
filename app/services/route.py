@@ -1,18 +1,16 @@
-"""Pure builder for the OpenShift Route exposing a workload.
+"""Workload external exposure via a Knative DomainMapping.
 
-The host is identical in both clusters; a *.serverless.{base_domain} DNS record
-forwards to the active site (docs §5).
+On OpenShift Serverless we do NOT create OpenShift Routes by hand: the Serverless
+Operator's ingress controller automatically creates the OpenShift Route for each
+Knative ingress. To expose a workload at a custom, cluster-independent host we
+create a ``DomainMapping`` for that host (identical in both clusters); the
+operator then provisions the corresponding Route. A ``*.serverless.{base_domain}``
+DNS record forwards to the active site (docs §5).
 """
 
 from __future__ import annotations
 
 from app.services.labels import workload_labels
-
-ROUTE_API = "route.openshift.io/v1"
-# Knative ingress service (Kourier) in OpenShift Serverless.
-KOURIER_SERVICE = "kourier"
-KOURIER_NAMESPACE = "knative-serving-ingress"
-
 
 DOMAIN_MAPPING_API = "serving.knative.dev/v1beta1"
 
@@ -29,7 +27,7 @@ def build_domain_mapping(
     offering: str,
     host: str,
 ) -> dict:
-    """Bind a custom host to the KSVC so kourier routes it (OpenShift Serverless)."""
+    """Bind a custom host to the KSVC; the operator creates the Route for it."""
     return {
         "apiVersion": DOMAIN_MAPPING_API,
         "kind": "DomainMapping",
@@ -43,33 +41,5 @@ def build_domain_mapping(
                 "kind": "Service",
                 "apiVersion": "serving.knative.dev/v1",
             }
-        },
-    }
-
-
-def build_route(
-    *,
-    name: str,
-    group: str,
-    owner: str,
-    offering: str,
-    host: str,
-    target_namespace: str,
-) -> dict:
-    return {
-        "apiVersion": ROUTE_API,
-        "kind": "Route",
-        "metadata": {
-            "name": f"{name}-{group}",
-            "labels": workload_labels(group, owner, name, offering),
-        },
-        "spec": {
-            "host": host,
-            "to": {"kind": "Service", "name": KOURIER_SERVICE},
-            "port": {"targetPort": "http2"},
-            "tls": {
-                "termination": "edge",
-                "insecureEdgeTerminationPolicy": "Redirect",
-            },
         },
     }

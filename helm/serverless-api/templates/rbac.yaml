@@ -1,6 +1,8 @@
-# Least-privilege RBAC for the client-cert user (CN = DNS name). docs §6.3 / §12.4
-#  - workloads namespace: KSVC + DomainMapping + Secret + ConfigMap (+ read pods/events)
-#  - ingress namespace:   Route (it targets the kourier Service, which lives there)
+# Least-privilege RBAC for the client-cert user (CN = DNS name) in the workloads
+# namespace. docs §6.3 / §12.4
+#
+# Routes are NOT in this Role: on OpenShift Serverless the operator auto-creates
+# the OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.
 {{- $cn := include "serverless-api.clientCN" . -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -34,32 +36,4 @@ subjects:
 roleRef:
   kind: Role
   name: serverless-api-workloads
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: serverless-api-routes
-  namespace: {{ .Values.ingressNamespace }}
-  labels:
-    {{- include "serverless-api.labels" . | nindent 4 }}
-rules:
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: serverless-api-routes
-  namespace: {{ .Values.ingressNamespace }}
-  labels:
-    {{- include "serverless-api.labels" . | nindent 4 }}
-subjects:
-  - kind: User
-    name: {{ $cn }}
-    apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: Role
-  name: serverless-api-routes
   apiGroup: rbac.authorization.k8s.io

@@ -137,14 +137,6 @@ class WorkloadService:
         mapping = route_svc.build_domain_mapping(
             name=spec.name, group=group, owner=user.username, offering=offering, host=host
         )
-        route = route_svc.build_route(
-            name=spec.name,
-            group=group,
-            owner=user.username,
-            offering=offering,
-            host=host,
-            target_namespace=targets[0].namespace,
-        )
 
         def apply(cluster: Cluster, site: SiteConfig) -> SiteStatus:
             for manifest in backing:
@@ -152,8 +144,9 @@ class WorkloadService:
             if pull_secret_manifest:
                 cluster.apply(pull_secret_manifest)
             cluster.apply(ksvc)
+            # DomainMapping exposes the custom host; the Serverless Operator
+            # auto-creates the OpenShift Route for it.
             cluster.apply(mapping)
-            cluster.apply(route, namespace=route_svc.KOURIER_NAMESPACE)
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, spec.name)
             status, revision = _ksvc_status(obj)
             return SiteStatus(site=cluster.name, status=status, revision=revision)

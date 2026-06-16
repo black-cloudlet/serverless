@@ -16,10 +16,6 @@ namespaces:
   api: serverless-api               # where the API runs
   workloads: serverless-workloads   # where the API creates functions/containers
 
-# Knative ingress (kourier) namespace where the API creates workload Routes.
-# Pre-existing (part of OpenShift Serverless); the chart only adds a Role here.
-ingressNamespace: knative-serving-ingress
-
 # Single platform wildcard domain (docs §5).
 routeDomain: serverless.example.com
 
