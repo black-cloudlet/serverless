@@ -50,9 +50,6 @@ externalSecrets:
   refreshInterval: 1h
   vaultPath: serverless/api
 
-serviceAccount:
-  name: serverless-api
-
 resources:
   requests:
     cpu: 100m

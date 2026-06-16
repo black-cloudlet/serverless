@@ -15,7 +15,8 @@ spec:
       labels:
         {{- include "serverless-api.labels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ .Values.serviceAccount.name }}
+      # Runs as the namespace 'default' ServiceAccount — cluster auth uses the
+      # cert-manager client certificate, not the SA token (docs §6.3).
       containers:
         - name: serverless-api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

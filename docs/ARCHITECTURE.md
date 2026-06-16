@@ -611,9 +611,11 @@ flowchart LR
 ```
 
 - **Helm chart (this repo)** templates: `Deployment`, `Service`, `Route` (for the API
-  itself), `ServiceAccount`, `Role`/`RoleBinding`, cert-manager `Certificate` (per site),
-  ESO **`ExternalSecret`** (referencing the pre-existing `ClusterSecretStore`), and
-  `values.yaml` describing the site profiles. It does **not** ship a SecretStore.
+  itself), `Role`/`RoleBinding` (bound to the client-cert CN user), cert-manager
+  `Certificate` (per site), ESO **`ExternalSecret`** (referencing the pre-existing
+  `ClusterSecretStore`), and `values.yaml` describing the site profiles. It does **not**
+  ship a SecretStore, and the API pod runs as the namespace `default` ServiceAccount
+  (cluster auth is the client certificate, not the SA token).
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
   site**, each pointing at this repo's chart with a per-site values file. Sync waves order
   Secrets/RBAC before the Deployment; health checks gate rollout.
@@ -861,7 +863,6 @@ Serverless/
 │           ├── deployment.yaml
 │           ├── service.yaml
 │           ├── route.yaml
-│           ├── serviceaccount.yaml
 │           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site)
 │           ├── certificate.yaml     # cert-manager Certificate (ACME, per site)
 │           └── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
