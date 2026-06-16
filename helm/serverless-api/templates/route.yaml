@@ -1,0 +1,18 @@
+# External exposure for the API itself. The serverless-api.{base_domain} DNS
+# record fronts the active instance across both clusters (docs §2/§4).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: serverless-api
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  host: serverless-api.{{ .Values.clientCert.baseDomain }}
+  to:
+    kind: Service
+    name: serverless-api
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

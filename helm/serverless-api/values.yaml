@@ -1,0 +1,62 @@
+# Default values for serverless-api.
+# Per-zone overrides live in the central GitOps repo (values-zone-a.yaml, ...).
+
+image:
+  repository: registry.internal/serverless/serverless-api
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# This deployment's zone (one Application per cluster). Used to label/annotate.
+zoneName: zone-a
+
+# Single platform wildcard domain (docs §5).
+routeDomain: serverless.example.com
+
+# RHBK OIDC (docs §6). clientSecret comes from Vault via ESO, not here.
+rhbk:
+  issuer: https://rhbk.internal/realms/serverless
+  audience: serverless-api
+  jwksUrl: https://rhbk.internal/realms/serverless/protocol/openid-connect/certs
+  groupsClaim: groups
+  adminGroups:
+    - platform-admins
+
+registry:
+  url: registry.internal
+
+# Zone connection profiles the API talks to (active/active, both clusters).
+zones:
+  - name: zone-a
+    apiServer: https://api.zone-a.internal:6443
+    namespace: serverless-workloads
+    inCluster: false
+  - name: zone-b
+    apiServer: https://api.zone-b.internal:6443
+    namespace: serverless-workloads
+    inCluster: false
+
+# cert-manager client certificate (CN = DNS name, ACME-issued). docs §6.3
+clientCert:
+  baseDomain: example.com
+  issuerRef:
+    name: internal-acme
+    kind: ClusterIssuer
+
+# ESO: reference the PRE-EXISTING ClusterSecretStore; we ship ExternalSecret only.
+externalSecrets:
+  clusterSecretStore: vault-backend
+  refreshInterval: 1h
+  vaultPath: serverless/api
+
+serviceAccount:
+  name: serverless-api
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

@@ -1,0 +1,50 @@
+"""FastAPI auth dependencies used by the routers."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Annotated
+
+from fastapi import Depends, Request
+
+from app.auth.claims import Principal, principal_from_claims
+from app.auth.oidc import TokenValidator
+from app.core.config import Settings, get_settings
+from app.core.errors import ForbiddenError, UnauthenticatedError
+
+
+@lru_cache
+def get_validator() -> TokenValidator:
+    return TokenValidator(get_settings().rhbk)
+
+
+def _bearer_token(request: Request) -> str:
+    header = request.headers.get("Authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise UnauthenticatedError("Missing or malformed Authorization header.")
+    return token
+
+
+def require_auth(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    validator: Annotated[TokenValidator, Depends(get_validator)],
+) -> Principal:
+    """Validate the bearer token and return the Principal.
+
+    When ``auth_enabled`` is false (local dev only) a synthetic principal is
+    returned so the API is usable without a live RHBK.
+    """
+    if not settings.auth_enabled:
+        return Principal(
+            subject="dev", username="dev", groups=["dev"], is_admin=True
+        )
+    claims = validator.validate(_bearer_token(request))
+    principal = principal_from_claims(claims, settings.rhbk)
+    if not principal.groups:
+        raise ForbiddenError("Token has no group membership.")
+    return principal
+
+
+CurrentUser = Annotated[Principal, Depends(require_auth)]

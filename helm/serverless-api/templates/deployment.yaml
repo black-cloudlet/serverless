@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: serverless-api
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "serverless-api.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "serverless-api.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: serverless-api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVERLESS_AUTH_ENABLED
+              value: "true"
+            - name: SERVERLESS_ROUTE_DOMAIN
+              value: {{ .Values.routeDomain | quote }}
+            - name: SERVERLESS_REGISTRY__URL
+              value: {{ .Values.registry.url | quote }}
+            - name: SERVERLESS_RHBK__ISSUER
+              value: {{ .Values.rhbk.issuer | quote }}
+            - name: SERVERLESS_RHBK__AUDIENCE
+              value: {{ .Values.rhbk.audience | quote }}
+            - name: SERVERLESS_RHBK__JWKS_URL
+              value: {{ .Values.rhbk.jwksUrl | quote }}
+            - name: SERVERLESS_RHBK__GROUPS_CLAIM
+              value: {{ .Values.rhbk.groupsClaim | quote }}
+            - name: SERVERLESS_RHBK__ADMIN_GROUPS
+              value: {{ toJson .Values.rhbk.adminGroups | quote }}
+            - name: SERVERLESS_ZONES
+              value: |-
+                [{{- range $i, $z := .Values.zones }}{{ if $i }},{{ end }}{"name":"{{ $z.name }}","api_server":"{{ $z.apiServer }}","namespace":"{{ $z.namespace }}","in_cluster":{{ $z.inCluster }},"client_cert_path":"/etc/serverless/client/tls.crt","client_key_path":"/etc/serverless/client/tls.key","ca_path":"/etc/serverless/client/ca.crt"}{{- end }}]
+          envFrom:
+            - secretRef:
+                name: serverless-api-secrets
+          volumeMounts:
+            - name: client-cert
+              mountPath: /etc/serverless/client
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: client-cert
+          secret:
+            secretName: serverless-api-client
