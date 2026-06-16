@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from app.models.common import EnvVar
 from app.services import resources as res
 from app.services.ksvc import ContainerEnv
+from app.services.labels import workload_labels
 
 
 @dataclass
@@ -42,5 +43,6 @@ def resolve_env(
 
     backing: list[dict] = []
     if secret_data:
-        backing.append(res.build_secret(secret_name, group, owner, secret_data))
+        labels = workload_labels(group, owner, workload)
+        backing.append(res.build_secret(secret_name, labels, secret_data))
     return ResolvedEnv(env=resolved, backing=backing)

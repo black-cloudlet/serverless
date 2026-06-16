@@ -7,6 +7,7 @@ from app.models.common import (
     LABEL_MANAGED_BY,
     LABEL_OFFERING,
     LABEL_OWNER,
+    LABEL_WORKLOAD,
     MANAGED_BY_VALUE,
 )
 
@@ -21,6 +22,20 @@ def ownership_labels(
     }
     if offering:
         labels[LABEL_OFFERING] = offering
+    return labels
+
+
+def workload_labels(
+    group: str, owner: str, workload: str, offering: str | None = None
+) -> dict[str, str]:
+    """Ownership labels plus the workload (function/container) name.
+
+    Every resource the API creates for a function/container carries both the SSO
+    group and the workload name so it is unambiguously attributable and
+    selectable.
+    """
+    labels = ownership_labels(group, owner, offering)
+    labels[LABEL_WORKLOAD] = workload
     return labels
 
 

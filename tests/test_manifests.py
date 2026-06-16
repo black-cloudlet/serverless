@@ -52,32 +52,48 @@ def test_build_ksvc_env_secret_ref():
     assert env["valueFrom"]["secretKeyRef"] == {"name": "s", "key": "k"}
 
 
-def test_resolve_inline_file_creates_backing_and_mount():
-    files = [FileMount(mountPath="/etc/app/app.yaml", content="x: 1\n")]
+def test_resolve_files_aggregates_one_cm_and_one_secret():
+    from app.models.common import LABEL_GROUP, LABEL_WORKLOAD
+    from app.services.files import files_name
+
+    files = [
+        FileMount(mountPath="/etc/app/app.yaml", content="x: 1\n"),
+        FileMount(mountPath="/etc/app/extra.conf", content="a=b\n", readOnly=False),
+        FileMount(mountPath="/etc/tls/tls.key", content="KEY", secret=True),
+    ]
     resolved = resolve_files("app", "team", "alice", files)
-    assert len(resolved.backing) == 1
-    cm = resolved.backing[0]
-    assert cm["kind"] == "ConfigMap"
-    assert cm["data"] == {"app.yaml": "x: 1\n"}
-    vol = resolved.volumes[0]
-    assert vol.kind == "configmap"
-    assert vol.sub_path == "app.yaml"
-    assert vol.mount_path == "/etc/app/app.yaml"
+
+    # exactly one ConfigMap + one Secret
+    kinds = sorted(b["kind"] for b in resolved.backing)
+    assert kinds == ["ConfigMap", "Secret"]
+    by_kind = {b["kind"]: b for b in resolved.backing}
+
+    cm = by_kind["ConfigMap"]
+    assert cm["metadata"]["name"] == files_name("app")
+    assert set(cm["data"]) == {"etc-app-app.yaml", "etc-app-extra.conf"}
+    # every workload resource carries group + workload labels
+    assert cm["metadata"]["labels"][LABEL_GROUP] == "team"
+    assert cm["metadata"]["labels"][LABEL_WORKLOAD] == "app"
+
+    sec = by_kind["Secret"]
+    assert set(sec["data"]) == {"etc-tls-tls.key"}
+
+    # volumes share volume names per kind; mounts carry subPath + readOnly
+    cfg_vols = [v for v in resolved.volumes if v.kind == "configmap"]
+    assert {v.volume_name for v in cfg_vols} == {"files-config"}
+    rw = next(v for v in resolved.volumes if v.mount_path == "/etc/app/extra.conf")
+    assert rw.read_only is False
 
 
-def test_resolve_inline_secret_file():
-    files = [FileMount(mountPath="/etc/tls/tls.key", content="KEY", secret=True)]
-    resolved = resolve_files("app", "team", "alice", files)
-    assert resolved.backing[0]["kind"] == "Secret"
-    assert resolved.volumes[0].kind == "secret"
+def test_resolve_files_duplicate_key_rejected():
+    import pytest
 
-
-def test_resolve_source_reference_no_backing():
-    files = [FileMount(mountPath="/etc/app", source="cfg", type="configmap")]
-    resolved = resolve_files("app", "team", "alice", files)
-    assert resolved.backing == []
-    assert resolved.volumes[0].source_name == "cfg"
-    assert resolved.volumes[0].sub_path is None
+    files = [
+        FileMount(mountPath="/a/conf", content="1"),
+        FileMount(mountPath="/a/conf", content="2"),
+    ]
+    with pytest.raises(ValueError):
+        resolve_files("app", "team", "alice", files)
 
 
 def test_host_and_route():
@@ -104,10 +120,14 @@ def test_pull_secret_dockerconfig():
     import base64
     import json
 
+    from app.services.labels import workload_labels
+
+    labels = workload_labels("team", "o", "app", "caas")
     s = secret_svc.build_pull_secret(
-        "p", "team", "o", "registry.internal", "user", "tok"
+        "p", labels, "registry.internal", "user", "tok"
     )
     assert s["type"] == "kubernetes.io/dockerconfigjson"
+    assert s["metadata"]["labels"][LABEL_GROUP] == "team"
     cfg = json.loads(base64.b64decode(s["data"][".dockerconfigjson"]))
     assert "registry.internal" in cfg["auths"]
 
@@ -115,7 +135,9 @@ def test_pull_secret_dockerconfig():
 def test_build_secret_encodes_values():
     import base64
 
-    s = res.build_secret("n", "team", "o", {"k": "v"})
+    from app.services.labels import ownership_labels
+
+    s = res.build_secret("n", ownership_labels("team", "o"), {"k": "v"})
     assert base64.b64decode(s["data"]["k"]).decode() == "v"
 
 

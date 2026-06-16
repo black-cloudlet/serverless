@@ -6,7 +6,7 @@ forwards to the active site (docs §5).
 
 from __future__ import annotations
 
-from app.services.labels import ownership_labels
+from app.services.labels import workload_labels
 
 ROUTE_API = "route.openshift.io/v1"
 # Knative ingress service (Kourier) in OpenShift Serverless.
@@ -35,7 +35,7 @@ def build_domain_mapping(
         "kind": "DomainMapping",
         "metadata": {
             "name": host,
-            "labels": ownership_labels(group, owner, offering),
+            "labels": workload_labels(group, owner, name, offering),
         },
         "spec": {
             "ref": {
@@ -61,7 +61,7 @@ def build_route(
         "kind": "Route",
         "metadata": {
             "name": f"{name}-{group}",
-            "labels": ownership_labels(group, owner, offering),
+            "labels": workload_labels(group, owner, name, offering),
         },
         "spec": {
             "host": host,

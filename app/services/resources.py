@@ -1,25 +1,26 @@
-"""Pure builders for API-managed Secret / ConfigMap manifests (docs §7.3)."""
+"""Pure builders for Secret / ConfigMap manifests.
+
+The caller supplies the labels (see ``services.labels``) so each builder stays
+agnostic about ownership/workload labelling.
+"""
 
 from __future__ import annotations
 
 import base64
 
-from app.services.labels import ownership_labels
 
-
-def build_configmap(name: str, group: str, owner: str, data: dict[str, str]) -> dict:
+def build_configmap(name: str, labels: dict[str, str], data: dict[str, str]) -> dict:
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
-        "metadata": {"name": name, "labels": ownership_labels(group, owner)},
+        "metadata": {"name": name, "labels": dict(labels)},
         "data": dict(data),
     }
 
 
 def build_secret(
     name: str,
-    group: str,
-    owner: str,
+    labels: dict[str, str],
     data: dict[str, str],
     secret_type: str = "Opaque",
 ) -> dict:
@@ -30,6 +31,6 @@ def build_secret(
         "apiVersion": "v1",
         "kind": "Secret",
         "type": secret_type,
-        "metadata": {"name": name, "labels": ownership_labels(group, owner)},
+        "metadata": {"name": name, "labels": dict(labels)},
         "data": encoded,
     }

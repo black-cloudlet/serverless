@@ -1,82 +1,87 @@
-"""Resolve a workload's ``files`` into backing resources + volume specs.
+"""Resolve a workload's ``files`` into at most one ConfigMap + one Secret.
 
-Inline files become API-managed ConfigMaps/Secrets (docs §7.3); referenced
-files mount an existing resource. Pure functions — no cluster access.
+All non-secret files are aggregated into a single ``{workload}-files`` ConfigMap
+and all secret files into a single ``{workload}-files`` Secret, one key per file.
+Each file is mounted at its ``mountPath`` via ``subPath`` (so it appears as a
+single file, not a directory). Pure functions — no cluster access.
 """
 
 from __future__ import annotations
 
 import base64
-import posixpath
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.models.common import FileMount
 from app.services import resources as res
+from app.services.labels import workload_labels
+
+CONFIG_VOLUME = "files-config"
+SECRET_VOLUME = "files-secret"
 
 
 @dataclass
 class VolumeSpec:
-    """A volume + mount derived from a FileMount."""
+    """A volume mount derived from a FileMount (always a single-file subPath)."""
 
     volume_name: str
     kind: str  # "configmap" | "secret"
     source_name: str
     mount_path: str
-    sub_path: str | None = None  # set for single-file (inline) mounts
+    sub_path: str
+    read_only: bool = True
 
 
 @dataclass
 class ResolvedFiles:
-    volumes: list[VolumeSpec]
-    backing: list[dict]  # ConfigMap/Secret manifests the API must create
+    volumes: list[VolumeSpec] = field(default_factory=list)
+    backing: list[dict] = field(default_factory=list)  # at most one CM + one Secret
 
 
-def _vol_name(workload: str, index: int) -> str:
-    return f"{workload}-file-{index}"
+def files_name(workload: str) -> str:
+    return f"{workload}-files"
+
+
+def _key(mount_path: str) -> str:
+    """Stable, collision-free ConfigMap/Secret key derived from the mount path."""
+    safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in mount_path.lstrip("/"))
+    return safe.strip("-_.") or "file"
 
 
 def resolve_files(
     workload: str, group: str, owner: str, files: list[FileMount]
 ) -> ResolvedFiles:
+    name = files_name(workload)
+    labels = workload_labels(group, owner, workload)
+    config_data: dict[str, str] = {}
+    secret_data: dict[str, str] = {}
     volumes: list[VolumeSpec] = []
-    backing: list[dict] = []
+    seen: set[str] = set()
 
-    for i, f in enumerate(files):
-        if f.source:
-            kind = f.type or "configmap"
-            volumes.append(
-                VolumeSpec(
-                    volume_name=_vol_name(workload, i),
-                    kind=kind,
-                    source_name=f.source,
-                    mount_path=f.mountPath,
-                )
-            )
-            continue
+    for f in files:
+        key = _key(f.mountPath)
+        if key in seen:
+            raise ValueError(f"duplicate file mount path resolves to key '{key}'")
+        seen.add(key)
 
-        # Inline upload — create a dedicated backing resource for this file.
-        key = posixpath.basename(f.mountPath) or f"file-{i}"
-        name = _vol_name(workload, i)
         if f.contentBase64 is not None:
             raw = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
         else:
             raw = f.content or ""
 
         if f.secret:
-            backing.append(res.build_secret(name, group, owner, {key: raw}))
-            kind = "secret"
-        else:
-            backing.append(res.build_configmap(name, group, owner, {key: raw}))
-            kind = "configmap"
-
-        volumes.append(
-            VolumeSpec(
-                volume_name=name,
-                kind=kind,
-                source_name=name,
-                mount_path=f.mountPath,
-                sub_path=key,
+            secret_data[key] = raw
+            volumes.append(
+                VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key, f.readOnly)
             )
-        )
+        else:
+            config_data[key] = raw
+            volumes.append(
+                VolumeSpec(CONFIG_VOLUME, "configmap", name, f.mountPath, key, f.readOnly)
+            )
 
+    backing: list[dict] = []
+    if config_data:
+        backing.append(res.build_configmap(name, labels, config_data))
+    if secret_data:
+        backing.append(res.build_secret(name, labels, secret_data))
     return ResolvedFiles(volumes=volumes, backing=backing)

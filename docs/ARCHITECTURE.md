@@ -274,7 +274,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 | Capability | How it maps to Knative |
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` — users cannot reference arbitrary existing cluster Secrets/ConfigMaps. |
-| **Files (config & secret mounts)** | Via the `files` field, a user **uploads file content and its `mountPath`** (or references an existing API-managed resource). The **API itself creates** the backing `ConfigMap` (or `Secret` when `secret: true`) from that data (**not** via ESO), labels it to the owning group, and mounts each file at its path. Users can **read these back through the API** (see §7.3 and §10). |
+| **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** — one ConfigMap and one Secret per workload, a key per file — and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
 | **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `target` (concurrency), and `containerConcurrency`. Scale-to-zero is the default when `min-scale=0`. |
 
 A canonical scaling sub-object in the API:
@@ -461,7 +461,14 @@ hop, another deployment to secure in both clusters, and a failure point. The com
       serverless.platform/group: "<keycloak-group>"
       serverless.platform/managed-by: "serverless-api"
       serverless.platform/owner: "<sub or preferred_username>"
+      # every resource created for a function/container also carries the workload name:
+      serverless.platform/workload: "<function-or-container-name>"
   ```
+
+  Every resource the API creates for a function/container (KSVC, Route,
+  DomainMapping, the `{workload}-env` Secret, the `{workload}-files`
+  ConfigMap/Secret, and the imagePullSecret) carries **both** the SSO group label
+  and the workload-name label, so it is unambiguously attributable and selectable.
 
 - The API derives the caller's group(s) from the **`groups` claim**. Authorization rules:
   - **Create/Update:** the workload is stamped with the caller's group label.
@@ -678,12 +685,10 @@ are JSON. Times are RFC 3339 UTC.
     { "name": "LOG_LEVEL", "value": "info" },                       // inline
     { "name": "DB_PASSWORD", "value": "s3cret", "secret": true }    // -> API-created Secret {workload}-env
   ],
-  "files": [                            // optional: files to load into the workload
-    // (a) inline upload — the API creates the backing ConfigMap/Secret (§7.3)
-    { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false },
-    { "mountPath": "/etc/tls/tls.key",  "contentBase64": "<base64>",    "secret": true },
-    // (b) reference an existing API-managed resource by name
-    { "mountPath": "/etc/app", "source": "orders-config", "type": "configmap" }
+  "files": [                            // optional: inline files to mount
+    // non-secret files -> one {workload}-files ConfigMap; secret files -> one {workload}-files Secret
+    { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false, "readOnly": true },
+    { "mountPath": "/etc/tls/tls.key",  "contentBase64": "<base64>",    "secret": true }
   ],
   "scaling": {                          // optional, see 3.3
     "minScale": 0, "maxScale": 10,

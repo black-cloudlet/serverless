@@ -31,13 +31,14 @@ def test_envvar_requires_value():
     assert EnvVar(name="X", value="1", secret=True).secret is True
 
 
-def test_filemount_inline_xor_source():
-    FileMount(mountPath="/etc/a", content="hi")
-    FileMount(mountPath="/etc/a", source="cm", type="configmap")
+def test_filemount_requires_inline_content():
+    f = FileMount(mountPath="/etc/a", content="hi")
+    assert f.readOnly is True
+    assert FileMount(mountPath="/etc/a", content="hi", readOnly=False).readOnly is False
     with pytest.raises(ValidationError):
-        FileMount(mountPath="/etc/a")
+        FileMount(mountPath="/etc/a")  # no content
     with pytest.raises(ValidationError):
-        FileMount(mountPath="/etc/a", content="x", source="cm")
+        FileMount(mountPath="/etc/a", content="x", contentBase64="eA==")
 
 
 def test_scaling_bounds():

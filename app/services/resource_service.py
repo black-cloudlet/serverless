@@ -16,7 +16,7 @@ from app.models.common import LABEL_GROUP, SiteStatus
 from app.models.resource import ResourceCreate, ResourceResponse
 from app.services import resources as builders
 from app.services.deployer import Deployer, aggregate
-from app.services.labels import group_selector
+from app.services.labels import group_selector, ownership_labels
 
 REDACTED = "<redacted>"
 _KINDS = {"secret": ResourceKind.SECRET, "config": ResourceKind.CONFIG_MAP}
@@ -34,12 +34,11 @@ class ResourceService:
         self, rtype: str, spec: ResourceCreate, user: Principal
     ) -> tuple[ResourceResponse, int]:
         group = user.primary_group
+        labels = ownership_labels(group, user.username)
         if rtype == "secret":
-            manifest = builders.build_secret(spec.name, group, user.username, spec.data)
+            manifest = builders.build_secret(spec.name, labels, spec.data)
         else:
-            manifest = builders.build_configmap(
-                spec.name, group, user.username, spec.data
-            )
+            manifest = builders.build_configmap(spec.name, labels, spec.data)
 
         def apply(cluster: Cluster, site: SiteConfig) -> SiteStatus:
             cluster.apply(manifest)

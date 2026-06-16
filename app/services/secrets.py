@@ -1,7 +1,7 @@
 """Pure builder for an imagePullSecret from customer registry credentials.
 
 The token is used transiently to materialize the pull secret; it is never
-persisted by the API itself (docs §7.2).
+persisted by the API itself (docs §7.2). The caller supplies the labels.
 """
 
 from __future__ import annotations
@@ -9,13 +9,10 @@ from __future__ import annotations
 import base64
 import json
 
-from app.services.labels import ownership_labels
-
 
 def build_pull_secret(
     name: str,
-    group: str,
-    owner: str,
+    labels: dict[str, str],
     registry: str,
     username: str,
     token: str,
@@ -27,6 +24,6 @@ def build_pull_secret(
         "apiVersion": "v1",
         "kind": "Secret",
         "type": "kubernetes.io/dockerconfigjson",
-        "metadata": {"name": name, "labels": ownership_labels(group, owner)},
+        "metadata": {"name": name, "labels": dict(labels)},
         "data": {".dockerconfigjson": encoded},
     }

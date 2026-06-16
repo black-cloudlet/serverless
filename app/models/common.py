@@ -13,6 +13,7 @@ LABEL_GROUP = "serverless.platform/group"
 LABEL_MANAGED_BY = "serverless.platform/managed-by"
 LABEL_OWNER = "serverless.platform/owner"
 LABEL_OFFERING = "serverless.platform/offering"
+LABEL_WORKLOAD = "serverless.platform/workload"
 MANAGED_BY_VALUE = "serverless-api"
 
 DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
@@ -39,29 +40,25 @@ class EnvVar(BaseModel):
 
 
 class FileMount(BaseModel):
-    """A file to load into the workload at ``mountPath``.
+    """An inline file to load into the workload at ``mountPath``.
 
-    Either upload inline content (``content`` / ``contentBase64``) — the API
-    creates the backing ConfigMap/Secret — or reference an existing API-managed
-    resource by ``source``.
+    The API stores the content in the workload's shared ConfigMap (or Secret when
+    ``secret: true``) — one ConfigMap and one Secret per workload — and mounts
+    each file at its ``mountPath`` via ``subPath``.
     """
 
     mountPath: str
     content: str | None = None
     contentBase64: str | None = None
     secret: bool = False
-    source: str | None = None
-    type: Literal["configmap", "secret"] | None = None
+    readOnly: bool = True
 
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
-        inline = self.content is not None or self.contentBase64 is not None
-        if inline == bool(self.source):
+        if (self.content is None) == (self.contentBase64 is None):
             raise ValueError(
-                "file requires exactly one of inline content or 'source'"
+                "file requires exactly one of 'content' or 'contentBase64'"
             )
-        if self.content is not None and self.contentBase64 is not None:
-            raise ValueError("provide only one of 'content' or 'contentBase64'")
         return self
 
 

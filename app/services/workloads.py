@@ -25,6 +25,7 @@ from app.services.builder import Builder, BuildRequest
 from app.services.deployer import Deployer, aggregate, status_code_for
 from app.services.env import resolve_env
 from app.services.files import resolve_files
+from app.services.labels import workload_labels
 from app.clients.cluster import Cluster, ResourceKind
 
 OFFERING_FUNCTION = "faas"
@@ -88,8 +89,7 @@ class WorkloadService:
         pull_name = f"{spec.name}-pull"
         pull = secret_svc.build_pull_secret(
             pull_name,
-            group,
-            user.username,
+            workload_labels(group, user.username, spec.name, OFFERING_CONTAINER),
             self._settings.registry.url,
             spec.registryUsername,
             spec.registryToken,

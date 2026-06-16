@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.models.common import Scaling
 from app.services.files import VolumeSpec
-from app.services.labels import ownership_labels
+from app.services.labels import workload_labels
 
 KSVC_API = "serving.knative.dev/v1"
 
@@ -38,20 +38,25 @@ def _env(env: list[ContainerEnv]) -> list[dict]:
 
 
 def _volumes(volumes: list[VolumeSpec]) -> tuple[list[dict], list[dict]]:
-    vols: list[dict] = []
+    # Multiple files share one ConfigMap/Secret volume; declare each volume once
+    # but emit a mount (with its own subPath) per file.
+    vols: dict[str, dict] = {}
     mounts: list[dict] = []
     for v in volumes:
         if v.kind == "secret":
             source = {"secret": {"secretName": v.source_name}}
         else:
             source = {"configMap": {"name": v.source_name}}
-        vols.append({"name": v.volume_name, **source})
-        mount = {"name": v.volume_name, "mountPath": v.mount_path}
-        if v.sub_path:
-            mount["subPath"] = v.sub_path
-            mount["readOnly"] = True
-        mounts.append(mount)
-    return vols, mounts
+        vols[v.volume_name] = {"name": v.volume_name, **source}
+        mounts.append(
+            {
+                "name": v.volume_name,
+                "mountPath": v.mount_path,
+                "subPath": v.sub_path,
+                "readOnly": v.read_only,
+            }
+        )
+    return list(vols.values()), mounts
 
 
 def build_ksvc(
@@ -71,7 +76,7 @@ def build_ksvc(
         "autoscaling.knative.dev/max-scale": str(scaling.maxScale),
         "autoscaling.knative.dev/target": str(scaling.targetConcurrency),
     }
-    labels = ownership_labels(group, owner, offering)
+    labels = workload_labels(group, owner, name, offering)
     vols, mounts = _volumes(volumes)
 
     container: dict = {"image": image}
