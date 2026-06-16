@@ -142,3 +142,28 @@ async def test_host_owned_by_same_workload_ok():
     )
     # same owner -> update, no conflict
     await svc._assert_host_available(host, "app-team", svc._deployer.resolve_targets(None))
+
+
+async def test_workload_absent_ok():
+    svc = _workload_service(
+        {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
+    )
+    await svc._assert_workload_absent(
+        "app", "app-team", svc._deployer.resolve_targets(None)
+    )
+
+
+async def test_workload_already_exists_conflicts():
+    from app.core.errors import ConflictError
+
+    ksvc = {"metadata": {"name": "app-team"}}
+    svc = _workload_service(
+        {
+            "site-a": _FakeCluster("site-a", existing={"app-team": ksvc}),
+            "site-b": _FakeCluster("site-b"),
+        }
+    )
+    with pytest.raises(ConflictError):
+        await svc._assert_workload_absent(
+            "app", "app-team", svc._deployer.resolve_targets(None)
+        )

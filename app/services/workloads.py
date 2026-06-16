@@ -139,6 +139,8 @@ class WorkloadService:
         # The DomainMapping name IS the host, so an idempotent apply would hijack
         # another workload's mapping. Reject a host already owned by someone else.
         await self._assert_host_available(host, oname, targets)
+        # Create semantics: a workload with this name must not already exist.
+        await self._assert_workload_absent(spec.name, oname, targets)
 
         resolved = resolve_files(oname, group, user.username, spec.files)
         resolved_env = resolve_env(oname, group, user.username, spec.env)
@@ -202,6 +204,22 @@ class WorkloadService:
         statuses = await self._deployer.fanout(targets, check)
         if any(s.status == "Taken" for s in statuses):
             raise ConflictError(f"hostname '{host}' is already assigned")
+
+    async def _assert_workload_absent(
+        self, name: str, oname: str, targets: list[SiteConfig]
+    ) -> None:
+        """Raise ConflictError if a workload named `oname` already exists (create only)."""
+
+        def probe(cluster: Cluster, site: SiteConfig) -> SiteStatus:
+            try:
+                cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+                return SiteStatus(site=cluster.name, status="Exists")
+            except Exception:
+                return SiteStatus(site=cluster.name, status="Absent")
+
+        statuses = await self._deployer.fanout(targets, probe)
+        if any(s.status == "Exists" for s in statuses):
+            raise ConflictError(f"workload '{name}' already exists")
 
     # -- read / delete ---------------------------------------------------
     async def get(

@@ -708,6 +708,10 @@ are JSON. Times are RFC 3339 UTC.
 > workload's `files`/`env`, and are **readable back by their owning group** — they do
 > **not** flow through ESO/Vault.
 
+> **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
+> workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
+> changes go through the update endpoints.
+
 ### Shared sub-schemas
 
 ```jsonc
