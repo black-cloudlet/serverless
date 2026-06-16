@@ -25,17 +25,26 @@ SiteFn = Callable[[Cluster, SiteConfig], SiteStatus]
 class Deployer:
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._clusters: dict[str, Cluster] = {}
+        # Build one Cluster per configured site up front (from config), so they
+        # are not created per request. The k8s connection itself stays lazy
+        # (established on first use) so startup doesn't fail if a site is down.
+        self._clusters: dict[str, Cluster] = {
+            site.name: self._build(site) for site in settings.sites
+        }
+
+    def _build(self, site: SiteConfig) -> Cluster:
+        return Cluster(
+            site,
+            client_cert_path=self._settings.client_cert_path,
+            client_key_path=self._settings.client_key_path,
+            ca_path=self._settings.ca_bundle.path,
+        )
 
     def cluster(self, site: SiteConfig) -> Cluster:
-        if site.name not in self._clusters:
-            self._clusters[site.name] = Cluster(
-                site,
-                client_cert_path=self._settings.client_cert_path,
-                client_key_path=self._settings.client_key_path,
-                ca_path=self._settings.ca_bundle.path,
-            )
-        return self._clusters[site.name]
+        cluster = self._clusters.get(site.name)
+        if cluster is None:  # site not present at init (defensive)
+            cluster = self._clusters[site.name] = self._build(site)
+        return cluster
 
     def resolve_targets(self, requested: list[str] | None) -> list[SiteConfig]:
         if not self._settings.sites:
