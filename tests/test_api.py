@@ -13,20 +13,30 @@ from app.models.common import WorkloadResponse, SiteStatus
 from app.models.resource import ResourceResponse
 
 
+def _accepted(kind, name, **extra):
+    return WorkloadResponse(
+        name=name,
+        type=kind,
+        url=f"https://{name}.serverless.example.com",
+        overallStatus="Pending",
+        sites=[],
+        statusUrl=f"/api/v1/{kind}s/{name}/status",
+        **extra,
+    )
+
+
 class FakeWorkloads:
-    async def create_container(self, spec, user):
-        return (
-            WorkloadResponse(
-                name=spec.name,
-                type="container",
-                url=f"https://{spec.name}-{user.primary_group}.serverless.example.com",
-                overallStatus="Ready",
-                image=spec.image,
-                sites=[SiteStatus(site="site-a", status="Ready")],
-                createdAt=datetime.now(timezone.utc),
-            ),
-            201,
-        )
+    async def accept_container(self, spec, user, background):
+        return _accepted("container", spec.name, image=spec.image)
+
+    async def accept_function(self, spec, user, background):
+        return _accepted("function", spec.name, runtime=spec.runtime)
+
+    async def accept_update_container(self, name, spec, user, background):
+        return _accepted("container", name, image=spec.image or "kept:1")
+
+    async def accept_update_function(self, name, spec, user, background):
+        return _accepted("function", name)
 
     async def get(self, kind, name, user):
         return WorkloadResponse(
@@ -35,31 +45,6 @@ class FakeWorkloads:
             url="https://x.serverless.example.com",
             overallStatus="Ready",
             sites=[SiteStatus(site="site-a", status="Ready")],
-        )
-
-    async def update_container(self, name, spec, user):
-        return (
-            WorkloadResponse(
-                name=name,
-                type="container",
-                url="https://x.serverless.example.com",
-                overallStatus="Ready",
-                image=spec.image or "kept:1",
-                sites=[SiteStatus(site="site-a", status="Ready")],
-            ),
-            200,
-        )
-
-    async def update_function(self, name, spec, user):
-        return (
-            WorkloadResponse(
-                name=name,
-                type="function",
-                url="https://x.serverless.example.com",
-                overallStatus="Ready",
-                sites=[SiteStatus(site="site-a", status="Ready")],
-            ),
-            200,
         )
 
 
@@ -93,7 +78,20 @@ def test_healthz_no_auth():
     assert c.get("/healthz").json() == {"status": "ok"}
 
 
-def test_create_container(client):
+def test_cors_allows_configured_origin(monkeypatch):
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("SERVERLESS_CORS_ALLOW_ORIGINS", '["https://acme.service-now.com"]')
+    try:
+        c = TestClient(create_app())
+        r = c.get("/healthz", headers={"Origin": "https://acme.service-now.com"})
+        assert r.headers.get("access-control-allow-origin") == "https://acme.service-now.com"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_create_container_accepted(client):
     r = client.post(
         "/api/v1/containers",
         json={
@@ -103,10 +101,11 @@ def test_create_container(client):
             "registryToken": "t",
         },
     )
-    assert r.status_code == 201
+    assert r.status_code == 202
     body = r.json()
     assert body["type"] == "container"
-    assert body["url"].startswith("https://orders-api-team.")
+    assert body["overallStatus"] == "Pending"
+    assert body["statusUrl"] == "/api/v1/containers/orders-api/status"
 
 
 def test_create_container_validation_error(client):
@@ -121,18 +120,19 @@ def test_get_function(client):
     assert r.json()["name"] == "foo"
 
 
-def test_update_container(client):
+def test_update_container_accepted(client):
     r = client.put(
         "/api/v1/containers/orders-api",
         json={"image": "registry.internal/team/orders:2", "scaling": {"minScale": 1}},
     )
-    assert r.status_code == 200
+    assert r.status_code == 202
     assert r.json()["image"] == "registry.internal/team/orders:2"
+    assert r.json()["overallStatus"] == "Pending"
 
 
-def test_update_function(client):
+def test_update_function_accepted(client):
     r = client.put("/api/v1/functions/foo", json={"env": [{"name": "X", "value": "1"}]})
-    assert r.status_code == 200
+    assert r.status_code == 202
     assert r.json()["type"] == "function"
 
 

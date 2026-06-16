@@ -212,3 +212,23 @@ async def test_load_existing_offering_mismatch_404():
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await svc._load_existing("app", "faas", user)  # it's a caas
+
+
+async def test_accept_container_returns_pending_and_schedules():
+    from fastapi import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.models.container import ContainerCreate
+
+    svc = _workload_service(
+        {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    bg = BackgroundTasks()
+    spec = ContainerCreate(
+        name="app", image="reg/x:1", registryUsername="u", registryToken="t"
+    )
+    body = await svc.accept_container(spec, user, bg)
+    assert body.overallStatus == "Pending"
+    assert body.statusUrl == "/api/v1/containers/app/status"
+    assert len(bg.tasks) == 1  # deploy scheduled in the background

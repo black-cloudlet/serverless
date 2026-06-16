@@ -16,6 +16,7 @@ from app.core.errors import (
     NotFoundError,
     ServiceUnavailableError,
 )
+from app.core.logging import get_logger
 from app.models.common import (
     ANNOTATION_HOST,
     LABEL_GROUP,
@@ -35,6 +36,8 @@ from app.services.env import resolve_env
 from app.services.files import resolve_files
 from app.services.labels import workload_labels
 from app.clients.cluster import Cluster, ResourceKind
+
+logger = get_logger(__name__)
 
 OFFERING_FUNCTION = "faas"
 OFFERING_CONTAINER = "caas"
@@ -145,6 +148,70 @@ class WorkloadService:
         body.type = "container"
         body.image = spec.image
         return body, code
+
+    # -- async accept (202 + poll) ---------------------------------------
+    # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
+    # run the build+deploy in the background and return 202 Accepted with a
+    # status URL to poll. Deploys (esp. FaaS builds) can be slow.
+    async def accept_function(
+        self, spec: FunctionCreate, user: Principal, background
+    ) -> WorkloadResponse:
+        oname = object_name(spec.name, user.primary_group)
+        targets = self._deployer.resolve_targets(spec.sites)
+        host = self._host_for(spec.name, spec.hostname, user)
+        await self._assert_host_available(host, oname, targets)
+        await self._assert_workload_absent(spec.name, oname, targets)
+        background.add_task(self._run, self.create_function, spec, user)
+        return self._accepted("function", spec.name, host, runtime=spec.runtime)
+
+    async def accept_container(
+        self, spec: ContainerCreate, user: Principal, background
+    ) -> WorkloadResponse:
+        oname = object_name(spec.name, user.primary_group)
+        targets = self._deployer.resolve_targets(spec.sites)
+        host = self._host_for(spec.name, spec.hostname, user)
+        await self._assert_host_available(host, oname, targets)
+        await self._assert_workload_absent(spec.name, oname, targets)
+        background.add_task(self._run, self.create_container, spec, user)
+        return self._accepted("container", spec.name, host, image=spec.image)
+
+    async def accept_update_function(
+        self, name: str, spec: FunctionUpdate, user: Principal, background
+    ) -> WorkloadResponse:
+        await self._load_existing(name, OFFERING_FUNCTION, user)  # 404 if missing
+        background.add_task(self._run, self.update_function, name, spec, user)
+        return self._accepted("function", name, self._host_for(name, spec.hostname, user))
+
+    async def accept_update_container(
+        self, name: str, spec: ContainerUpdate, user: Principal, background
+    ) -> WorkloadResponse:
+        await self._load_existing(name, OFFERING_CONTAINER, user)  # 404 if missing
+        background.add_task(self._run, self.update_container, name, spec, user)
+        return self._accepted(
+            "container", name, self._host_for(name, spec.hostname, user), image=spec.image
+        )
+
+    def _host_for(self, name: str, hostname: str | None, user: Principal) -> str:
+        return hostname or route_svc.host_for(
+            name, user.primary_group, self._settings.route_domain
+        )
+
+    def _accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
+        return WorkloadResponse(
+            name=name,
+            type=kind,  # type: ignore[arg-type]
+            url=f"https://{host}",
+            overallStatus="Pending",
+            sites=[],
+            statusUrl=f"/api/v1/{kind}s/{name}/status",
+            **extra,
+        )
+
+    async def _run(self, fn, *args) -> None:
+        try:
+            await fn(*args)
+        except Exception:  # noqa: BLE001 - background work; surfaced via status polling
+            logger.exception("background deploy failed for %s", args)
 
     # -- update (full replace of the mutable spec) -----------------------
     async def update_function(

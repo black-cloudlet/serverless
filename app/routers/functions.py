@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import WorkloadDep
@@ -12,26 +12,26 @@ from app.models.function import FunctionCreate, FunctionUpdate
 router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
 
 
-@router.post("", response_model=WorkloadResponse, status_code=201)
+@router.post("", response_model=WorkloadResponse, status_code=202)
 async def create_function(
-    spec: FunctionCreate, user: CurrentUser, svc: WorkloadDep, response: Response
+    spec: FunctionCreate,
+    user: CurrentUser,
+    svc: WorkloadDep,
+    background: BackgroundTasks,
 ) -> WorkloadResponse:
-    body, code = await svc.create_function(spec, user)
-    response.status_code = code
-    return body
+    # Validated synchronously; deployed in the background. Poll statusUrl.
+    return await svc.accept_function(spec, user, background)
 
 
-@router.put("/{name}", response_model=WorkloadResponse)
+@router.put("/{name}", response_model=WorkloadResponse, status_code=202)
 async def update_function(
     name: str,
     spec: FunctionUpdate,
     user: CurrentUser,
     svc: WorkloadDep,
-    response: Response,
+    background: BackgroundTasks,
 ) -> WorkloadResponse:
-    body, code = await svc.update_function(name, spec, user)
-    response.status_code = code
-    return body
+    return await svc.accept_update_function(name, spec, user, background)
 
 
 @router.get("/{name}", response_model=WorkloadResponse)

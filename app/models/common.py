@@ -100,8 +100,10 @@ class WorkloadResponse(BaseModel):
     name: str
     type: Literal["function", "container"]
     url: str
+    # Pending (accepted, deploying in background) | Ready | Deploying | Degraded
     overallStatus: str
-    sites: list[SiteStatus]
+    sites: list[SiteStatus] = []
+    statusUrl: str | None = None
     runtime: str | None = None
     image: str | None = None
     imageDigest: str | None = None

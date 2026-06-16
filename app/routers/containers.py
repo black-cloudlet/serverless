@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import WorkloadDep
@@ -12,26 +12,26 @@ from app.models.container import ContainerCreate, ContainerUpdate
 router = APIRouter(prefix="/api/v1/containers", tags=["containers"])
 
 
-@router.post("", response_model=WorkloadResponse, status_code=201)
+@router.post("", response_model=WorkloadResponse, status_code=202)
 async def create_container(
-    spec: ContainerCreate, user: CurrentUser, svc: WorkloadDep, response: Response
+    spec: ContainerCreate,
+    user: CurrentUser,
+    svc: WorkloadDep,
+    background: BackgroundTasks,
 ) -> WorkloadResponse:
-    body, code = await svc.create_container(spec, user)
-    response.status_code = code
-    return body
+    # Validated synchronously; deployed in the background. Poll statusUrl.
+    return await svc.accept_container(spec, user, background)
 
 
-@router.put("/{name}", response_model=WorkloadResponse)
+@router.put("/{name}", response_model=WorkloadResponse, status_code=202)
 async def update_container(
     name: str,
     spec: ContainerUpdate,
     user: CurrentUser,
     svc: WorkloadDep,
-    response: Response,
+    background: BackgroundTasks,
 ) -> WorkloadResponse:
-    body, code = await svc.update_container(name, spec, user)
-    response.status_code = code
-    return body
+    return await svc.accept_update_container(name, spec, user, background)
 
 
 @router.get("/{name}", response_model=WorkloadResponse)

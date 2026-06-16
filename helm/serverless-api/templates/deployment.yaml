@@ -29,6 +29,8 @@ spec:
               value: "true"
             - name: SERVERLESS_ROUTE_DOMAIN
               value: {{ .Values.routeDomain | quote }}
+            - name: SERVERLESS_CORS_ALLOW_ORIGINS
+              value: {{ toJson .Values.corsAllowOrigins | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_SSO__ISSUER

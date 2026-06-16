@@ -688,15 +688,15 @@ are JSON. Times are RFC 3339 UTC.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git, deploy to both sites). |
+| `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/functions` | List caller's functions (label-scoped). |
 | `GET` | `/api/v1/functions/{name}` | Get one function (spec + per-site status). |
-| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). |
+| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}` | Delete the function in both sites. |
-| `POST` | `/api/v1/containers` | Create a CaaS workload (deploy image to both sites). |
+| `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/containers` | List caller's containers (label-scoped). |
 | `GET` | `/api/v1/containers/{name}` | Get one container (spec + per-site status). |
-| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). |
+| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/{type}/{name}/status` | Per-site readiness, URLs, revision info. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
@@ -716,6 +716,12 @@ are JSON. Times are RFC 3339 UTC.
 > workload's `files`/`env`, and are **readable back by their owning group** — they do
 > **not** flow through ESO/Vault.
 
+> **Async (submit + poll).** `POST`/`PUT` validate synchronously (so the caller gets
+> immediate `400`/`404`/`409`), then **return `202 Accepted`** with `overallStatus: "Pending"`
+> and a `statusUrl`; the build/deploy runs in the background. Clients poll
+> `GET {statusUrl}` (`/api/v1/{type}/{name}/status`) until `overallStatus` is `Ready` (or
+> `Degraded`). This suits slow FaaS builds and ServiceNow workflow patterns (§10.x).
+>
 > **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
 > workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
 > changes go through the `PUT` endpoints.
@@ -769,21 +775,32 @@ Request:
 }
 ```
 
-Response `201 Created`:
+Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
 
 ```json
 {
   "name": "image-resizer",
   "type": "function",
   "runtime": "python",
-  "imageDigest": "registry.internal/team/image-resizer@sha256:abcd...",
+  "url": "https://image-resizer-team.serverless.example.com",
+  "overallStatus": "Pending",
+  "sites": [],
+  "statusUrl": "/api/v1/functions/image-resizer/status"
+}
+```
+
+Then `GET /api/v1/functions/image-resizer/status` once Ready:
+
+```json
+{
+  "name": "image-resizer",
+  "type": "function",
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
   "sites": [
     { "site": "site-a", "status": "Ready", "revision": "image-resizer-00001" },
     { "site": "site-b", "status": "Ready", "revision": "image-resizer-00001" }
-  ],
-  "createdAt": "2026-06-16T07:30:00Z"
+  ]
 }
 ```
 
@@ -803,8 +820,25 @@ Request:
 }
 ```
 
-Response `201 Created`: same envelope shape as the FaaS response (`type: "container"`,
-no `runtime`/`imageDigest` build fields; `image` echoed back).
+Response `202 Accepted`: same envelope as the FaaS response (`type: "container"`, no
+`runtime` build fields; `image` echoed back), then poll `statusUrl`.
+
+### 10.x ServiceNow integration (frontend)
+
+The API is the backend for a **ServiceNow** frontend; the design accommodates that:
+
+- **Authentication — forward the end-user token.** ServiceNow obtains the user's **RHBK
+  (OIDC) access token** (OAuth authorization-code / on-behalf-of) and sends it as the
+  `Authorization: Bearer` header. The JWT carries the real user and `groups`, so the API's
+  group-based authz (§6.2) works unchanged — actions are attributed to the actual requester.
+  Configure ServiceNow as an OAuth client of RHBK whose tokens carry `aud = serverless-api`.
+- **CORS.** When a ServiceNow Service Portal widget calls the API **from the browser**, set
+  `SERVERLESS_CORS_ALLOW_ORIGINS` (Helm `corsAllowOrigins`) to the ServiceNow instance
+  origin(s); the API enables CORS (preflight + `Authorization` header) only then. Server-side
+  ServiceNow calls (IntegrationHub / Scripted REST) need no CORS.
+- **Async submit + poll.** `POST`/`PUT` return **202** immediately with a `statusUrl`;
+  the ServiceNow workflow polls `GET {statusUrl}` until `Ready`/`Degraded`. This avoids
+  ServiceNow REST timeouts on slow FaaS builds and matches its long-running-task patterns.
 
 ### Workload secrets & configs (API-managed — `POST /api/v1/secrets`, `/api/v1/configs`)
 

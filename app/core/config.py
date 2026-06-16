@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
+    # Browser origins allowed to call the API (e.g. the ServiceNow portal).
+    # Empty disables CORS. env: SERVERLESS_CORS_ALLOW_ORIGINS (JSON list).
+    cors_allow_origins: list[str] = Field(default_factory=list)
+
     # Directory holding the cert-manager client cert (tls.crt / tls.key), used to
     # authenticate to every cluster (env: SERVERLESS_CLIENT_CERT_DIR).
     client_cert_dir: str = "/etc/serverless/client"
