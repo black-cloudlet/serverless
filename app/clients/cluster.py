@@ -2,10 +2,10 @@
 
 One instance represents one site/cluster. It holds that site's :class:`SiteConfig`
 and pulls the shared bits (client cert, CA bundle, timeouts, workloads namespace)
-from :class:`Settings`, so the rest of the app works with ``Cluster`` only — never
-``SiteConfig`` directly. It fully encapsulates the ``kubernetes`` library: nobody
-outside this module imports ``kubernetes`` or passes raw apiVersion/kind strings —
-callers use the :class:`ResourceKind` enum.
+from the global :class:`Settings` (``get_settings()``), so the rest of the app works
+with ``Cluster`` only — never ``SiteConfig`` directly. It fully encapsulates the
+``kubernetes`` library: nobody outside this module imports ``kubernetes`` or passes
+raw apiVersion/kind strings — callers use the :class:`ResourceKind` enum.
 
 Authentication uses the global cert-manager client certificate over mTLS
 (CN = serverless-api.clients.{base_domain}); the same identity/CA is valid in
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from app.core.config import Settings, SiteConfig
+from app.core.config import SiteConfig, get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,9 +44,9 @@ class Cluster:
 
     FIELD_MANAGER = "serverless-api"
 
-    def __init__(self, config: SiteConfig, settings: Settings):
+    def __init__(self, config: SiteConfig):
         self._config = config
-        self._settings = settings
+        self._settings = get_settings()
         self._dynamic = None
 
     # -- identity / config ------------------------------------------------

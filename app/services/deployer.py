@@ -30,7 +30,7 @@ class Deployer:
         # The k8s connection stays lazy (on first use), so startup doesn't fail
         # if a site is down.
         self._clusters: dict[str, Cluster] = {
-            site.name: Cluster(site, settings) for site in settings.sites
+            site.name: Cluster(site) for site in settings.sites
         }
 
     def resolve_targets(self, requested: list[str] | None) -> list[Cluster]:
