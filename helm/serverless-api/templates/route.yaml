@@ -8,7 +8,7 @@ metadata:
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 spec:
-  host: serverless-api.{{ .Values.clientCert.baseDomain }}
+  host: serverless-api.{{ .Values.global.baseDomain }}
   to:
     kind: Service
     name:  {{ .Values.name }}
