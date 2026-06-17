@@ -21,11 +21,8 @@ class SiteConfig(BaseModel):
     ``https://api.central-0.{base_domain}:6443``). The client certificate, CA
     bundle, and workloads namespace are global (the same in every cluster).
     """
-
-    name: str  # site/region, e.g. "central"
-    api_server: str
-    cluster: str | None = None  # cluster instance name, e.g. "central-0"
-
+    name: str
+    cluster: str
 
 class CABundleConfig(BaseModel):
     """The OpenShift-injected trusted CA bundle ConfigMap.
@@ -37,12 +34,12 @@ class CABundleConfig(BaseModel):
     servers.
     """
 
-    config_map: str = "trusted-ca-bundle"
+    config_map: str = "ca-bundle"
     key: str = "ca-bundle.crt"
-    mount_path: str = "/etc/serverless/trusted-ca"
+    mount_path: str = "/etc/ssl/certs"
 
     @property
-    def path(self) -> str:
+    def file(self) -> str:
         return f"{self.mount_path.rstrip('/')}/{self.key}"
 
 
@@ -60,23 +57,6 @@ class SSOConfig(BaseModel):
     jwks_cache_seconds: int = 3600
 
 
-class ApiKey(BaseModel):
-    """A static, platform-issued API key for a non-OIDC service account.
-
-    Only the **sha256 hash** of the key is stored (hex); the raw key is never
-    persisted. Each key maps to an identity and SSO groups for authorization.
-    """
-
-    name: str
-    sha256: str
-    groups: list[str] = Field(default_factory=list)
-
-
-class RegistryConfig(BaseModel):
-    """Internal (mirrored) container registry."""
-
-    url: str = "registry.internal"
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -88,6 +68,7 @@ class Settings(BaseSettings):
 
     app_name: str = "serverless-api"
     auth_enabled: bool = True
+    base_domain: str = "example.com"
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
@@ -95,16 +76,13 @@ class Settings(BaseSettings):
     # Empty disables CORS. env: SERVERLESS_CORS_ALLOW_ORIGINS (JSON list).
     cors_allow_origins: list[str] = Field(default_factory=list)
 
-    # Directory holding the cert-manager client cert (tls.crt / tls.key), used to
-    # authenticate to every cluster (env: SERVERLESS_CLIENT_CERT_DIR).
     client_cert_dir: str = "/etc/serverless/client"
-    # Trusted CA bundle (env: SERVERLESS_CA_BUNDLE__*).
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
 
     # Per-call timeouts to a cluster's API server (seconds). Without these a down
     # cluster would block a worker thread until the OS socket timeout.
-    cluster_connect_timeout: float = 5.0
-    cluster_read_timeout: float = 15.0
+    cluster_connect_timeout: float = 2.0
+    cluster_read_timeout: float = 5.0
     # Backstop for a whole per-site operation (covers several sequential calls).
     site_op_timeout: float = 60.0
 
@@ -112,18 +90,17 @@ class Settings(BaseSettings):
     workloads_namespace: str = "serverless-workloads"
 
     sso: SSOConfig = Field(default_factory=SSOConfig)
-    registry: RegistryConfig = Field(default_factory=RegistryConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
     # Static API keys (sha256-hashed) for non-OIDC service accounts. From Vault
     # via ESO. env: SERVERLESS_API_KEYS (JSON list).
-    api_keys: list[ApiKey] = Field(default_factory=list)
+    admin_api_key: str = "Aa123456"
 
     @property
-    def client_cert_path(self) -> str:
+    def client_cert_file(self) -> str:
         return f"{self.client_cert_dir.rstrip('/')}/tls.crt"
 
     @property
-    def client_key_path(self) -> str:
+    def client_key_file(self) -> str:
         return f"{self.client_cert_dir.rstrip('/')}/tls.key"
 
     def site(self, name: str) -> SiteConfig | None:

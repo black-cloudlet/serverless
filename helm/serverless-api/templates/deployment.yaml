@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: serverless-api
+  name: {{ .Values.name }}
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
@@ -9,8 +9,7 @@ spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "serverless-api.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "serverless-api.labels" . | nindent 6 }}
   template:
     metadata:
       labels:
@@ -20,52 +19,46 @@ spec:
       # cert-manager client certificate, not the SA token (docs §6.3).
       containers:
         - name: serverless-api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 8080
+            - containerPort: {{ .Values.service.targetPort }}
           env:
             - name: SERVERLESS_AUTH_ENABLED
               value: "true"
+            - name: SERVERLESS_BASE_DOMAIN
+              value: {{ .Values.global.baseDomain | quote }}
             - name: SERVERLESS_ROUTE_DOMAIN
               value: {{ .Values.routeDomain | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
               value: {{ toJson .Values.corsAllowOrigins | quote }}
-            - name: SERVERLESS_REGISTRY__URL
-              value: {{ .Values.registry.url | quote }}
+            - name: SERVERLESS_REGISTRY_URL
+              value: {{ Values.image.registry | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
               value: {{ .Values.sso.audience | quote }}
-            - name: SERVERLESS_SSO__JWKS_URL
-              value: {{ .Values.sso.jwksUrl | quote }}
             - name: SERVERLESS_SSO__GROUPS_CLAIM
               value: {{ .Values.sso.groupsClaim | quote }}
             - name: SERVERLESS_SSO__ADMIN_GROUPS
               value: {{ toJson .Values.sso.adminGroups | quote }}
             # Where the cert-manager client cert is mounted (global, all sites).
             - name: SERVERLESS_CLIENT_CERT_DIR
-              value: {{ .Values.clientCert.mountPath | quote }}
+              value: {{ .Values.certificate.mountPath | quote }}
             # Trusted CA bundle (k8s-client CA + workload mount).
             - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
-              value: {{ .Values.caBundle.configMap | quote }}
+              value: {{ .Values.caBundle.name | quote }}
             - name: SERVERLESS_CA_BUNDLE__KEY
-              value: {{ .Values.caBundle.key | quote }}
+              value: {{ .Values.caBundle.file | quote }}
             - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
               value: {{ .Values.caBundle.mountPath | quote }}
             # Make outbound TLS (SSO/registry/git) trust the internal CA too.
             - name: SSL_CERT_FILE
-              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.file | quote }}
             - name: REQUESTS_CA_BUNDLE
-              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
-            # Sites data is kept in its own ConfigMap (api url / name / namespace).
-            - name: SERVERLESS_SITES
-              valueFrom:
-                configMapKeyRef:
-                  name: serverless-api-sites
-                  key: SERVERLESS_SITES
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.file | quote }}
           envFrom:
             # Load each ESO-projected Secret (keys must be valid env names).
             {{- range .Values.externalSecrets.secrets }}
@@ -73,26 +66,26 @@ spec:
                 name: {{ .name }}
             {{- end }}
           volumeMounts:
-            - name: client-cert
+            - name: {{ .Values.certificate.name }}
               mountPath: {{ .Values.clientCert.mountPath }}
               readOnly: true
-            - name: trusted-ca
+            - name: {{ .Values.caBundle.name }}
               mountPath: {{ .Values.caBundle.mountPath }}
               readOnly: true
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8080
+              port: {{ .Values.service.targetPort }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8080
+              port: {{ .Values.service.targetPort }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        - name: client-cert
+        - name: {{ .Values.certificate.name }}
           secret:
-            secretName: {{ .Values.clientCert.secretName }}
-        - name: trusted-ca
+            secretName: {{ .Values.certificate.name }}
+        - name: {{ .Values.caBundle.name }}
           configMap:
-            name: {{ .Values.caBundle.configMap }}
+            name: {{ .Values.caBundle.name }}

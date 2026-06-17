@@ -1,26 +1,13 @@
-"""``Cluster`` — the single runtime object per OpenShift cluster.
-
-One instance represents one site/cluster. It holds that site's :class:`SiteConfig`
-and pulls the shared bits (client cert, CA bundle, timeouts, workloads namespace)
-from the global :class:`Settings` (``get_settings()``), so the rest of the app works
-with ``Cluster`` only — never ``SiteConfig`` directly. It fully encapsulates the
-``kubernetes`` library: nobody outside this module imports ``kubernetes`` or passes
-raw apiVersion/kind strings — callers use the :class:`ResourceKind` enum.
-
-Authentication uses the global cert-manager client certificate over mTLS
-(CN = serverless-api.clients.{base_domain}); the same identity/CA is valid in
-every cluster (docs §6.3).
-"""
-
 from __future__ import annotations
 
 from enum import Enum
+from kubernetes import client, utils
+from kubernetes.dynamic import DynamicClient, resource.Resource
 
-from app.core.config import SiteConfig, get_settings
+from app.core.config import SiteConfig, Settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-
 
 class ResourceKind(Enum):
     """The resource kinds the API manages, mapped to (apiVersion, kind)."""
@@ -40,101 +27,52 @@ class ResourceKind(Enum):
 
 
 class Cluster:
-    """One OpenShift cluster. Holds its SiteConfig; reads shared bits from Settings."""
+    def __init__(self, site_config: SiteConfig, settings: Settings):
+        self.site: str = site_config.name
+        self.name: str = site_config.cluster
+        self._namespace: str = settings.workloads_namespace
 
-    FIELD_MANAGER = "serverless-api"
+        configuration = client.Configuration()
+        configuration.host = f"api.{self.name}.{settings.base_domain}:6443"
 
-    def __init__(self, config: SiteConfig):
-        self._config = config
-        self._settings = get_settings()
-        self._dynamic = None
+        configuration.ssl_ca_cert = settings.ca_bundle.file
+        configuration.cert_file = settings.client_cert_file
+        configuration.key_file = settings.client_key_file
 
-    # -- identity / config ------------------------------------------------
-    @property
-    def name(self) -> str:  # site/region name
-        return self._config.name
-
-    @property
-    def cluster(self) -> str | None:  # cluster instance name, e.g. central-0
-        return self._config.cluster
-
-    @property
-    def api_server(self) -> str:
-        return self._config.api_server
-
-    @property
-    def namespace(self) -> str:  # workloads namespace (global)
-        return self._settings.workloads_namespace
-
-    # -- connection -------------------------------------------------------
-    def _client(self):
-        if self._dynamic is not None:
-            return self._dynamic
-
-        from kubernetes import client
-        from kubernetes.dynamic import DynamicClient
-
-        cfg = client.Configuration()
-        cfg.host = self._config.api_server
-        cfg.ssl_ca_cert = self._settings.ca_bundle.path
-        cfg.cert_file = self._settings.client_cert_path
-        cfg.key_file = self._settings.client_key_path
-        api = client.ApiClient(cfg)
-
-        self._dynamic = DynamicClient(api)
-        return self._dynamic
-
-    def _resource(self, api_version: str, kind: str):
-        return self._client().resources.get(api_version=api_version, kind=kind)
-
-    def _ns(self, namespace: str | None) -> str:
-        return namespace or self.namespace
-
-    def _opts(self) -> dict:
-        # (connect, read) timeout on every call so an unreachable cluster fails
-        # fast instead of blocking the worker thread.
-        return {
+        self._api_client = client.ApiClient(configuration)
+        self._dynamic_client = DynamicClient(self._api_client)
+        self._opts: dict = {
             "_request_timeout": (
-                self._settings.cluster_connect_timeout,
-                self._settings.cluster_read_timeout,
+                settings.cluster_connect_timeout,
+                settings.cluster_read_timeout,
             )
         }
 
-    # -- operations -------------------------------------------------------
-    def apply(self, manifest: dict, namespace: str | None = None) -> dict:
-        """Idempotent create-or-update via Kubernetes server-side apply."""
-        res = self._resource(manifest["apiVersion"], manifest["kind"])
-        return self._client().server_side_apply(
-            res,
-            body=manifest,
-            name=manifest["metadata"]["name"],
-            namespace=self._ns(namespace),
-            field_manager=self.FIELD_MANAGER,
+    def _dynamic_api(kind: ResourceKind):
+        return self._dynamic_client.resources.get(kind.api_version, kind.kind)
+
+
+    def apply(self, manifest: dict) -> list[dict]:
+        results = utils.create_from_dict(
+            self._api_client,
+            manifest,
+            verbose=False,
+            namespace=self._namespace,
+            apply=True,
             force_conflicts=True,
-            **self._opts(),
-        ).to_dict()
-
-    def get(self, kind: ResourceKind, name: str, namespace: str | None = None) -> dict:
-        return (
-            self._resource(kind.api_version, kind.kind)
-            .get(name=name, namespace=self._ns(namespace), **self._opts())
-            .to_dict()
+            **self._opts,
         )
+        return [i.to_dict() for i in results]
 
-    def list(
-        self,
-        kind: ResourceKind,
-        namespace: str | None = None,
-        label_selector: str | None = None,
-    ) -> list[dict]:
-        result = self._resource(kind.api_version, kind.kind).get(
-            namespace=self._ns(namespace), label_selector=label_selector, **self._opts()
-        )
-        return [i.to_dict() for i in result.items]
 
-    def delete(
-        self, kind: ResourceKind, name: str, namespace: str | None = None
-    ) -> None:
-        self._resource(kind.api_version, kind.kind).delete(
-            name=name, namespace=self._ns(namespace), **self._opts()
-        )
+    def get(self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None) -> dict | list[dict]:
+        dynamic_api = self._dynamic_api(kind)
+        if name is not None:
+            return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
+
+        results = dynamic_api.get(namespace=self._namespace, label_selector=label_selector, **self._opts)
+        return [i.to_dict() for i in results.items]
+
+    def delete(self, kind: ResourceKind, name: str) -> None:
+        dynamic_api = self._dynamic_api(kind)
+        dynamic_api.delete(name=name, namespace=self._namespace, **self._opts)

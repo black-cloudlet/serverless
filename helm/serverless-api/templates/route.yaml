@@ -3,7 +3,7 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: serverless-api
+  name: {{ .Values.name }}
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
@@ -11,9 +11,9 @@ spec:
   host: serverless-api.{{ .Values.clientCert.baseDomain }}
   to:
     kind: Service
-    name: serverless-api
+    name:  {{ .Values.name }}
   port:
-    targetPort: http
+    targetPort: {{ .Values.service.portName }}
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect

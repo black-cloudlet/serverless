@@ -3,11 +3,10 @@
 #
 # Routes are NOT in this Role: on OpenShift Serverless the operator auto-creates
 # the OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.
-{{- $cn := include "serverless-api.clientCN" . -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: serverless-api-workloads
+  name: {{ .Values.name }}
   namespace: {{ .Values.namespaces.workloads }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
@@ -25,15 +24,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: serverless-api-workloads
+  name: {{ .Values.name }}
   namespace: {{ .Values.namespaces.workloads }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 subjects:
   - kind: User
-    name: {{ $cn }}
+    name: {{ .Values. }}
     apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: Role
-  name: serverless-api-workloads
+  name: {{ .Values.name }}
   apiGroup: rbac.authorization.k8s.io

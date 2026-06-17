@@ -1,5 +1,10 @@
 # Default values for serverless-api.
 # Per-site overrides live in the central GitOps repo (values-site-a.yaml, ...).
+global:
+  clusterName: example
+  baseDomain: example.com
+  site: example
+  env: example
 
 image:
   repository: registry.internal/serverless/serverless-api
@@ -7,9 +12,6 @@ image:
   pullPolicy: IfNotPresent
 
 replicaCount: 2
-
-# This deployment's site (one Application per cluster). Used to label/annotate.
-siteName: site-a
 
 # Namespaces created by this chart, guarded against ArgoCD delete/prune.
 namespaces:
@@ -41,27 +43,25 @@ registry:
 sites:
   - name: central                 # site/region
     cluster: central-0            # cluster instance
-    apiServer: https://api.central-0.example.com:6443
   - name: south
     cluster: south-0
-    apiServer: https://api.south-0.example.com:6443
 
 # cert-manager client certificate (CN = DNS name, ACME-issued). docs §6.3
 # Same identity is valid in every cluster; mounted at mountPath as tls.crt/tls.key.
-clientCert:
-  baseDomain: example.com
-  secretName: serverless-api-client
+certificate:
+  name: serverless-client-cert
+  user: serverless-api.client.example.com
   mountPath: /etc/serverless/client
   issuerRef:
-    name: internal-acme
+    name: client-cert-acme
     kind: ClusterIssuer
 
 # OpenShift-injected trusted CA bundle (same for every cluster). Created in both
 # namespaces and mounted into the API and every workload.
 caBundle:
-  configMap: trusted-ca-bundle
-  key: ca-bundle.crt
-  mountPath: /etc/serverless/trusted-ca
+  name: ca-bundle
+  file: ca-bundle.crt
+  mountPath: /etc/ssl/certs
 
 # ESO: reference the PRE-EXISTING ClusterSecretStore; we ship ExternalSecret(s) only.
 # Each kind of data is its own Secret (separate rotation/exposure). Every listed
@@ -72,18 +72,24 @@ externalSecrets:
   clusterSecretStore: vault-backend
   refreshInterval: 1h
   secrets:
-    # SSO client secret (only needed if the API ever initiates an OIDC call).
     - name: serverless-api-sso
       data:
         - secretKey: SSO_CLIENT_SECRET
-          key: serverless/api
-          property: sso_client_secret
-    # Admin API keys — add this entry to enable (requires the Vault property):
-    # - name: serverless-api-keys
-    #   data:
-    #     - secretKey: SERVERLESS_API_KEYS
-    #       key: serverless/api
-    #       property: api_keys
+          key: cloudlet/platforms/serverless-api
+          property: sso-client-secret
+        - secretKey: SSO_CLIENT_ID
+          key: cloudlet/platforms/serverless-api
+          property: sso-client-secret
+    - name: serverless-api-keys
+      data:
+        - secretKey: SERVERLESS_ADMIN_API_KEY
+          key: cloudlet/platforms/serverless-api
+          property: admin-api-key
+
+service:
+  portName: http
+  targetPort: 8080
+  port: 80
 
 resources:
   requests:
