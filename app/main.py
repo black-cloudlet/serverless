@@ -31,7 +31,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Serverless API",
         version=__version__,
-        description="FaaS/CaaS REST API wrapping OpenShift Servelless Operator.",
+        description="REST API for functions and containers on the OpenShift Serverless Operator.",
         lifespan=lifespan
     )
 

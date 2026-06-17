@@ -397,7 +397,7 @@ e.g. orders-api-team.serverless.example.com
 Rationale: the host must be **identical in both clusters** (DNS forwards to active), so it
 must be a custom platform domain anyway; FaaS-vs-CaaS is a build-time detail the consumer
 shouldn't see in the URL; and one wildcard domain means **one wildcard cert + one DNS zone**
-to manage. The offering (`faas`/`caas`) is tracked as a **label**, not in the host. The
+to manage. The offering (`function`/`container`) is tracked as a **label**, not in the host. The
 `{group}` prefix prevents collisions in the shared namespace and makes ownership obvious.
 
 **Object naming.** The OpenShift name of the workload (KSVC) and all its derived resources
@@ -1009,7 +1009,7 @@ metadata:
   labels:
     serverless.platform/group: team
     serverless.platform/workload: orders-api-team
-    serverless.platform/offering: caas
+    serverless.platform/offering: container
 spec:
   ref:
     name: orders-api-team        # the {name}-{group} KSVC

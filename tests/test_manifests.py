@@ -21,7 +21,7 @@ def test_build_ksvc_basic():
         group="team",
         owner="alice",
         image="reg/x:1",
-        offering="caas",
+        offering="container",
         host="app-team.serverless.example.com",
         env=[ContainerEnv(name="LOG", value="info")],
         volumes=files.volumes,
@@ -46,7 +46,7 @@ def test_build_ksvc_mounts_ca_bundle():
         group="team",
         owner="o",
         image="i",
-        offering="caas",
+        offering="container",
         host="app-team.serverless.example.com",
         env=[],
         volumes=[],
@@ -67,7 +67,7 @@ def test_build_ksvc_env_secret_ref():
         group="t",
         owner="o",
         image="i",
-        offering="faas",
+        offering="function",
         host="app-t.serverless.example.com",
         env=[ContainerEnv(name="P", secret_ref=("s", "k"))],
         volumes=[],
@@ -125,11 +125,11 @@ def test_host_and_domain_mapping():
     host = route_svc.host_for("app", "team", "serverless.example.com")
     assert host == "app-team.serverless.example.com"
     dm = route_svc.build_domain_mapping(
-        name="app", group="team", owner="o", offering="caas", host=host
+        name="app", group="team", owner="o", offering="container", host=host
     )
     assert dm["apiVersion"] == "serving.knative.dev/v1beta1"
     assert dm["metadata"]["name"] == host
-    assert dm["metadata"]["labels"][LABEL_OFFERING] == "caas"
+    assert dm["metadata"]["labels"][LABEL_OFFERING] == "container"
     assert dm["spec"]["ref"]["name"] == "app"
 
 
@@ -139,7 +139,7 @@ def test_pull_secret_dockerconfig():
 
     from app.services.labels import workload_labels
 
-    labels = workload_labels("team", "o", "app", "caas")
+    labels = workload_labels("team", "o", "app", "container")
     s = secret_svc.build_pull_secret(
         "p", labels, "registry.internal", "user", "tok"
     )

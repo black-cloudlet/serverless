@@ -279,12 +279,12 @@ async def test_load_existing_returns_image():
 
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("caas")}),
-            "site-b": _FakeCluster("site-b", existing={"app-team": _ksvc("caas")}),
+            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("container")}),
+            "site-b": _FakeCluster("site-b", existing={"app-team": _ksvc("container")}),
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    existing = await svc._load_existing("app", "caas", user)
+    existing = await svc._load_existing("app", "container", user)
     assert existing["image"] == "reg/x:1"
 
 
@@ -294,13 +294,13 @@ async def test_load_existing_offering_mismatch_404():
 
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("caas")}),
+            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("container")}),
             "site-b": _FakeCluster("site-b"),
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await svc._load_existing("app", "faas", user)  # it's a caas
+        await svc._load_existing("app", "function", user)  # it's a container
 
 
 async def test_accept_container_returns_pending_and_schedules():

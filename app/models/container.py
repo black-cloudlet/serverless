@@ -1,4 +1,4 @@
-"""CaaS request schemas."""
+"""Container request schemas."""
 
 from __future__ import annotations
 

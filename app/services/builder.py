@@ -1,4 +1,4 @@
-"""FaaS build via Knative Functions (func) + Cloud Native Buildpacks.
+"""Function build via Knative Functions (func) + Cloud Native Buildpacks.
 
 In the airgapped cluster, the build uses the mirrored buildpack builder/run
 images for Python/Go/JS (docs §3.1, §9). The source is cloned with the
@@ -57,7 +57,7 @@ class FuncBuilder:
         # configured per environment; see deploy docs.
         image = self.image_ref(req)
         logger.info(
-            "FaaS build requested: name=%s runtime=%s git=%s@%s -> %s",
+            "function build requested: name=%s runtime=%s git=%s@%s -> %s",
             req.name,
             req.runtime,
             req.git_url,

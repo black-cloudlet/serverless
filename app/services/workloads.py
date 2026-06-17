@@ -1,7 +1,7 @@
 """Workload orchestration: build manifests once, fan out to all sites.
 
-Covers FaaS (build then deploy) and CaaS (deploy image), plus lookup/delete with
-group-scoped access control. See docs §3, §4, §6.2.
+Covers functions (build then deploy) and containers (deploy image), plus
+lookup/delete with group-scoped access control. See docs §3, §4, §6.2.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ from app.clients.cluster import Cluster, ResourceKind
 
 logger = get_logger(__name__)
 
-OFFERING_FUNCTION = "faas"
-OFFERING_CONTAINER = "caas"
+OFFERING_FUNCTION = "function"
+OFFERING_CONTAINER = "container"
 
 
 def object_name(name: str, group: str) -> str:
@@ -152,7 +152,7 @@ class WorkloadService:
     # -- async accept (202 + poll) ---------------------------------------
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a
-    # status URL to poll. Deploys (esp. FaaS builds) can be slow.
+    # status URL to poll. Deploys (esp. function builds) can be slow.
     async def accept_function(
         self, spec: FunctionCreate, user: Principal, background
     ) -> WorkloadResponse:

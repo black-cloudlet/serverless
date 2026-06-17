@@ -1,4 +1,4 @@
-"""CaaS endpoints."""
+"""Container endpoints."""
 
 from __future__ import annotations
 

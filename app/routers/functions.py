@@ -1,4 +1,4 @@
-"""FaaS endpoints."""
+"""Function endpoints."""
 
 from __future__ import annotations
 

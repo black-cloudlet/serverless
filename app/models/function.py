@@ -1,4 +1,4 @@
-"""FaaS request schemas."""
+"""Function request schemas."""
 
 from __future__ import annotations
 
