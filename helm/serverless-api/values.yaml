@@ -34,7 +34,7 @@ corsAllowOrigins: []
 sso:
   issuer: https://sso.internal/realms/serverless
   audience: serverless-api
-  jwksUrl: https://sso.internal/realms/serverless/protocol/openid-connect/certs
+  discoveryUrl: https://sso.internal/realms/serverless/.well-known/openid-configuration
   groupsClaim: groups
   adminGroups:
     - platform-admins

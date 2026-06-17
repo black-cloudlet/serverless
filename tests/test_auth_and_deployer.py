@@ -54,6 +54,48 @@ def test_require_auth_via_bearer_admin_key():
         require_auth(bad, settings, validator=None)
 
 
+def test_oidc_discovery_resolved_once_and_client_reused(monkeypatch):
+    from app.auth.oidc import TokenValidator
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"jwks_uri": "https://sso.internal/jwks"}
+
+    def fake_get(url, timeout=None):
+        calls["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr("app.auth.oidc.httpx.get", fake_get)
+
+    v = TokenValidator(SSOConfig())
+    c1 = v._client()
+    c2 = v._client()
+    assert c1 is c2  # one PyJWKClient, reused across requests
+    assert calls["n"] == 1  # discovery hit exactly once, not per request
+    assert c1.uri == "https://sso.internal/jwks"  # JWKS URI came from discovery
+
+
+def test_oidc_discovery_failure_is_service_unavailable(monkeypatch):
+    import httpx
+
+    from app.auth.oidc import TokenValidator
+    from app.core.errors import ServiceUnavailableError
+
+    def boom(url, timeout=None):
+        raise httpx.ConnectError("sso down")
+
+    monkeypatch.setattr("app.auth.oidc.httpx.get", boom)
+
+    v = TokenValidator(SSOConfig())
+    with pytest.raises(ServiceUnavailableError):
+        v._client()
+
+
 def test_aggregate_all_ok():
     statuses = [SiteStatus(site="a", status="Ready"), SiteStatus(site="b", status="Ready")]
     assert aggregate(statuses, "Ready") == "Ready"

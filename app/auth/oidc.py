@@ -1,14 +1,18 @@
-"""SSO OIDC token validation: JWKS fetch/cache + JWT verification."""
+"""SSO OIDC token validation: discovery + JWKS fetch/cache + JWT verification."""
 
 from __future__ import annotations
 
-import time
+import threading
 
+import httpx
 import jwt
 from jwt import PyJWKClient
 
 from app.core.config import SSOConfig
-from app.core.errors import UnauthenticatedError
+from app.core.errors import ServiceUnavailableError, UnauthenticatedError
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def looks_like_jwt(token: str) -> bool:
@@ -23,22 +27,45 @@ def looks_like_jwt(token: str) -> bool:
 class TokenValidator:
     """Validates SSO-issued JWTs offline against cached JWKS.
 
-    The signing keys are fetched from the internal SSO realm and cached; no
-    per-request round trip to the IdP is made.
+    The JWKS URI is resolved once from the OIDC ``.well-known`` discovery
+    document; a single :class:`PyJWKClient` is then built and reused. It caches
+    the JWK set (``jwks_cache_seconds``), so steady-state requests verify
+    tokens without any round trip to the IdP.
     """
 
     def __init__(self, config: SSOConfig):
         self._config = config
         self._jwk_client: PyJWKClient | None = None
-        self._jwk_fetched_at: float = 0.0
+        self._lock = threading.Lock()
 
     def _client(self) -> PyJWKClient:
-        now = time.monotonic()
-        expired = now - self._jwk_fetched_at > self._config.jwks_cache_seconds
-        if self._jwk_client is None or expired:
-            self._jwk_client = PyJWKClient(self._config.jwks_url)
-            self._jwk_fetched_at = now
+        # Resolve the JWKS URI from discovery once, then reuse the client. The
+        # lock keeps concurrent first requests from each running discovery.
+        if self._jwk_client is None:
+            with self._lock:
+                if self._jwk_client is None:
+                    jwks_uri = self._discover_jwks_uri()
+                    self._jwk_client = PyJWKClient(
+                        jwks_uri,
+                        cache_keys=True,
+                        lifespan=self._config.jwks_cache_seconds,
+                    )
         return self._jwk_client
+
+    def _discover_jwks_uri(self) -> str:
+        """Fetch the OIDC discovery document and return its ``jwks_uri``."""
+        try:
+            resp = httpx.get(
+                self._config.discovery_url, timeout=self._config.discovery_timeout
+            )
+            resp.raise_for_status()
+            jwks_uri = resp.json()["jwks_uri"]
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            raise ServiceUnavailableError(
+                f"OIDC discovery failed at {self._config.discovery_url}: {exc}"
+            ) from exc
+        logger.info("Resolved JWKS URI from OIDC discovery: %s", jwks_uri)
+        return jwks_uri
 
     def validate(self, token: str) -> dict:
         """Return the decoded claims, or raise UnauthenticatedError."""

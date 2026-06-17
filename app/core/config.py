@@ -49,13 +49,17 @@ class SSOConfig(BaseModel):
 
     issuer: str = "https://sso.internal/realms/serverless"
     audience: str = "serverless-api"
-    jwks_url: str = (
-        "https://sso.internal/realms/serverless/protocol/openid-connect/certs"
+    # OIDC discovery document; the JWKS URI is read from it once at startup
+    # rather than configuring the JWKS endpoint directly.
+    discovery_url: str = (
+        "https://sso.internal/realms/serverless/.well-known/openid-configuration"
     )
     groups_claim: str = "groups"
     admin_groups: list[str] = Field(default_factory=list)
-    # Seconds to cache JWKS keys before refetching.
+    # Seconds the JWK set is cached before it is refetched from the JWKS URI.
     jwks_cache_seconds: int = 3600
+    # Timeout (seconds) for the one-off OIDC discovery request.
+    discovery_timeout: float = 5.0
 
 
 class RegistryConfig(BaseModel):

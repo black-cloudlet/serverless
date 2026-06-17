@@ -42,6 +42,8 @@ spec:
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
               value: {{ .Values.sso.audience | quote }}
+            - name: SERVERLESS_SSO__DISCOVERY_URL
+              value: {{ .Values.sso.discoveryUrl | quote }}
             - name: SERVERLESS_SSO__GROUPS_CLAIM
               value: {{ .Values.sso.groupsClaim | quote }}
             - name: SERVERLESS_SSO__ADMIN_GROUPS
