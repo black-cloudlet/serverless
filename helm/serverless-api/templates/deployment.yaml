@@ -69,7 +69,7 @@ spec:
             {{- end }}
           volumeMounts:
             - name: {{ .Values.certificate.name }}
-              mountPath: {{ .Values.clientCert.mountPath }}
+              mountPath: {{ .Values.certificate.mountPath }}
               readOnly: true
             - name: {{ .Values.caBundle.name }}
               mountPath: {{ .Values.caBundle.mountPath }}
