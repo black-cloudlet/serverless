@@ -27,46 +27,28 @@ def test_principal_non_admin_scope():
     assert p.can_access_group("team-b") is False
 
 
-def _settings_with_api_key(raw_key, groups, admin_groups=()):
-    import hashlib
-
-    from app.core.config import ApiKey
-
+def _settings_with_admin_key(raw_key, admin_groups=("platform-admins",)):
     return Settings(
         auth_enabled=True,
+        admin_api_key=raw_key,
         sso=SSOConfig(admin_groups=list(admin_groups)),
-        api_keys=[
-            ApiKey(
-                name="ci-bot",
-                sha256=hashlib.sha256(raw_key.encode()).hexdigest(),
-                groups=groups,
-            )
-        ],
     )
 
 
-def test_authenticate_api_key_is_admin():
-    from app.auth.apikey import authenticate_api_key
-
-    settings = _settings_with_api_key("s3cret", ["platform-admins"], ["platform-admins"])
-    p = authenticate_api_key("s3cret", settings)
-    assert p.username == "ci-bot"
-    assert p.is_admin is True  # API keys are admin-only
-    assert authenticate_api_key("wrong", settings) is None
-
-
-def test_require_auth_via_bearer_api_key():
+def test_require_auth_via_bearer_admin_key():
     from types import SimpleNamespace
 
     from app.auth.deps import require_auth
     from app.core.errors import UnauthenticatedError
 
-    settings = _settings_with_api_key("opaque-s3cret", ["platform-admins"])
-    # Opaque token in the standard Authorization: Bearer header.
+    settings = _settings_with_admin_key("opaque-s3cret")
+    # Opaque admin key in the standard Authorization: Bearer header.
     req = SimpleNamespace(headers={"Authorization": "Bearer opaque-s3cret"})
     p = require_auth(req, settings, validator=None)  # validator unused for opaque key
-    assert p.username == "ci-bot" and p.is_admin is True
+    assert p.username == "admin" and p.is_admin is True
+    assert p.groups == ["platform-admins"]
 
+    # An unrecognised, non-JWT token must be rejected, not silently allowed.
     bad = SimpleNamespace(headers={"Authorization": "Bearer nope"})
     with pytest.raises(UnauthenticatedError):
         require_auth(bad, settings, validator=None)
@@ -96,22 +78,22 @@ def test_aggregate_total_failure():
 def _settings_with_sites():
     return Settings(
         sites=[
-            SiteConfig(name="site-a", api_server="https://a"),
-            SiteConfig(name="site-b", api_server="https://b"),
+            SiteConfig(name="site-a", cluster="site-a-0"),
+            SiteConfig(name="site-b", cluster="site-b-0"),
         ]
     )
 
 
 def test_global_cert_and_ca_paths():
     s = Settings(client_cert_dir="/etc/serverless/client")
-    assert s.client_cert_path == "/etc/serverless/client/tls.crt"
-    assert s.client_key_path == "/etc/serverless/client/tls.key"
-    assert s.ca_bundle.path == "/etc/serverless/trusted-ca/ca-bundle.crt"
+    assert s.client_cert_file == "/etc/serverless/client/tls.crt"
+    assert s.client_key_file == "/etc/serverless/client/tls.key"
+    assert s.ca_bundle.file == "/etc/ssl/certs/ca-bundle.crt"
 
 
 def test_resolve_targets_default_all():
     d = Deployer(_settings_with_sites())
-    assert [z.name for z in d.resolve_targets(None)] == ["site-a", "site-b"]
+    assert [z.site for z in d.resolve_targets(None)] == ["site-a", "site-b"]
 
 
 def test_resolve_targets_unknown_site():
@@ -124,9 +106,9 @@ async def test_fanout_captures_per_site_errors():
     d = Deployer(_settings_with_sites())
 
     def fn(cluster):
-        if cluster.name == "site-b":
+        if cluster.site == "site-b":
             raise RuntimeError("kaboom")
-        return SiteStatus(site=cluster.name, status="Ready")
+        return SiteStatus(site=cluster.site, status="Ready")
 
     statuses = await d.fanout(d.resolve_targets(None), fn)
     by_site = {s.site: s for s in statuses}
@@ -141,9 +123,9 @@ async def test_fanout_times_out_unreachable_site():
     d._op_timeout = 0.05  # tighten for the test
 
     def fn(cluster):
-        if cluster.name == "site-b":
+        if cluster.site == "site-b":
             time.sleep(0.5)  # simulate an unreachable/slow cluster
-        return SiteStatus(site=cluster.name, status="Ready")
+        return SiteStatus(site=cluster.site, status="Ready")
 
     statuses = await d.fanout(d.resolve_targets(None), fn)
     by_site = {s.site: s for s in statuses}
@@ -156,6 +138,7 @@ async def test_fanout_times_out_unreachable_site():
 class _FakeCluster:
     def __init__(self, name, existing=None):
         self.name = name
+        self.site = name
         self._existing = existing or {}
 
     def get(self, kind, name, namespace=None):

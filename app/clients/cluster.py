@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from kubernetes import client, utils
-from kubernetes.dynamic import DynamicClient, resource.Resource
+from kubernetes.dynamic import DynamicClient
 
 from app.core.config import SiteConfig, Settings
 from app.core.logging import get_logger
@@ -32,15 +32,18 @@ class Cluster:
         self.name: str = site_config.cluster
         self._namespace: str = settings.workloads_namespace
 
-        configuration = client.Configuration()
-        configuration.host = f"api.{self.name}.{settings.base_domain}:6443"
+        self._configuration = client.Configuration()
+        self._configuration.host = f"https://api.{self.name}.{settings.base_domain}:6443"
 
-        configuration.ssl_ca_cert = settings.ca_bundle.file
-        configuration.cert_file = settings.client_cert_file
-        configuration.key_file = settings.client_key_file
+        self._configuration.ssl_ca_cert = settings.ca_bundle.file
+        self._configuration.cert_file = settings.client_cert_file
+        self._configuration.key_file = settings.client_key_file
 
-        self._api_client = client.ApiClient(configuration)
-        self._dynamic_client = DynamicClient(self._api_client)
+        # Connection stays lazy (built on first use) so that one unreachable
+        # cluster can't fail or block API startup (DynamicClient does API
+        # discovery against the cluster the first time it is touched).
+        self._api_client_obj: client.ApiClient | None = None
+        self._dynamic_client_obj: DynamicClient | None = None
         self._opts: dict = {
             "_request_timeout": (
                 settings.cluster_connect_timeout,
@@ -48,7 +51,19 @@ class Cluster:
             )
         }
 
-    def _dynamic_api(kind: ResourceKind):
+    @property
+    def _api_client(self) -> client.ApiClient:
+        if self._api_client_obj is None:
+            self._api_client_obj = client.ApiClient(self._configuration)
+        return self._api_client_obj
+
+    @property
+    def _dynamic_client(self) -> DynamicClient:
+        if self._dynamic_client_obj is None:
+            self._dynamic_client_obj = DynamicClient(self._api_client)
+        return self._dynamic_client_obj
+
+    def _dynamic_api(self, kind: ResourceKind):
         return self._dynamic_client.resources.get(kind.api_version, kind.kind)
 
 

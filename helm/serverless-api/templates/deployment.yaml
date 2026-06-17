@@ -19,13 +19,13 @@ spec:
       # cert-manager client certificate, not the SA token (docs §6.3).
       containers:
         - name: {{ .Values.name }}
-          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           env:
             - name: SERVERLESS_PORT
-              value: {{ .Values.service.targetPort }}
+              value: {{ .Values.service.targetPort | quote }}
             - name: SERVERLESS_AUTH_ENABLED
               value: "true"
             - name: SERVERLESS_BASE_DOMAIN
@@ -37,7 +37,7 @@ spec:
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
               value: {{ toJson .Values.corsAllowOrigins | quote }}
             - name: SERVERLESS_REGISTRY_URL
-              value: {{ .Values.image.registry | quote }}
+              value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE

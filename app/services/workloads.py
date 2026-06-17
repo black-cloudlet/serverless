@@ -316,7 +316,7 @@ class WorkloadService:
             cluster.apply(mapping)
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             status, revision = _ksvc_status(obj)
-            return SiteStatus(site=cluster.name, status=status, revision=revision)
+            return SiteStatus(site=cluster.site, status=status, revision=revision)
 
         statuses = await self._deployer.fanout(targets, apply)
         overall = aggregate(statuses, success_label="Ready")
@@ -348,7 +348,7 @@ class WorkloadService:
             image = _extract_image(obj)
             if image and "image" not in holder:
                 holder["image"] = image
-            return SiteStatus(site=cluster.name, status="Present")
+            return SiteStatus(site=cluster.site, status="Present")
 
         await self._deployer.fanout(self._deployer.resolve_targets(None), fetch)
         if "image" not in holder:
@@ -364,11 +364,11 @@ class WorkloadService:
             try:
                 existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
             except Exception:
-                return SiteStatus(site=cluster.name, status="Available")
+                return SiteStatus(site=cluster.site, status="Available")
             labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
             owner_workload = labels.get(LABEL_WORKLOAD)
             status = "Available" if owner_workload == oname else "Taken"
-            return SiteStatus(site=cluster.name, status=status)
+            return SiteStatus(site=cluster.site, status=status)
 
         statuses = await self._deployer.fanout(targets, check)
         if any(s.status == "Taken" for s in statuses):
@@ -382,9 +382,9 @@ class WorkloadService:
         def probe(cluster: Cluster) -> SiteStatus:
             try:
                 cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-                return SiteStatus(site=cluster.name, status="Exists")
+                return SiteStatus(site=cluster.site, status="Exists")
             except Exception:
-                return SiteStatus(site=cluster.name, status="Absent")
+                return SiteStatus(site=cluster.site, status="Absent")
 
         statuses = await self._deployer.fanout(targets, probe)
         if any(s.status == "Exists" for s in statuses):
@@ -406,7 +406,7 @@ class WorkloadService:
             if ANNOTATION_HOST in annotations:
                 host_holder["host"] = annotations[ANNOTATION_HOST]
             status, revision = _ksvc_status(obj)
-            return SiteStatus(site=cluster.name, status=status, revision=revision)
+            return SiteStatus(site=cluster.site, status=status, revision=revision)
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, fetch)
@@ -434,7 +434,7 @@ class WorkloadService:
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
-            return SiteStatus(site=cluster.name, status="Deleted")
+            return SiteStatus(site=cluster.site, status="Deleted")
 
         targets = self._deployer.resolve_targets(None)
         statuses = await self._deployer.fanout(targets, remove)

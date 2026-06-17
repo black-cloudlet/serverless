@@ -7,7 +7,6 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from app.auth.apikey import authenticate_api_key
 from app.auth.claims import Principal, principal_from_claims
 from app.auth.oidc import TokenValidator, looks_like_jwt
 from app.core.config import Settings, get_settings
@@ -43,10 +42,10 @@ def require_auth(
         )
 
     token = _bearer_token(request)
-    
+
     if token == settings.admin_api_key:
         return Principal(
-            subject="admin", username="admin", groups=settigns.sso.admin_groups, is_admin=True
+            subject="admin", username="admin", groups=settings.sso.admin_groups, is_admin=True
         )
 
     # A structural JWT -> OIDC user/service token; otherwise an opaque admin API key.
@@ -57,6 +56,7 @@ def require_auth(
             raise ForbiddenError("Token has no group membership.")
         return principal
 
+    raise UnauthenticatedError("Invalid bearer token.")
 
 
 CurrentUser = Annotated[Principal, Depends(require_auth)]

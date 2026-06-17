@@ -17,12 +17,13 @@ class SiteConfig(BaseModel):
     """Connection profile for one site.
 
     A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
-    *cluster* (e.g. ``central-0``) reachable at ``api_server`` (e.g.
-    ``https://api.central-0.{base_domain}:6443``). The client certificate, CA
+    *cluster* (e.g. ``central-0``) whose API server is derived as
+    ``https://api.{cluster}.{base_domain}:6443``. The client certificate, CA
     bundle, and workloads namespace are global (the same in every cluster).
     """
-    name: str
-    cluster: str
+
+    name: str  # site/region, e.g. "central"
+    cluster: str  # cluster instance name, e.g. "central-0"
 
 class CABundleConfig(BaseModel):
     """The OpenShift-injected trusted CA bundle ConfigMap.
@@ -57,6 +58,12 @@ class SSOConfig(BaseModel):
     jwks_cache_seconds: int = 3600
 
 
+class RegistryConfig(BaseModel):
+    """Internal (mirrored) container registry."""
+
+    url: str = "registry.internal"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SERVERLESS_",
@@ -66,7 +73,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "serverless-api"
-    port: int: 8080
+    port: int = 8080
     auth_enabled: bool = True
     base_domain: str = "example.com"
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
@@ -90,6 +97,7 @@ class Settings(BaseSettings):
     workloads_namespace: str = "serverless-workloads"
 
     sso: SSOConfig = Field(default_factory=SSOConfig)
+    registry: RegistryConfig = Field(default_factory=RegistryConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
     # Static API keys (sha256-hashed) for non-OIDC service accounts. From Vault
     # via ESO. env: SERVERLESS_API_KEYS (JSON list).

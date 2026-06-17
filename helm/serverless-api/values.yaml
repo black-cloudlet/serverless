@@ -1,5 +1,9 @@
 # Default values for serverless-api.
 # Per-site overrides live in the central GitOps repo (values-site-a.yaml, ...).
+
+# Base name for the API's resources (Deployment, Service, Route, RBAC, labels).
+name: serverless-api
+
 global:
   clusterName: example
   baseDomain: example.com

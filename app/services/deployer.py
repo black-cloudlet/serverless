@@ -30,7 +30,7 @@ class Deployer:
         # The k8s connection stays lazy (on first use), so startup doesn't fail
         # if a site is down.
         self._clusters: dict[str, Cluster] = {
-            site.name: Cluster(site) for site in settings.sites
+            site.name: Cluster(site, settings) for site in settings.sites
         }
 
     def resolve_targets(self, requested: list[str] | None) -> list[Cluster]:
@@ -55,15 +55,15 @@ class Deployer:
                     asyncio.to_thread(fn, cluster), timeout=self._op_timeout
                 )
             except asyncio.TimeoutError:
-                logger.warning("site %s operation timed out", cluster.name)
+                logger.warning("site %s operation timed out", cluster.site)
                 return SiteStatus(
-                    site=cluster.name,
+                    site=cluster.site,
                     status="Timeout",
                     error=f"site unreachable (timed out after {self._op_timeout}s)",
                 )
             except Exception as exc:  # noqa: BLE001 - surfaced as per-site error
-                logger.exception("site %s operation failed", cluster.name)
-                return SiteStatus(site=cluster.name, status="Failed", error=str(exc))
+                logger.exception("site %s operation failed", cluster.site)
+                return SiteStatus(site=cluster.site, status="Failed", error=str(exc))
 
         return await asyncio.gather(*(run(c) for c in targets))
 
