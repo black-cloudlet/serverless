@@ -2,16 +2,47 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.core.config import get_settings
+from app.auth.deps import get_validator
+from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, get_logger
 from app.dependencies import get_workload_service
 from app.routers import containers, functions, health
+from app.services.deployer import Deployer
+
+logger = get_logger(__name__)
+
+
+async def _warm(label: str, fn, timeout: float) -> None:
+    """Run one blocking warmup off the event loop; log, never raise."""
+    try:
+        await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+        logger.info("startup warmup ok: %s", label)
+    except Exception as exc:  # noqa: BLE001 - best effort; retried lazily on first use
+        logger.warning("startup warmup failed for %s: %s", label, exc)
+
+
+async def _warmup(settings: Settings, deployer: Deployer) -> None:
+    """Best-effort: warm the one-time caches (OIDC discovery, cluster
+    connections) at startup so the first request is fast and misconfig shows up
+    in the logs now. A down dependency is logged, not fatal — it is retried
+    lazily on first use, preserving active/active startup."""
+    timeout = settings.cluster_connect_timeout + settings.cluster_read_timeout
+    tasks = []
+    if settings.auth_enabled:
+        tasks.append(_warm("SSO discovery", get_validator().warmup, timeout))
+    if settings.sites:
+        for cluster in deployer.resolve_targets(None):
+            tasks.append(_warm(f"cluster {cluster.site}", cluster.connect, timeout))
+    if tasks:
+        await asyncio.gather(*tasks)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -20,8 +51,9 @@ async def lifespan(app: FastAPI):
     Everything before the 'yield' runs on startup.
     Everything after the 'yield' runs on shutdown.
     """
-    get_workload_service()
-    
+    service = get_workload_service()  # build the service graph (no network)
+    await _warmup(get_settings(), service.deployer)  # warm caches, best effort
+
     yield
 
 def create_app() -> FastAPI:

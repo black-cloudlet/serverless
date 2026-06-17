@@ -38,6 +38,10 @@ class TokenValidator:
         self._jwk_client: PyJWKClient | None = None
         self._lock = threading.Lock()
 
+    def warmup(self) -> None:
+        """Resolve discovery + build the JWK client now (idempotent). Blocking."""
+        self._client()
+
     def _client(self) -> PyJWKClient:
         # Resolve the JWKS URI from discovery once, then reuse the client. The
         # lock keeps concurrent first requests from each running discovery.

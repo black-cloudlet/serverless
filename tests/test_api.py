@@ -76,6 +76,38 @@ def test_healthz_no_auth():
     assert c.get("/healthz").json() == {"status": "ok"}
 
 
+async def test_startup_warmup_is_best_effort(monkeypatch):
+    """A failing OIDC discovery / cluster connect must not crash startup."""
+    from app.core.config import Settings, SiteConfig, SSOConfig
+    from app.main import _warmup
+    from app.services.deployer import Deployer
+
+    class _BoomValidator:
+        def warmup(self):
+            raise RuntimeError("sso down")
+
+    monkeypatch.setattr("app.main.get_validator", lambda: _BoomValidator())
+
+    settings = Settings(
+        auth_enabled=True,
+        sso=SSOConfig(),
+        sites=[SiteConfig(name="site-a", cluster="site-a-0")],
+        cluster_connect_timeout=0.01,
+        cluster_read_timeout=0.01,
+    )
+
+    class _BoomCluster:
+        site = "site-a"
+
+        def connect(self):
+            raise RuntimeError("cluster unreachable")
+
+    deployer = Deployer(settings)
+    deployer._clusters = {"site-a": _BoomCluster()}
+    # Should complete without raising even though both warmups fail.
+    await _warmup(settings, deployer)
+
+
 def test_cors_allows_configured_origin(monkeypatch):
     from app.core.config import get_settings
 

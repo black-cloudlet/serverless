@@ -66,6 +66,11 @@ class Cluster:
     def _dynamic_api(self, kind: ResourceKind):
         return self._dynamic_client.resources.get(kind.api_version, kind.kind)
 
+    def connect(self) -> None:
+        """Eagerly establish the connection (API discovery) so the first request
+        doesn't pay for it. Idempotent — a no-op once connected. Blocking."""
+        _ = self._dynamic_client
+
 
     def apply(self, manifest: dict) -> list[dict]:
         results = utils.create_from_dict(
