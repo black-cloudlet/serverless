@@ -37,7 +37,7 @@ spec:
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
               value: {{ toJson .Values.corsAllowOrigins | quote }}
             - name: SERVERLESS_REGISTRY_URL
-              value: {{ Values.image.registry | quote }}
+              value: {{ .Values.image.registry | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
