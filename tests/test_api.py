@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.auth.claims import Principal
 from app.auth.deps import require_auth
-from app.dependencies import get_workload_service
+from app.dependencies import get_container_service, get_function_service
 from app.main import create_app
 from app.models.common import WorkloadResponse, SiteStatus
 
@@ -22,27 +22,42 @@ def _accepted(kind, name, **extra):
     )
 
 
-class FakeWorkloads:
-    async def accept_container(self, spec, user, background):
-        return _accepted("container", spec.name, image=spec.image)
+def _ready(kind, name):
+    return WorkloadResponse(
+        name=name,
+        type=kind,
+        url="https://x.serverless.example.com",
+        overallStatus="Ready",
+        sites=[SiteStatus(site="site-a", status="Ready")],
+    )
 
-    async def accept_function(self, spec, user, background):
+
+class FakeFunctions:
+    async def accept(self, spec, user, background):
         return _accepted("function", spec.name, runtime=spec.runtime)
 
-    async def accept_update_container(self, name, spec, user, background):
-        return _accepted("container", name, image=spec.image or "kept:1")
-
-    async def accept_update_function(self, name, spec, user, background):
+    async def accept_update(self, name, spec, user, background):
         return _accepted("function", name)
 
-    async def get(self, kind, name, user):
-        return WorkloadResponse(
-            name=name,
-            type=kind,
-            url="https://x.serverless.example.com",
-            overallStatus="Ready",
-            sites=[SiteStatus(site="site-a", status="Ready")],
-        )
+    async def get(self, name, user):
+        return _ready("function", name)
+
+    async def delete(self, name, user):
+        return None
+
+
+class FakeContainers:
+    async def accept(self, spec, user, background):
+        return _accepted("container", spec.name, image=spec.image)
+
+    async def accept_update(self, name, spec, user, background):
+        return _accepted("container", name, image=spec.image or "kept:1")
+
+    async def get(self, name, user):
+        return _ready("container", name)
+
+    async def delete(self, name, user):
+        return None
 
 
 @pytest.fixture
@@ -51,7 +66,8 @@ def client():
     app.dependency_overrides[require_auth] = lambda: Principal(
         subject="u", username="alice", groups=["team"], is_admin=False
     )
-    app.dependency_overrides[get_workload_service] = lambda: FakeWorkloads()
+    app.dependency_overrides[get_function_service] = lambda: FakeFunctions()
+    app.dependency_overrides[get_container_service] = lambda: FakeContainers()
     return TestClient(app)
 
 

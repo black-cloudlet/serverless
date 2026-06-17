@@ -1,7 +1,10 @@
-"""Workload orchestration: build manifests once, fan out to all sites.
+"""Shared workload engine: build manifests once, fan out to all sites.
 
-Covers functions (build then deploy) and containers (deploy image), plus
-lookup/delete with group-scoped access control. See docs §3, §4, §6.2.
+Offering-agnostic. :class:`~app.services.function_service.FunctionService` and
+:class:`~app.services.container_service.ContainerService` compose this engine and
+add only the offering-specific prep (build-from-Git vs image + pull secret);
+everything else — apply, host/absence checks, access control, get/delete — lives
+here. See docs §3, §4, §6.2.
 """
 
 from __future__ import annotations
@@ -14,7 +17,6 @@ from app.core.errors import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
-    ServiceUnavailableError,
 )
 from app.core.logging import get_logger
 from app.models.common import (
@@ -25,16 +27,12 @@ from app.models.common import (
     WorkloadResponse,
     SiteStatus,
 )
-from app.models.container import ContainerCreate, ContainerUpdate
-from app.models.function import FunctionCreate, FunctionUpdate
 from app.services import ksvc as ksvc_svc
 from app.services import route as route_svc
-from app.services import secrets as secret_svc
-from app.services.builder import Builder, BuildRequest
+from app.services.builder import Builder
 from app.services.deployer import Deployer, aggregate, status_code_for
 from app.services.env import resolve_env
 from app.services.files import resolve_files
-from app.services.labels import workload_labels
 from app.clients.cluster import Cluster, ResourceKind
 
 logger = get_logger(__name__)
@@ -68,135 +66,20 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
 
 
 class WorkloadService:
+    """Offering-agnostic orchestration shared by the function/container services."""
+
     def __init__(self, settings: Settings, deployer: Deployer, builder: Builder):
-        self._settings = settings
-        self._deployer = deployer
-        self._builder = builder
+        self.settings = settings
+        self.deployer = deployer
+        self.builder = builder
 
-    # -- create ----------------------------------------------------------
-    async def create_function(
-        self, spec: FunctionCreate, user: Principal
-    ) -> tuple[WorkloadResponse, int]:
-        group = user.primary_group
-        oname = object_name(spec.name, group)
-        try:
-            build = self._builder.build(
-                BuildRequest(
-                    name=spec.name,
-                    group=group,
-                    git_url=spec.gitUrl,
-                    branch=spec.branch,
-                    git_token=spec.gitToken,
-                    runtime=spec.runtime,
-                )
-            )
-        except NotImplementedError as exc:
-            raise ServiceUnavailableError(str(exc)) from exc
-
-        await self._assert_workload_absent(
-            spec.name, oname, self._deployer.resolve_targets(spec.sites)
-        )
-        body, code = await self._apply_workload(
-            name=spec.name,
-            user=user,
-            image=build.digest or build.image,
-            offering=OFFERING_FUNCTION,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            hostname=spec.hostname,
-            sites=spec.sites,
-            pull_secret_name=None,
-            pull_secret_manifest=None,
-            created=True,
-        )
-        body.type = "function"
-        body.runtime = spec.runtime
-        body.imageDigest = build.digest
-        return body, code
-
-    async def create_container(
-        self, spec: ContainerCreate, user: Principal
-    ) -> tuple[WorkloadResponse, int]:
-        group = user.primary_group
-        oname = object_name(spec.name, group)
-        pull_name = f"{oname}-pull"
-        pull = secret_svc.build_pull_secret(
-            pull_name,
-            workload_labels(group, user.username, oname, OFFERING_CONTAINER),
-            self._settings.registry.url,
-            spec.registryUsername,
-            spec.registryToken,
-        )
-        await self._assert_workload_absent(
-            spec.name, oname, self._deployer.resolve_targets(spec.sites)
-        )
-        body, code = await self._apply_workload(
-            name=spec.name,
-            user=user,
-            image=spec.image,
-            offering=OFFERING_CONTAINER,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            hostname=spec.hostname,
-            sites=spec.sites,
-            pull_secret_name=pull_name,
-            pull_secret_manifest=pull,
-            created=True,
-        )
-        body.type = "container"
-        body.image = spec.image
-        return body, code
-
-    # -- async accept (202 + poll) ---------------------------------------
-    # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
-    # run the build+deploy in the background and return 202 Accepted with a
-    # status URL to poll. Deploys (esp. function builds) can be slow.
-    async def accept_function(
-        self, spec: FunctionCreate, user: Principal, background
-    ) -> WorkloadResponse:
-        oname = object_name(spec.name, user.primary_group)
-        targets = self._deployer.resolve_targets(spec.sites)
-        host = self._host_for(spec.name, spec.hostname, user)
-        await self._assert_host_available(host, oname, targets)
-        await self._assert_workload_absent(spec.name, oname, targets)
-        background.add_task(self._run, self.create_function, spec, user)
-        return self._accepted("function", spec.name, host, runtime=spec.runtime)
-
-    async def accept_container(
-        self, spec: ContainerCreate, user: Principal, background
-    ) -> WorkloadResponse:
-        oname = object_name(spec.name, user.primary_group)
-        targets = self._deployer.resolve_targets(spec.sites)
-        host = self._host_for(spec.name, spec.hostname, user)
-        await self._assert_host_available(host, oname, targets)
-        await self._assert_workload_absent(spec.name, oname, targets)
-        background.add_task(self._run, self.create_container, spec, user)
-        return self._accepted("container", spec.name, host, image=spec.image)
-
-    async def accept_update_function(
-        self, name: str, spec: FunctionUpdate, user: Principal, background
-    ) -> WorkloadResponse:
-        await self._load_existing(name, OFFERING_FUNCTION, user)  # 404 if missing
-        background.add_task(self._run, self.update_function, name, spec, user)
-        return self._accepted("function", name, self._host_for(name, spec.hostname, user))
-
-    async def accept_update_container(
-        self, name: str, spec: ContainerUpdate, user: Principal, background
-    ) -> WorkloadResponse:
-        await self._load_existing(name, OFFERING_CONTAINER, user)  # 404 if missing
-        background.add_task(self._run, self.update_container, name, spec, user)
-        return self._accepted(
-            "container", name, self._host_for(name, spec.hostname, user), image=spec.image
-        )
-
-    def _host_for(self, name: str, hostname: str | None, user: Principal) -> str:
+    # -- async accept helpers --------------------------------------------
+    def host_for(self, name: str, hostname: str | None, user: Principal) -> str:
         return hostname or route_svc.host_for(
-            name, user.primary_group, self._settings.route_domain
+            name, user.primary_group, self.settings.route_domain
         )
 
-    def _accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
+    def accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
         return WorkloadResponse(
             name=name,
             type=kind,  # type: ignore[arg-type]
@@ -207,59 +90,15 @@ class WorkloadService:
             **extra,
         )
 
-    async def _run(self, fn, *args) -> None:
+    async def run(self, fn, *args) -> None:
+        """Run background work; failures surface via status polling, not the caller."""
         try:
             await fn(*args)
         except Exception:  # noqa: BLE001 - background work; surfaced via status polling
             logger.exception("background deploy failed for %s", args)
 
-    # -- update (full replace of the mutable spec) -----------------------
-    async def update_function(
-        self, name: str, spec: FunctionUpdate, user: Principal
-    ) -> tuple[WorkloadResponse, int]:
-        existing = await self._load_existing(name, OFFERING_FUNCTION, user)
-        body, code = await self._apply_workload(
-            name=name,
-            user=user,
-            image=existing["image"],  # code changes go through a (re)build flow
-            offering=OFFERING_FUNCTION,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            hostname=spec.hostname,
-            sites=None,
-            pull_secret_name=None,
-            pull_secret_manifest=None,
-            created=False,
-        )
-        body.type = "function"
-        return body, code
-
-    async def update_container(
-        self, name: str, spec: ContainerUpdate, user: Principal
-    ) -> tuple[WorkloadResponse, int]:
-        existing = await self._load_existing(name, OFFERING_CONTAINER, user)
-        oname = object_name(name, user.primary_group)
-        image = spec.image or existing["image"]
-        body, code = await self._apply_workload(
-            name=name,
-            user=user,
-            image=image,
-            offering=OFFERING_CONTAINER,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            hostname=spec.hostname,
-            sites=None,
-            pull_secret_name=f"{oname}-pull",  # reuse the existing pull secret
-            pull_secret_manifest=None,
-            created=False,
-        )
-        body.type = "container"
-        body.image = image
-        return body, code
-
-    async def _apply_workload(
+    # -- apply (full replace of the mutable spec) ------------------------
+    async def apply_workload(
         self,
         *,
         name: str,
@@ -277,12 +116,12 @@ class WorkloadService:
     ) -> tuple[WorkloadResponse, int]:
         group = user.primary_group
         oname = object_name(name, group)
-        targets = self._deployer.resolve_targets(sites)
-        host = hostname or route_svc.host_for(name, group, self._settings.route_domain)
+        targets = self.deployer.resolve_targets(sites)
+        host = hostname or route_svc.host_for(name, group, self.settings.route_domain)
 
         # The DomainMapping name IS the host, so an idempotent apply would hijack
         # another workload's mapping. Reject a host already owned by someone else.
-        await self._assert_host_available(host, oname, targets)
+        await self.assert_host_available(host, oname, targets)
 
         resolved = resolve_files(oname, group, user.username, files)
         resolved_env = resolve_env(oname, group, user.username, env)
@@ -298,8 +137,8 @@ class WorkloadService:
             volumes=resolved.volumes,
             scaling=scaling,
             pull_secret=pull_secret_name,
-            ca_config_map=self._settings.ca_bundle.config_map,
-            ca_mount_path=self._settings.ca_bundle.mount_path,
+            ca_config_map=self.settings.ca_bundle.config_map,
+            ca_mount_path=self.settings.ca_bundle.mount_path,
         )
         mapping = route_svc.build_domain_mapping(
             name=oname, group=group, owner=user.username, offering=offering, host=host
@@ -318,11 +157,11 @@ class WorkloadService:
             status, revision = _ksvc_status(obj)
             return SiteStatus(site=cluster.site, status=status, revision=revision)
 
-        statuses = await self._deployer.fanout(targets, apply)
+        statuses = await self.deployer.fanout(targets, apply)
         overall = aggregate(statuses, success_label="Ready")
         body = WorkloadResponse(
             name=name,
-            type="function",
+            type=offering,  # type: ignore[arg-type]
             url=f"https://{host}",
             overallStatus=overall,
             sites=statuses,
@@ -330,9 +169,7 @@ class WorkloadService:
         )
         return body, status_code_for(overall, created=created)
 
-    async def _load_existing(
-        self, name: str, offering: str, user: Principal
-    ) -> dict:
+    async def load_existing(self, name: str, offering: str, user: Principal) -> dict:
         """Fetch an existing workload (offering-scoped); return {'image','host'}.
 
         Raises NotFoundError if it doesn't exist, isn't this offering, or the
@@ -350,12 +187,12 @@ class WorkloadService:
                 holder["image"] = image
             return SiteStatus(site=cluster.site, status="Present")
 
-        await self._deployer.fanout(self._deployer.resolve_targets(None), fetch)
+        await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
         if "image" not in holder:
             raise NotFoundError(f"{offering} workload '{name}' not found")
         return holder
 
-    async def _assert_host_available(
+    async def assert_host_available(
         self, host: str, oname: str, targets: list[Cluster]
     ) -> None:
         """Raise ConflictError if `host` is a DomainMapping owned by another workload."""
@@ -370,11 +207,11 @@ class WorkloadService:
             status = "Available" if owner_workload == oname else "Taken"
             return SiteStatus(site=cluster.site, status=status)
 
-        statuses = await self._deployer.fanout(targets, check)
+        statuses = await self.deployer.fanout(targets, check)
         if any(s.status == "Taken" for s in statuses):
             raise ConflictError(f"hostname '{host}' is already assigned")
 
-    async def _assert_workload_absent(
+    async def assert_workload_absent(
         self, name: str, oname: str, targets: list[Cluster]
     ) -> None:
         """Raise ConflictError if a workload named `oname` already exists (create only)."""
@@ -386,14 +223,12 @@ class WorkloadService:
             except Exception:
                 return SiteStatus(site=cluster.site, status="Absent")
 
-        statuses = await self._deployer.fanout(targets, probe)
+        statuses = await self.deployer.fanout(targets, probe)
         if any(s.status == "Exists" for s in statuses):
             raise ConflictError(f"workload '{name}' already exists")
 
-    # -- read / delete ---------------------------------------------------
-    async def get(
-        self, kind: str, name: str, user: Principal
-    ) -> WorkloadResponse:
+    # -- read / delete (offering-scoped via kind) ------------------------
+    async def get(self, kind: str, name: str, user: Principal) -> WorkloadResponse:
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
         oname = object_name(name, user.primary_group)
         host_holder: dict[str, str] = {}
@@ -408,12 +243,12 @@ class WorkloadService:
             status, revision = _ksvc_status(obj)
             return SiteStatus(site=cluster.site, status=status, revision=revision)
 
-        targets = self._deployer.resolve_targets(None)
-        statuses = await self._deployer.fanout(targets, fetch)
+        targets = self.deployer.resolve_targets(None)
+        statuses = await self.deployer.fanout(targets, fetch)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
         host = host_holder.get(
-            "host", route_svc.host_for(name, user.primary_group, self._settings.route_domain)
+            "host", route_svc.host_for(name, user.primary_group, self.settings.route_domain)
         )
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
@@ -436,8 +271,8 @@ class WorkloadService:
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
             return SiteStatus(site=cluster.site, status="Deleted")
 
-        targets = self._deployer.resolve_targets(None)
-        statuses = await self._deployer.fanout(targets, remove)
+        targets = self.deployer.resolve_targets(None)
+        statuses = await self.deployer.fanout(targets, remove)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 

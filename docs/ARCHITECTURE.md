@@ -889,9 +889,11 @@ Serverless/
 │   │   ├── function.py
 │   │   └── container.py
 │   ├── services/                    # business logic
-│   │   ├── workloads.py             # build-once / deploy-both orchestration
+│   │   ├── workloads.py             # shared build-once / deploy-both engine
+│   │   ├── function_service.py      # function-specific orchestration (build from Git)
+│   │   ├── container_service.py     # container-specific orchestration (image + pull secret)
 │   │   ├── deployer.py              # multi-site fan-out + status aggregation
-│   │   ├── builder.py               # FaaS build via func/buildpacks
+│   │   ├── builder.py               # function build via func/buildpacks
 │   │   ├── ksvc.py                  # KSVC manifest construction
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
 │   │   ├── env.py                   # env resolution (+ {workload}-env Secret)

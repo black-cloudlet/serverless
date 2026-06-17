@@ -204,8 +204,8 @@ def _workload_service(clusters):
 async def test_host_available_when_unused():
     svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     # no DomainMapping exists -> no raise
-    await svc._assert_host_available(
-        "app-team.serverless.example.com", "app-team", svc._deployer.resolve_targets(None)
+    await svc.assert_host_available(
+        "app-team.serverless.example.com", "app-team", svc.deployer.resolve_targets(None)
     )
 
 
@@ -222,7 +222,7 @@ async def test_host_taken_by_other_workload_conflicts():
         }
     )
     with pytest.raises(ConflictError):
-        await svc._assert_host_available(host, "app-team", svc._deployer.resolve_targets(None))
+        await svc.assert_host_available(host, "app-team", svc.deployer.resolve_targets(None))
 
 
 async def test_host_owned_by_same_workload_ok():
@@ -237,15 +237,15 @@ async def test_host_owned_by_same_workload_ok():
         }
     )
     # same owner -> update, no conflict
-    await svc._assert_host_available(host, "app-team", svc._deployer.resolve_targets(None))
+    await svc.assert_host_available(host, "app-team", svc.deployer.resolve_targets(None))
 
 
 async def test_workload_absent_ok():
     svc = _workload_service(
         {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
     )
-    await svc._assert_workload_absent(
-        "app", "app-team", svc._deployer.resolve_targets(None)
+    await svc.assert_workload_absent(
+        "app", "app-team", svc.deployer.resolve_targets(None)
     )
 
 
@@ -260,8 +260,8 @@ async def test_workload_already_exists_conflicts():
         }
     )
     with pytest.raises(ConflictError):
-        await svc._assert_workload_absent(
-            "app", "app-team", svc._deployer.resolve_targets(None)
+        await svc.assert_workload_absent(
+            "app", "app-team", svc.deployer.resolve_targets(None)
         )
 
 
@@ -284,7 +284,7 @@ async def test_load_existing_returns_image():
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    existing = await svc._load_existing("app", "container", user)
+    existing = await svc.load_existing("app", "container", user)
     assert existing["image"] == "reg/x:1"
 
 
@@ -300,7 +300,7 @@ async def test_load_existing_offering_mismatch_404():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await svc._load_existing("app", "function", user)  # it's a container
+        await svc.load_existing("app", "function", user)  # it's a container
 
 
 async def test_accept_container_returns_pending_and_schedules():
@@ -308,16 +308,19 @@ async def test_accept_container_returns_pending_and_schedules():
 
     from app.auth.claims import Principal
     from app.models.container import ContainerCreate
+    from app.services.container_service import ContainerService
 
-    svc = _workload_service(
-        {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
+    svc = ContainerService(
+        _workload_service(
+            {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
+        )
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     spec = ContainerCreate(
         name="app", image="reg/x:1", registryUsername="u", registryToken="t"
     )
-    body = await svc.accept_container(spec, user, bg)
+    body = await svc.accept(spec, user, bg)
     assert body.overallStatus == "Pending"
     assert body.statusUrl == "/api/v1/containers/app/status"
     assert len(bg.tasks) == 1  # deploy scheduled in the background
