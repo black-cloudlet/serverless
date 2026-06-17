@@ -4,7 +4,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: serverless-api-sites
+  name: "{{ .Values.name }}-sites"
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
@@ -12,6 +12,6 @@ data:
   # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
   {{- $sites := list }}
   {{- range .Values.sites }}
-  {{- $sites = append $sites (dict "name" .name "cluster" .cluster "api_server" .apiServer) }}
+  {{- $sites = append $sites (dict "name" .name "cluster" .cluster) }}
   {{- end }}
   SERVERLESS_SITES: {{ toJson $sites | quote }}

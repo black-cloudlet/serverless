@@ -30,7 +30,7 @@ metadata:
     {{- include "serverless-api.labels" . | nindent 4 }}
 subjects:
   - kind: User
-    name: {{ .Values. }}
+    name: {{ .Values.certificate.user }}
     apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: Role

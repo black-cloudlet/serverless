@@ -57,7 +57,6 @@ class SSOConfig(BaseModel):
     jwks_cache_seconds: int = 3600
 
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SERVERLESS_",
@@ -67,6 +66,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "serverless-api"
+    port: int: 8080
     auth_enabled: bool = True
     base_domain: str = "example.com"
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}

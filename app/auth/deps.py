@@ -43,6 +43,11 @@ def require_auth(
         )
 
     token = _bearer_token(request)
+    
+    if token == settings.admin_api_key:
+        return Principal(
+            subject="admin", username="admin", groups=settigns.sso.admin_groups, is_admin=True
+        )
 
     # A structural JWT -> OIDC user/service token; otherwise an opaque admin API key.
     if looks_like_jwt(token):
@@ -52,10 +57,6 @@ def require_auth(
             raise ForbiddenError("Token has no group membership.")
         return principal
 
-    principal = authenticate_api_key(token, settings)
-    if principal is None:
-        raise UnauthenticatedError("Invalid bearer token.")
-    return principal
 
 
 CurrentUser = Annotated[Principal, Depends(require_auth)]

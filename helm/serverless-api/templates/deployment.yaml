@@ -18,12 +18,14 @@ spec:
       # Runs as the namespace 'default' ServiceAccount — cluster auth uses the
       # cert-manager client certificate, not the SA token (docs §6.3).
       containers:
-        - name: serverless-api
+        - name: {{ .Values.name }}
           image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           env:
+            - name: SERVERLESS_PORT
+              value: {{ .Values.service.targetPort }}
             - name: SERVERLESS_AUTH_ENABLED
               value: "true"
             - name: SERVERLESS_BASE_DOMAIN
@@ -51,14 +53,14 @@ spec:
             - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
               value: {{ .Values.caBundle.name | quote }}
             - name: SERVERLESS_CA_BUNDLE__KEY
-              value: {{ .Values.caBundle.file | quote }}
+              value: {{ .Values.caBundle.key | quote }}
             - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
               value: {{ .Values.caBundle.mountPath | quote }}
             # Make outbound TLS (SSO/registry/git) trust the internal CA too.
             - name: SSL_CERT_FILE
-              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.file | quote }}
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
             - name: REQUESTS_CA_BUNDLE
-              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.file | quote }}
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
             # Load each ESO-projected Secret (keys must be valid env names).
             {{- range .Values.externalSecrets.secrets }}

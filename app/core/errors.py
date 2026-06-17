@@ -73,7 +73,8 @@ def _envelope(
     message: str,
     details: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
-) -> dict[str, Any]:
+    ) -> dict[str, Any]:
+    
     return {
         "error": {
             "code": code,
