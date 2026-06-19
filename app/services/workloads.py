@@ -82,7 +82,7 @@ class WorkloadService:
     def accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
         return WorkloadResponse(
             name=name,
-            type=kind,  # type: ignore[arg-type]
+            type=kind,
             url=f"https://{host}",
             overallStatus="Pending",
             sites=[],
