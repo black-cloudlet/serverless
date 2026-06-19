@@ -21,8 +21,8 @@ MANAGED_BY_VALUE = "serverless-api"
 ANNOTATION_HOST = "serverless.platform/host"
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
-# capable); cpu uses the HPA autoscaler class (no scale-to-zero).
-ScalingMetric = Literal["concurrency", "rps", "cpu"]
+# capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
+ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]
 _KPA_METRICS = {"concurrency", "rps"}
 
 DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
@@ -98,7 +98,7 @@ class Scaling(BaseModel):
     # The signal the Knative autoscaler scales on, and the target value for it:
     #   concurrency -> in-flight requests per replica (default KPA)
     #   rps         -> requests per second per replica (KPA)
-    #   cpu         -> % CPU utilization (HPA class; cannot scale to zero)
+    #   cpu/memory  -> % CPU/memory utilization (HPA class; cannot scale to zero)
     metric: ScalingMetric = "concurrency"
     target: int = Field(100, ge=1)
 
