@@ -20,6 +20,11 @@ MANAGED_BY_VALUE = "serverless-api"
 # report the URL without recomputing/guessing it).
 ANNOTATION_HOST = "serverless.platform/host"
 
+# Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
+# capable); cpu uses the HPA autoscaler class (no scale-to-zero).
+ScalingMetric = Literal["concurrency", "rps", "cpu"]
+_KPA_METRICS = {"concurrency", "rps"}
+
 DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 # RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
 HOSTNAME = re.compile(
@@ -90,13 +95,29 @@ class FileMount(BaseModel):
 class Scaling(BaseModel):
     minScale: int = Field(0, ge=0)
     maxScale: int = Field(10, ge=1)
-    targetConcurrency: int = Field(100, ge=1)
+    # The signal the Knative autoscaler scales on, and the target value for it:
+    #   concurrency -> in-flight requests per replica (default KPA)
+    #   rps         -> requests per second per replica (KPA)
+    #   cpu         -> % CPU utilization (HPA class; cannot scale to zero)
+    metric: ScalingMetric = "concurrency"
+    target: int = Field(100, ge=1)
+    # Hard per-replica concurrency cap (0 = unlimited); independent of `metric`.
     containerConcurrency: int = Field(0, ge=0)
+
+    @property
+    def autoscaler_class(self) -> str | None:
+        """The Knative autoscaler class annotation, or None for the default (KPA)."""
+        return None if self.metric in _KPA_METRICS else "hpa.autoscaling.knative.dev"
 
     @model_validator(mode="after")
     def _bounds(self) -> "Scaling":
         if self.maxScale < self.minScale:
             raise ValueError("maxScale must be >= minScale")
+        if self.metric not in _KPA_METRICS and self.minScale < 1:
+            raise ValueError(
+                f"metric '{self.metric}' uses the HPA autoscaler, which cannot "
+                "scale to zero; set minScale >= 1"
+            )
         return self
 
 

@@ -46,6 +46,24 @@ def test_scaling_bounds():
         Scaling(minScale=5, maxScale=2)
 
 
+def test_scaling_metric_default_and_choices():
+    assert Scaling().metric == "concurrency"  # KPA default
+    assert Scaling().autoscaler_class is None
+    assert Scaling(metric="rps", target=20).autoscaler_class is None
+    assert Scaling(metric="cpu", minScale=1, target=70).autoscaler_class == (
+        "hpa.autoscaling.knative.dev"
+    )
+    with pytest.raises(ValidationError):  # unknown metric
+        Scaling(metric="bananas")
+
+
+def test_scaling_hpa_metric_cannot_scale_to_zero():
+    # cpu uses HPA, which can't scale to zero; minScale must be >= 1.
+    with pytest.raises(ValidationError):
+        Scaling(metric="cpu", minScale=0)
+    Scaling(metric="cpu", minScale=1)  # ok
+
+
 def test_optional_hostname_validated():
     fn = FunctionCreate(
         name="my-fn",

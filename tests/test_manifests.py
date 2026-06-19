@@ -25,7 +25,7 @@ def test_build_ksvc_basic():
         host="app-team.serverless.example.com",
         env=[ContainerEnv(name="LOG", value="info")],
         volumes=files.volumes,
-        scaling=Scaling(minScale=1, maxScale=3, targetConcurrency=50),
+        scaling=Scaling(minScale=1, maxScale=3, target=50),
         pull_secret="app-pull",
     )
     assert m["apiVersion"] == "serving.knative.dev/v1"
@@ -33,11 +33,33 @@ def test_build_ksvc_basic():
     assert m["metadata"]["annotations"]["serverless.platform/host"] == "app-team.serverless.example.com"
     assert m["metadata"]["labels"][LABEL_GROUP] == "team"
     tmpl = m["spec"]["template"]
-    assert tmpl["metadata"]["annotations"]["autoscaling.knative.dev/min-scale"] == "1"
-    assert tmpl["metadata"]["annotations"]["autoscaling.knative.dev/target"] == "50"
+    ann = tmpl["metadata"]["annotations"]
+    assert ann["autoscaling.knative.dev/min-scale"] == "1"
+    assert ann["autoscaling.knative.dev/target"] == "50"
+    # default metric is concurrency (KPA) -> no class annotation
+    assert ann["autoscaling.knative.dev/metric"] == "concurrency"
+    assert "autoscaling.knative.dev/class" not in ann
     spec = tmpl["spec"]
     assert spec["imagePullSecrets"] == [{"name": "app-pull"}]
     assert spec["containers"][0]["env"] == [{"name": "LOG", "value": "info"}]
+
+
+def test_build_ksvc_cpu_metric_sets_hpa_class():
+    m = ksvc_svc.build_ksvc(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(minScale=1, maxScale=5, metric="cpu", target=70),
+    )
+    ann = m["spec"]["template"]["metadata"]["annotations"]
+    assert ann["autoscaling.knative.dev/metric"] == "cpu"
+    assert ann["autoscaling.knative.dev/target"] == "70"
+    assert ann["autoscaling.knative.dev/class"] == "hpa.autoscaling.knative.dev"
 
 
 def test_build_ksvc_mounts_ca_bundle():

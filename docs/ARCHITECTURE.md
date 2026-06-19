@@ -275,7 +275,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` — users cannot reference arbitrary existing cluster Secrets/ConfigMaps. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** — one ConfigMap and one Secret per workload, a key per file — and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
-| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `target` (concurrency), and `containerConcurrency`. Scale-to-zero is the default when `min-scale=0`. |
+| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `containerConcurrency`. `metric` selects the scaling signal — `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. Scale-to-zero is the default when `min-scale=0` (KPA metrics only). |
 
 A canonical scaling sub-object in the API:
 
@@ -284,7 +284,8 @@ A canonical scaling sub-object in the API:
   "scaling": {
     "minScale": 0,
     "maxScale": 10,
-    "targetConcurrency": 100,
+    "metric": "concurrency",
+    "target": 100,
     "containerConcurrency": 0
   }
 }
@@ -752,7 +753,8 @@ are JSON. Times are RFC 3339 UTC.
   ],
   "scaling": {                          // optional, see 3.3
     "minScale": 0, "maxScale": 10,
-    "targetConcurrency": 100, "containerConcurrency": 0
+    "metric": "concurrency",            // concurrency | rps | cpu
+    "target": 100, "containerConcurrency": 0
   },
   "sites": ["central", "south"]         // optional; default = all sites (HA)
 }
@@ -815,7 +817,7 @@ Request:
   "registryToken": "<registry-token>",
   "env": [ { "name": "LOG_LEVEL", "value": "info" } ],
   "files": [ { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false } ],
-  "scaling": { "minScale": 1, "maxScale": 8, "targetConcurrency": 50 }
+  "scaling": { "minScale": 1, "maxScale": 8, "metric": "concurrency", "target": 50 }
 }
 ```
 
@@ -961,6 +963,7 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "8"
+        autoscaling.knative.dev/metric: "concurrency"
         autoscaling.knative.dev/target: "50"
     spec:
       containerConcurrency: 0
