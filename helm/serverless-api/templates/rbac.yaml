@@ -20,6 +20,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "events"]
     verbs: ["get", "list", "watch"]
+  # Live per-site resource usage surfaced on GET.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

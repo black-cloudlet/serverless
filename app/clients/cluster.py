@@ -16,6 +16,7 @@ class ResourceKind(Enum):
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
     CONFIG_MAP = ("v1", "ConfigMap")
     SECRET = ("v1", "Secret")
+    POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
 
     @property
     def api_version(self) -> str:

@@ -347,6 +347,44 @@ async def test_accept_container_returns_pending_and_schedules():
     assert len(bg.tasks) == 1  # deploy scheduled in the background
 
 
+async def test_get_reports_size_and_live_usage_per_site():
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
+
+    class _UsageCluster:
+        def __init__(self, name):
+            self.site = name
+            self.name = name
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return {
+                    "metadata": {
+                        "name": name,
+                        "labels": {LABEL_GROUP: "team", LABEL_OFFERING: "container"},
+                        "annotations": {
+                            ANNOTATION_HOST: "app-team.serverless.example.com",
+                            ANNOTATION_SIZE: "medium",
+                        },
+                    },
+                    "status": {
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                        "latestReadyRevisionName": "app-team-00001",
+                    },
+                }
+            if kind == ResourceKind.POD_METRICS:
+                return [{"containers": [{"usage": {"cpu": "120m", "memory": "180Mi"}}]}]
+            raise AssertionError(f"unexpected kind {kind}")
+
+    engine = _workload_service({"site-a": _UsageCluster("site-a")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+    assert body.size == "medium"
+    assert body.sites[0].usage.cpu == "120m"
+    assert body.sites[0].usage.memory == "180Mi"
+
+
 async def test_accept_rejects_group_caller_is_not_member_of():
     from fastapi import BackgroundTasks
 

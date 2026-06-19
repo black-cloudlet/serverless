@@ -19,6 +19,8 @@ MANAGED_BY_VALUE = "serverless-api"
 # Annotation recording the external host chosen for a workload (so reads can
 # report the URL without recomputing/guessing it).
 ANNOTATION_HOST = "serverless.platform/host"
+# Annotation recording the chosen t-shirt size (so reads can report it).
+ANNOTATION_SIZE = "serverless.platform/size"
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
@@ -129,6 +131,14 @@ class SiteStatus(BaseModel):
     status: str
     revision: str | None = None
     error: str | None = None
+    usage: "ResourceUsage | None" = None  # live cpu/memory in use at this site
+
+
+class ResourceUsage(BaseModel):
+    """Live resource consumption summed over a workload's running pods."""
+
+    cpu: str | None = None  # e.g. "120m"
+    memory: str | None = None  # e.g. "180Mi"
 
 
 class WorkloadResponse(BaseModel):
@@ -137,6 +147,7 @@ class WorkloadResponse(BaseModel):
     url: str
     # Pending (accepted, deploying in background) | Ready | Deploying | Degraded
     overallStatus: str
+    size: str | None = None  # resource t-shirt size (uniform across sites)
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
     runtime: str | None = None

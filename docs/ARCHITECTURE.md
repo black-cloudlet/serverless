@@ -799,12 +799,20 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
   "type": "function",
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
+  "size": "small",
   "sites": [
-    { "site": "central", "status": "Ready", "revision": "image-resizer-00001" },
-    { "site": "south", "status": "Ready", "revision": "image-resizer-00001" }
+    { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
+      "usage": { "cpu": "120m", "memory": "180Mi" } },
+    { "site": "south", "status": "Ready", "revision": "image-resizer-00001",
+      "usage": { "cpu": "90m", "memory": "175Mi" } }
   ]
 }
 ```
+
+> `size` is the resource t-shirt size (uniform across sites). Each site's `usage`
+> is **live** cpu/memory summed over that site's running pods, read best-effort
+> from the metrics API — it is `null` when the metrics API is unavailable or the
+> workload is scaled to zero (no pods).
 
 ### CaaS — `POST /api/v1/containers`
 

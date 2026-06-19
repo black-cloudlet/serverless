@@ -22,6 +22,7 @@ from app.core.errors import (
 from app.core.logging import get_logger
 from app.models.common import (
     ANNOTATION_HOST,
+    ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
     LABEL_WORKLOAD,
@@ -29,6 +30,7 @@ from app.models.common import (
     SiteStatus,
 )
 from app.services import ksvc as ksvc_svc
+from app.services import metrics as metrics_svc
 from app.services import route as route_svc
 from app.services.builder import Builder
 from app.services.deployer import Deployer, aggregate, status_code_for
@@ -266,23 +268,29 @@ class WorkloadService:
         self.assert_group(user, group)
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
         oname = object_name(name, group)
-        host_holder: dict[str, str] = {}
+        meta_holder: dict[str, str] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)
             annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            if ANNOTATION_HOST in annotations:
-                host_holder["host"] = annotations[ANNOTATION_HOST]
+            for key, ann in (("host", ANNOTATION_HOST), ("size", ANNOTATION_SIZE)):
+                if ann in annotations and key not in meta_holder:
+                    meta_holder[key] = annotations[ann]
             status, revision = _ksvc_status(obj)
-            return SiteStatus(site=cluster.site, status=status, revision=revision)
+            return SiteStatus(
+                site=cluster.site,
+                status=status,
+                revision=revision,
+                usage=self._site_usage(cluster, oname),
+            )
 
         targets = self.deployer.resolve_targets(None)
         statuses = await self.deployer.fanout(targets, fetch)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
-        host = host_holder.get(
+        host = meta_holder.get(
             "host", route_svc.host_for(name, group, self.settings.route_domain)
         )
         ok = [s for s in statuses if s.error is None]
@@ -292,8 +300,21 @@ class WorkloadService:
             type=kind,  # type: ignore[arg-type]
             url=f"https://{host}",
             overallStatus=overall,
+            size=meta_holder.get("size"),
             sites=statuses,
         )
+
+    def _site_usage(self, cluster: Cluster, oname: str):
+        """Best-effort live cpu/memory in use at this site (None if the metrics
+        API is unavailable or the workload is scaled to zero)."""
+        try:
+            items = cluster.get(
+                ResourceKind.POD_METRICS,
+                label_selector=f"serving.knative.dev/service={oname}",
+            )
+            return metrics_svc.sum_usage(items)
+        except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
+            return None
 
     async def delete(
         self, kind: str, name: str, user: Principal, group: str

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models.common import ANNOTATION_HOST, Scaling
+from app.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, Scaling
 from app.services.files import VolumeSpec
 from app.services.labels import workload_labels
 
@@ -132,7 +132,7 @@ def build_ksvc(
         "metadata": {
             "name": name,
             "labels": labels,
-            "annotations": {ANNOTATION_HOST: host},
+            "annotations": {ANNOTATION_HOST: host, ANNOTATION_SIZE: size},
         },
         "spec": {
             "template": {
