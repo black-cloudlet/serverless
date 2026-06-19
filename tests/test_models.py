@@ -73,6 +73,25 @@ def test_scaling_metric_default_and_choices():
         Scaling(metric="bananas")
 
 
+def test_scaling_effective_target_is_metric_aware():
+    # KPA metrics default to 100; cpu/memory default to 70% so we scale early.
+    assert Scaling().effective_target == 100
+    assert Scaling(metric="rps").effective_target == 100
+    assert Scaling(metric="cpu", minScale=1).effective_target == 70
+    assert Scaling(metric="memory", minScale=1).effective_target == 70
+    # explicit target always wins
+    assert Scaling(metric="cpu", minScale=1, target=55).effective_target == 55
+    assert Scaling(target=200).effective_target == 200  # concurrency: no % cap
+
+
+def test_scaling_cpu_memory_target_is_a_percentage():
+    # utilization percentage targets above 100 make no sense.
+    for hpa_metric in ("cpu", "memory"):
+        with pytest.raises(ValidationError):
+            Scaling(metric=hpa_metric, minScale=1, target=150)
+        Scaling(metric=hpa_metric, minScale=1, target=100)  # ok
+
+
 def test_scaling_hpa_metric_cannot_scale_to_zero():
     # cpu/memory use HPA, which can't scale to zero; minScale must be >= 1.
     for hpa_metric in ("cpu", "memory"):

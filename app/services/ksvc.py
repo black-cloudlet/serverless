@@ -96,7 +96,7 @@ def build_ksvc(
         "autoscaling.knative.dev/min-scale": str(scaling.minScale),
         "autoscaling.knative.dev/max-scale": str(scaling.maxScale),
         "autoscaling.knative.dev/metric": scaling.metric,
-        "autoscaling.knative.dev/target": str(scaling.target),
+        "autoscaling.knative.dev/target": str(scaling.effective_target),
     }
     # cpu/memory metrics need the HPA autoscaler class; concurrency/rps use the
     # default KPA, so the class annotation is omitted for them.

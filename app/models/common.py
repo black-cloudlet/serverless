@@ -107,7 +107,15 @@ class Scaling(BaseModel):
     #   rps         -> requests per second per replica (KPA)
     #   cpu/memory  -> % CPU/memory utilization (HPA class; cannot scale to zero)
     metric: ScalingMetric = "concurrency"
-    target: int = Field(100, ge=1)
+    # Omitted -> a metric-aware default is used (see effective_target): 100 for
+    # concurrency/rps, 70 (%) for cpu/memory so we scale before saturation.
+    target: int | None = Field(None, ge=1)
+
+    @property
+    def effective_target(self) -> int:
+        if self.target is not None:
+            return self.target
+        return 100 if self.metric in _KPA_METRICS else 70
 
     @property
     def autoscaler_class(self) -> str | None:
@@ -123,6 +131,12 @@ class Scaling(BaseModel):
                 f"metric '{self.metric}' uses the HPA autoscaler, which cannot "
                 "scale to zero; set minScale >= 1"
             )
+        # cpu/memory targets are a utilization percentage; >100 makes no sense.
+        if self.metric not in _KPA_METRICS and self.target is not None and self.target > 100:
+            raise ValueError(
+                f"metric '{self.metric}' target is a utilization percentage; "
+                "it must be between 1 and 100"
+            )
         return self
 
 
@@ -131,7 +145,8 @@ class SiteStatus(BaseModel):
     status: str
     revision: str | None = None
     error: str | None = None
-    usage: "ResourceUsage | None" = None  # live cpu/memory in use at this site
+    replicas: int | None = None  # running pods at this site (None if unknown)
+    usage: "ResourceUsage | None" = None  # live cpu/memory summed over those pods
 
 
 class ResourceUsage(BaseModel):

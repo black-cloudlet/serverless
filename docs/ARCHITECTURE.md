@@ -275,7 +275,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` — users cannot reference arbitrary existing cluster Secrets/ConfigMaps. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** — one ConfigMap and one Secret per workload, a key per file — and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
-| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, and `target`. `metric` selects the scaling signal — `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. Scale-to-zero is the default when `min-scale=0` (KPA metrics only). |
+| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, and `target`. `metric` selects the scaling signal — `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). |
 | **Resource size** | `size: small\|medium\|large` (default `small`) — a t-shirt size, so clients pick capacity without Kubernetes units. Maps to container resources: **memory** is set `request==limit` (a hard, predictable OOM boundary — exceeding it restarts that replica), **CPU** is **request-only** (no limit, so workloads are never CPU-throttled). `small`=100m/256Mi, `medium`=250m/512Mi, `large`=500m/1Gi. The CPU/memory request is also what lets the `cpu`/`memory` autoscaling metrics compute utilization. |
 
 A canonical scaling sub-object in the API:
@@ -802,17 +802,20 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
   "size": "small",
   "sites": [
     { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
-      "usage": { "cpu": "120m", "memory": "180Mi" } },
+      "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" } },
     { "site": "south", "status": "Ready", "revision": "image-resizer-00001",
-      "usage": { "cpu": "90m", "memory": "175Mi" } }
+      "replicas": 1, "usage": { "cpu": "90m", "memory": "175Mi" } }
   ]
 }
 ```
 
-> `size` is the resource t-shirt size (uniform across sites). Each site's `usage`
-> is **live** cpu/memory summed over that site's running pods, read best-effort
-> from the metrics API — it is `null` when the metrics API is unavailable or the
-> workload is scaled to zero (no pods).
+> `size` is the resource t-shirt size (per replica, uniform across sites). Each
+> site reports its `replicas` (running pod count) and `usage` — **live** cpu/memory
+> **summed over all of that site's running pods** (so with `replicas: 2` the figure
+> is the combined total of both), counting only the user container, not Knative's
+> queue-proxy sidecar. Both are read best-effort from the metrics API: `usage` is
+> `null` and `replicas` `0` when the workload is scaled to zero, and both are
+> `null` when the metrics API is unavailable.
 
 ### CaaS — `POST /api/v1/containers`
 

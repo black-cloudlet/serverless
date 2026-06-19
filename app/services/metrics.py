@@ -37,14 +37,21 @@ def parse_memory_bytes(quantity: str) -> float:
     return _parse(quantity, _MEM_UNITS)
 
 
+# Knative injects this sidecar into every pod; exclude it so usage reflects the
+# user's workload, not the platform proxy.
+_SIDECAR = "queue-proxy"
+
+
 def sum_usage(pod_metrics: list[dict]) -> ResourceUsage | None:
-    """Sum cpu/memory over all containers of all pods; None if there's nothing
-    (e.g. the workload is scaled to zero, so no pods are running)."""
+    """Sum cpu/memory over each pod's user container(s), ignoring the queue-proxy
+    sidecar. None if there's nothing (e.g. the workload is scaled to zero)."""
     cpu_milli = 0.0
     mem_bytes = 0.0
     seen = False
     for pod in pod_metrics:
         for container in pod.get("containers", []) or []:
+            if container.get("name") == _SIDECAR:
+                continue
             usage = container.get("usage", {}) or {}
             if usage.get("cpu"):
                 cpu_milli += parse_cpu_millicores(usage["cpu"])

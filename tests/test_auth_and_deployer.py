@@ -374,15 +374,25 @@ async def test_get_reports_size_and_live_usage_per_site():
                     },
                 }
             if kind == ResourceKind.POD_METRICS:
-                return [{"containers": [{"usage": {"cpu": "120m", "memory": "180Mi"}}]}]
+                # two replicas, each with a user container + queue-proxy sidecar
+                pod = {
+                    "containers": [
+                        {"name": "user-container", "usage": {"cpu": "60m", "memory": "90Mi"}},
+                        {"name": "queue-proxy", "usage": {"cpu": "999m", "memory": "999Mi"}},
+                    ]
+                }
+                return [pod, pod]
             raise AssertionError(f"unexpected kind {kind}")
 
     engine = _workload_service({"site-a": _UsageCluster("site-a")})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get("container", "app", user, "team")
     assert body.size == "medium"
-    assert body.sites[0].usage.cpu == "120m"
-    assert body.sites[0].usage.memory == "180Mi"
+    site = body.sites[0]
+    assert site.replicas == 2
+    # summed over both replicas' user containers, ignoring the queue-proxy sidecar
+    assert site.usage.cpu == "120m"
+    assert site.usage.memory == "180Mi"
 
 
 async def test_accept_rejects_group_caller_is_not_member_of():

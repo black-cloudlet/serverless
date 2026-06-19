@@ -279,11 +279,13 @@ class WorkloadService:
                 if ann in annotations and key not in meta_holder:
                     meta_holder[key] = annotations[ann]
             status, revision = _ksvc_status(obj)
+            replicas, usage = self._site_usage(cluster, oname)
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
-                usage=self._site_usage(cluster, oname),
+                replicas=replicas,
+                usage=usage,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -305,16 +307,17 @@ class WorkloadService:
         )
 
     def _site_usage(self, cluster: Cluster, oname: str):
-        """Best-effort live cpu/memory in use at this site (None if the metrics
-        API is unavailable or the workload is scaled to zero)."""
+        """Best-effort (replica count, live cpu/memory) at this site. Both are
+        None if the metrics API is unavailable; usage is None and replicas 0 when
+        the workload is scaled to zero (no running pods)."""
         try:
             items = cluster.get(
                 ResourceKind.POD_METRICS,
                 label_selector=f"serving.knative.dev/service={oname}",
             )
-            return metrics_svc.sum_usage(items)
+            return len(items), metrics_svc.sum_usage(items)
         except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-            return None
+            return None, None
 
     async def delete(
         self, kind: str, name: str, user: Principal, group: str
