@@ -80,19 +80,24 @@ class WorkloadService:
 
         - no hostname -> the default ``{name}-{group}.{route_domain}``
         - a single label -> the base domain is appended (``{label}.{route_domain}``)
-        - an FQDN -> accepted only if it sits under the platform base domain
+        - an FQDN -> accepted only if it is exactly one label under the base
+          domain (``{label}.{route_domain}``); deeper names are rejected
         Anything else raises ValidationError (surfaced synchronously as 400).
         """
         domain = self.settings.route_domain
         if not hostname:
             return route_svc.host_for(name, user.primary_group, domain)
         if "." not in hostname:
-            return f"{hostname}.{domain}"
-        if hostname.endswith(f".{domain}"):
-            return hostname
-        raise ValidationError(
-            f"hostname must be a single label or end in '.{domain}'"
-        )
+            label = hostname
+        elif hostname.endswith(f".{domain}"):
+            label = hostname[: -len(domain) - 1]  # strip ".{domain}"
+        else:
+            raise ValidationError(f"hostname must be a single label under '{domain}'")
+        if not label or "." in label:
+            raise ValidationError(
+                f"hostname must be exactly one label under '{domain}'"
+            )
+        return f"{label}.{domain}"
 
     def accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
         return WorkloadResponse(

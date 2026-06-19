@@ -212,7 +212,7 @@ def test_host_for_resolution_and_validation():
     assert svc.host_for("app", None, user) == "app-team.serverless.example.com"
     # single label (last octet) -> base domain appended
     assert svc.host_for("app", "shop", user) == "shop.serverless.example.com"
-    # FQDN already under the base domain -> kept as-is
+    # one label under the base domain -> kept as-is
     assert (
         svc.host_for("app", "shop.serverless.example.com", user)
         == "shop.serverless.example.com"
@@ -220,6 +220,9 @@ def test_host_for_resolution_and_validation():
     # FQDN outside the base domain -> rejected (surfaced as 400)
     with pytest.raises(ValidationError):
         svc.host_for("app", "shop.evil.com", user)
+    # more than one level under the base domain -> rejected
+    with pytest.raises(ValidationError):
+        svc.host_for("app", "a.b.serverless.example.com", user)
 
 
 async def test_host_available_when_unused():
