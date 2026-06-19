@@ -38,13 +38,8 @@ async def update_function(
 async def get_function(
     name: str, group: str, user: CurrentUser, svc: FunctionDep
 ) -> WorkloadResponse:
-    return await svc.get(name, group, user)
-
-
-@router.get("/{name}/status", response_model=WorkloadResponse)
-async def function_status(
-    name: str, group: str, user: CurrentUser, svc: FunctionDep
-) -> WorkloadResponse:
+    # Also the poll target advertised as `statusUrl` on the 202 accept response;
+    # the response already carries overallStatus + per-site status.
     return await svc.get(name, group, user)
 
 

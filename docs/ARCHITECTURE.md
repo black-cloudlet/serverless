@@ -704,7 +704,6 @@ are JSON. Times are RFC 3339 UTC.
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
-| `GET` | `/api/v1/{type}/{name}/status` | Per-site readiness, URLs, revision info. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
@@ -715,8 +714,9 @@ are JSON. Times are RFC 3339 UTC.
 > **Async (submit + poll).** `POST`/`PUT` validate synchronously (so the caller gets
 > immediate `400`/`404`/`409`), then **return `202 Accepted`** with `overallStatus: "Pending"`
 > and a `statusUrl`; the build/deploy runs in the background. Clients poll
-> `GET {statusUrl}` (`/api/v1/{type}/{name}/status`) until `overallStatus` is `Ready` (or
-> `Degraded`). This suits slow FaaS builds and ServiceNow workflow patterns (§10.x).
+> `GET {statusUrl}` (the resource itself, `/api/v1/{type}/{name}?group=`) until
+> `overallStatus` is `Ready` (or `Degraded`). This suits slow FaaS builds and ServiceNow
+> workflow patterns (§10.x).
 >
 > **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
 > workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
@@ -784,11 +784,11 @@ Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Pending",
   "sites": [],
-  "statusUrl": "/api/v1/functions/image-resizer/status"
+  "statusUrl": "/api/v1/functions/image-resizer?group=team"
 }
 ```
 
-Then `GET /api/v1/functions/image-resizer/status` once Ready:
+Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 
 ```json
 {

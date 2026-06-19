@@ -343,7 +343,7 @@ async def test_accept_container_returns_pending_and_schedules():
     )
     body = await svc.accept(spec, user, bg)
     assert body.overallStatus == "Pending"
-    assert body.statusUrl == "/api/v1/containers/app/status?group=team"
+    assert body.statusUrl == "/api/v1/containers/app?group=team"
     assert len(bg.tasks) == 1  # deploy scheduled in the background
 
 

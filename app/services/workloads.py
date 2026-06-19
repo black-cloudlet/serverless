@@ -116,7 +116,7 @@ class WorkloadService:
             url=f"https://{host}",
             overallStatus="Pending",
             sites=[],
-            statusUrl=f"/api/v1/{kind}s/{name}/status?group={group}",
+            statusUrl=f"/api/v1/{kind}s/{name}?group={group}",
             **extra,
         )
 

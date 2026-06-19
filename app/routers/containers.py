@@ -38,13 +38,8 @@ async def update_container(
 async def get_container(
     name: str, group: str, user: CurrentUser, svc: ContainerDep
 ) -> WorkloadResponse:
-    return await svc.get(name, group, user)
-
-
-@router.get("/{name}/status", response_model=WorkloadResponse)
-async def container_status(
-    name: str, group: str, user: CurrentUser, svc: ContainerDep
-) -> WorkloadResponse:
+    # Also the poll target advertised as `statusUrl` on the 202 accept response;
+    # the response already carries overallStatus + per-site status.
     return await svc.get(name, group, user)
 
 

@@ -17,7 +17,7 @@ def _accepted(kind, name, group, **extra):
         url=f"https://{name}.serverless.example.com",
         overallStatus="Pending",
         sites=[],
-        statusUrl=f"/api/v1/{kind}s/{name}/status?group={group}",
+        statusUrl=f"/api/v1/{kind}s/{name}?group={group}",
         **extra,
     )
 
@@ -136,7 +136,7 @@ def test_create_container_accepted(client):
     body = r.json()
     assert body["type"] == "container"
     assert body["overallStatus"] == "Pending"
-    assert body["statusUrl"] == "/api/v1/containers/orders-api/status?group=team"
+    assert body["statusUrl"] == "/api/v1/containers/orders-api?group=team"
 
 
 def test_create_container_validation_error(client):
