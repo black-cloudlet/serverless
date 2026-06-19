@@ -94,15 +94,13 @@ class FileMount(BaseModel):
 
 class Scaling(BaseModel):
     minScale: int = Field(0, ge=0)
-    maxScale: int = Field(10, ge=1)
+    maxScale: int = Field(3, ge=1)
     # The signal the Knative autoscaler scales on, and the target value for it:
     #   concurrency -> in-flight requests per replica (default KPA)
     #   rps         -> requests per second per replica (KPA)
     #   cpu         -> % CPU utilization (HPA class; cannot scale to zero)
     metric: ScalingMetric = "concurrency"
     target: int = Field(100, ge=1)
-    # Hard per-replica concurrency cap (0 = unlimited); independent of `metric`.
-    containerConcurrency: int = Field(0, ge=0)
 
     @property
     def autoscaler_class(self) -> str | None:

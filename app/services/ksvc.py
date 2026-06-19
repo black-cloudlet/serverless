@@ -101,7 +101,6 @@ def build_ksvc(
         container["volumeMounts"] = mounts
 
     pod_spec: dict = {
-        "containerConcurrency": scaling.containerConcurrency,
         "containers": [container],
     }
     if vols:
