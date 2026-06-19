@@ -24,7 +24,8 @@ SiteFn = Callable[[Cluster], SiteStatus]
 
 class Deployer:
     def __init__(self, settings: Settings):
-        self._settings = settings
+        # `settings` is a construction input (each Cluster needs it); we don't
+        # retain it — only the per-site timeout and the built Clusters.
         self._op_timeout = settings.site_op_timeout
         # One Cluster per configured site, built once up front (not per request).
         # The k8s connection stays lazy (on first use), so startup doesn't fail

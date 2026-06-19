@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.core.config import Settings
+from app.core.config import RegistryConfig
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,11 +44,11 @@ class Builder(Protocol):
 class FuncBuilder:
     """Default builder targeting `func`/buildpacks against the internal registry."""
 
-    def __init__(self, settings: Settings):
-        self._settings = settings
+    def __init__(self, registry: RegistryConfig):
+        self._registry = registry
 
     def image_ref(self, req: BuildRequest) -> str:
-        registry = self._settings.registry.url.rstrip("/")
+        registry = self._registry.url.rstrip("/")
         return f"{registry}/{req.group}/{req.name}:{req.branch}"
 
     def build(self, req: BuildRequest) -> BuildResult:

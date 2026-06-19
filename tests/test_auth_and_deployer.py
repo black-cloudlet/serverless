@@ -198,7 +198,7 @@ def _workload_service(clusters):
     settings = _settings_with_sites()
     d = Deployer(settings)
     d._clusters = clusters  # inject fakes (name -> _FakeCluster)
-    return WorkloadService(settings, d, FuncBuilder(settings))
+    return WorkloadService(settings, d, FuncBuilder(settings.registry))
 
 
 def test_host_for_resolution_and_validation():
@@ -334,11 +334,10 @@ async def test_accept_container_returns_pending_and_schedules():
     from app.models.container import ContainerCreate
     from app.services.container import ContainerService
 
-    svc = ContainerService(
-        _workload_service(
-            {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
-        )
+    engine = _workload_service(
+        {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
     )
+    svc = ContainerService(engine, engine.settings.registry)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     spec = ContainerCreate(

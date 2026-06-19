@@ -24,7 +24,7 @@ def get_deployer() -> Deployer:
 def get_workload_service() -> WorkloadService:
     """The shared, offering-agnostic engine both offering services compose."""
     settings = get_settings()
-    return WorkloadService(settings, get_deployer(), FuncBuilder(settings))
+    return WorkloadService(settings, get_deployer(), FuncBuilder(settings.registry))
 
 
 @lru_cache
@@ -34,7 +34,7 @@ def get_function_service() -> FunctionService:
 
 @lru_cache
 def get_container_service() -> ContainerService:
-    return ContainerService(get_workload_service())
+    return ContainerService(get_workload_service(), get_settings().registry)
 
 
 FunctionDep = Annotated[FunctionService, Depends(get_function_service)]
