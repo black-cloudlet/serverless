@@ -17,6 +17,7 @@ from app.core.errors import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ValidationError,
 )
 from app.core.logging import get_logger
 from app.models.common import (
@@ -75,8 +76,22 @@ class WorkloadService:
 
     # -- async accept helpers --------------------------------------------
     def host_for(self, name: str, hostname: str | None, user: Principal) -> str:
-        return f"{hostname}.{self.settings.route_domain}" or route_svc.host_for(
-            name, user.primary_group, self.settings.route_domain
+        """Resolve the external host for a workload, validating any custom one.
+
+        - no hostname -> the default ``{name}-{group}.{route_domain}``
+        - a single label -> the base domain is appended (``{label}.{route_domain}``)
+        - an FQDN -> accepted only if it sits under the platform base domain
+        Anything else raises ValidationError (surfaced synchronously as 400).
+        """
+        domain = self.settings.route_domain
+        if not hostname:
+            return route_svc.host_for(name, user.primary_group, domain)
+        if "." not in hostname:
+            return f"{hostname}.{domain}"
+        if hostname.endswith(f".{domain}"):
+            return hostname
+        raise ValidationError(
+            f"hostname must be a single label or end in '.{domain}'"
         )
 
     def accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
@@ -117,7 +132,7 @@ class WorkloadService:
         group = user.primary_group
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(sites)
-        host = hostname or route_svc.host_for(name, group, self.settings.route_domain)
+        host = self.host_for(name, hostname, user)
 
         # The DomainMapping name IS the host, so an idempotent apply would hijack
         # another workload's mapping. Reject a host already owned by someone else.

@@ -201,6 +201,27 @@ def _workload_service(clusters):
     return WorkloadService(settings, d, FuncBuilder(settings))
 
 
+def test_host_for_resolution_and_validation():
+    from app.auth.claims import Principal
+    from app.core.errors import ValidationError
+
+    svc = _workload_service({})  # host_for doesn't touch clusters
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # no hostname -> default {name}-{group}.{route_domain}
+    assert svc.host_for("app", None, user) == "app-team.serverless.example.com"
+    # single label (last octet) -> base domain appended
+    assert svc.host_for("app", "shop", user) == "shop.serverless.example.com"
+    # FQDN already under the base domain -> kept as-is
+    assert (
+        svc.host_for("app", "shop.serverless.example.com", user)
+        == "shop.serverless.example.com"
+    )
+    # FQDN outside the base domain -> rejected (surfaced as 400)
+    with pytest.raises(ValidationError):
+        svc.host_for("app", "shop.evil.com", user)
+
+
 async def test_host_available_when_unused():
     svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     # no DomainMapping exists -> no raise

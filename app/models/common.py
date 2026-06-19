@@ -36,9 +36,12 @@ def validate_name(name: str) -> str:
 
 
 def validate_hostname(host: str) -> str:
-    if not HOSTNAME.match(host):
-        raise ValueError("hostname must be a valid lowercase DNS hostname (FQDN)")
-    return host
+    # Either a single DNS-1123 label (the platform base domain is appended by the
+    # API) or a full lowercase FQDN. That the FQDN sits under the platform base
+    # domain is enforced in the service layer, where the base domain is known.
+    if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
+        return host
+    raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
 
 
 class EnvVar(BaseModel):
