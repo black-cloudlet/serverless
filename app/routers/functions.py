@@ -35,17 +35,21 @@ async def update_function(
 
 
 @router.get("/{name}", response_model=WorkloadResponse)
-async def get_function(name: str, user: CurrentUser, svc: FunctionDep) -> WorkloadResponse:
-    return await svc.get(name, user)
+async def get_function(
+    name: str, group: str, user: CurrentUser, svc: FunctionDep
+) -> WorkloadResponse:
+    return await svc.get(name, group, user)
 
 
 @router.get("/{name}/status", response_model=WorkloadResponse)
 async def function_status(
-    name: str, user: CurrentUser, svc: FunctionDep
+    name: str, group: str, user: CurrentUser, svc: FunctionDep
 ) -> WorkloadResponse:
-    return await svc.get(name, user)
+    return await svc.get(name, group, user)
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_function(name: str, user: CurrentUser, svc: FunctionDep) -> None:
-    await svc.delete(name, user)
+async def delete_function(
+    name: str, group: str, user: CurrentUser, svc: FunctionDep
+) -> None:
+    await svc.delete(name, group, user)

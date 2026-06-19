@@ -35,17 +35,21 @@ async def update_container(
 
 
 @router.get("/{name}", response_model=WorkloadResponse)
-async def get_container(name: str, user: CurrentUser, svc: ContainerDep) -> WorkloadResponse:
-    return await svc.get(name, user)
+async def get_container(
+    name: str, group: str, user: CurrentUser, svc: ContainerDep
+) -> WorkloadResponse:
+    return await svc.get(name, group, user)
 
 
 @router.get("/{name}/status", response_model=WorkloadResponse)
 async def container_status(
-    name: str, user: CurrentUser, svc: ContainerDep
+    name: str, group: str, user: CurrentUser, svc: ContainerDep
 ) -> WorkloadResponse:
-    return await svc.get(name, user)
+    return await svc.get(name, group, user)
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_container(name: str, user: CurrentUser, svc: ContainerDep) -> None:
-    await svc.delete(name, user)
+async def delete_container(
+    name: str, group: str, user: CurrentUser, svc: ContainerDep
+) -> None:
+    await svc.delete(name, group, user)

@@ -10,14 +10,14 @@ from app.main import create_app
 from app.models.common import WorkloadResponse, SiteStatus
 
 
-def _accepted(kind, name, **extra):
+def _accepted(kind, name, group, **extra):
     return WorkloadResponse(
         name=name,
         type=kind,
         url=f"https://{name}.serverless.example.com",
         overallStatus="Pending",
         sites=[],
-        statusUrl=f"/api/v1/{kind}s/{name}/status",
+        statusUrl=f"/api/v1/{kind}s/{name}/status?group={group}",
         **extra,
     )
 
@@ -34,29 +34,29 @@ def _ready(kind, name):
 
 class FakeFunctions:
     async def accept(self, spec, user, background):
-        return _accepted("function", spec.name, runtime=spec.runtime)
+        return _accepted("function", spec.name, spec.group, runtime=spec.runtime)
 
     async def accept_update(self, name, spec, user, background):
-        return _accepted("function", name)
+        return _accepted("function", name, spec.group)
 
-    async def get(self, name, user):
+    async def get(self, name, group, user):
         return _ready("function", name)
 
-    async def delete(self, name, user):
+    async def delete(self, name, group, user):
         return None
 
 
 class FakeContainers:
     async def accept(self, spec, user, background):
-        return _accepted("container", spec.name, image=spec.image)
+        return _accepted("container", spec.name, spec.group, image=spec.image)
 
     async def accept_update(self, name, spec, user, background):
-        return _accepted("container", name, image=spec.image or "kept:1")
+        return _accepted("container", name, spec.group, image=spec.image or "kept:1")
 
-    async def get(self, name, user):
+    async def get(self, name, group, user):
         return _ready("container", name)
 
-    async def delete(self, name, user):
+    async def delete(self, name, group, user):
         return None
 
 
@@ -126,6 +126,7 @@ def test_create_container_accepted(client):
         "/api/v1/containers",
         json={
             "name": "orders-api",
+            "group": "team",
             "image": "registry.internal/team/orders:1",
             "registryUsername": "u",
             "registryToken": "t",
@@ -135,7 +136,7 @@ def test_create_container_accepted(client):
     body = r.json()
     assert body["type"] == "container"
     assert body["overallStatus"] == "Pending"
-    assert body["statusUrl"] == "/api/v1/containers/orders-api/status"
+    assert body["statusUrl"] == "/api/v1/containers/orders-api/status?group=team"
 
 
 def test_create_container_validation_error(client):
@@ -145,15 +146,24 @@ def test_create_container_validation_error(client):
 
 
 def test_get_function(client):
-    r = client.get("/api/v1/functions/foo")
+    r = client.get("/api/v1/functions/foo?group=team")
     assert r.status_code == 200
     assert r.json()["name"] == "foo"
+
+
+def test_get_function_requires_group(client):
+    r = client.get("/api/v1/functions/foo")  # missing ?group=
+    assert r.status_code == 400
 
 
 def test_update_container_accepted(client):
     r = client.put(
         "/api/v1/containers/orders-api",
-        json={"image": "registry.internal/team/orders:2", "scaling": {"minScale": 1}},
+        json={
+            "group": "team",
+            "image": "registry.internal/team/orders:2",
+            "scaling": {"minScale": 1},
+        },
     )
     assert r.status_code == 202
     assert r.json()["image"] == "registry.internal/team/orders:2"
@@ -161,6 +171,9 @@ def test_update_container_accepted(client):
 
 
 def test_update_function_accepted(client):
-    r = client.put("/api/v1/functions/foo", json={"env": [{"name": "X", "value": "1"}]})
+    r = client.put(
+        "/api/v1/functions/foo",
+        json={"group": "team", "env": [{"name": "X", "value": "1"}]},
+    )
     assert r.status_code == 202
     assert r.json()["type"] == "function"

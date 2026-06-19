@@ -202,27 +202,25 @@ def _workload_service(clusters):
 
 
 def test_host_for_resolution_and_validation():
-    from app.auth.claims import Principal
     from app.core.errors import ValidationError
 
     svc = _workload_service({})  # host_for doesn't touch clusters
-    user = Principal(subject="u", username="alice", groups=["team"])
 
     # no hostname -> default {name}-{group}.{route_domain}
-    assert svc.host_for("app", None, user) == "app-team.serverless.example.com"
+    assert svc.host_for("app", None, "team") == "app-team.serverless.example.com"
     # single label (last octet) -> base domain appended
-    assert svc.host_for("app", "shop", user) == "shop.serverless.example.com"
+    assert svc.host_for("app", "shop", "team") == "shop.serverless.example.com"
     # one label under the base domain -> kept as-is
     assert (
-        svc.host_for("app", "shop.serverless.example.com", user)
+        svc.host_for("app", "shop.serverless.example.com", "team")
         == "shop.serverless.example.com"
     )
     # FQDN outside the base domain -> rejected (surfaced as 400)
     with pytest.raises(ValidationError):
-        svc.host_for("app", "shop.evil.com", user)
+        svc.host_for("app", "shop.evil.com", "team")
     # more than one level under the base domain -> rejected
     with pytest.raises(ValidationError):
-        svc.host_for("app", "a.b.serverless.example.com", user)
+        svc.host_for("app", "a.b.serverless.example.com", "team")
 
 
 async def test_host_available_when_unused():
@@ -308,7 +306,7 @@ async def test_load_existing_returns_image():
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    existing = await svc.load_existing("app", "container", user)
+    existing = await svc.load_existing("app", "container", user, "team")
     assert existing["image"] == "reg/x:1"
 
 
@@ -324,7 +322,7 @@ async def test_load_existing_offering_mismatch_404():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await svc.load_existing("app", "function", user)  # it's a container
+        await svc.load_existing("app", "function", user, "team")  # it's a container
 
 
 async def test_accept_container_returns_pending_and_schedules():
@@ -341,9 +339,27 @@ async def test_accept_container_returns_pending_and_schedules():
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     spec = ContainerCreate(
-        name="app", image="reg/x:1", registryUsername="u", registryToken="t"
+        name="app", group="team", image="reg/x:1", registryUsername="u", registryToken="t"
     )
     body = await svc.accept(spec, user, bg)
     assert body.overallStatus == "Pending"
-    assert body.statusUrl == "/api/v1/containers/app/status"
+    assert body.statusUrl == "/api/v1/containers/app/status?group=team"
     assert len(bg.tasks) == 1  # deploy scheduled in the background
+
+
+async def test_accept_rejects_group_caller_is_not_member_of():
+    from fastapi import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.core.errors import ForbiddenError
+    from app.models.container import ContainerCreate
+    from app.services.container import ContainerService
+
+    engine = _workload_service({"site-a": _FakeCluster("site-a")})
+    svc = ContainerService(engine, engine.settings.registry)
+    user = Principal(subject="u", username="alice", groups=["team"])  # not 'other'
+    spec = ContainerCreate(
+        name="app", group="other", image="reg/x:1", registryUsername="u", registryToken="t"
+    )
+    with pytest.raises(ForbiddenError):  # 403 before anything is scheduled
+        await svc.accept(spec, user, BackgroundTasks())

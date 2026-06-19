@@ -503,14 +503,17 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   ConfigMap/Secret, and the imagePullSecret) carries **both** the SSO group label
   and the workload-name label, so it is unambiguously attributable and selectable.
 
-- The API derives the caller's group(s) from the **`groups` claim**. Authorization rules:
-  - **Create/Update:** the workload is stamped with the caller's group label.
-  - **Read/List:** results are filtered with a **label selector**
-    `serverless.platform/group in (<caller groups>)`.
-  - **Update/Delete by name:** the API first verifies the target resource's group label is
-    in the caller's groups; otherwise `403`/`404`.
-- A configurable mapping allows **admin groups** (full access) vs **tenant groups** (own
-  resources only).
+- The caller **explicitly chooses the group** to act as on every request — in the body for
+  writes (`group` field) and as a `?group=` query parameter for reads/deletes. The API
+  **asserts the caller is a member** of that group (from the **`groups` claim**); otherwise
+  `403`. This makes the acting group unambiguous for users in multiple groups. Authorization
+  rules:
+  - **Create/Update:** the workload is named `{name}-{group}` and stamped with that group label.
+  - **Read/Delete by name:** the request targets `{name}-{group}`; the API verifies both that
+    the caller is a member of `group` and that the resource's group label matches; otherwise
+    `403`/`404`.
+- Admins (members of a configured **admin group**) may act for any group; **tenant groups**
+  are limited to groups the caller belongs to.
 
 > Isolation is enforced **in the API layer** plus label selectors. Because all tenants share
 > a namespace, the cluster RBAC for the API's service identity is namespace-wide (see §6.3);
@@ -693,14 +696,14 @@ are JSON. Times are RFC 3339 UTC.
 |--------|------|---------|
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/functions` | List caller's functions (label-scoped). |
-| `GET` | `/api/v1/functions/{name}` | Get one function (spec + per-site status). |
-| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). **202 Accepted**. |
-| `DELETE` | `/api/v1/functions/{name}` | Delete the function in both sites. |
+| `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
+| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). **202 Accepted**. |
+| `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/containers` | List caller's containers (label-scoped). |
-| `GET` | `/api/v1/containers/{name}` | Get one container (spec + per-site status). |
-| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). **202 Accepted**. |
-| `DELETE` | `/api/v1/containers/{name}` | Delete the container in both sites. |
+| `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
+| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). **202 Accepted**. |
+| `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
 | `GET` | `/api/v1/{type}/{name}/status` | Per-site readiness, URLs, revision info. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
@@ -733,8 +736,11 @@ are JSON. Times are RFC 3339 UTC.
 // Workload shared fields (used by both functions and containers)
 {
   "name": "orders-api",                 // DNS-1123, required. OpenShift object name is {name}-{group}.
-  "hostname": "orders.example.com",     // optional custom host; default {name}-{group}.{route_domain}.
-                                        // must be a valid FQDN and not already assigned (else 409).
+  "group": "team-a",                    // required; the SSO group to act as. Caller must be a
+                                        // member (else 403). Reads/deletes pass it as ?group=.
+  "hostname": "orders",                 // optional custom host; default {name}-{group}.{route_domain}.
+                                        // a single label, or one level under {route_domain}
+                                        // ({label}.{route_domain}); must not be assigned (else 409).
   "env": [                              // optional; each entry is name + value
     { "name": "LOG_LEVEL", "value": "info" },                       // inline
     { "name": "DB_PASSWORD", "value": "s3cret", "secret": true }    // -> API-created Secret {workload}-env

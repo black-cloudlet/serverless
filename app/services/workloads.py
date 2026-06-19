@@ -74,8 +74,16 @@ class WorkloadService:
         self.deployer = deployer
         self.builder = builder
 
+    # -- access control --------------------------------------------------
+    def assert_group(self, user: Principal, group: str) -> None:
+        """Reject the request unless the caller is a member of ``group`` (admins
+        may act for any group). The group is caller-supplied, so this is checked
+        on every entry point."""
+        if not user.can_access_group(group):
+            raise ForbiddenError(f"not a member of group '{group}'")
+
     # -- async accept helpers --------------------------------------------
-    def host_for(self, name: str, hostname: str | None, user: Principal) -> str:
+    def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host for a workload, validating any custom one.
 
         - no hostname -> the default ``{name}-{group}.{route_domain}``
@@ -86,7 +94,7 @@ class WorkloadService:
         """
         domain = self.settings.route_domain
         if not hostname:
-            return route_svc.host_for(name, user.primary_group, domain)
+            return route_svc.host_for(name, group, domain)
         if "." not in hostname:
             label = hostname
         elif hostname.endswith(f".{domain}"):
@@ -99,14 +107,16 @@ class WorkloadService:
             )
         return f"{label}.{domain}"
 
-    def accepted(self, kind: str, name: str, host: str, **extra) -> WorkloadResponse:
+    def accepted(
+        self, kind: str, name: str, group: str, host: str, **extra
+    ) -> WorkloadResponse:
         return WorkloadResponse(
             name=name,
             type=kind,
             url=f"https://{host}",
             overallStatus="Pending",
             sites=[],
-            statusUrl=f"/api/v1/{kind}s/{name}/status",
+            statusUrl=f"/api/v1/{kind}s/{name}/status?group={group}",
             **extra,
         )
 
@@ -123,6 +133,7 @@ class WorkloadService:
         *,
         name: str,
         user: Principal,
+        group: str,
         image: str,
         offering: str,
         env,
@@ -134,10 +145,10 @@ class WorkloadService:
         pull_secret_manifest: dict | None,
         created: bool,
     ) -> tuple[WorkloadResponse, int]:
-        group = user.primary_group
+        self.assert_group(user, group)
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(sites)
-        host = self.host_for(name, hostname, user)
+        host = self.host_for(name, hostname, group)
 
         # The DomainMapping name IS the host, so an idempotent apply would hijack
         # another workload's mapping. Reject a host already owned by someone else.
@@ -189,13 +200,16 @@ class WorkloadService:
         )
         return body, status_code_for(overall, created=created)
 
-    async def load_existing(self, name: str, offering: str, user: Principal) -> dict:
+    async def load_existing(
+        self, name: str, offering: str, user: Principal, group: str
+    ) -> dict:
         """Fetch an existing workload (offering-scoped); return {'image','host'}.
 
         Raises NotFoundError if it doesn't exist, isn't this offering, or the
         caller can't access its group.
         """
-        oname = object_name(name, user.primary_group)
+        self.assert_group(user, group)
+        oname = object_name(name, group)
         holder: dict = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
@@ -244,9 +258,12 @@ class WorkloadService:
             raise ConflictError(f"workload '{name}' already exists")
 
     # -- read / delete (offering-scoped via kind) ------------------------
-    async def get(self, kind: str, name: str, user: Principal) -> WorkloadResponse:
+    async def get(
+        self, kind: str, name: str, user: Principal, group: str
+    ) -> WorkloadResponse:
+        self.assert_group(user, group)
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
-        oname = object_name(name, user.primary_group)
+        oname = object_name(name, group)
         host_holder: dict[str, str] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
@@ -264,7 +281,7 @@ class WorkloadService:
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
         host = host_holder.get(
-            "host", route_svc.host_for(name, user.primary_group, self.settings.route_domain)
+            "host", route_svc.host_for(name, group, self.settings.route_domain)
         )
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
@@ -276,9 +293,12 @@ class WorkloadService:
             sites=statuses,
         )
 
-    async def delete(self, kind: str, name: str, user: Principal) -> None:
+    async def delete(
+        self, kind: str, name: str, user: Principal, group: str
+    ) -> None:
+        self.assert_group(user, group)
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
-        oname = object_name(name, user.primary_group)
+        oname = object_name(name, group)
 
         def remove(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)

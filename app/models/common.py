@@ -35,6 +35,14 @@ def validate_name(name: str) -> str:
     return name
 
 
+def validate_group(group: str) -> str:
+    if not DNS1123.match(group) or len(group) > 63:
+        raise ValueError(
+            "group must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
+        )
+    return group
+
+
 def validate_hostname(host: str) -> str:
     # Either a single DNS-1123 label (the platform base domain is appended by the
     # API) or a full lowercase FQDN. That the FQDN sits under the platform base
