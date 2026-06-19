@@ -308,7 +308,7 @@ async def test_accept_container_returns_pending_and_schedules():
 
     from app.auth.claims import Principal
     from app.models.container import ContainerCreate
-    from app.services.container_service import ContainerService
+    from app.services.container import ContainerService
 
     svc = ContainerService(
         _workload_service(

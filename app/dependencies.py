@@ -9,9 +9,9 @@ from fastapi import Depends
 
 from app.core.config import get_settings
 from app.services.builder import FuncBuilder
-from app.services.container_service import ContainerService
+from app.services.container import ContainerService
 from app.services.deployer import Deployer
-from app.services.function_service import FunctionService
+from app.services.function import FunctionService
 from app.services.workloads import WorkloadService
 
 

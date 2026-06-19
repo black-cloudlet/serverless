@@ -1,7 +1,7 @@
 """Shared workload engine: build manifests once, fan out to all sites.
 
-Offering-agnostic. :class:`~app.services.function_service.FunctionService` and
-:class:`~app.services.container_service.ContainerService` compose this engine and
+Offering-agnostic. :class:`~app.services.function.FunctionService` and
+:class:`~app.services.container.ContainerService` compose this engine and
 add only the offering-specific prep (build-from-Git vs image + pull secret);
 everything else — apply, host/absence checks, access control, get/delete — lives
 here. See docs §3, §4, §6.2.

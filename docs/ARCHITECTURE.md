@@ -890,8 +890,8 @@ Serverless/
 │   │   └── container.py
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine
-│   │   ├── function_service.py      # function-specific orchestration (build from Git)
-│   │   ├── container_service.py     # container-specific orchestration (image + pull secret)
+│   │   ├── function.py      # function-specific orchestration (build from Git)
+│   │   ├── container.py     # container-specific orchestration (image + pull secret)
 │   │   ├── deployer.py              # multi-site fan-out + status aggregation
 │   │   ├── builder.py               # function build via func/buildpacks
 │   │   ├── ksvc.py                  # KSVC manifest construction
