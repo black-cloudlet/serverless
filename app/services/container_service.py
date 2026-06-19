@@ -17,21 +17,19 @@ class ContainerService:
         self._engine = engine
 
     # -- async accept (202 + poll) ---------------------------------------
-    async def accept(
-        self, spec: ContainerCreate, user: Principal, background
-    ) -> WorkloadResponse:
+    async def accept(self, spec: ContainerCreate, user: Principal, background) -> WorkloadResponse:
         oname = object_name(spec.name, user.primary_group)
+        
         targets = self._engine.deployer.resolve_targets(spec.sites)
         host = self._engine.host_for(spec.name, spec.hostname, user)
+        
         await self._engine.assert_host_available(host, oname, targets)
         await self._engine.assert_workload_absent(spec.name, oname, targets)
         background.add_task(self._engine.run, self.create, spec, user)
         return self._engine.accepted("container", spec.name, host, image=spec.image)
 
-    async def accept_update(
-        self, name: str, spec: ContainerUpdate, user: Principal, background
-    ) -> WorkloadResponse:
-        await self._engine.load_existing(name, OFFERING_CONTAINER, user)  # 404 if missing
+    async def accept_update(self, name: str, spec: ContainerUpdate, user: Principal, background) -> WorkloadResponse:
+        await self._engine.load_existing(name, OFFERING_CONTAINER, user)
         background.add_task(self._engine.run, self.update, name, spec, user)
         return self._engine.accepted(
             "container", name, self._engine.host_for(name, spec.hostname, user),

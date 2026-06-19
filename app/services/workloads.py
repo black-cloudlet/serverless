@@ -75,7 +75,7 @@ class WorkloadService:
 
     # -- async accept helpers --------------------------------------------
     def host_for(self, name: str, hostname: str | None, user: Principal) -> str:
-        return hostname or route_svc.host_for(
+        return f"{hostname}.{self.settings.route_domain}" or route_svc.host_for(
             name, user.primary_group, self.settings.route_domain
         )
 
@@ -192,9 +192,7 @@ class WorkloadService:
             raise NotFoundError(f"{offering} workload '{name}' not found")
         return holder
 
-    async def assert_host_available(
-        self, host: str, oname: str, targets: list[Cluster]
-    ) -> None:
+    async def assert_host_available(self, host: str, oname: str, targets: list[Cluster]) -> None:
         """Raise ConflictError if `host` is a DomainMapping owned by another workload."""
 
         def check(cluster: Cluster) -> SiteStatus:
@@ -211,9 +209,7 @@ class WorkloadService:
         if any(s.status == "Taken" for s in statuses):
             raise ConflictError(f"hostname '{host}' is already assigned")
 
-    async def assert_workload_absent(
-        self, name: str, oname: str, targets: list[Cluster]
-    ) -> None:
+    async def assert_workload_absent(self, name: str, oname: str, targets: list[Cluster]) -> None:
         """Raise ConflictError if a workload named `oname` already exists (create only)."""
 
         def probe(cluster: Cluster) -> SiteStatus:
