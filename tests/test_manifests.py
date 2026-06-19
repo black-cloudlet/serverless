@@ -44,6 +44,26 @@ def test_build_ksvc_basic():
     assert spec["containers"][0]["env"] == [{"name": "LOG", "value": "info"}]
 
 
+def test_build_ksvc_size_sets_resources():
+    m = ksvc_svc.build_ksvc(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="medium",
+    )
+    res = m["spec"]["template"]["spec"]["containers"][0]["resources"]
+    # memory is request==limit (hard cap); cpu is request-only (no limit).
+    assert res["requests"] == {"cpu": "250m", "memory": "512Mi"}
+    assert res["limits"] == {"memory": "512Mi"}
+    assert "cpu" not in res["limits"]
+
+
 def test_build_ksvc_cpu_metric_sets_hpa_class():
     m = ksvc_svc.build_ksvc(
         name="app-team",

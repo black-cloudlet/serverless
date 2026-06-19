@@ -25,6 +25,11 @@ ANNOTATION_HOST = "serverless.platform/host"
 ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]
 _KPA_METRICS = {"concurrency", "rps"}
 
+# Workload resource size (t-shirt sizing). Maps to container resources in the
+# KSVC (see services.ksvc): memory is request==limit (hard cap), CPU is
+# request-only (no limit -> no throttling).
+WorkloadSize = Literal["small", "medium", "large"]
+
 DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 # RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
 HOSTNAME = re.compile(

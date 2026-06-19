@@ -23,6 +23,21 @@ def test_unsupported_runtime_rejected():
         FunctionCreate(name="x", group="team", gitUrl="g", gitToken="t", runtime="ruby")
 
 
+def test_size_default_and_choices():
+    fn = FunctionCreate(name="x", group="team", gitUrl="g", gitToken="t", runtime="go")
+    assert fn.size == "small"  # default
+    assert (
+        FunctionCreate(
+            name="x", group="team", gitUrl="g", gitToken="t", runtime="go", size="large"
+        ).size
+        == "large"
+    )
+    with pytest.raises(ValidationError):  # unknown size
+        FunctionCreate(
+            name="x", group="team", gitUrl="g", gitToken="t", runtime="go", size="xl"
+        )
+
+
 def test_envvar_requires_value():
     with pytest.raises(ValidationError):
         EnvVar(name="X")

@@ -10,6 +10,7 @@ from app.models.common import (
     EnvVar,
     FileMount,
     Scaling,
+    WorkloadSize,
     validate_group,
     validate_hostname,
     validate_name,
@@ -29,6 +30,7 @@ class ContainerCreate(BaseModel):
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
+    size: WorkloadSize = "small"  # resource size; see services.ksvc
     sites: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
@@ -42,4 +44,5 @@ class ContainerUpdate(BaseModel):
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
+    size: WorkloadSize = "small"
     hostname: Hostname | None = None

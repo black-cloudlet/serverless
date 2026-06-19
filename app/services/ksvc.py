@@ -10,6 +10,23 @@ from app.services.labels import workload_labels
 
 KSVC_API = "serving.knative.dev/v1"
 
+# T-shirt sizes -> (cpu request, memory). Memory is set as request==limit (a
+# hard, predictable OOM boundary); CPU is request-only (no limit, so the
+# workload is never CPU-throttled). The request also lets cpu/memory HPA work.
+_SIZES: dict[str, tuple[str, str]] = {
+    "small": ("100m", "256Mi"),
+    "medium": ("250m", "512Mi"),
+    "large": ("500m", "1Gi"),
+}
+
+
+def _resources(size: str) -> dict:
+    cpu_request, memory = _SIZES[size]
+    return {
+        "requests": {"cpu": cpu_request, "memory": memory},
+        "limits": {"memory": memory},
+    }
+
 
 @dataclass
 class ContainerEnv:
@@ -70,6 +87,7 @@ def build_ksvc(
     env: list[ContainerEnv],
     volumes: list[VolumeSpec],
     scaling: Scaling,
+    size: str = "small",
     pull_secret: str | None = None,
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
@@ -94,7 +112,7 @@ def build_ksvc(
             {"name": "trusted-ca", "mountPath": ca_mount_path, "readOnly": True}
         )
 
-    container: dict = {"image": image}
+    container: dict = {"image": image, "resources": _resources(size)}
     if env:
         container["env"] = _env(env)
     if mounts:
