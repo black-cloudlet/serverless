@@ -23,7 +23,7 @@ def _accepted(kind, name, group, **extra):
         name=name,
         group=group,
         type=kind,
-        url=f"https://{name}.serverless.example.com",
+        hostname=f"{name}.serverless.example.com",
         overallStatus="Pending",
         sites=[],
         statusUrl=f"/api/v1/{kind}s/{name}?group={group}",
@@ -37,7 +37,7 @@ def _ready(kind, name, group="team", **extra):
         name=name,
         group=group,
         type=kind,
-        url="https://x.serverless.example.com",
+        hostname="x.serverless.example.com",
         overallStatus="Ready",
         sites=[SiteStatus(site="site-a", status="Ready")],
         **extra,
@@ -59,7 +59,7 @@ class FakeFunctions:
 
         return [
             WorkloadSummary(
-                name="fn-a", group="team", type="function", url="https://fn-a.example.com",
+                name="fn-a", group="team", type="function", hostname="fn-a.example.com",
                 overallStatus="Ready", size="small", sites=["central"],
             )
         ]
@@ -83,7 +83,7 @@ class FakeContainers:
 
         return [
             WorkloadSummary(
-                name="ctr-a", group="team", type="container", url="https://ctr-a.example.com",
+                name="ctr-a", group="team", type="container", hostname="ctr-a.example.com",
                 overallStatus="Ready", size="medium", sites=["central", "south"],
             )
         ]

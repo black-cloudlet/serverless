@@ -653,7 +653,7 @@ async def test_list_workloads_reads_only_local_site():
     orders = next(w for w in out if w.name == "orders")
     assert orders.sites == ["site-a"]  # only the local site is reported
     assert orders.size == "medium"
-    assert orders.url == "https://orders-team.ex.com"
+    assert orders.hostname == "orders-team.ex.com"
     assert orders.overallStatus == "Ready"
 
 

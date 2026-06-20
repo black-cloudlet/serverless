@@ -331,14 +331,15 @@ sites:
 - The API holds **one Kubernetes client per site** (built from that site's client cert + the
   shared CA).
 - On deploy, it applies the KSVC + Route to both sites **concurrently** (async / thread
-  pool), then **aggregates** per-site results. The workload `url` is the **same host** in
-  both sites; only the per-site readiness differs:
+  pool), then **aggregates** per-site results. The workload `hostname` is the **same host**
+  in both sites; only the per-site readiness differs:
 
 ```json
 {
   "name": "orders-api",
+  "group": "team",
   "type": "container",
-  "url": "https://orders-api-team.serverless.example.com",
+  "hostname": "orders-api-team.serverless.example.com",
   "sites": [
     { "site": "central", "status": "Ready", "revision": "orders-api-00001" },
     { "site": "south", "status": "Ready", "revision": "orders-api-00001" }
@@ -784,7 +785,7 @@ Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
   "name": "image-resizer",
   "type": "function",
   "runtime": "python",
-  "url": "https://image-resizer-team.serverless.example.com",
+  "hostname": "image-resizer-team.serverless.example.com",
   "overallStatus": "Pending",
   "sites": [],
   "statusUrl": "/api/v1/functions/image-resizer?group=team"
@@ -801,7 +802,7 @@ body (secrets redacted) with the live status alongside:
   "name": "image-resizer",
   "group": "team",
   "type": "function",
-  "url": "https://image-resizer-team.serverless.example.com",
+  "hostname": "image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
   "size": "small",
   "runtime": "python",
@@ -834,7 +835,10 @@ source, not images.)
 > **Shape.** Each offering has its own response model (`FunctionResponse` /
 > `ContainerResponse`) so the response is the same shape as the create body — no
 > irrelevant fields (a container never shows `gitRepo`; a function never shows
-> `registryUsername`). The desired-state fields (`scaling`, `env`, `files`, plus
+> `registryUsername`). Both share `WorkloadBase` (name, group, type, hostname,
+> overallStatus, size) with the list summary. `hostname` is the bare external host
+> (no scheme), mirroring the create body's `hostname`; reach the workload at
+> `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
 > the source fields) are read from the **local site** (uniform across sites); the
 > per-site `sites[]` status/`replicas`/`usage` come from fanning out to every site.
 >
@@ -859,7 +863,7 @@ info only (no live usage/replicas; use the single-workload GET for those):
     "name": "image-resizer",
     "group": "team",
     "type": "function",
-    "url": "https://image-resizer-team.serverless.example.com",
+    "hostname": "image-resizer-team.serverless.example.com",
     "overallStatus": "Ready",
     "size": "small",
     "sites": ["central", "south"]

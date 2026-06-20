@@ -167,7 +167,7 @@ class WorkloadBase(BaseModel):
     name: str
     group: str  # the owning SSO group
     type: Literal["function", "container"]
-    url: str
+    hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
     overallStatus: str  # Pending | Ready | Deploying | Degraded
     size: str | None = None  # resource t-shirt size (uniform across sites)
 
