@@ -34,7 +34,7 @@ def get_function_service() -> FunctionService:
 
 @lru_cache
 def get_container_service() -> ContainerService:
-    return ContainerService(get_workload_service(), get_settings().registry)
+    return ContainerService(get_workload_service())
 
 
 FunctionDep = Annotated[FunctionService, Depends(get_function_service)]

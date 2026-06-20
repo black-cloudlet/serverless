@@ -264,7 +264,9 @@ sequenceDiagram
 
 1. The API creates a Kubernetes `kubernetes.io/dockerconfigjson` **imagePullSecret** from
    the supplied credentials in each site, **labeled** with the owning group (§6) and linked
-   to the KSVC's service account.
+   to the KSVC's service account. The secret's `auths` entry is keyed to the **registry host
+   parsed from the client's `image`** (the org runs several registries), not the platform's
+   own registry.
 2. The API creates/updates the **KSVC** referencing `image` in **both sites**.
 
 ### 3.3 Shared capabilities (FaaS and CaaS)

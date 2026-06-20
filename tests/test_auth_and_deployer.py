@@ -351,7 +351,7 @@ async def test_accept_container_returns_pending_and_schedules():
     engine = _workload_service(
         {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
     )
-    svc = ContainerService(engine, engine.settings.registry)
+    svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     spec = ContainerCreate(
@@ -534,13 +534,13 @@ async def test_container_update_rotates_pull_secret():
     from app.services.ksvc import build_ksvc
 
     existing = build_ksvc(
-        name="api-team", group="team", owner="alice", image="reg/api:1",
+        name="api-team", group="team", owner="alice", image="reg.acme.com/api:1",
         offering="container", host="api-team.ex.com", env=[], volumes=[],
         scaling=Scaling(), size="small",  # public image: no pull secret
     )
     cluster = _ApplyCluster("site-a", {"api-team": existing})
     engine = _workload_service({"site-a": cluster})
-    csvc = ContainerService(engine, _settings_with_sites().registry)
+    csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
     from app.models.container import ContainerUpdate
@@ -549,6 +549,10 @@ async def test_container_update_rotates_pull_secret():
     secrets = [m for m in _applied_kind(cluster, "Secret")
                if m.get("type") == "kubernetes.io/dockerconfigjson"]
     assert secrets and secrets[0]["metadata"]["name"] == "api-team-pull"
+    # the pull secret is keyed to the client image's registry, not our platform one
+    import base64 as _b64, json as _json
+    cfg = _json.loads(_b64.b64decode(secrets[0]["data"][".dockerconfigjson"]))
+    assert set(cfg["auths"]) == {"reg.acme.com"}
     ksvc = _applied_kind(cluster, "Service")[0]
     assert ksvc["spec"]["template"]["spec"]["imagePullSecrets"] == [{"name": "api-team-pull"}]
 
@@ -684,7 +688,7 @@ async def test_accept_rejects_group_caller_is_not_member_of():
     from app.services.container import ContainerService
 
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
-    svc = ContainerService(engine, engine.settings.registry)
+    svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])  # not 'other'
     spec = ContainerCreate(
         name="app", group="other", image="reg/x:1", registryUsername="u", registryToken="t"

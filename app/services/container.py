@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from app.auth.claims import Principal
-from app.core.config import RegistryConfig
 from app.models.common import WorkloadSummary
 from app.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from app.services import describe as describe_svc
@@ -15,9 +14,8 @@ from app.services.workloads import OFFERING_CONTAINER, WorkloadService, object_n
 class ContainerService:
     """Container-specific orchestration; delegates the shared work to WorkloadService."""
 
-    def __init__(self, engine: WorkloadService, registry: RegistryConfig):
+    def __init__(self, engine: WorkloadService):
         self._engine = engine
-        self._registry = registry
 
     # -- async accept (202 + poll) ---------------------------------------
     def _echo(self, spec) -> dict:
@@ -73,7 +71,7 @@ class ContainerService:
             pull = secret_svc.build_pull_secret(
                 pull_name,
                 workload_labels(group, user.username, oname, OFFERING_CONTAINER),
-                self._registry.url,
+                secret_svc.registry_of(spec.image),  # key to the image's registry
                 spec.registryUsername,
                 spec.registryToken,
             )
@@ -115,7 +113,7 @@ class ContainerService:
             pull = secret_svc.build_pull_secret(
                 pull_name,
                 workload_labels(group, user.username, oname, OFFERING_CONTAINER),
-                self._registry.url,
+                secret_svc.registry_of(image),  # key to the (effective) image's registry
                 spec.registryUsername,
                 spec.registryToken,
             )
