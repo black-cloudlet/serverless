@@ -181,7 +181,9 @@ def test_get_function(client):
     # FunctionResponse is flat and mirrors the create body: function source fields
     # are present, container-only fields are absent.
     assert body["runtime"] == "python" and body["gitRepo"] == "https://git/x.git"
+    # the built image is internal to functions; not exposed
     assert "registryUsername" not in body
+    assert "image" not in body and "imageDigest" not in body
 
 
 def test_get_container_shape(client):

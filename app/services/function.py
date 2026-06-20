@@ -94,7 +94,6 @@ class FunctionService:
             git_url=spec.gitRepo,
             branch=spec.branch,
         )
-        body.imageDigest = build.digest
         return body, code
 
     async def update(self, name: str, spec: FunctionUpdate, user: Principal) -> tuple[FunctionResponse, int]:
@@ -106,7 +105,6 @@ class FunctionService:
         runtime = spec.runtime or existing.get("runtime")
         git_url = spec.gitRepo or existing.get("gitUrl")
         branch = spec.branch or existing.get("branch") or "main"
-        digest = None
         if spec.rebuild_requested:
             try:
                 build = self._engine.builder.build(
@@ -121,7 +119,7 @@ class FunctionService:
                 )
             except NotImplementedError as exc:
                 raise ServiceUnavailableError(str(exc)) from exc
-            image, digest = build.digest or build.image, build.digest
+            image = build.digest or build.image
         else:
             image = existing["image"]
 
@@ -145,7 +143,6 @@ class FunctionService:
             git_url=git_url,
             branch=branch,
         )
-        body.imageDigest = digest
         return body, code
 
     # -- read / delete ---------------------------------------------------

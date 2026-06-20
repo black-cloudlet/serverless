@@ -806,7 +806,6 @@ body (secrets redacted) with the live status alongside:
   "runtime": "python",
   "gitRepo": "https://git.example.com/team/image-resizer.git",
   "branch": "main",
-  "image": "registry.internal/team/image-resizer@sha256:…",
   "scaling": { "minScale": 0, "maxScale": 3, "metric": "concurrency", "target": 100 },
   "env": [
     { "name": "LOG_LEVEL", "value": "debug", "secret": false },
@@ -827,7 +826,9 @@ body (secrets redacted) with the live status alongside:
 ```
 
 A **`ContainerResponse`** is the same idea mirroring `ContainerCreate`: instead of
-`gitRepo`/`branch`/`runtime` it carries `image` and `registryUsername`.
+`gitRepo`/`branch`/`runtime` it carries `image` and `registryUsername`. (Functions
+expose **no image** — the built image is an internal artifact; the client deals in
+source, not images.)
 
 > **Shape.** Each offering has its own response model (`FunctionResponse` /
 > `ContainerResponse`) so the response is the same shape as the create body — no

@@ -218,7 +218,6 @@ class WorkloadService:
             overallStatus=overall,
             size=size,
             sites=statuses,
-            image=image,
             scaling=scaling,
             env=describe_svc.redact_env(env),
             files=describe_svc.redact_files(files),
@@ -229,7 +228,7 @@ class WorkloadService:
                 **common, runtime=runtime, gitRepo=git_url, branch=branch
             )
         else:
-            body = ContainerResponse(**common)
+            body = ContainerResponse(**common, image=image)
         return body, status_code_for(overall, created=created)
 
     async def load_existing(
@@ -354,12 +353,12 @@ class WorkloadService:
             overallStatus=overall,
             size=meta_holder.get("size"),
             sites=statuses,
-            image=image,
             scaling=spec.scaling if spec else None,
             env=spec.env if spec else [],
             files=spec.files if spec else [],
         )
         if kind == OFFERING_FUNCTION:
+            # no image: the built image is internal, the client deals in source
             return FunctionResponse(
                 **common,
                 runtime=runtime,
@@ -367,7 +366,9 @@ class WorkloadService:
                 branch=spec.branch if spec else None,
             )
         return ContainerResponse(
-            **common, registryUsername=spec.registryUsername if spec else None
+            **common,
+            image=image,
+            registryUsername=spec.registryUsername if spec else None,
         )
 
     def _describe_spec(self, cluster: Cluster, obj: dict):

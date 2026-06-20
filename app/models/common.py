@@ -175,8 +175,6 @@ class WorkloadResponse(BaseModel):
     size: str | None = None  # resource t-shirt size (uniform across sites)
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
-    image: str | None = None
-    imageDigest: str | None = None
     createdAt: datetime | None = None
     # desired-state config common to both offerings (secret values redacted)
     scaling: "Scaling | None" = None
@@ -185,7 +183,10 @@ class WorkloadResponse(BaseModel):
 
 
 class FunctionResponse(WorkloadResponse):
-    """A function, shaped like FunctionCreate (gitToken redacted) + live status."""
+    """A function, shaped like FunctionCreate (gitToken redacted) + live status.
+
+    No image is exposed: the built image is an internal artifact — the client
+    deals in source (gitRepo/branch), not images."""
 
     type: Literal["function", "container"] = "function"
     runtime: str | None = None
@@ -197,6 +198,7 @@ class ContainerResponse(WorkloadResponse):
     """A container, shaped like ContainerCreate (registry token redacted) + status."""
 
     type: Literal["function", "container"] = "container"
+    image: str | None = None  # the client-supplied image reference
     registryUsername: str | None = None  # shown; the token is never returned
 
 
