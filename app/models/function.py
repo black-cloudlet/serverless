@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from app.models.common import (
     EnvVar,
@@ -39,11 +39,34 @@ class FunctionCreate(BaseModel):
 
 
 class FunctionUpdate(BaseModel):
-    """Full replace of the mutable spec (config only; code changes go via create)."""
+    """Full replace of the mutable spec. Supplying any build input (gitUrl,
+    branch, runtime) — or just a gitToken — triggers a rebuild from source;
+    otherwise the existing image is kept and only config is updated."""
 
     group: Group  # the SSO group that owns the workload; caller must be a member
+    # Rebuild inputs (all optional). gitUrl/branch/runtime default to the existing
+    # values when omitted; gitToken is never stored, so it must be supplied to
+    # rebuild (it can't be carried forward).
+    gitUrl: str | None = None
+    branch: str | None = None
+    gitToken: str | None = None
+    runtime: Runtime | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
+
+    @model_validator(mode="after")
+    def _rebuild_needs_token(self) -> "FunctionUpdate":
+        if any(v is not None for v in (self.gitUrl, self.branch, self.runtime)) and (
+            self.gitToken is None
+        ):
+            raise ValueError(
+                "changing gitUrl/branch/runtime requires gitToken to rebuild"
+            )
+        return self
+
+    @property
+    def rebuild_requested(self) -> bool:
+        return self.gitToken is not None

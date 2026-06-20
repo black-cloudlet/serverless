@@ -218,3 +218,19 @@ def test_update_function_accepted(client):
     )
     assert r.status_code == 202
     assert r.json()["type"] == "function"
+
+
+def test_update_container_partial_creds_rejected(client):
+    r = client.put(
+        "/api/v1/containers/orders-api",
+        json={"group": "team", "registryUsername": "bob"},  # token missing
+    )
+    assert r.status_code == 400
+
+
+def test_update_function_build_change_requires_token(client):
+    r = client.put(
+        "/api/v1/functions/foo",
+        json={"group": "team", "branch": "release"},  # gitToken missing
+    )
+    assert r.status_code == 400

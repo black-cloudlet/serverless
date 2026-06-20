@@ -2,8 +2,30 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.common import EnvVar, FileMount, Scaling
-from app.models.container import ContainerCreate
-from app.models.function import FunctionCreate
+from app.models.container import ContainerCreate, ContainerUpdate
+from app.models.function import FunctionCreate, FunctionUpdate
+
+
+def test_container_update_creds_paired():
+    ContainerUpdate(group="team")  # no creds -> keep existing, fine
+    ContainerUpdate(group="team", registryUsername="bob", registryToken="t")
+    with pytest.raises(ValidationError):
+        ContainerUpdate(group="team", registryUsername="bob")
+
+
+def test_function_update_rebuild_requires_token():
+    # config-only update: no rebuild
+    u = FunctionUpdate(group="team", scaling=Scaling(minScale=1, maxScale=1))
+    assert u.rebuild_requested is False
+    # token alone -> rebuild from same source
+    assert FunctionUpdate(group="team", gitToken="t").rebuild_requested is True
+    # build inputs without a token are rejected
+    with pytest.raises(ValidationError):
+        FunctionUpdate(group="team", branch="release")
+    with pytest.raises(ValidationError):
+        FunctionUpdate(group="team", runtime="go")
+    # build inputs WITH a token are fine
+    FunctionUpdate(group="team", gitUrl="https://git/x.git", runtime="go", gitToken="t")
 
 
 def test_container_registry_creds_optional_but_paired():

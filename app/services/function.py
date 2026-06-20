@@ -87,11 +87,36 @@ class FunctionService:
     async def update(self, name: str, spec: FunctionUpdate, user: Principal) -> tuple[WorkloadResponse, int]:
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
+
+        # Build inputs default to the existing ones; supplying a gitToken triggers
+        # a rebuild from source, otherwise the current image is kept.
+        runtime = spec.runtime or existing.get("runtime")
+        git_url = spec.gitUrl or existing.get("gitUrl")
+        branch = spec.branch or existing.get("branch") or "main"
+        digest = None
+        if spec.rebuild_requested:
+            try:
+                build = self._engine.builder.build(
+                    BuildRequest(
+                        name=name,
+                        group=group,
+                        git_url=git_url,
+                        branch=branch,
+                        git_token=spec.gitToken,
+                        runtime=runtime,
+                    )
+                )
+            except NotImplementedError as exc:
+                raise ServiceUnavailableError(str(exc)) from exc
+            image, digest = build.digest or build.image, build.digest
+        else:
+            image = existing["image"]
+
         body, code = await self._engine.apply_workload(
             name=name,
             user=user,
             group=group,
-            image=existing["image"],  # code changes go through a (re)build flow
+            image=image,
             offering=OFFERING_FUNCTION,
             env=spec.env,
             files=spec.files,
@@ -102,13 +127,14 @@ class FunctionService:
             pull_secret_name=None,
             pull_secret_manifest=None,
             created=False,
-            # preserve build metadata across a config-only update
-            runtime=existing.get("runtime"),
-            git_url=existing.get("gitUrl"),
-            branch=existing.get("branch"),
+            # stamp the (possibly updated) build metadata; never the token
+            runtime=runtime,
+            git_url=git_url,
+            branch=branch,
         )
         body.type = OFFERING_FUNCTION
-        body.runtime = existing.get("runtime")
+        body.runtime = runtime
+        body.imageDigest = digest
         return body, code
 
     # -- read / delete ---------------------------------------------------

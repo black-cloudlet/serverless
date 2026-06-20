@@ -89,8 +89,24 @@ class ContainerService:
 
     async def update(self, name: str, spec: ContainerUpdate, user: Principal) -> tuple[WorkloadResponse, int]:
         group = spec.group
+        oname = object_name(name, group)
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         image = spec.image or existing["image"]
+
+        # New creds -> (re)build the pull secret; otherwise carry the existing one
+        # forward (None if the image is public).
+        pull_name = existing.get("pull_secret")
+        pull: dict | None = None
+        if spec.registryUsername and spec.registryToken:
+            pull_name = f"{oname}-pull"
+            pull = secret_svc.build_pull_secret(
+                pull_name,
+                workload_labels(group, user.username, oname, OFFERING_CONTAINER),
+                self._registry.url,
+                spec.registryUsername,
+                spec.registryToken,
+            )
+
         body, code = await self._engine.apply_workload(
             name=name,
             user=user,
@@ -103,9 +119,8 @@ class ContainerService:
             size=spec.size,
             hostname=spec.hostname,
             sites=None,
-            # carry the existing pull secret forward (None if the image is public)
-            pull_secret_name=existing.get("pull_secret"),
-            pull_secret_manifest=None,
+            pull_secret_name=pull_name,
+            pull_secret_manifest=pull,
             created=False,
         )
         body.type = OFFERING_CONTAINER

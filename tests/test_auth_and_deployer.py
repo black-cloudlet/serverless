@@ -191,14 +191,14 @@ class _FakeCluster:
         raise _NF(f"{name} not found")
 
 
-def _workload_service(clusters):
+def _workload_service(clusters, builder=None):
     from app.services.builder import FuncBuilder
     from app.services.workloads import WorkloadService
 
     settings = _settings_with_sites()
     d = Deployer(settings)
     d._clusters = clusters  # inject fakes (name -> _FakeCluster)
-    return WorkloadService(settings, d, FuncBuilder(settings.registry))
+    return WorkloadService(settings, d, builder or FuncBuilder(settings.registry))
 
 
 def test_host_for_resolution_and_validation():
@@ -484,6 +484,131 @@ async def test_get_returns_redacted_spec():
     assert files["/etc/secret"].secret is True and files["/etc/secret"].content is None
     # registry username shown, token never returned
     assert spec.registryUsername == "bob"
+
+
+class _ApplyCluster:
+    """Records applied manifests; serves a preset existing KSVC."""
+
+    def __init__(self, name, existing):
+        self.site = name
+        self.name = name
+        self._existing = existing  # oname -> ksvc dict
+        self.applied = []
+
+    def get(self, kind, name=None, label_selector=None, namespace=None):
+        from app.clients.cluster import ResourceKind
+        from app.core.errors import NotFoundError as _NF
+
+        if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
+            return self._existing[name]
+        raise _NF("not found")  # domain mapping -> Available; missing ksvc
+
+    def apply(self, manifest):
+        self.applied.append(manifest)
+
+
+def _applied_kind(cluster, kind):
+    return [m for m in cluster.applied if m.get("kind") == kind]
+
+
+async def test_container_update_rotates_pull_secret():
+    from app.auth.claims import Principal
+    from app.models.common import Scaling
+    from app.services.container import ContainerService
+    from app.services.ksvc import build_ksvc
+
+    existing = build_ksvc(
+        name="api-team", group="team", owner="alice", image="reg/api:1",
+        offering="container", host="api-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",  # public image: no pull secret
+    )
+    cluster = _ApplyCluster("site-a", {"api-team": existing})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine, _settings_with_sites().registry)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    from app.models.container import ContainerUpdate
+    await csvc.update("api", ContainerUpdate(group="team", registryUsername="bob", registryToken="t"), user)
+
+    secrets = [m for m in _applied_kind(cluster, "Secret")
+               if m.get("type") == "kubernetes.io/dockerconfigjson"]
+    assert secrets and secrets[0]["metadata"]["name"] == "api-team-pull"
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert ksvc["spec"]["template"]["spec"]["imagePullSecrets"] == [{"name": "api-team-pull"}]
+
+
+async def test_function_update_rebuilds_when_token_given():
+    from app.auth.claims import Principal
+    from app.models.common import Scaling
+    from app.models.function import FunctionUpdate
+    from app.services.builder import BuildResult
+    from app.services.function import FunctionService
+    from app.services.ksvc import build_ksvc
+    from app.services.workloads import _extract_image
+
+    class _StubBuilder:
+        def __init__(self):
+            self.calls = 0
+
+        def build(self, req):
+            self.calls += 1
+            self.req = req
+            return BuildResult(image="reg/built:rel", digest="sha256:abc")
+
+    existing = build_ksvc(
+        name="fn-team", group="team", owner="alice", image="reg/fn:old",
+        offering="function", host="fn-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",
+        runtime="python", git_url="https://git/old.git", branch="main",
+    )
+    cluster = _ApplyCluster("site-a", {"fn-team": existing})
+    builder = _StubBuilder()
+    engine = _workload_service({"site-a": cluster}, builder=builder)
+    fsvc = FunctionService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # rebuild from a new branch; gitUrl/runtime carried from existing
+    await fsvc.update("fn", FunctionUpdate(group="team", branch="release", gitToken="tok"), user)
+    assert builder.calls == 1
+    assert builder.req.branch == "release"
+    assert builder.req.git_url == "https://git/old.git"
+    assert builder.req.runtime == "python"
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert _extract_image(ksvc) == "sha256:abc"  # rebuilt digest deployed
+
+
+async def test_function_update_without_token_keeps_image():
+    from app.auth.claims import Principal
+    from app.models.common import Scaling
+    from app.models.function import FunctionUpdate
+    from app.services.function import FunctionService
+    from app.services.ksvc import build_ksvc
+    from app.services.workloads import _extract_image
+
+    class _StubBuilder:
+        def __init__(self):
+            self.calls = 0
+
+        def build(self, req):
+            self.calls += 1
+            raise AssertionError("must not rebuild for a config-only update")
+
+    existing = build_ksvc(
+        name="fn-team", group="team", owner="alice", image="reg/fn:old",
+        offering="function", host="fn-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small", runtime="python",
+        git_url="https://git/old.git", branch="main",
+    )
+    cluster = _ApplyCluster("site-a", {"fn-team": existing})
+    builder = _StubBuilder()
+    engine = _workload_service({"site-a": cluster}, builder=builder)
+    fsvc = FunctionService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await fsvc.update("fn", FunctionUpdate(group="team", scaling=Scaling(minScale=2, maxScale=2)), user)
+    assert builder.calls == 0
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
 
 
 async def test_list_workloads_merges_sites_and_strips_suffix():

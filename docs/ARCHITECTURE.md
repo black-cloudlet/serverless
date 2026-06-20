@@ -698,12 +698,12 @@ are JSON. Times are RFC 3339 UTC.
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
 | `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
-| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). **202 Accepted**. |
+| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitUrl`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
-| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). **202 Accepted**. |
+| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
 | `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |

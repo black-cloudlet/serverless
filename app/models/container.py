@@ -52,8 +52,20 @@ class ContainerUpdate(BaseModel):
 
     group: Group  # the SSO group that owns the workload; caller must be a member
     image: str | None = None
+    # Rotate/add registry creds; omit both to keep the existing pull secret. If
+    # either is given, both are required together.
+    registryUsername: str | None = None
+    registryToken: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
+
+    @model_validator(mode="after")
+    def _registry_creds(self) -> "ContainerUpdate":
+        if (self.registryUsername is None) != (self.registryToken is None):
+            raise ValueError(
+                "registryUsername and registryToken must be provided together"
+            )
+        return self
