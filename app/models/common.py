@@ -169,6 +169,7 @@ class WorkloadResponse(BaseModel):
     image: str | None = None
     imageDigest: str | None = None
     createdAt: datetime | None = None
+    spec: "WorkloadSpec | None" = None  # desired-state config (secrets redacted)
 
 
 class WorkloadSummary(BaseModel):
@@ -181,3 +182,33 @@ class WorkloadSummary(BaseModel):
     overallStatus: str  # Ready | Deploying | Degraded
     size: str | None = None
     sites: list[str] = []  # site names where the workload is deployed
+
+
+class EnvVarView(BaseModel):
+    """An env var as read back from a deployed workload. Secret-backed values are
+    never returned — `secret: true` with `value: null` signals one is set."""
+
+    name: str
+    value: str | None = None
+    secret: bool = False
+
+
+class FileView(BaseModel):
+    """A mounted file as read back. `content` is returned only for non-secret
+    (ConfigMap-backed) files; it is always null for secret files."""
+
+    mountPath: str
+    readOnly: bool = True
+    secret: bool = False
+    content: str | None = None
+
+
+class WorkloadSpec(BaseModel):
+    """The desired-state spec read back from a deployed workload, with all secret
+    material redacted (secret env values, secret file contents, registry creds)."""
+
+    scaling: "Scaling | None" = None
+    env: list[EnvVarView] = []
+    files: list[FileView] = []
+    hasPullSecret: bool = False  # a registry pull secret is configured (creds redacted)
+

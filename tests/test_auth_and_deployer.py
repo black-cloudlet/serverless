@@ -429,6 +429,56 @@ class _ListCluster:
         return list(self._items)
 
 
+async def test_get_returns_redacted_spec():
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.models.common import Scaling
+    from app.services.files import VolumeSpec
+    from app.services.ksvc import ContainerEnv, build_ksvc
+
+    ksvc = build_ksvc(
+        name="app-team", group="team", owner="alice",
+        image="reg/app:1", offering="container", host="app-team.ex.com",
+        env=[
+            ContainerEnv(name="LOG", value="debug"),
+            ContainerEnv(name="API_KEY", secret_ref=("app-team-env", "API_KEY")),
+        ],
+        volumes=[
+            VolumeSpec("files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf", True),
+            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret", True),
+        ],
+        scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
+        size="medium", pull_secret="app-team-pull",
+        ca_config_map="trusted-ca", ca_mount_path="/etc/pki/tls/certs/ca.crt",
+    )
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            if kind == ResourceKind.CONFIG_MAP:
+                assert name == "app-team-files"
+                return {"data": {"etc-app.conf": "level=debug"}}
+            raise RuntimeError("revision/metrics are best-effort here")
+
+    engine = _workload_service({"site-a": _C()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+
+    spec = body.spec
+    assert spec.scaling.metric == "cpu" and spec.scaling.effective_target == 80
+    envs = {e.name: e for e in spec.env}
+    assert envs["LOG"].value == "debug" and envs["LOG"].secret is False
+    assert envs["API_KEY"].secret is True and envs["API_KEY"].value is None
+    files = {f.mountPath: f for f in spec.files}
+    assert files["/etc/app.conf"].content == "level=debug"  # plain content
+    assert files["/etc/secret"].secret is True and files["/etc/secret"].content is None
+    assert spec.hasPullSecret is True
+
+
 async def test_list_workloads_merges_sites_and_strips_suffix():
     from app.auth.claims import Principal
 

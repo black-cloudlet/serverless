@@ -805,7 +805,20 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
       "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" } },
     { "site": "south", "status": "Ready", "revision": "image-resizer-00001",
       "replicas": 1, "usage": { "cpu": "90m", "memory": "175Mi" } }
-  ]
+  ],
+  "spec": {
+    "scaling": { "minScale": 0, "maxScale": 3, "metric": "concurrency", "target": 100 },
+    "env": [
+      { "name": "LOG_LEVEL", "value": "debug", "secret": false },
+      { "name": "API_KEY", "value": null, "secret": true }
+    ],
+    "files": [
+      { "mountPath": "/etc/app/config.yaml", "readOnly": true, "secret": false,
+        "content": "level: debug\n" },
+      { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
+    ],
+    "hasPullSecret": false
+  }
 }
 ```
 
@@ -817,6 +830,14 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 > the figure is the combined total of both), counting only the user container, not
 > Knative's queue-proxy sidecar; it is read best-effort from the metrics API and is
 > `null` when the workload is scaled to zero or the metrics API is unavailable.
+>
+> `spec` is the **desired-state config** read back from the deployed KSVC — what
+> the user submitted (`scaling`, `env`, `files`, plus `hasPullSecret` for CaaS),
+> with **all secret material redacted**: secret-backed env values and secret file
+> contents come back `null` with `secret: true`, registry creds are never returned
+> (only `hasPullSecret`). Non-secret env values and non-secret file contents (read
+> from the workload's ConfigMap) are returned in full. `scaling.target` reflects
+> the *effective* target actually deployed (so omitted cpu/memory targets show `70`).
 
 And `GET /api/v1/functions?group=team` to list the group's functions — general
 info only (no live usage/replicas; use the single-workload GET for those):

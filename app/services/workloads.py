@@ -9,6 +9,7 @@ here. See docs §3, §4, §6.2.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from app.auth.claims import Principal
@@ -31,6 +32,7 @@ from app.models.common import (
     WorkloadSummary,
     SiteStatus,
 )
+from app.services import describe as describe_svc
 from app.services import ksvc as ksvc_svc
 from app.services import metrics as metrics_svc
 from app.services import route as route_svc
@@ -271,6 +273,9 @@ class WorkloadService:
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
+        # First site to respond OK donates its KSVC (the spec is uniform across
+        # sites) so we can read the desired-state spec back once, after the fan-out.
+        rep: dict[str, object] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
@@ -280,6 +285,8 @@ class WorkloadService:
             for key, ann in (("host", ANNOTATION_HOST), ("size", ANNOTATION_SIZE)):
                 if ann in annotations and key not in meta_holder:
                     meta_holder[key] = annotations[ann]
+            if "obj" not in rep:
+                rep["obj"], rep["cluster"] = obj, cluster
             status, revision = _ksvc_status(obj)
             return SiteStatus(
                 site=cluster.site,
@@ -298,6 +305,11 @@ class WorkloadService:
         )
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
+        spec = None
+        if "obj" in rep:
+            spec = await asyncio.to_thread(
+                self._describe_spec, rep["cluster"], rep["obj"]
+            )
         return WorkloadResponse(
             name=name,
             type=kind,  # type: ignore[arg-type]
@@ -305,7 +317,21 @@ class WorkloadService:
             overallStatus=overall,
             size=meta_holder.get("size"),
             sites=statuses,
+            spec=spec,
         )
+
+    def _describe_spec(self, cluster: Cluster, obj: dict):
+        """Read the desired-state spec (secrets redacted) from a KSVC, fetching
+        the file ConfigMap(s) to fill in non-secret file contents. Best-effort: a
+        failed ConfigMap read just leaves that file's content null."""
+        configmaps: dict[str, dict] = {}
+        for cm_name in describe_svc.configmap_refs(obj):
+            try:
+                cm = cluster.get(ResourceKind.CONFIG_MAP, cm_name)
+                configmaps[cm_name] = cm.get("data") or {}
+            except Exception:  # noqa: BLE001 - content is best-effort
+                pass
+        return describe_svc.parse_spec(obj, configmaps)
 
     def _site_replicas(self, cluster: Cluster, revision: str | None) -> int | None:
         """Best-effort running pod count from the revision the KSVC points at —
