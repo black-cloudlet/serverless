@@ -33,7 +33,11 @@ def test_configmap_refs_excludes_platform_ca():
 
 
 def test_parse_spec_redacts_secrets_and_returns_plain_config():
-    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": "level=debug"}})
+    spec = parse_spec(
+        _ksvc(),
+        {"app-team-files": {"etc-app.conf": "level=debug"}},
+        registry_username="bob",
+    )
 
     assert spec.scaling.metric == "cpu"
     assert spec.scaling.effective_target == 80
@@ -50,7 +54,23 @@ def test_parse_spec_redacts_secrets_and_returns_plain_config():
     # secret file content always redacted
     assert files["/etc/secret"].secret is True and files["/etc/secret"].content is None
 
-    assert spec.hasPullSecret is True
+    # registry username shown; token never part of the spec
+    assert spec.registryUsername == "bob"
+
+
+def test_parse_spec_reports_function_build_inputs():
+    from app.models.common import Scaling as _Scaling
+
+    ksvc = build_ksvc(
+        name="fn-team", group="team", owner="alice", image="reg/fn:main",
+        offering="function", host="fn-team.ex.com", env=[], volumes=[],
+        scaling=_Scaling(), size="small",
+        runtime="python", git_url="https://git.example.com/app.git", branch="release",
+    )
+    spec = parse_spec(ksvc)
+    assert spec.gitUrl == "https://git.example.com/app.git"
+    assert spec.branch == "release"
+    assert spec.registryUsername is None  # functions have no pull secret
 
 
 def test_parse_spec_without_configmap_leaves_content_null():

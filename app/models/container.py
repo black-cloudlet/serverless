@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from app.models.common import (
     EnvVar,
@@ -25,8 +25,10 @@ class ContainerCreate(BaseModel):
     name: Name
     group: Group  # the SSO group to act as; caller must be a member
     image: str
-    registryUsername: str
-    registryToken: str
+    # Registry credentials are optional: omit both for a public image. When
+    # supplied, both are required together (a username alone can't authenticate).
+    registryUsername: str | None = None
+    registryToken: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
@@ -34,6 +36,15 @@ class ContainerCreate(BaseModel):
     sites: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
+
+    @model_validator(mode="after")
+    def _registry_creds(self) -> "ContainerCreate":
+        if (self.registryUsername is None) != (self.registryToken is None):
+            raise ValueError(
+                "registryUsername and registryToken must be provided together "
+                "(or both omitted for a public image)"
+            )
+        return self
 
 
 class ContainerUpdate(BaseModel):

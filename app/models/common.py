@@ -21,6 +21,11 @@ MANAGED_BY_VALUE = "serverless-api"
 ANNOTATION_HOST = "serverless.platform/host"
 # Annotation recording the chosen t-shirt size (so reads can report it).
 ANNOTATION_SIZE = "serverless.platform/size"
+# Function build inputs, stamped so reads can report what was submitted. The git
+# token is deliberately NOT among these — it is never persisted (docs §7.2).
+ANNOTATION_RUNTIME = "serverless.platform/runtime"
+ANNOTATION_GIT_URL = "serverless.platform/git-url"
+ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
@@ -205,10 +210,16 @@ class FileView(BaseModel):
 
 class WorkloadSpec(BaseModel):
     """The desired-state spec read back from a deployed workload, with all secret
-    material redacted (secret env values, secret file contents, registry creds)."""
+    material redacted (secret env values, secret file contents, the registry token
+    and the git token)."""
 
     scaling: "Scaling | None" = None
     env: list[EnvVarView] = []
     files: list[FileView] = []
-    hasPullSecret: bool = False  # a registry pull secret is configured (creds redacted)
+    # Container source: registry username is shown (like a secret's name); the
+    # token is never returned. None when the image is public (no pull secret).
+    registryUsername: str | None = None
+    # Function source: what the build was run from. The git token is never stored.
+    gitUrl: str | None = None
+    branch: str | None = None
 

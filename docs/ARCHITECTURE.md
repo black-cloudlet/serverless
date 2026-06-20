@@ -255,8 +255,8 @@ sequenceDiagram
 | Field | Required | Notes |
 |-------|----------|-------|
 | `image` | yes | Fully-qualified image reference in the internal registry (airgap). |
-| `registryUsername` | yes | Registry username. |
-| `registryToken` | yes | Registry access token; used to create an `imagePullSecret`, **not persisted** by the API. |
+| `registryUsername` | no | Registry username. Optional — omit both creds for a public image; if either is given, **both** are required. Returned on GET (`spec.registryUsername`). |
+| `registryToken` | no | Registry access token; used to create an `imagePullSecret`, **not persisted** and **never returned**. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
 
@@ -800,6 +800,8 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
   "size": "small",
+  "runtime": "python",
+  "image": "registry.internal/team/image-resizer@sha256:…",
   "sites": [
     { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
       "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" } },
@@ -817,7 +819,9 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
         "content": "level: debug\n" },
       { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
     ],
-    "hasPullSecret": false
+    "gitUrl": "https://git.example.com/team/image-resizer.git",
+    "branch": "main",
+    "registryUsername": null
   }
 }
 ```
@@ -832,12 +836,17 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 > `null` when the workload is scaled to zero or the metrics API is unavailable.
 >
 > `spec` is the **desired-state config** read back from the deployed KSVC — what
-> the user submitted (`scaling`, `env`, `files`, plus `hasPullSecret` for CaaS),
-> with **all secret material redacted**: secret-backed env values and secret file
-> contents come back `null` with `secret: true`, registry creds are never returned
-> (only `hasPullSecret`). Non-secret env values and non-secret file contents (read
-> from the workload's ConfigMap) are returned in full. `scaling.target` reflects
-> the *effective* target actually deployed (so omitted cpu/memory targets show `70`).
+> the user submitted, with **all secret material redacted**:
+> - common: `scaling`, `env`, `files`. Secret-backed env values and secret file
+>   contents come back `null` with `secret: true`; non-secret env values and
+>   non-secret file contents (read from the workload's ConfigMap) are returned in
+>   full. `scaling.target` reflects the *effective* target deployed (so an omitted
+>   cpu/memory target shows `70`).
+> - functions: `gitUrl`, `branch`, and top-level `runtime` (the language). The git
+>   **token is never persisted** (docs §7.2), so it is never returned.
+> - containers: `registryUsername` (shown, like a secret's name) when a pull secret
+>   is set, else `null` for a public image — the **registry token is never returned**.
+>   Top-level `image` is the deployed image reference (returned for both offerings).
 
 And `GET /api/v1/functions?group=team` to list the group's functions — general
 info only (no live usage/replicas; use the single-workload GET for those):
@@ -870,6 +879,7 @@ Request:
   "image": "registry.internal/team/orders-api:1.4.2",
   "registryUsername": "svc-team",
   "registryToken": "<registry-token>",
+  // registryUsername/registryToken are optional (omit both for a public image)
   "env": [ { "name": "LOG_LEVEL", "value": "info" } ],
   "files": [ { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false } ],
   "scaling": { "minScale": 1, "maxScale": 8, "metric": "concurrency", "target": 50 }

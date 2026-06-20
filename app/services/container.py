@@ -51,16 +51,19 @@ class ContainerService:
     async def create(self, spec: ContainerCreate, user: Principal) -> tuple[WorkloadResponse, int]:
         group = spec.group
         oname = object_name(spec.name, group)
-        pull_name = f"{oname}-pull"
-        
-        pull = secret_svc.build_pull_secret(
-            pull_name,
-            workload_labels(group, user.username, oname, OFFERING_CONTAINER),
-            self._registry.url,
-            spec.registryUsername,
-            spec.registryToken,
-        )
-        
+        # Registry creds are optional (public image -> no pull secret).
+        pull_name: str | None = None
+        pull: dict | None = None
+        if spec.registryUsername and spec.registryToken:
+            pull_name = f"{oname}-pull"
+            pull = secret_svc.build_pull_secret(
+                pull_name,
+                workload_labels(group, user.username, oname, OFFERING_CONTAINER),
+                self._registry.url,
+                spec.registryUsername,
+                spec.registryToken,
+            )
+
         await self._engine.assert_workload_absent(
             spec.name, oname, self._engine.deployer.resolve_targets(spec.sites)
         )
@@ -87,7 +90,6 @@ class ContainerService:
     async def update(self, name: str, spec: ContainerUpdate, user: Principal) -> tuple[WorkloadResponse, int]:
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
-        oname = object_name(name, group)
         image = spec.image or existing["image"]
         body, code = await self._engine.apply_workload(
             name=name,
@@ -101,7 +103,8 @@ class ContainerService:
             size=spec.size,
             hostname=spec.hostname,
             sites=None,
-            pull_secret_name=f"{oname}-pull",
+            # carry the existing pull secret forward (None if the image is public)
+            pull_secret_name=existing.get("pull_secret"),
             pull_secret_manifest=None,
             created=False,
         )

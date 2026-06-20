@@ -23,7 +23,10 @@ from app.core.errors import (
 )
 from app.core.logging import get_logger
 from app.models.common import (
+    ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
+    ANNOTATION_RUNTIME,
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
@@ -36,6 +39,7 @@ from app.services import describe as describe_svc
 from app.services import ksvc as ksvc_svc
 from app.services import metrics as metrics_svc
 from app.services import route as route_svc
+from app.services import secrets as secret_svc
 from app.services.builder import Builder
 from app.services.deployer import Deployer, aggregate, status_code_for
 from app.services.env import resolve_env
@@ -151,6 +155,9 @@ class WorkloadService:
         pull_secret_name: str | None,
         pull_secret_manifest: dict | None,
         created: bool,
+        runtime: str | None = None,
+        git_url: str | None = None,
+        branch: str | None = None,
     ) -> tuple[WorkloadResponse, int]:
         self.assert_group(user, group)
         oname = object_name(name, group)
@@ -176,6 +183,9 @@ class WorkloadService:
             scaling=scaling,
             size=size,
             pull_secret=pull_secret_name,
+            runtime=runtime,
+            git_url=git_url,
+            branch=branch,
             ca_config_map=self.settings.ca_bundle.config_map,
             ca_mount_path=self.settings.ca_bundle.mount_path,
         )
@@ -227,6 +237,13 @@ class WorkloadService:
             image = _extract_image(obj)
             if image and "image" not in holder:
                 holder["image"] = image
+                ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+                # carry build metadata + pull secret forward across updates so a
+                # config-only update doesn't drop them
+                holder["runtime"] = ann.get(ANNOTATION_RUNTIME)
+                holder["gitUrl"] = ann.get(ANNOTATION_GIT_URL)
+                holder["branch"] = ann.get(ANNOTATION_GIT_BRANCH)
+                holder["pull_secret"] = describe_svc.pull_secret_name(obj)
             return SiteStatus(site=cluster.site, status="Present")
 
         await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
@@ -305,11 +322,14 @@ class WorkloadService:
         )
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
-        spec = None
+        spec = image = runtime = None
         if "obj" in rep:
-            spec = await asyncio.to_thread(
-                self._describe_spec, rep["cluster"], rep["obj"]
+            obj = rep["obj"]
+            image = _extract_image(obj)
+            runtime = ((obj.get("metadata", {}) or {}).get("annotations", {}) or {}).get(
+                ANNOTATION_RUNTIME
             )
+            spec = await asyncio.to_thread(self._describe_spec, rep["cluster"], obj)
         return WorkloadResponse(
             name=name,
             type=kind,  # type: ignore[arg-type]
@@ -317,13 +337,16 @@ class WorkloadService:
             overallStatus=overall,
             size=meta_holder.get("size"),
             sites=statuses,
+            image=image,
+            runtime=runtime,
             spec=spec,
         )
 
     def _describe_spec(self, cluster: Cluster, obj: dict):
-        """Read the desired-state spec (secrets redacted) from a KSVC, fetching
-        the file ConfigMap(s) to fill in non-secret file contents. Best-effort: a
-        failed ConfigMap read just leaves that file's content null."""
+        """Read the desired-state spec (secrets redacted) from a KSVC. Fetches the
+        file ConfigMap(s) for non-secret file contents and the pull secret for the
+        registry username (never the token). Best-effort: a failed read just leaves
+        the corresponding field null."""
         configmaps: dict[str, dict] = {}
         for cm_name in describe_svc.configmap_refs(obj):
             try:
@@ -331,7 +354,15 @@ class WorkloadService:
                 configmaps[cm_name] = cm.get("data") or {}
             except Exception:  # noqa: BLE001 - content is best-effort
                 pass
-        return describe_svc.parse_spec(obj, configmaps)
+        registry_username = None
+        ps_name = describe_svc.pull_secret_name(obj)
+        if ps_name:
+            try:
+                secret = cluster.get(ResourceKind.SECRET, ps_name)
+                registry_username = secret_svc.registry_username(secret)
+            except Exception:  # noqa: BLE001 - username is best-effort
+                pass
+        return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
 
     def _site_replicas(self, cluster: Cluster, revision: str | None) -> int | None:
         """Best-effort running pod count from the revision the KSVC points at —

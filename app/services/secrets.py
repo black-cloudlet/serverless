@@ -27,3 +27,19 @@ def build_pull_secret(
         "metadata": {"name": name, "labels": dict(labels)},
         "data": {".dockerconfigjson": encoded},
     }
+
+
+def registry_username(secret: dict) -> str | None:
+    """Decode the registry username from a dockerconfigjson Secret. The password
+    (token) is deliberately never returned. None if it can't be read."""
+    raw = (secret.get("data") or {}).get(".dockerconfigjson")
+    if not raw:
+        return None
+    try:
+        auths = json.loads(base64.b64decode(raw)).get("auths") or {}
+        for entry in auths.values():
+            if entry.get("username"):
+                return entry["username"]
+    except Exception:  # noqa: BLE001 - malformed secret -> treat as unknown
+        return None
+    return None

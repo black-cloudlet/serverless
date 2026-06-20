@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, Scaling
+from app.models.common import (
+    ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_URL,
+    ANNOTATION_HOST,
+    ANNOTATION_RUNTIME,
+    ANNOTATION_SIZE,
+    Scaling,
+)
 from app.services.files import VolumeSpec
 from app.services.labels import workload_labels
 
@@ -89,6 +96,9 @@ def build_ksvc(
     scaling: Scaling,
     size: str = "small",
     pull_secret: str | None = None,
+    runtime: str | None = None,
+    git_url: str | None = None,
+    branch: str | None = None,
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
 ) -> dict:
@@ -126,13 +136,22 @@ def build_ksvc(
     if pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": pull_secret}]
 
+    meta_annotations = {ANNOTATION_HOST: host, ANNOTATION_SIZE: size}
+    # Function build inputs (stamped so reads can report them; never the token).
+    if runtime:
+        meta_annotations[ANNOTATION_RUNTIME] = runtime
+    if git_url:
+        meta_annotations[ANNOTATION_GIT_URL] = git_url
+    if branch:
+        meta_annotations[ANNOTATION_GIT_BRANCH] = branch
+
     return {
         "apiVersion": KSVC_API,
         "kind": "Service",
         "metadata": {
             "name": name,
             "labels": labels,
-            "annotations": {ANNOTATION_HOST: host, ANNOTATION_SIZE: size},
+            "annotations": meta_annotations,
         },
         "spec": {
             "template": {

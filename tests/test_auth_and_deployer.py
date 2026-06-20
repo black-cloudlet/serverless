@@ -457,17 +457,23 @@ async def test_get_returns_redacted_spec():
         name = "site-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
+            from app.services.secrets import build_pull_secret
+
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             if kind == ResourceKind.CONFIG_MAP:
                 assert name == "app-team-files"
                 return {"data": {"etc-app.conf": "level=debug"}}
+            if kind == ResourceKind.SECRET:
+                assert name == "app-team-pull"
+                return build_pull_secret(name, {}, "reg.example.com", "bob", "s3cr3t")
             raise RuntimeError("revision/metrics are best-effort here")
 
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get("container", "app", user, "team")
 
+    assert body.image == "reg/app:1"  # container image returned on read
     spec = body.spec
     assert spec.scaling.metric == "cpu" and spec.scaling.effective_target == 80
     envs = {e.name: e for e in spec.env}
@@ -476,7 +482,8 @@ async def test_get_returns_redacted_spec():
     files = {f.mountPath: f for f in spec.files}
     assert files["/etc/app.conf"].content == "level=debug"  # plain content
     assert files["/etc/secret"].secret is True and files["/etc/secret"].content is None
-    assert spec.hasPullSecret is True
+    # registry username shown, token never returned
+    assert spec.registryUsername == "bob"
 
 
 async def test_list_workloads_merges_sites_and_strips_suffix():

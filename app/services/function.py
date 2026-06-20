@@ -75,6 +75,9 @@ class FunctionService:
             pull_secret_name=None,
             pull_secret_manifest=None,
             created=True,
+            runtime=spec.runtime,
+            git_url=spec.gitUrl,
+            branch=spec.branch,
         )
         body.type = OFFERING_FUNCTION
         body.runtime = spec.runtime
@@ -99,8 +102,13 @@ class FunctionService:
             pull_secret_name=None,
             pull_secret_manifest=None,
             created=False,
+            # preserve build metadata across a config-only update
+            runtime=existing.get("runtime"),
+            git_url=existing.get("gitUrl"),
+            branch=existing.get("branch"),
         )
         body.type = OFFERING_FUNCTION
+        body.runtime = existing.get("runtime")
         return body, code
 
     # -- read / delete ---------------------------------------------------

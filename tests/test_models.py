@@ -2,7 +2,22 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.common import EnvVar, FileMount, Scaling
+from app.models.container import ContainerCreate
 from app.models.function import FunctionCreate
+
+
+def test_container_registry_creds_optional_but_paired():
+    # both omitted -> public image, fine
+    c = ContainerCreate(name="api", group="team", image="reg/api:1")
+    assert c.registryUsername is None and c.registryToken is None
+    # both provided -> fine
+    ContainerCreate(name="api", group="team", image="reg/api:1",
+                    registryUsername="bob", registryToken="t")
+    # only one provided -> rejected
+    with pytest.raises(ValidationError):
+        ContainerCreate(name="api", group="team", image="reg/api:1", registryUsername="bob")
+    with pytest.raises(ValidationError):
+        ContainerCreate(name="api", group="team", image="reg/api:1", registryToken="t")
 
 
 def test_valid_function():

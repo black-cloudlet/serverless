@@ -8,7 +8,14 @@ contents, registry creds — is deliberately never reconstructed.
 
 from __future__ import annotations
 
-from app.models.common import EnvVarView, FileView, Scaling, WorkloadSpec
+from app.models.common import (
+    ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_URL,
+    EnvVarView,
+    FileView,
+    Scaling,
+    WorkloadSpec,
+)
 
 # Platform-injected volume mounted into every pod; not part of the user's spec.
 _CA_VOLUME = "trusted-ca"
@@ -29,6 +36,16 @@ def _container(ksvc: dict) -> dict:
 
 def _annotations(ksvc: dict) -> dict:
     return (_template(ksvc).get("metadata") or {}).get("annotations") or {}
+
+
+def _meta_annotations(ksvc: dict) -> dict:
+    return (ksvc.get("metadata") or {}).get("annotations") or {}
+
+
+def pull_secret_name(ksvc: dict) -> str | None:
+    """The imagePullSecret name referenced by the pod, or None (public image)."""
+    secrets = _pod_spec(ksvc).get("imagePullSecrets") or []
+    return secrets[0].get("name") if secrets else None
 
 
 def configmap_refs(ksvc: dict) -> set[str]:
@@ -97,11 +114,18 @@ def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
     return out
 
 
-def parse_spec(ksvc: dict, configmaps: dict[str, dict] | None = None) -> WorkloadSpec:
+def parse_spec(
+    ksvc: dict,
+    configmaps: dict[str, dict] | None = None,
+    registry_username: str | None = None,
+) -> WorkloadSpec:
     configmaps = configmaps or {}
+    meta = _meta_annotations(ksvc)
     return WorkloadSpec(
         scaling=_scaling(ksvc),
         env=_env(ksvc),
         files=_files(ksvc, configmaps),
-        hasPullSecret=bool(_pod_spec(ksvc).get("imagePullSecrets")),
+        registryUsername=registry_username,
+        gitUrl=meta.get(ANNOTATION_GIT_URL),
+        branch=meta.get(ANNOTATION_GIT_BRANCH),
     )
