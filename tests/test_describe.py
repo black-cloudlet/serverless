@@ -68,7 +68,7 @@ def test_parse_spec_reports_function_build_inputs():
         runtime="python", git_url="https://git.example.com/app.git", branch="release",
     )
     spec = parse_spec(ksvc)
-    assert spec.gitUrl == "https://git.example.com/app.git"
+    assert spec.gitRepo == "https://git.example.com/app.git"
     assert spec.branch == "release"
     assert spec.registryUsername is None  # functions have no pull secret
 

@@ -48,7 +48,7 @@ class FunctionService:
                 BuildRequest(
                     name=spec.name,
                     group=group,
-                    git_url=spec.gitUrl,
+                    git_url=spec.gitRepo,
                     branch=spec.branch,
                     git_token=spec.gitToken,
                     runtime=spec.runtime,
@@ -76,7 +76,7 @@ class FunctionService:
             pull_secret_manifest=None,
             created=True,
             runtime=spec.runtime,
-            git_url=spec.gitUrl,
+            git_url=spec.gitRepo,
             branch=spec.branch,
         )
         body.type = OFFERING_FUNCTION
@@ -91,7 +91,7 @@ class FunctionService:
         # Build inputs default to the existing ones; supplying a gitToken triggers
         # a rebuild from source, otherwise the current image is kept.
         runtime = spec.runtime or existing.get("runtime")
-        git_url = spec.gitUrl or existing.get("gitUrl")
+        git_url = spec.gitRepo or existing.get("gitUrl")
         branch = spec.branch or existing.get("branch") or "main"
         digest = None
         if spec.rebuild_requested:

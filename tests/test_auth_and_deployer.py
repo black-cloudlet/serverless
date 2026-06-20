@@ -567,7 +567,7 @@ async def test_function_update_rebuilds_when_token_given():
     fsvc = FunctionService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    # rebuild from a new branch; gitUrl/runtime carried from existing
+    # rebuild from a new branch; gitRepo/runtime carried from existing
     await fsvc.update("fn", FunctionUpdate(group="team", branch="release", gitToken="tok"), user)
     assert builder.calls == 1
     assert builder.req.branch == "release"

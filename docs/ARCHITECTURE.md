@@ -202,7 +202,7 @@ flowchart LR
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `gitUrl` | yes | HTTPS Git repository URL (internal Git, airgapped). |
+| `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). |
 | `branch` | yes | Branch / ref to build. |
 | `gitToken` | yes | Repo access token; used only to clone, **never persisted** (see §7). |
 | `runtime` | yes | One of `python`, `go`, `javascript`. |
@@ -215,7 +215,7 @@ flowchart LR
    **Cloud Native Buildpacks**. The builder/run images are the **mirrored** versions hosted
    in the internal registry (see §9) — buildpack autodetection picks the right
    Python/Go/JS buildpack.
-2. Source is cloned from `gitUrl@branch` using `gitToken`.
+2. Source is cloned from `gitRepo@branch` using `gitToken`.
 3. The resulting OCI image is pushed to the **internal container registry** under a
    deterministic tag, e.g. `registry.internal/<group>/<name>:<gitsha>`.
 4. The API then creates/updates the **KSVC** referencing that image (§3.3), in **both
@@ -236,7 +236,7 @@ sequenceDiagram
 
     U->>API: POST /api/v1/functions (git, runtime, ...)
     API->>API: AuthN (JWT) + AuthZ (group)
-    API->>Build: build(gitUrl@branch, runtime)
+    API->>Build: build(gitRepo@branch, runtime)
     Build->>Reg: push image @digest
     Build-->>API: image digest
     par Deploy to both sites (same digest)
@@ -698,7 +698,7 @@ are JSON. Times are RFC 3339 UTC.
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
 | `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
-| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitUrl`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
+| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
@@ -768,7 +768,7 @@ Request:
 ```json
 {
   "name": "image-resizer",
-  "gitUrl": "https://git.internal/team/image-resizer.git",
+  "gitRepo": "https://git.internal/team/image-resizer.git",
   "branch": "main",
   "gitToken": "<repo-access-token>",
   "runtime": "python",
@@ -819,7 +819,7 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
         "content": "level: debug\n" },
       { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
     ],
-    "gitUrl": "https://git.example.com/team/image-resizer.git",
+    "gitRepo": "https://git.example.com/team/image-resizer.git",
     "branch": "main",
     "registryUsername": null
   }
@@ -842,7 +842,7 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 >   non-secret file contents (read from the workload's ConfigMap) are returned in
 >   full. `scaling.target` reflects the *effective* target deployed (so an omitted
 >   cpu/memory target shows `70`).
-> - functions: `gitUrl`, `branch`, and top-level `runtime` (the language). The git
+> - functions: `gitRepo`, `branch`, and top-level `runtime` (the language). The git
 >   **token is never persisted** (docs §7.2), so it is never returned.
 > - containers: `registryUsername` (shown, like a secret's name) when a pull secret
 >   is set, else `null` for a public image — the **registry token is never returned**.

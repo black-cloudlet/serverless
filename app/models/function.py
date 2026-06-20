@@ -25,7 +25,7 @@ Hostname = Annotated[str, AfterValidator(validate_hostname)]
 class FunctionCreate(BaseModel):
     name: Name
     group: Group  # the SSO group to act as; caller must be a member
-    gitUrl: str
+    gitRepo: str
     branch: str = "main"
     gitToken: str
     runtime: Runtime
@@ -39,15 +39,15 @@ class FunctionCreate(BaseModel):
 
 
 class FunctionUpdate(BaseModel):
-    """Full replace of the mutable spec. Supplying any build input (gitUrl,
+    """Full replace of the mutable spec. Supplying any build input (gitRepo,
     branch, runtime) — or just a gitToken — triggers a rebuild from source;
     otherwise the existing image is kept and only config is updated."""
 
     group: Group  # the SSO group that owns the workload; caller must be a member
-    # Rebuild inputs (all optional). gitUrl/branch/runtime default to the existing
+    # Rebuild inputs (all optional). gitRepo/branch/runtime default to the existing
     # values when omitted; gitToken is never stored, so it must be supplied to
     # rebuild (it can't be carried forward).
-    gitUrl: str | None = None
+    gitRepo: str | None = None
     branch: str | None = None
     gitToken: str | None = None
     runtime: Runtime | None = None
@@ -59,11 +59,11 @@ class FunctionUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _rebuild_needs_token(self) -> "FunctionUpdate":
-        if any(v is not None for v in (self.gitUrl, self.branch, self.runtime)) and (
+        if any(v is not None for v in (self.gitRepo, self.branch, self.runtime)) and (
             self.gitToken is None
         ):
             raise ValueError(
-                "changing gitUrl/branch/runtime requires gitToken to rebuild"
+                "changing gitRepo/branch/runtime requires gitToken to rebuild"
             )
         return self
 

@@ -220,6 +220,6 @@ class WorkloadSpec(BaseModel):
     # token is never returned. None when the image is public (no pull secret).
     registryUsername: str | None = None
     # Function source: what the build was run from. The git token is never stored.
-    gitUrl: str | None = None
+    gitRepo: str | None = None
     branch: str | None = None
 

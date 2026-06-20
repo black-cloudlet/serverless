@@ -126,6 +126,6 @@ def parse_spec(
         env=_env(ksvc),
         files=_files(ksvc, configmaps),
         registryUsername=registry_username,
-        gitUrl=meta.get(ANNOTATION_GIT_URL),
+        gitRepo=meta.get(ANNOTATION_GIT_URL),
         branch=meta.get(ANNOTATION_GIT_BRANCH),
     )
