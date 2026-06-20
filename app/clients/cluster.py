@@ -5,9 +5,7 @@ from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
 from app.core.config import SiteConfig, Settings
-from app.core.logging import get_logger
 
-logger = get_logger(__name__)
 
 class ResourceKind(Enum):
     """The resource kinds the API manages, mapped to (apiVersion, kind)."""
