@@ -31,6 +31,8 @@ from app.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     LABEL_WORKLOAD,
+    ContainerResponse,
+    FunctionResponse,
     WorkloadResponse,
     WorkloadSummary,
     SiteStatus,
@@ -120,7 +122,8 @@ class WorkloadService:
     def accepted(
         self, kind: str, name: str, group: str, host: str, **extra
     ) -> WorkloadResponse:
-        return WorkloadResponse(
+        cls = FunctionResponse if kind == OFFERING_FUNCTION else ContainerResponse
+        return cls(
             name=name,
             type=kind,
             url=f"https://{host}",
@@ -208,14 +211,25 @@ class WorkloadService:
 
         statuses = await self.deployer.fanout(targets, apply)
         overall = aggregate(statuses, success_label="Ready")
-        body = WorkloadResponse(
+        common = dict(
             name=name,
-            type=offering,  # type: ignore[arg-type]
+            type=offering,
             url=f"https://{host}",
             overallStatus=overall,
+            size=size,
             sites=statuses,
+            image=image,
+            scaling=scaling,
+            env=describe_svc.redact_env(env),
+            files=describe_svc.redact_files(files),
             createdAt=datetime.now(timezone.utc) if created else None,
         )
+        if offering == OFFERING_FUNCTION:
+            body: WorkloadResponse = FunctionResponse(
+                **common, runtime=runtime, gitRepo=git_url, branch=branch
+            )
+        else:
+            body = ContainerResponse(**common)
         return body, status_code_for(overall, created=created)
 
     async def load_existing(
@@ -322,26 +336,38 @@ class WorkloadService:
         )
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
-        spec = image = runtime = None
+        spec = None
+        image = runtime = None
         if reps:
-            # spec is uniform across sites: read it from the local site if it
-            # answered, else any site that did.
+            # the desired-state spec is uniform across sites: read it from the
+            # local site if it answered, else any site that did.
             obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
             image = _extract_image(obj)
             runtime = ((obj.get("metadata", {}) or {}).get("annotations", {}) or {}).get(
                 ANNOTATION_RUNTIME
             )
             spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
-        return WorkloadResponse(
+        common = dict(
             name=name,
-            type=kind,  # type: ignore[arg-type]
+            type=kind,
             url=f"https://{host}",
             overallStatus=overall,
             size=meta_holder.get("size"),
             sites=statuses,
             image=image,
-            runtime=runtime,
-            spec=spec,
+            scaling=spec.scaling if spec else None,
+            env=spec.env if spec else [],
+            files=spec.files if spec else [],
+        )
+        if kind == OFFERING_FUNCTION:
+            return FunctionResponse(
+                **common,
+                runtime=runtime,
+                gitRepo=spec.gitRepo if spec else None,
+                branch=spec.branch if spec else None,
+            )
+        return ContainerResponse(
+            **common, registryUsername=spec.registryUsername if spec else None
         )
 
     def _describe_spec(self, cluster: Cluster, obj: dict):

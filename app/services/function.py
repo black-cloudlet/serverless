@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from app.auth.claims import Principal
 from app.core.errors import ServiceUnavailableError
-from app.models.common import WorkloadResponse, WorkloadSummary
+from app.models.common import FunctionResponse, WorkloadSummary
 from app.models.function import FunctionCreate, FunctionUpdate
+from app.services import describe as describe_svc
 from app.services.builder import BuildRequest
 from app.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
 
@@ -20,7 +21,19 @@ class FunctionService:
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a
     # status URL to poll. Deploys (esp. function builds) can be slow.
-    async def accept(self, spec: FunctionCreate, user: Principal, background) -> WorkloadResponse:
+    def _echo(self, spec) -> dict:
+        """Submitted config echoed back on the spec (gitToken never echoed)."""
+        return dict(
+            size=spec.size,
+            scaling=spec.scaling,
+            env=describe_svc.redact_env(spec.env),
+            files=describe_svc.redact_files(spec.files),
+            runtime=spec.runtime,
+            gitRepo=spec.gitRepo,
+            branch=spec.branch,
+        )
+
+    async def accept(self, spec: FunctionCreate, user: Principal, background) -> FunctionResponse:
         group = spec.group
         self._engine.assert_group(user, group)
         oname = object_name(spec.name, group)
@@ -29,18 +42,20 @@ class FunctionService:
         await self._engine.assert_host_available(host, oname, targets)
         await self._engine.assert_workload_absent(spec.name, oname, targets)
         background.add_task(self._engine.run, self.create, spec, user)
-        return self._engine.accepted(OFFERING_FUNCTION, spec.name, group, host, runtime=spec.runtime)
+        return self._engine.accepted(OFFERING_FUNCTION, spec.name, group, host, **self._echo(spec))
 
-    async def accept_update(self, name: str, spec: FunctionUpdate, user: Principal, background) -> WorkloadResponse:
+    async def accept_update(self, name: str, spec: FunctionUpdate, user: Principal, background) -> FunctionResponse:
         group = spec.group
         await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
         background.add_task(self._engine.run, self.update, name, spec, user)
         return self._engine.accepted(
-            OFFERING_FUNCTION, name, group, self._engine.host_for(name, spec.hostname, group)
+            OFFERING_FUNCTION, name, group,
+            self._engine.host_for(name, spec.hostname, group),
+            **self._echo(spec),
         )
 
     # -- create / update -------------------------------------------------
-    async def create(self, spec: FunctionCreate, user: Principal) -> tuple[WorkloadResponse, int]:
+    async def create(self, spec: FunctionCreate, user: Principal) -> tuple[FunctionResponse, int]:
         group = spec.group
         oname = object_name(spec.name, group)
         try:
@@ -79,12 +94,10 @@ class FunctionService:
             git_url=spec.gitRepo,
             branch=spec.branch,
         )
-        body.type = OFFERING_FUNCTION
-        body.runtime = spec.runtime
         body.imageDigest = build.digest
         return body, code
 
-    async def update(self, name: str, spec: FunctionUpdate, user: Principal) -> tuple[WorkloadResponse, int]:
+    async def update(self, name: str, spec: FunctionUpdate, user: Principal) -> tuple[FunctionResponse, int]:
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
 
@@ -132,13 +145,11 @@ class FunctionService:
             git_url=git_url,
             branch=branch,
         )
-        body.type = OFFERING_FUNCTION
-        body.runtime = runtime
         body.imageDigest = digest
         return body, code
 
     # -- read / delete ---------------------------------------------------
-    async def get(self, name: str, group: str, user: Principal) -> WorkloadResponse:
+    async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
         return await self._engine.get(OFFERING_FUNCTION, name, user, group)
 
     async def list(self, group: str, user: Principal) -> list[WorkloadSummary]:

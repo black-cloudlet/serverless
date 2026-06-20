@@ -6,31 +6,31 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import FunctionDep
-from app.models.common import WorkloadResponse, WorkloadSummary
+from app.models.common import FunctionResponse, WorkloadSummary
 from app.models.function import FunctionCreate, FunctionUpdate
 
 router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
 
 
-@router.post("", response_model=WorkloadResponse, status_code=202)
+@router.post("", response_model=FunctionResponse, status_code=202)
 async def create_function(
     spec: FunctionCreate,
     user: CurrentUser,
     svc: FunctionDep,
     background: BackgroundTasks,
-) -> WorkloadResponse:
+) -> FunctionResponse:
     # Validated synchronously; deployed in the background. Poll statusUrl.
     return await svc.accept(spec, user, background)
 
 
-@router.put("/{name}", response_model=WorkloadResponse, status_code=202)
+@router.put("/{name}", response_model=FunctionResponse, status_code=202)
 async def update_function(
     name: str,
     spec: FunctionUpdate,
     user: CurrentUser,
     svc: FunctionDep,
     background: BackgroundTasks,
-) -> WorkloadResponse:
+) -> FunctionResponse:
     return await svc.accept_update(name, spec, user, background)
 
 
@@ -42,10 +42,10 @@ async def list_functions(
     return await svc.list(group, user)
 
 
-@router.get("/{name}", response_model=WorkloadResponse)
+@router.get("/{name}", response_model=FunctionResponse)
 async def get_function(
     name: str, group: str, user: CurrentUser, svc: FunctionDep
-) -> WorkloadResponse:
+) -> FunctionResponse:
     # Also the poll target advertised as `statusUrl` on the 202 accept response;
     # the response already carries overallStatus + per-site status.
     return await svc.get(name, group, user)

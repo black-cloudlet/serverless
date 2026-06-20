@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from app.auth.claims import Principal
 from app.core.config import RegistryConfig
-from app.models.common import WorkloadResponse, WorkloadSummary
+from app.models.common import ContainerResponse, WorkloadSummary
 from app.models.container import ContainerCreate, ContainerUpdate
+from app.services import describe as describe_svc
 from app.services import secrets as secret_svc
 from app.services.labels import workload_labels
 from app.services.workloads import OFFERING_CONTAINER, WorkloadService, object_name
@@ -19,7 +20,17 @@ class ContainerService:
         self._registry = registry
 
     # -- async accept (202 + poll) ---------------------------------------
-    async def accept(self, spec: ContainerCreate, user: Principal, background) -> WorkloadResponse:
+    def _echo(self, spec) -> dict:
+        """Submitted config echoed back on the spec (secrets redacted)."""
+        return dict(
+            size=spec.size,
+            scaling=spec.scaling,
+            env=describe_svc.redact_env(spec.env),
+            files=describe_svc.redact_files(spec.files),
+            registryUsername=spec.registryUsername,
+        )
+
+    async def accept(self, spec: ContainerCreate, user: Principal, background) -> ContainerResponse:
         group = spec.group
         self._engine.assert_group(user, group)
         oname = object_name(spec.name, group)
@@ -31,9 +42,11 @@ class ContainerService:
         await self._engine.assert_workload_absent(spec.name, oname, targets)
 
         background.add_task(self._engine.run, self.create, spec, user)
-        return self._engine.accepted(OFFERING_CONTAINER, spec.name, group, host, image=spec.image)
+        return self._engine.accepted(
+            OFFERING_CONTAINER, spec.name, group, host, image=spec.image, **self._echo(spec)
+        )
 
-    async def accept_update(self, name: str, spec: ContainerUpdate, user: Principal, background) -> WorkloadResponse:
+    async def accept_update(self, name: str, spec: ContainerUpdate, user: Principal, background) -> ContainerResponse:
         group = spec.group
         await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
 
@@ -45,10 +58,11 @@ class ContainerService:
             group,
             self._engine.host_for(name, spec.hostname, group),
             image=spec.image,
+            **self._echo(spec),
         )
 
     # -- create / update -------------------------------------------------
-    async def create(self, spec: ContainerCreate, user: Principal) -> tuple[WorkloadResponse, int]:
+    async def create(self, spec: ContainerCreate, user: Principal) -> tuple[ContainerResponse, int]:
         group = spec.group
         oname = object_name(spec.name, group)
         # Registry creds are optional (public image -> no pull secret).
@@ -83,11 +97,10 @@ class ContainerService:
             pull_secret_manifest=pull,
             created=True,
         )
-        body.type = OFFERING_CONTAINER
-        body.image = spec.image
+        body.registryUsername = spec.registryUsername
         return body, code
 
-    async def update(self, name: str, spec: ContainerUpdate, user: Principal) -> tuple[WorkloadResponse, int]:
+    async def update(self, name: str, spec: ContainerUpdate, user: Principal) -> tuple[ContainerResponse, int]:
         group = spec.group
         oname = object_name(name, group)
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
@@ -123,12 +136,11 @@ class ContainerService:
             pull_secret_manifest=pull,
             created=False,
         )
-        body.type = OFFERING_CONTAINER
-        body.image = image
+        body.registryUsername = spec.registryUsername
         return body, code
 
     # -- read / delete ---------------------------------------------------
-    async def get(self, name: str, group: str, user: Principal) -> WorkloadResponse:
+    async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
         return await self._engine.get(OFFERING_CONTAINER, name, user, group)
 
     async def list(self, group: str, user: Principal) -> list[WorkloadSummary]:

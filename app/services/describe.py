@@ -8,10 +8,14 @@ contents, registry creds — is deliberately never reconstructed.
 
 from __future__ import annotations
 
+import base64
+
 from app.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_URL,
+    EnvVar,
     EnvVarView,
+    FileMount,
     FileView,
     Scaling,
     WorkloadSpec,
@@ -19,6 +23,30 @@ from app.models.common import (
 
 # Platform-injected volume mounted into every pod; not part of the user's spec.
 _CA_VOLUME = "trusted-ca"
+
+
+def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
+    """Submitted env -> response view: secret values are dropped (value=None)."""
+    return [
+        EnvVarView(name=e.name, value=None if e.secret else e.value, secret=e.secret)
+        for e in env
+    ]
+
+
+def redact_files(files: list[FileMount]) -> list[FileView]:
+    """Submitted files -> response view: secret file contents are dropped."""
+    out: list[FileView] = []
+    for f in files:
+        if f.secret:
+            content = None
+        elif f.contentBase64 is not None:
+            content = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
+        else:
+            content = f.content
+        out.append(
+            FileView(mountPath=f.mountPath, readOnly=f.readOnly, secret=f.secret, content=content)
+        )
+    return out
 
 
 def _template(ksvc: dict) -> dict:

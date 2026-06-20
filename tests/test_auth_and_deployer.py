@@ -489,17 +489,17 @@ async def test_get_returns_redacted_spec():
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get("container", "app", user, "team")
 
+    # flattened ContainerResponse mirrors the create body (secrets redacted)
     assert body.image == "reg/app:1"  # container image returned on read
-    spec = body.spec
-    assert spec.scaling.metric == "cpu" and spec.scaling.effective_target == 80
-    envs = {e.name: e for e in spec.env}
+    assert body.scaling.metric == "cpu" and body.scaling.effective_target == 80
+    envs = {e.name: e for e in body.env}
     assert envs["LOG"].value == "debug" and envs["LOG"].secret is False
     assert envs["API_KEY"].secret is True and envs["API_KEY"].value is None
-    files = {f.mountPath: f for f in spec.files}
+    files = {f.mountPath: f for f in body.files}
     assert files["/etc/app.conf"].content == "level=debug"  # plain content
     assert files["/etc/secret"].secret is True and files["/etc/secret"].content is None
     # registry username shown, token never returned
-    assert spec.registryUsername == "bob"
+    assert body.registryUsername == "bob"
 
 
 class _ApplyCluster:

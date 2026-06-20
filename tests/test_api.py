@@ -7,11 +7,17 @@ from app.auth.claims import Principal
 from app.auth.deps import require_auth
 from app.dependencies import get_container_service, get_function_service
 from app.main import create_app
-from app.models.common import WorkloadResponse, SiteStatus
+from app.models.common import ContainerResponse, FunctionResponse, SiteStatus
+
+
+def _model(kind, **fields):
+    cls = FunctionResponse if kind == "function" else ContainerResponse
+    return cls(**fields)
 
 
 def _accepted(kind, name, group, **extra):
-    return WorkloadResponse(
+    return _model(
+        kind,
         name=name,
         type=kind,
         url=f"https://{name}.serverless.example.com",
@@ -22,13 +28,15 @@ def _accepted(kind, name, group, **extra):
     )
 
 
-def _ready(kind, name):
-    return WorkloadResponse(
+def _ready(kind, name, **extra):
+    return _model(
+        kind,
         name=name,
         type=kind,
         url="https://x.serverless.example.com",
         overallStatus="Ready",
         sites=[SiteStatus(site="site-a", status="Ready")],
+        **extra,
     )
 
 
@@ -40,7 +48,7 @@ class FakeFunctions:
         return _accepted("function", name, spec.group)
 
     async def get(self, name, group, user):
-        return _ready("function", name)
+        return _ready("function", name, runtime="python", gitRepo="https://git/x.git", branch="main")
 
     async def list(self, group, user):
         from app.models.common import WorkloadSummary
@@ -64,7 +72,7 @@ class FakeContainers:
         return _accepted("container", name, spec.group, image=spec.image or "kept:1")
 
     async def get(self, name, group, user):
-        return _ready("container", name)
+        return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
 
     async def list(self, group, user):
         from app.models.common import WorkloadSummary
@@ -168,7 +176,22 @@ def test_create_container_validation_error(client):
 def test_get_function(client):
     r = client.get("/api/v1/functions/foo?group=team")
     assert r.status_code == 200
-    assert r.json()["name"] == "foo"
+    body = r.json()
+    assert body["name"] == "foo"
+    # FunctionResponse is flat and mirrors the create body: function source fields
+    # are present, container-only fields are absent.
+    assert body["runtime"] == "python" and body["gitRepo"] == "https://git/x.git"
+    assert "registryUsername" not in body
+
+
+def test_get_container_shape(client):
+    r = client.get("/api/v1/containers/foo?group=team")
+    assert r.status_code == 200
+    body = r.json()
+    # ContainerResponse mirrors the create body: image + registryUsername present,
+    # function-only fields (gitRepo/runtime) absent.
+    assert body["image"] == "reg/x:1" and body["registryUsername"] == "svc-team"
+    assert "gitRepo" not in body and "runtime" not in body
 
 
 def test_get_function_requires_group(client):

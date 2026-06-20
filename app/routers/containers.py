@@ -6,31 +6,31 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import ContainerDep
-from app.models.common import WorkloadResponse, WorkloadSummary
+from app.models.common import ContainerResponse, WorkloadSummary
 from app.models.container import ContainerCreate, ContainerUpdate
 
 router = APIRouter(prefix="/api/v1/containers", tags=["containers"])
 
 
-@router.post("", response_model=WorkloadResponse, status_code=202)
+@router.post("", response_model=ContainerResponse, status_code=202)
 async def create_container(
     spec: ContainerCreate,
     user: CurrentUser,
     svc: ContainerDep,
     background: BackgroundTasks,
-) -> WorkloadResponse:
+) -> ContainerResponse:
     # Validated synchronously; deployed in the background. Poll statusUrl.
     return await svc.accept(spec, user, background)
 
 
-@router.put("/{name}", response_model=WorkloadResponse, status_code=202)
+@router.put("/{name}", response_model=ContainerResponse, status_code=202)
 async def update_container(
     name: str,
     spec: ContainerUpdate,
     user: CurrentUser,
     svc: ContainerDep,
     background: BackgroundTasks,
-) -> WorkloadResponse:
+) -> ContainerResponse:
     return await svc.accept_update(name, spec, user, background)
 
 
@@ -42,10 +42,10 @@ async def list_containers(
     return await svc.list(group, user)
 
 
-@router.get("/{name}", response_model=WorkloadResponse)
+@router.get("/{name}", response_model=ContainerResponse)
 async def get_container(
     name: str, group: str, user: CurrentUser, svc: ContainerDep
-) -> WorkloadResponse:
+) -> ContainerResponse:
     # Also the poll target advertised as `statusUrl` on the 202 accept response;
     # the response already carries overallStatus + per-site status.
     return await svc.get(name, group, user)
