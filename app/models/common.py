@@ -161,47 +161,6 @@ class ResourceUsage(BaseModel):
     memory: str | None = None  # e.g. "180Mi"
 
 
-class WorkloadResponse(BaseModel):
-    """Common fields shared by both offerings: identity + live status + the
-    desired-state config that's common to functions and containers (secrets
-    redacted). Per-offering responses subclass this — see FunctionResponse /
-    ContainerResponse — so the response mirrors the create body of that offering."""
-
-    name: str
-    type: Literal["function", "container"]
-    url: str
-    # Pending (accepted, deploying in background) | Ready | Deploying | Degraded
-    overallStatus: str
-    size: str | None = None  # resource t-shirt size (uniform across sites)
-    sites: list[SiteStatus] = []
-    statusUrl: str | None = None
-    createdAt: datetime | None = None
-    # desired-state config common to both offerings (secret values redacted)
-    scaling: "Scaling | None" = None
-    env: list["EnvVarView"] = []
-    files: list["FileView"] = []
-
-
-class FunctionResponse(WorkloadResponse):
-    """A function, shaped like FunctionCreate (gitToken redacted) + live status.
-
-    No image is exposed: the built image is an internal artifact — the client
-    deals in source (gitRepo/branch), not images."""
-
-    type: Literal["function", "container"] = "function"
-    runtime: str | None = None
-    gitRepo: str | None = None
-    branch: str | None = None
-
-
-class ContainerResponse(WorkloadResponse):
-    """A container, shaped like ContainerCreate (registry token redacted) + status."""
-
-    type: Literal["function", "container"] = "container"
-    image: str | None = None  # the client-supplied image reference
-    registryUsername: str | None = None  # shown; the token is never returned
-
-
 class WorkloadSummary(BaseModel):
     """Lightweight list item: general info only, no per-site live usage. Use the
     single-workload GET for replicas/usage."""
@@ -231,6 +190,28 @@ class FileView(BaseModel):
     readOnly: bool = True
     secret: bool = False
     content: str | None = None
+
+
+class WorkloadResponse(BaseModel):
+    """Common fields shared by both offerings: identity + live status + the
+    desired-state config that's common to functions and containers (secrets
+    redacted). Per-offering responses subclass this — see FunctionResponse (in
+    models.function) / ContainerResponse (in models.container) — so the response
+    mirrors the create body of that offering."""
+
+    name: str
+    type: Literal["function", "container"]
+    url: str
+    # Pending (accepted, deploying in background) | Ready | Deploying | Degraded
+    overallStatus: str
+    size: str | None = None  # resource t-shirt size (uniform across sites)
+    sites: list[SiteStatus] = []
+    statusUrl: str | None = None
+    createdAt: datetime | None = None
+    # desired-state config common to both offerings (secret values redacted)
+    scaling: Scaling | None = None
+    env: list[EnvVarView] = []
+    files: list[FileView] = []
 
 
 class WorkloadSpec(BaseModel):

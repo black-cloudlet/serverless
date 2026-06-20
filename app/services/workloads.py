@@ -31,12 +31,12 @@ from app.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     LABEL_WORKLOAD,
-    ContainerResponse,
-    FunctionResponse,
     WorkloadResponse,
     WorkloadSummary,
     SiteStatus,
 )
+from app.models.container import ContainerResponse
+from app.models.function import FunctionResponse
 from app.services import describe as describe_svc
 from app.services import ksvc as ksvc_svc
 from app.services import metrics as metrics_svc

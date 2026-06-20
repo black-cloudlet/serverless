@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from app.auth.claims import Principal
 from app.core.errors import ServiceUnavailableError
-from app.models.common import FunctionResponse, WorkloadSummary
-from app.models.function import FunctionCreate, FunctionUpdate
+from app.models.common import WorkloadSummary
+from app.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from app.services import describe as describe_svc
 from app.services.builder import BuildRequest
 from app.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name

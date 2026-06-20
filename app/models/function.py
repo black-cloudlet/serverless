@@ -10,6 +10,7 @@ from app.models.common import (
     EnvVar,
     FileMount,
     Scaling,
+    WorkloadResponse,
     WorkloadSize,
     validate_group,
     validate_hostname,
@@ -70,3 +71,15 @@ class FunctionUpdate(BaseModel):
     @property
     def rebuild_requested(self) -> bool:
         return self.gitToken is not None
+
+
+class FunctionResponse(WorkloadResponse):
+    """A function, shaped like FunctionCreate (gitToken redacted) + live status.
+
+    No image is exposed: the built image is an internal artifact — the client
+    deals in source (gitRepo/branch), not images."""
+
+    type: Literal["function", "container"] = "function"
+    runtime: str | None = None
+    gitRepo: str | None = None
+    branch: str | None = None

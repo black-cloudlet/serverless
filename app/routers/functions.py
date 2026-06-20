@@ -6,8 +6,8 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import FunctionDep
-from app.models.common import FunctionResponse, WorkloadSummary
-from app.models.function import FunctionCreate, FunctionUpdate
+from app.models.common import WorkloadSummary
+from app.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 
 router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
 

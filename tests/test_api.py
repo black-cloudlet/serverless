@@ -7,7 +7,9 @@ from app.auth.claims import Principal
 from app.auth.deps import require_auth
 from app.dependencies import get_container_service, get_function_service
 from app.main import create_app
-from app.models.common import ContainerResponse, FunctionResponse, SiteStatus
+from app.models.common import SiteStatus
+from app.models.container import ContainerResponse
+from app.models.function import FunctionResponse
 
 
 def _model(kind, **fields):

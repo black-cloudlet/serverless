@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from app.auth.claims import Principal
 from app.core.config import RegistryConfig
-from app.models.common import ContainerResponse, WorkloadSummary
-from app.models.container import ContainerCreate, ContainerUpdate
+from app.models.common import WorkloadSummary
+from app.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from app.services import describe as describe_svc
 from app.services import secrets as secret_svc
 from app.services.labels import workload_labels

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
@@ -10,6 +10,7 @@ from app.models.common import (
     EnvVar,
     FileMount,
     Scaling,
+    WorkloadResponse,
     WorkloadSize,
     validate_group,
     validate_hostname,
@@ -69,3 +70,11 @@ class ContainerUpdate(BaseModel):
                 "registryUsername and registryToken must be provided together"
             )
         return self
+
+
+class ContainerResponse(WorkloadResponse):
+    """A container, shaped like ContainerCreate (registry token redacted) + status."""
+
+    type: Literal["function", "container"] = "container"
+    image: str | None = None  # the client-supplied image reference
+    registryUsername: str | None = None  # shown; the token is never returned

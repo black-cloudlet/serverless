@@ -6,8 +6,8 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import ContainerDep
-from app.models.common import ContainerResponse, WorkloadSummary
-from app.models.container import ContainerCreate, ContainerUpdate
+from app.models.common import WorkloadSummary
+from app.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 
 router = APIRouter(prefix="/api/v1/containers", tags=["containers"])
 
