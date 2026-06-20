@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     sso: SSOConfig = Field(default_factory=SSOConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
+    # The site this API instance runs in (active/active). Injected per-cluster
+    # from the Helm `global.site` value (env SERVERLESS_LOCAL_SITE). Reads of
+    # data that is uniform across sites (list, the spec/describe block) prefer
+    # it; defaults to the first site when unset/unknown.
+    local_site: str | None = None
     # Static API keys (sha256-hashed) for non-OIDC service accounts. From Vault
     # via ESO. env: SERVERLESS_API_KEYS (JSON list).
     admin_api_key: str = "Aa123456"

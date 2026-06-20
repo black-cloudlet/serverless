@@ -30,6 +30,9 @@ spec:
               value: "true"
             - name: SERVERLESS_BASE_DOMAIN
               value: {{ .Values.global.baseDomain | quote }}
+            # The site this instance runs in; reads of uniform data prefer it.
+            - name: SERVERLESS_LOCAL_SITE
+              value: {{ .Values.global.site | quote }}
             - name: SERVERLESS_ROUTE_DOMAIN
               value: {{ .Values.routeDomain | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE

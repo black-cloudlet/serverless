@@ -696,12 +696,12 @@ are JSON. Times are RFC 3339 UTC.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
+| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, url, overallStatus, size). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`. |
 | `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
+| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, url, overallStatus, size). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`. |
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
@@ -836,7 +836,9 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 > `null` when the workload is scaled to zero or the metrics API is unavailable.
 >
 > `spec` is the **desired-state config** read back from the deployed KSVC — what
-> the user submitted, with **all secret material redacted**:
+> the user submitted, with **all secret material redacted**. It is read from the
+> **local site** (the spec is uniform across sites), whereas the per-site `sites[]`
+> status/`replicas`/`usage` above come from fanning out to every site. Fields:
 > - common: `scaling`, `env`, `files`. Secret-backed env values and secret file
 >   contents come back `null` with `secret: true`; non-secret env values and
 >   non-secret file contents (read from the workload's ConfigMap) are returned in
@@ -864,10 +866,12 @@ info only (no live usage/replicas; use the single-workload GET for those):
 ]
 ```
 
-> Workloads are merged by name across sites (`sites` lists where each is
-> deployed). `overallStatus` is `Ready` when every instance is ready, `Deploying`
-> while all are still coming up, else `Degraded`. The listing is best-effort: an
-> unreachable site is skipped; only if **all** sites fail does the call error (502).
+> The list reads only the **local site** (the API's own cluster): workloads are
+> active/active and identical across sites, so one cluster is authoritative and we
+> skip the cross-site fan-out. `overallStatus` is the local site's readiness
+> (`Ready`/`Deploying`/`Degraded`); `sites` reflects the local site. If the local
+> site is unreachable the call errors (502). For per-site live health across all
+> sites, use the single-workload GET.
 
 ### CaaS — `POST /api/v1/containers`
 

@@ -27,12 +27,32 @@ class Deployer:
         # `settings` is a construction input (each Cluster needs it); we don't
         # retain it — only the per-site timeout and the built Clusters.
         self._op_timeout = settings.site_op_timeout
+        self._local_site = settings.local_site
         # One Cluster per configured site, built once up front (not per request).
         # The k8s connection stays lazy (on first use), so startup doesn't fail
         # if a site is down.
         self._clusters: dict[str, Cluster] = {
             site.name: Cluster(site, settings) for site in settings.sites
         }
+
+    def local_cluster(self) -> Cluster:
+        """The cluster this API instance sits in (config `local_site`, matched by
+        site name then cluster name), falling back to the first configured site.
+        Used for reads of data that is uniform across sites (active/active), to
+        avoid a cross-cluster round trip."""
+        if not self._clusters:
+            raise ValidationError("no sites are configured")
+        if self._local_site:
+            by_site = self._clusters.get(self._local_site)
+            if by_site:
+                return by_site
+            for cluster in self._clusters.values():
+                if cluster.name == self._local_site:  # match the cluster name too
+                    return cluster
+        return next(iter(self._clusters.values()))
+
+    def local_site(self) -> str:
+        return self.local_cluster().site
 
     def resolve_targets(self, requested: list[str] | None) -> list[Cluster]:
         if not self._clusters:

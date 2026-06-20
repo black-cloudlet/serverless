@@ -290,9 +290,10 @@ class WorkloadService:
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
-        # First site to respond OK donates its KSVC (the spec is uniform across
-        # sites) so we can read the desired-state spec back once, after the fan-out.
-        rep: dict[str, object] = {}
+        # Each OK site donates its KSVC; the spec is uniform across sites, so we
+        # read the desired-state spec back from the local site (most reliable hop)
+        # once, after the fan-out — see _pick_rep.
+        reps: dict[str, tuple] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
@@ -302,8 +303,7 @@ class WorkloadService:
             for key, ann in (("host", ANNOTATION_HOST), ("size", ANNOTATION_SIZE)):
                 if ann in annotations and key not in meta_holder:
                     meta_holder[key] = annotations[ann]
-            if "obj" not in rep:
-                rep["obj"], rep["cluster"] = obj, cluster
+            reps[cluster.site] = (obj, cluster)
             status, revision = _ksvc_status(obj)
             return SiteStatus(
                 site=cluster.site,
@@ -323,13 +323,15 @@ class WorkloadService:
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
         spec = image = runtime = None
-        if "obj" in rep:
-            obj = rep["obj"]
+        if reps:
+            # spec is uniform across sites: read it from the local site if it
+            # answered, else any site that did.
+            obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
             image = _extract_image(obj)
             runtime = ((obj.get("metadata", {}) or {}).get("annotations", {}) or {}).get(
                 ANNOTATION_RUNTIME
             )
-            spec = await asyncio.to_thread(self._describe_spec, rep["cluster"], obj)
+            spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
         return WorkloadResponse(
             name=name,
             type=kind,  # type: ignore[arg-type]
@@ -411,9 +413,10 @@ class WorkloadService:
     async def list_workloads(
         self, kind: str, user: Principal, group: str
     ) -> list[WorkloadSummary]:
-        """General info for every workload of this offering owned by `group`,
-        merged across sites. Best-effort: a down site is skipped; only if *all*
-        sites fail do we raise (rather than report an empty, misleading list)."""
+        """General info for every workload of this offering owned by `group`.
+        Reads only the **local site**: workloads are active/active and identical
+        across sites, so one cluster is authoritative and we skip the cross-site
+        fan-out. Raises if the local site is unreachable."""
         self.assert_group(user, group)
         offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"
@@ -421,8 +424,7 @@ class WorkloadService:
         def fetch(cluster: Cluster) -> list[dict]:
             return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
 
-        targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.gather_each(targets, fetch)
+        results = await self.deployer.gather_each([self.deployer.local_cluster()], fetch)
         if all(items is None for _, items in results):
             raise SiteTotalFailure(
                 "Listing failed in all sites.",

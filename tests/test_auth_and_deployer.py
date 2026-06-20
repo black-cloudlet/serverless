@@ -144,6 +144,21 @@ def test_resolve_targets_unknown_site():
         d.resolve_targets(["site-c"])
 
 
+def test_local_cluster_selection():
+    d = Deployer(_settings_with_sites())
+    # unset -> first configured site
+    assert d.local_cluster().site == "site-a"
+    # match by site name
+    d._local_site = "site-b"
+    assert d.local_cluster().site == "site-b"
+    # match by cluster name (Cluster.name), not just site name
+    d._local_site = "site-b-0"
+    assert d.local_cluster().site == "site-b"
+    # unknown value -> deterministic fallback to the first site
+    d._local_site = "nope"
+    assert d.local_cluster().site == "site-a"
+
+
 async def test_fanout_captures_per_site_errors():
     d = Deployer(_settings_with_sites())
 
@@ -191,13 +206,14 @@ class _FakeCluster:
         raise _NF(f"{name} not found")
 
 
-def _workload_service(clusters, builder=None):
+def _workload_service(clusters, builder=None, local_site=None):
     from app.services.builder import FuncBuilder
     from app.services.workloads import WorkloadService
 
     settings = _settings_with_sites()
     d = Deployer(settings)
     d._clusters = clusters  # inject fakes (name -> _FakeCluster)
+    d._local_site = local_site
     return WorkloadService(settings, d, builder or FuncBuilder(settings.registry))
 
 
@@ -611,30 +627,7 @@ async def test_function_update_without_token_keeps_image():
     assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
 
 
-async def test_list_workloads_merges_sites_and_strips_suffix():
-    from app.auth.claims import Principal
-
-    a = _ListCluster("site-a", [
-        _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
-        _list_ksvc("web-team", "small", "web-team.ex.com"),
-    ])
-    b = _ListCluster("site-b", [_list_ksvc("orders-team", "medium", "orders-team.ex.com")])
-    engine = _workload_service({"site-a": a, "site-b": b})
-    user = Principal(subject="u", username="alice", groups=["team"])
-
-    out = await engine.list_workloads("container", user, "team")
-    # display names are sorted and have the "-{group}" suffix stripped
-    assert [w.name for w in out] == ["orders", "web"]
-    orders = next(w for w in out if w.name == "orders")
-    assert orders.sites == ["site-a", "site-b"]  # merged across both sites
-    assert orders.size == "medium"
-    assert orders.url == "https://orders-team.ex.com"
-    assert orders.overallStatus == "Ready"
-    web = next(w for w in out if w.name == "web")
-    assert web.sites == ["site-a"]  # only present on one site
-
-
-async def test_list_workloads_skips_unreachable_site():
+async def test_list_workloads_reads_only_local_site():
     from app.auth.claims import Principal
 
     class _Boom:
@@ -643,17 +636,28 @@ async def test_list_workloads_skips_unreachable_site():
             self.name = name
 
         def get(self, *a, **k):
-            raise RuntimeError("site down")
+            raise AssertionError("remote site must not be queried for a list")
 
-    good = _ListCluster("site-a", [_list_ksvc("orders-team", "small", "orders-team.ex.com")])
-    engine = _workload_service({"site-a": good, "site-b": _Boom("site-b")})
+    local = _ListCluster("site-a", [
+        _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
+        _list_ksvc("web-team", "small", "web-team.ex.com"),
+    ])
+    # local_site=site-a -> only site-a is read; site-b would raise if touched
+    engine = _workload_service(
+        {"site-a": local, "site-b": _Boom("site-b")}, local_site="site-a"
+    )
     user = Principal(subject="u", username="alice", groups=["team"])
 
     out = await engine.list_workloads("container", user, "team")
-    assert [w.name for w in out] == ["orders"]  # down site skipped, not fatal
+    assert [w.name for w in out] == ["orders", "web"]  # sorted, suffix stripped
+    orders = next(w for w in out if w.name == "orders")
+    assert orders.sites == ["site-a"]  # only the local site is reported
+    assert orders.size == "medium"
+    assert orders.url == "https://orders-team.ex.com"
+    assert orders.overallStatus == "Ready"
 
 
-async def test_list_workloads_errors_when_all_sites_fail():
+async def test_list_workloads_errors_when_local_site_fails():
     from app.auth.claims import Principal
     from app.core.errors import SiteTotalFailure
 
@@ -665,7 +669,7 @@ async def test_list_workloads_errors_when_all_sites_fail():
         def get(self, *a, **k):
             raise RuntimeError("site down")
 
-    engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
+    engine = _workload_service({"site-a": _Boom("site-a")}, local_site="site-a")
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(SiteTotalFailure):
         await engine.list_workloads("container", user, "team")
