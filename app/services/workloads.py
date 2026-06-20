@@ -287,7 +287,7 @@ class WorkloadService:
         self, kind: str, name: str, user: Principal, group: str
     ) -> WorkloadResponse:
         self.assert_group(user, group)
-        offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
+        offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
         # Each OK site donates its KSVC; the spec is uniform across sites, so we
@@ -395,7 +395,7 @@ class WorkloadService:
         self, kind: str, name: str, user: Principal, group: str
     ) -> None:
         self.assert_group(user, group)
-        offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
+        offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
 
         def remove(cluster: Cluster) -> SiteStatus:
@@ -418,7 +418,7 @@ class WorkloadService:
         across sites, so one cluster is authoritative and we skip the cross-site
         fan-out. Raises if the local site is unreachable."""
         self.assert_group(user, group)
-        offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
+        offering = kind  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"
 
         def fetch(cluster: Cluster) -> list[dict]:
