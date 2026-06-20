@@ -799,6 +799,7 @@ body (secrets redacted) with the live status alongside:
 ```json
 {
   "name": "image-resizer",
+  "group": "team",
   "type": "function",
   "url": "https://image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
@@ -856,6 +857,7 @@ info only (no live usage/replicas; use the single-workload GET for those):
 [
   {
     "name": "image-resizer",
+    "group": "team",
     "type": "function",
     "url": "https://image-resizer-team.serverless.example.com",
     "overallStatus": "Ready",

@@ -161,15 +161,21 @@ class ResourceUsage(BaseModel):
     memory: str | None = None  # e.g. "180Mi"
 
 
-class WorkloadSummary(BaseModel):
+class WorkloadBase(BaseModel):
+    """Identity fields common to every workload view (list item and full GET)."""
+
+    name: str
+    group: str  # the owning SSO group
+    type: Literal["function", "container"]
+    url: str
+    overallStatus: str  # Pending | Ready | Deploying | Degraded
+    size: str | None = None  # resource t-shirt size (uniform across sites)
+
+
+class WorkloadSummary(WorkloadBase):
     """Lightweight list item: general info only, no per-site live usage. Use the
     single-workload GET for replicas/usage."""
 
-    name: str
-    type: Literal["function", "container"]
-    url: str
-    overallStatus: str  # Ready | Deploying | Degraded
-    size: str | None = None
     sites: list[str] = []  # site names where the workload is deployed
 
 
@@ -192,19 +198,13 @@ class FileView(BaseModel):
     content: str | None = None
 
 
-class WorkloadResponse(BaseModel):
-    """Common fields shared by both offerings: identity + live status + the
-    desired-state config that's common to functions and containers (secrets
-    redacted). Per-offering responses subclass this — see FunctionResponse (in
+class WorkloadResponse(WorkloadBase):
+    """Full single-workload view: identity (WorkloadBase) + live per-site status +
+    the desired-state config common to both offerings (secrets redacted).
+    Per-offering responses subclass this — see FunctionResponse (in
     models.function) / ContainerResponse (in models.container) — so the response
     mirrors the create body of that offering."""
 
-    name: str
-    type: Literal["function", "container"]
-    url: str
-    # Pending (accepted, deploying in background) | Ready | Deploying | Degraded
-    overallStatus: str
-    size: str | None = None  # resource t-shirt size (uniform across sites)
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
     createdAt: datetime | None = None

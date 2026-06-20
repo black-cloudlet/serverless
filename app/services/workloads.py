@@ -125,6 +125,7 @@ class WorkloadService:
         cls = FunctionResponse if kind == OFFERING_FUNCTION else ContainerResponse
         return cls(
             name=name,
+            group=group,
             type=kind,
             url=f"https://{host}",
             overallStatus="Pending",
@@ -213,6 +214,7 @@ class WorkloadService:
         overall = aggregate(statuses, success_label="Ready")
         common = dict(
             name=name,
+            group=group,
             type=offering,
             url=f"https://{host}",
             overallStatus=overall,
@@ -348,6 +350,7 @@ class WorkloadService:
             spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
         common = dict(
             name=name,
+            group=group,
             type=kind,
             url=f"https://{host}",
             overallStatus=overall,
@@ -494,6 +497,7 @@ class WorkloadService:
             summaries.append(
                 WorkloadSummary(
                     name=name,
+                    group=group,
                     type=kind,  # type: ignore[arg-type]
                     url=f"https://{host}",
                     overallStatus=overall,

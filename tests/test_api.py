@@ -21,6 +21,7 @@ def _accepted(kind, name, group, **extra):
     return _model(
         kind,
         name=name,
+        group=group,
         type=kind,
         url=f"https://{name}.serverless.example.com",
         overallStatus="Pending",
@@ -30,10 +31,11 @@ def _accepted(kind, name, group, **extra):
     )
 
 
-def _ready(kind, name, **extra):
+def _ready(kind, name, group="team", **extra):
     return _model(
         kind,
         name=name,
+        group=group,
         type=kind,
         url="https://x.serverless.example.com",
         overallStatus="Ready",
@@ -57,7 +59,7 @@ class FakeFunctions:
 
         return [
             WorkloadSummary(
-                name="fn-a", type="function", url="https://fn-a.example.com",
+                name="fn-a", group="team", type="function", url="https://fn-a.example.com",
                 overallStatus="Ready", size="small", sites=["central"],
             )
         ]
@@ -81,7 +83,7 @@ class FakeContainers:
 
         return [
             WorkloadSummary(
-                name="ctr-a", type="container", url="https://ctr-a.example.com",
+                name="ctr-a", group="team", type="container", url="https://ctr-a.example.com",
                 overallStatus="Ready", size="medium", sites=["central", "south"],
             )
         ]
@@ -179,7 +181,7 @@ def test_get_function(client):
     r = client.get("/api/v1/functions/foo?group=team")
     assert r.status_code == 200
     body = r.json()
-    assert body["name"] == "foo"
+    assert body["name"] == "foo" and body["group"] == "team"
     # FunctionResponse is flat and mirrors the create body: function source fields
     # are present, container-only fields are absent.
     assert body["runtime"] == "python" and body["gitRepo"] == "https://git/x.git"
@@ -208,7 +210,8 @@ def test_list_functions(client):
     assert r.status_code == 200
     body = r.json()
     assert [w["name"] for w in body] == ["fn-a"]
-    assert body[0]["type"] == "function" and body[0]["sites"] == ["central"]
+    assert body[0]["type"] == "function" and body[0]["group"] == "team"
+    assert body[0]["sites"] == ["central"]
 
 
 def test_list_containers(client):
