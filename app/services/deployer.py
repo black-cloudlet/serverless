@@ -68,6 +68,26 @@ class Deployer:
 
         return await asyncio.gather(*(run(c) for c in targets))
 
+    async def gather_each(
+        self, targets: list[Cluster], fn: Callable[[Cluster], object]
+    ) -> list[tuple[str, object | None]]:
+        """Run fn(cluster) on each target concurrently, returning [(site, result)].
+        A site whose call fails or times out yields (site, None) instead of
+        aborting the whole fan-out — for reads (e.g. listings) where a down site
+        should be skipped, not fatal."""
+
+        async def run(cluster: Cluster) -> tuple[str, object | None]:
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(fn, cluster), timeout=self._op_timeout
+                )
+                return cluster.site, result
+            except Exception:  # noqa: BLE001 - per-site failure is non-fatal here
+                logger.exception("site %s listing failed", cluster.site)
+                return cluster.site, None
+
+        return await asyncio.gather(*(run(c) for c in targets))
+
 
 def aggregate(statuses: list[SiteStatus], success_label: str) -> str:
     """Return the overall status, or raise SiteTotalFailure if every site failed."""

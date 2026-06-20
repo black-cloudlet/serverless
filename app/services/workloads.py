@@ -17,6 +17,7 @@ from app.core.errors import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    SiteTotalFailure,
     ValidationError,
 )
 from app.core.logging import get_logger
@@ -27,6 +28,7 @@ from app.models.common import (
     LABEL_OFFERING,
     LABEL_WORKLOAD,
     WorkloadResponse,
+    WorkloadSummary,
     SiteStatus,
 )
 from app.services import ksvc as ksvc_svc
@@ -348,6 +350,72 @@ class WorkloadService:
         statuses = await self.deployer.fanout(targets, remove)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
+
+    async def list_workloads(
+        self, kind: str, user: Principal, group: str
+    ) -> list[WorkloadSummary]:
+        """General info for every workload of this offering owned by `group`,
+        merged across sites. Best-effort: a down site is skipped; only if *all*
+        sites fail do we raise (rather than report an empty, misleading list)."""
+        self.assert_group(user, group)
+        offering = OFFERING_FUNCTION if kind == "function" else OFFERING_CONTAINER
+        selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"
+
+        def fetch(cluster: Cluster) -> list[dict]:
+            return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
+
+        targets = self.deployer.resolve_targets(None)
+        results = await self.deployer.gather_each(targets, fetch)
+        if all(items is None for _, items in results):
+            raise SiteTotalFailure(
+                "Listing failed in all sites.",
+                details=[{"site": site} for site, _ in results],
+            )
+
+        suffix = f"-{group}"
+        merged: dict[str, dict] = {}
+        for site, items in results:
+            if items is None:
+                continue
+            for obj in items:
+                meta = obj.get("metadata", {}) or {}
+                oname = meta.get("name", "")
+                # object name is "{name}-{group}"; recover the display name
+                name = oname[: -len(suffix)] if oname.endswith(suffix) else oname
+                annotations = meta.get("annotations", {}) or {}
+                status, _ = _ksvc_status(obj)
+                entry = merged.setdefault(
+                    name, {"host": None, "size": None, "sites": [], "statuses": []}
+                )
+                entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
+                entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
+                entry["sites"].append(site)
+                entry["statuses"].append(status)
+
+        summaries = []
+        for name in sorted(merged):
+            entry = merged[name]
+            host = entry["host"] or route_svc.host_for(
+                name, group, self.settings.route_domain
+            )
+            statuses = entry["statuses"]
+            if all(s == "Ready" for s in statuses):
+                overall = "Ready"
+            elif all(s == "Deploying" for s in statuses):
+                overall = "Deploying"
+            else:
+                overall = "Degraded"
+            summaries.append(
+                WorkloadSummary(
+                    name=name,
+                    type=kind,  # type: ignore[arg-type]
+                    url=f"https://{host}",
+                    overallStatus=overall,
+                    size=entry["size"],
+                    sites=sorted(entry["sites"]),
+                )
+            )
+        return summaries
 
     def _assert_access(self, obj: dict, user: Principal) -> None:
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}

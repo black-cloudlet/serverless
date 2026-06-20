@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import FunctionDep
-from app.models.common import WorkloadResponse
+from app.models.common import WorkloadResponse, WorkloadSummary
 from app.models.function import FunctionCreate, FunctionUpdate
 
 router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
@@ -32,6 +32,14 @@ async def update_function(
     background: BackgroundTasks,
 ) -> WorkloadResponse:
     return await svc.accept_update(name, spec, user, background)
+
+
+@router.get("", response_model=list[WorkloadSummary])
+async def list_functions(
+    group: str, user: CurrentUser, svc: FunctionDep
+) -> list[WorkloadSummary]:
+    # General info for every function the group owns, merged across sites.
+    return await svc.list(group, user)
 
 
 @router.get("/{name}", response_model=WorkloadResponse)

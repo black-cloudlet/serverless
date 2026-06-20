@@ -400,6 +400,95 @@ async def test_get_reports_size_and_live_usage_per_site():
     assert site.usage.memory == "180Mi"
 
 
+def _list_ksvc(oname, size, host, ready=True):
+    from app.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
+
+    return {
+        "metadata": {
+            "name": oname,
+            "labels": {LABEL_GROUP: "team", LABEL_OFFERING: "container"},
+            "annotations": {ANNOTATION_HOST: host, ANNOTATION_SIZE: size},
+        },
+        "status": {
+            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+            "latestReadyRevisionName": "r1",
+        },
+    }
+
+
+class _ListCluster:
+    def __init__(self, name, items):
+        self.site = name
+        self.name = name
+        self._items = items
+
+    def get(self, kind, name=None, label_selector=None, namespace=None):
+        from app.clients.cluster import ResourceKind
+
+        assert kind == ResourceKind.KNATIVE_SERVICE
+        return list(self._items)
+
+
+async def test_list_workloads_merges_sites_and_strips_suffix():
+    from app.auth.claims import Principal
+
+    a = _ListCluster("site-a", [
+        _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
+        _list_ksvc("web-team", "small", "web-team.ex.com"),
+    ])
+    b = _ListCluster("site-b", [_list_ksvc("orders-team", "medium", "orders-team.ex.com")])
+    engine = _workload_service({"site-a": a, "site-b": b})
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    out = await engine.list_workloads("container", user, "team")
+    # display names are sorted and have the "-{group}" suffix stripped
+    assert [w.name for w in out] == ["orders", "web"]
+    orders = next(w for w in out if w.name == "orders")
+    assert orders.sites == ["site-a", "site-b"]  # merged across both sites
+    assert orders.size == "medium"
+    assert orders.url == "https://orders-team.ex.com"
+    assert orders.overallStatus == "Ready"
+    web = next(w for w in out if w.name == "web")
+    assert web.sites == ["site-a"]  # only present on one site
+
+
+async def test_list_workloads_skips_unreachable_site():
+    from app.auth.claims import Principal
+
+    class _Boom:
+        def __init__(self, name):
+            self.site = name
+            self.name = name
+
+        def get(self, *a, **k):
+            raise RuntimeError("site down")
+
+    good = _ListCluster("site-a", [_list_ksvc("orders-team", "small", "orders-team.ex.com")])
+    engine = _workload_service({"site-a": good, "site-b": _Boom("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    out = await engine.list_workloads("container", user, "team")
+    assert [w.name for w in out] == ["orders"]  # down site skipped, not fatal
+
+
+async def test_list_workloads_errors_when_all_sites_fail():
+    from app.auth.claims import Principal
+    from app.core.errors import SiteTotalFailure
+
+    class _Boom:
+        def __init__(self, name):
+            self.site = name
+            self.name = name
+
+        def get(self, *a, **k):
+            raise RuntimeError("site down")
+
+    engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(SiteTotalFailure):
+        await engine.list_workloads("container", user, "team")
+
+
 async def test_accept_rejects_group_caller_is_not_member_of():
     from fastapi import BackgroundTasks
 

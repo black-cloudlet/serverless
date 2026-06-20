@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.auth.claims import Principal
 from app.core.config import RegistryConfig
-from app.models.common import WorkloadResponse
+from app.models.common import WorkloadResponse, WorkloadSummary
 from app.models.container import ContainerCreate, ContainerUpdate
 from app.services import secrets as secret_svc
 from app.services.labels import workload_labels
@@ -112,6 +112,9 @@ class ContainerService:
     # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> WorkloadResponse:
         return await self._engine.get(OFFERING_CONTAINER, name, user, group)
+
+    async def list(self, group: str, user: Principal) -> list[WorkloadSummary]:
+        return await self._engine.list_workloads(OFFERING_CONTAINER, user, group)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
         await self._engine.delete(OFFERING_CONTAINER, name, user, group)

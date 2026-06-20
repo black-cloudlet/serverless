@@ -169,3 +169,15 @@ class WorkloadResponse(BaseModel):
     image: str | None = None
     imageDigest: str | None = None
     createdAt: datetime | None = None
+
+
+class WorkloadSummary(BaseModel):
+    """Lightweight list item: general info only, no per-site live usage. Use the
+    single-workload GET for replicas/usage."""
+
+    name: str
+    type: Literal["function", "container"]
+    url: str
+    overallStatus: str  # Ready | Deploying | Degraded
+    size: str | None = None
+    sites: list[str] = []  # site names where the workload is deployed

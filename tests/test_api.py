@@ -42,6 +42,16 @@ class FakeFunctions:
     async def get(self, name, group, user):
         return _ready("function", name)
 
+    async def list(self, group, user):
+        from app.models.common import WorkloadSummary
+
+        return [
+            WorkloadSummary(
+                name="fn-a", type="function", url="https://fn-a.example.com",
+                overallStatus="Ready", size="small", sites=["central"],
+            )
+        ]
+
     async def delete(self, name, group, user):
         return None
 
@@ -55,6 +65,16 @@ class FakeContainers:
 
     async def get(self, name, group, user):
         return _ready("container", name)
+
+    async def list(self, group, user):
+        from app.models.common import WorkloadSummary
+
+        return [
+            WorkloadSummary(
+                name="ctr-a", type="container", url="https://ctr-a.example.com",
+                overallStatus="Ready", size="medium", sites=["central", "south"],
+            )
+        ]
 
     async def delete(self, name, group, user):
         return None
@@ -153,6 +173,27 @@ def test_get_function(client):
 
 def test_get_function_requires_group(client):
     r = client.get("/api/v1/functions/foo")  # missing ?group=
+    assert r.status_code == 400
+
+
+def test_list_functions(client):
+    r = client.get("/api/v1/functions?group=team")
+    assert r.status_code == 200
+    body = r.json()
+    assert [w["name"] for w in body] == ["fn-a"]
+    assert body[0]["type"] == "function" and body[0]["sites"] == ["central"]
+
+
+def test_list_containers(client):
+    r = client.get("/api/v1/containers?group=team")
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["name"] == "ctr-a"
+    assert body[0]["size"] == "medium" and body[0]["sites"] == ["central", "south"]
+
+
+def test_list_requires_group(client):
+    r = client.get("/api/v1/containers")  # missing ?group=
     assert r.status_code == 400
 
 

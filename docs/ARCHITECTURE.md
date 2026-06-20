@@ -696,12 +696,12 @@ are JSON. Times are RFC 3339 UTC.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/functions` | List caller's functions (label-scoped). |
+| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
 | `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/containers` | List caller's containers (label-scoped). |
+| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, url, overallStatus, size, sites), merged across sites. Requires `?group=`. |
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
@@ -817,6 +817,27 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 > the figure is the combined total of both), counting only the user container, not
 > Knative's queue-proxy sidecar; it is read best-effort from the metrics API and is
 > `null` when the workload is scaled to zero or the metrics API is unavailable.
+
+And `GET /api/v1/functions?group=team` to list the group's functions — general
+info only (no live usage/replicas; use the single-workload GET for those):
+
+```json
+[
+  {
+    "name": "image-resizer",
+    "type": "function",
+    "url": "https://image-resizer-team.serverless.example.com",
+    "overallStatus": "Ready",
+    "size": "small",
+    "sites": ["central", "south"]
+  }
+]
+```
+
+> Workloads are merged by name across sites (`sites` lists where each is
+> deployed). `overallStatus` is `Ready` when every instance is ready, `Deploying`
+> while all are still coming up, else `Degraded`. The listing is best-effort: an
+> unreachable site is skipped; only if **all** sites fail does the call error (502).
 
 ### CaaS — `POST /api/v1/containers`
 
