@@ -810,12 +810,13 @@ Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
 ```
 
 > `size` is the resource t-shirt size (per replica, uniform across sites). Each
-> site reports its `replicas` (running pod count) and `usage` — **live** cpu/memory
-> **summed over all of that site's running pods** (so with `replicas: 2` the figure
-> is the combined total of both), counting only the user container, not Knative's
-> queue-proxy sidecar. Both are read best-effort from the metrics API: `usage` is
-> `null` and `replicas` `0` when the workload is scaled to zero, and both are
-> `null` when the metrics API is unavailable.
+> site reports its `replicas` and `usage`. `replicas` is the autoscaler's live
+> scale, read from `Revision.status.actualReplicas` on the revision the KSVC points
+> at (so it needs no metrics API and doesn't lag scale-up). `usage` is **live**
+> cpu/memory **summed over all of that site's running pods** (so with `replicas: 2`
+> the figure is the combined total of both), counting only the user container, not
+> Knative's queue-proxy sidecar; it is read best-effort from the metrics API and is
+> `null` when the workload is scaled to zero or the metrics API is unavailable.
 
 ### CaaS — `POST /api/v1/containers`
 

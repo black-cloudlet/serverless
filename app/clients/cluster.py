@@ -13,6 +13,7 @@ class ResourceKind(Enum):
     """The resource kinds the API manages, mapped to (apiVersion, kind)."""
 
     KNATIVE_SERVICE = ("serving.knative.dev/v1", "Service")
+    KNATIVE_REVISION = ("serving.knative.dev/v1", "Revision")
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
     CONFIG_MAP = ("v1", "ConfigMap")
     SECRET = ("v1", "Secret")

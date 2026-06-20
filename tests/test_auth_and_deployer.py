@@ -373,6 +373,10 @@ async def test_get_reports_size_and_live_usage_per_site():
                         "latestReadyRevisionName": "app-team-00001",
                     },
                 }
+            if kind == ResourceKind.KNATIVE_REVISION:
+                assert name == "app-team-00001"
+                # replicas come from here, not from the metrics pod count
+                return {"status": {"actualReplicas": 3}}
             if kind == ResourceKind.POD_METRICS:
                 # two replicas, each with a user container + queue-proxy sidecar
                 pod = {
@@ -389,8 +393,9 @@ async def test_get_reports_size_and_live_usage_per_site():
     body = await engine.get("container", "app", user, "team")
     assert body.size == "medium"
     site = body.sites[0]
-    assert site.replicas == 2
-    # summed over both replicas' user containers, ignoring the queue-proxy sidecar
+    # replicas sourced from Revision.status.actualReplicas (3), not len(metrics) (2)
+    assert site.replicas == 3
+    # usage summed over the metrics pods' user containers, ignoring queue-proxy
     assert site.usage.cpu == "120m"
     assert site.usage.memory == "180Mi"
 

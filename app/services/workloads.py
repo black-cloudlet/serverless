@@ -279,13 +279,12 @@ class WorkloadService:
                 if ann in annotations and key not in meta_holder:
                     meta_holder[key] = annotations[ann]
             status, revision = _ksvc_status(obj)
-            replicas, usage = self._site_usage(cluster, oname)
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
-                replicas=replicas,
-                usage=usage,
+                replicas=self._site_replicas(cluster, revision),
+                usage=self._site_usage(cluster, oname),
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -306,18 +305,30 @@ class WorkloadService:
             sites=statuses,
         )
 
+    def _site_replicas(self, cluster: Cluster, revision: str | None) -> int | None:
+        """Best-effort running pod count from the revision the KSVC points at —
+        the autoscaler's authoritative scale (`Revision.status.actualReplicas`),
+        which doesn't depend on the metrics API. None if it can't be read."""
+        if not revision:
+            return None
+        try:
+            rev = cluster.get(ResourceKind.KNATIVE_REVISION, revision)
+            return (rev.get("status", {}) or {}).get("actualReplicas")
+        except Exception:  # noqa: BLE001 - best-effort, never fatal
+            return None
+
     def _site_usage(self, cluster: Cluster, oname: str):
-        """Best-effort (replica count, live cpu/memory) at this site. Both are
-        None if the metrics API is unavailable; usage is None and replicas 0 when
-        the workload is scaled to zero (no running pods)."""
+        """Best-effort live cpu/memory summed over the workload's running pods.
+        None if the metrics API is unavailable or the workload is scaled to
+        zero (no running pods)."""
         try:
             items = cluster.get(
                 ResourceKind.POD_METRICS,
                 label_selector=f"serving.knative.dev/service={oname}",
             )
-            return len(items), metrics_svc.sum_usage(items)
+            return metrics_svc.sum_usage(items)
         except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-            return None, None
+            return None
 
     async def delete(
         self, kind: str, name: str, user: Principal, group: str

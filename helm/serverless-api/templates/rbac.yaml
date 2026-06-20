@@ -14,6 +14,10 @@ rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["services", "domainmappings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Revisions are read-only: GET reports actualReplicas (live scale) from them.
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["revisions"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
