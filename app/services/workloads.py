@@ -338,15 +338,11 @@ class WorkloadService:
         ok = [s for s in statuses if s.error is None]
         overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
         spec = None
-        image = runtime = None
+        obj = None
         if reps:
             # the desired-state spec is uniform across sites: read it from the
             # local site if it answered, else any site that did.
             obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
-            image = _extract_image(obj)
-            runtime = ((obj.get("metadata", {}) or {}).get("annotations", {}) or {}).get(
-                ANNOTATION_RUNTIME
-            )
             spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
         common = dict(
             name=name,
@@ -361,16 +357,18 @@ class WorkloadService:
             files=spec.files if spec else [],
         )
         if kind == OFFERING_FUNCTION:
-            # no image: the built image is internal, the client deals in source
+            # function-only: runtime (from annotation); no image (built artifact)
+            annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) if obj else {}
             return FunctionResponse(
                 **common,
-                runtime=runtime,
+                runtime=(annotations or {}).get(ANNOTATION_RUNTIME),
                 gitRepo=spec.gitRepo if spec else None,
                 branch=spec.branch if spec else None,
             )
+        # container-only: the client-supplied image
         return ContainerResponse(
             **common,
-            image=image,
+            image=_extract_image(obj) if obj else None,
             registryUsername=spec.registryUsername if spec else None,
         )
 
