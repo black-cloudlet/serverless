@@ -27,6 +27,10 @@ ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
 
+# Name of the platform-injected trusted-CA volume/mount on every pod. Owned by
+# the KSVC builder; read-back filters it out as it isn't part of the user's spec.
+TRUSTED_CA_VOLUME = "trusted-ca"
+
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
 ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]

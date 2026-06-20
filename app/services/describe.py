@@ -13,6 +13,7 @@ import base64
 from app.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_URL,
+    TRUSTED_CA_VOLUME,
     EnvVar,
     EnvVarView,
     FileMount,
@@ -20,9 +21,6 @@ from app.models.common import (
     Scaling,
     WorkloadSpec,
 )
-
-# Platform-injected volume mounted into every pod; not part of the user's spec.
-_CA_VOLUME = "trusted-ca"
 
 
 def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
@@ -82,7 +80,7 @@ def configmap_refs(ksvc: dict) -> set[str]:
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     names: set[str] = set()
     for mount in _container(ksvc).get("volumeMounts") or []:
-        if mount.get("name") == _CA_VOLUME:
+        if mount.get("name") == TRUSTED_CA_VOLUME:
             continue
         cm = (volumes.get(mount.get("name")) or {}).get("configMap")
         if cm and cm.get("name"):
@@ -123,12 +121,15 @@ def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     out: list[FileView] = []
     for mount in _container(ksvc).get("volumeMounts") or []:
-        if mount.get("name") == _CA_VOLUME:
+        if mount.get("name") == TRUSTED_CA_VOLUME:
             continue
         volume = volumes.get(mount.get("name")) or {}
+        # secret-backed volumes carry a "secret" key; configMap-backed a "configMap"
         is_secret = "secret" in volume
         content = None
         if not is_secret:
+            # the mount's subPath IS the ConfigMap key (set to _key(mountPath) when
+            # the volume was built), so read it straight off the manifest
             cm_name = (volume.get("configMap") or {}).get("name", "")
             content = (configmaps.get(cm_name) or {}).get(mount.get("subPath"))
         out.append(
