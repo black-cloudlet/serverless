@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
@@ -36,10 +38,13 @@ async def update_container(
 
 @router.get("", response_model=list[WorkloadSummary])
 async def list_containers(
-    group: str, user: CurrentUser, svc: ContainerDep
+    group: str,
+    user: CurrentUser,
+    svc: ContainerDep,
+    sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    # General info for every container the group owns, merged across sites.
-    return await svc.list(group, user)
+    # General info for every container the group owns (local site).
+    return await svc.list(group, user, sort)
 
 
 @router.get("/{name}", response_model=ContainerResponse)

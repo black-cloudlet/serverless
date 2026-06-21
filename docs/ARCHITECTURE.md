@@ -699,12 +699,12 @@ are JSON. Times are RFC 3339 UTC.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, url, overallStatus, size). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`. |
+| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, hostname, overallStatus, size, createdAt). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, url, overallStatus, size). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`. |
+| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, hostname, overallStatus, size, createdAt). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
@@ -807,6 +807,7 @@ body (secrets redacted) with the live status alongside:
   "hostname": "image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
   "size": "small",
+  "createdAt": "2026-06-21T12:00:00Z",
   "runtime": "python",
   "gitRepo": "https://git.example.com/team/image-resizer.git",
   "branch": "main",
@@ -868,6 +869,7 @@ info only (no live usage/replicas; use the single-workload GET for those):
     "hostname": "image-resizer-team.serverless.example.com",
     "overallStatus": "Ready",
     "size": "small",
+    "createdAt": "2026-06-21T12:00:00Z",
     "sites": ["central", "south"]
   }
 ]

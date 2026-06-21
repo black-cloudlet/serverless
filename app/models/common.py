@@ -174,6 +174,7 @@ class WorkloadBase(BaseModel):
     hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
     overallStatus: str  # Pending | Ready | Deploying | Degraded
     size: str | None = None  # resource t-shirt size (uniform across sites)
+    createdAt: datetime | None = None  # workload creation time (metadata.creationTimestamp)
 
 
 class WorkloadSummary(WorkloadBase):
@@ -211,7 +212,6 @@ class WorkloadResponse(WorkloadBase):
 
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
-    createdAt: datetime | None = None
     # desired-state config common to both offerings (secret values redacted)
     scaling: Scaling | None = None
     env: list[EnvVarView] = []

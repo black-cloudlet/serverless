@@ -661,6 +661,29 @@ async def test_list_workloads_reads_only_local_site():
     assert orders.overallStatus == "Ready"
 
 
+async def test_list_workloads_sort_by_created_at():
+    from app.auth.claims import Principal
+
+    def _with_created(oname, created):
+        k = _list_ksvc(oname, "small", f"{oname}.ex.com")
+        k["metadata"]["creationTimestamp"] = created
+        return k
+
+    local = _ListCluster("site-a", [
+        _with_created("aaa-team", "2026-01-02T00:00:00Z"),  # name first, created newer
+        _with_created("bbb-team", "2026-01-01T00:00:00Z"),  # name last, created older
+    ])
+    engine = _workload_service({"site-a": local}, local_site="site-a")
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    by_name = await engine.list_workloads("container", user, "team")  # default
+    assert [w.name for w in by_name] == ["aaa", "bbb"]
+    assert by_name[0].createdAt is not None  # creation time populated
+
+    by_created = await engine.list_workloads("container", user, "team", sort="createdAt")
+    assert [w.name for w in by_created] == ["bbb", "aaa"]  # oldest first
+
+
 async def test_list_workloads_errors_when_local_site_fails():
     from app.auth.claims import Principal
     from app.core.errors import SiteTotalFailure

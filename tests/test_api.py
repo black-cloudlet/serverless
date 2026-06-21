@@ -54,7 +54,7 @@ class FakeFunctions:
     async def get(self, name, group, user):
         return _ready("function", name, runtime="python", gitRepo="https://git/x.git", branch="main")
 
-    async def list(self, group, user):
+    async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
 
         return [
@@ -78,7 +78,7 @@ class FakeContainers:
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
 
-    async def list(self, group, user):
+    async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
 
         return [
@@ -220,6 +220,12 @@ def test_list_containers(client):
     body = r.json()
     assert body[0]["name"] == "ctr-a"
     assert body[0]["size"] == "medium" and body[0]["sites"] == ["central", "south"]
+
+
+def test_list_accepts_sort_and_rejects_unknown(client):
+    assert client.get("/api/v1/functions?group=team&sort=createdAt").status_code == 200
+    assert client.get("/api/v1/functions?group=team&sort=name").status_code == 200
+    assert client.get("/api/v1/functions?group=team&sort=bogus").status_code == 400
 
 
 def test_list_requires_group(client):

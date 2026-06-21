@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
@@ -36,10 +38,13 @@ async def update_function(
 
 @router.get("", response_model=list[WorkloadSummary])
 async def list_functions(
-    group: str, user: CurrentUser, svc: FunctionDep
+    group: str,
+    user: CurrentUser,
+    svc: FunctionDep,
+    sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    # General info for every function the group owns, merged across sites.
-    return await svc.list(group, user)
+    # General info for every function the group owns (local site).
+    return await svc.list(group, user, sort)
 
 
 @router.get("/{name}", response_model=FunctionResponse)

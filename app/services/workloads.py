@@ -66,6 +66,17 @@ def _extract_image(obj: dict) -> str | None:
     return containers[0].get("image") if containers else None
 
 
+def _creation_time(obj: dict) -> datetime | None:
+    """The workload's creation time from `metadata.creationTimestamp` (RFC3339)."""
+    ts = (obj.get("metadata", {}) or {}).get("creationTimestamp")
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
 def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     status = obj.get("status", {}) or {}
     conditions = status.get("conditions", []) or []
@@ -351,6 +362,7 @@ class WorkloadService:
             hostname=host,
             overallStatus=overall,
             size=meta_holder.get("size"),
+            createdAt=_creation_time(obj) if obj else None,
             sites=statuses,
             scaling=spec.scaling if spec else None,
             env=spec.env if spec else [],
@@ -439,9 +451,10 @@ class WorkloadService:
             raise NotFoundError(f"{kind} '{name}' not found")
 
     async def list_workloads(
-        self, kind: str, user: Principal, group: str
+        self, kind: str, user: Principal, group: str, sort: str = "name"
     ) -> list[WorkloadSummary]:
-        """General info for every workload of this offering owned by `group`.
+        """General info for every workload of this offering owned by `group`,
+        sorted by `sort` ("name" or "createdAt"; default name).
         Reads only the **local site**: workloads are active/active and identical
         across sites, so one cluster is authoritative and we skip the cross-site
         fan-out. Raises if the local site is unreachable."""
@@ -472,15 +485,17 @@ class WorkloadService:
                 annotations = meta.get("annotations", {}) or {}
                 status, _ = _ksvc_status(obj)
                 entry = merged.setdefault(
-                    name, {"host": None, "size": None, "sites": [], "statuses": []}
+                    name,
+                    {"host": None, "size": None, "createdAt": None, "sites": [], "statuses": []},
                 )
                 entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
                 entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
+                entry["createdAt"] = entry["createdAt"] or _creation_time(obj)
                 entry["sites"].append(site)
                 entry["statuses"].append(status)
 
         summaries = []
-        for name in sorted(merged):
+        for name in merged:
             entry = merged[name]
             host = entry["host"] or route_svc.host_for(
                 name, group, self.settings.route_domain
@@ -500,9 +515,15 @@ class WorkloadService:
                     hostname=host,
                     overallStatus=overall,
                     size=entry["size"],
+                    createdAt=entry["createdAt"],
                     sites=sorted(entry["sites"]),
                 )
             )
+        if sort == "createdAt":
+            _epoch = datetime.min.replace(tzinfo=timezone.utc)  # Nones sort last
+            summaries.sort(key=lambda w: (w.createdAt is None, w.createdAt or _epoch))
+        else:
+            summaries.sort(key=lambda w: w.name)
         return summaries
 
     def _assert_access(self, obj: dict, user: Principal) -> None:
