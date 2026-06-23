@@ -561,6 +561,11 @@ class _ApplyCluster:
 
     def apply(self, manifest):
         self.applied.append(manifest)
+        # Mirror the real client: return the applied object(s), with a uid the
+        # server would assign (used to build ownerReferences for derived objects).
+        meta = manifest.get("metadata", {}) or {}
+        applied = {**manifest, "metadata": {**meta, "uid": f"uid-{meta.get('name')}"}}
+        return [applied]
 
 
 def _applied_kind(cluster, kind):
@@ -761,83 +766,95 @@ async def test_accept_rejects_group_caller_is_not_member_of():
 
 
 class _DeleteCluster:
-    """Records deletions and answers label-selector gets, so we can assert that
-    deleting a workload also tears down its derived resources."""
+    """Records deletions; serves a preset KSVC (or none) by name."""
 
-    def __init__(self, name, ksvc, derived):
+    def __init__(self, name, ksvc):
         self.name = name
         self.site = name
-        self._ksvc = ksvc          # the KSVC dict (deleted by name)
-        self._derived = list(derived)  # [(ResourceKind, obj)]
+        self._ksvc = ksvc          # the KSVC dict, or None if absent
         self.deleted = []          # [(ResourceKind, name)]
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
         from app.clients.cluster import ResourceKind
         from app.core.errors import NotFoundError as _NF
 
-        if name is not None:
-            if kind == ResourceKind.KNATIVE_SERVICE and self._ksvc is not None:
-                return self._ksvc
-            raise _NF(f"{name} not found")
-        key, _, val = (label_selector or "").partition("=")
-        return [
-            obj
-            for k, obj in self._derived
-            if k == kind and (obj.get("metadata", {}).get("labels", {}) or {}).get(key) == val
-        ]
+        if kind == ResourceKind.KNATIVE_SERVICE and self._ksvc is not None:
+            return self._ksvc
+        raise _NF(f"{name} not found")
 
     def delete(self, kind, name):
         self.deleted.append((kind, name))
-        self._derived = [
-            (k, o)
-            for k, o in self._derived
-            if not (k == kind and o.get("metadata", {}).get("name") == name)
-        ]
 
 
-async def test_delete_tears_down_derived_resources():
+async def test_delete_removes_ksvc_and_relies_on_gc():
+    """Delete removes only the KSVC; the derived resources are garbage-collected
+    by Kubernetes via their ownerReferences (set at apply time — see
+    test_apply_sets_owner_references_on_derived)."""
     from app.auth.claims import Principal
     from app.clients.cluster import ResourceKind
-    from app.models.common import LABEL_GROUP, LABEL_WORKLOAD
 
-    oname = "app-team"
-    host = "app-team.serverless.example.com"
-
-    def _labeled(name):
-        return {"metadata": {"name": name, "labels": {LABEL_WORKLOAD: oname, LABEL_GROUP: "team"}}}
-
-    derived = [
-        (ResourceKind.DOMAIN_MAPPING, _labeled(host)),
-        (ResourceKind.SECRET, _labeled(f"{oname}-env")),
-        (ResourceKind.SECRET, _labeled(f"{oname}-pull")),
-        (ResourceKind.CONFIG_MAP, _labeled(f"{oname}-files")),
-        # a resource for a DIFFERENT workload must be left untouched
-        (ResourceKind.SECRET, {"metadata": {"name": "other-env",
-                                            "labels": {LABEL_WORKLOAD: "other-team"}}}),
-    ]
-    cluster = _DeleteCluster("site-a", _ksvc("container"), derived)
+    cluster = _DeleteCluster("site-a", _ksvc("container"))
     engine = _workload_service({"site-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await engine.delete("container", "app", user, "team")
 
-    deleted = set(cluster.deleted)
-    assert (ResourceKind.KNATIVE_SERVICE, oname) in deleted
-    assert (ResourceKind.DOMAIN_MAPPING, host) in deleted  # frees the host (no future 409)
-    assert (ResourceKind.SECRET, f"{oname}-env") in deleted
-    assert (ResourceKind.SECRET, f"{oname}-pull") in deleted
-    assert (ResourceKind.CONFIG_MAP, f"{oname}-files") in deleted
-    # another workload's resource is never touched
-    assert (ResourceKind.SECRET, "other-env") not in deleted
+    assert cluster.deleted == [(ResourceKind.KNATIVE_SERVICE, "app-team")]
 
 
 async def test_delete_missing_workload_is_404():
     from app.auth.claims import Principal
     from app.core.errors import NotFoundError
 
-    cluster = _DeleteCluster("site-a", None, [])  # no KSVC present
+    cluster = _DeleteCluster("site-a", None)  # no KSVC present
     engine = _workload_service({"site-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await engine.delete("container", "app", user, "team")
-    assert cluster.deleted == []  # nothing cleaned up when the workload is absent
+    assert cluster.deleted == []  # nothing deleted when the workload is absent
+
+
+async def test_apply_sets_owner_references_on_derived():
+    """Every resource derived from a workload (env/files Secret & ConfigMap, the
+    imagePullSecret, and the DomainMapping) must carry an ownerReference to the
+    KSVC so Kubernetes GC cleans them up on delete. The KSVC itself owns nothing."""
+    from app.auth.claims import Principal
+    from app.models.common import EnvVar, FileMount, Scaling
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+    from app.services.ksvc import build_ksvc
+
+    existing = build_ksvc(
+        name="api-team", group="team", owner="alice", image="reg.acme.com/api:1",
+        offering="container", host="api-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",
+    )
+    cluster = _ApplyCluster("site-a", {"api-team": existing})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await csvc.update(
+        "api",
+        ContainerUpdate(
+            group="team",
+            registryUsername="bob", registryToken="t",   # -> pull Secret
+            env=[EnvVar(name="PW", value="x", secret=True)],  # -> env Secret
+            files=[FileMount(mountPath="/etc/app/c", content="hi")],  # -> files ConfigMap
+        ),
+        user,
+    )
+
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert "ownerReferences" not in ksvc["metadata"]  # the owner owns nothing
+
+    derived = [m for m in cluster.applied if m.get("kind") in ("Secret", "ConfigMap", "DomainMapping")]
+    assert derived, "expected derived resources to be applied"
+    for m in derived:
+        refs = m["metadata"].get("ownerReferences")
+        assert refs, f"{m['kind']}/{m['metadata']['name']} missing ownerReference"
+        ref = refs[0]
+        assert ref["kind"] == "Service"
+        assert ref["name"] == "api-team"
+        assert ref["uid"] == "uid-api-team"
+        assert ref["blockOwnerDeletion"] is False
