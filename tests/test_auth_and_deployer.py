@@ -138,23 +138,29 @@ def test_oidc_discovery_failure_is_service_unavailable(monkeypatch):
 
 def test_aggregate_all_ok():
     statuses = [SiteStatus(site="a", status="Ready"), SiteStatus(site="b", status="Ready")]
-    assert aggregate(statuses, "Ready") == "Ready"
+    assert aggregate(statuses) == "Ready"
     assert status_code_for("Ready", created=True) == 201
+
+
+def test_aggregate_still_rolling_out():
+    # a just-applied workload (sites not Ready yet) reports Deploying, not Ready
+    statuses = [SiteStatus(site="a", status="Ready"), SiteStatus(site="b", status="Deploying")]
+    assert aggregate(statuses) == "Deploying"
 
 
 def test_aggregate_partial():
     statuses = [
         SiteStatus(site="a", status="Ready"),
-        SiteStatus(site="b", status="Failed", error="boom"),
+        SiteStatus(site="b", status="Failed", error="boom"),  # unreachable -> Failed
     ]
-    assert aggregate(statuses, "Ready") == "Degraded"
+    assert aggregate(statuses) == "Degraded"
     assert status_code_for("Degraded", created=True) == 207
 
 
 def test_aggregate_total_failure():
     statuses = [SiteStatus(site="a", status="Failed", error="x")]
     with pytest.raises(SiteTotalFailure):
-        aggregate(statuses, "Ready")
+        aggregate(statuses)
 
 
 def test_overall_status_rollup():

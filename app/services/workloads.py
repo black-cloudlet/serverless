@@ -237,7 +237,7 @@ class WorkloadService:
             return SiteStatus(site=cluster.site, status=status, revision=revision)
 
         statuses = await self.deployer.fanout(targets, apply)
-        overall = aggregate(statuses, success_label="Ready")
+        overall = aggregate(statuses)
         common = dict(
             name=name,
             group=group,

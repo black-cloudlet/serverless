@@ -109,15 +109,21 @@ class Deployer:
         return await asyncio.gather(*(run(c) for c in targets))
 
 
-def aggregate(statuses: list[SiteStatus], success_label: str) -> str:
-    """Return the overall status, or raise SiteTotalFailure if every site failed."""
-    ok = [s for s in statuses if s.error is None]
-    if not ok:
+def aggregate(statuses: list[SiteStatus]) -> str:
+    """Overall status for the create/update path.
+
+    Raises SiteTotalFailure if every site failed (nothing deployed anywhere);
+    otherwise delegates the rollup to overall_status, mapping an unreachable site
+    to ``Failed``. This keeps a single definition of "how per-site statuses roll
+    up" shared with the read paths — so a just-applied workload honestly reports
+    ``Deploying`` rather than an optimistic ``Ready``.
+    """
+    if all(s.error is not None for s in statuses):
         raise SiteTotalFailure(
             "Deployment failed in all sites.",
             details=[{"site": s.site, "message": s.error} for s in statuses],
         )
-    return success_label if len(ok) == len(statuses) else "Degraded"
+    return overall_status([s.status if s.error is None else "Failed" for s in statuses])
 
 
 def overall_status(statuses: list[str]) -> str:
