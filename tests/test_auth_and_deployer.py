@@ -54,6 +54,46 @@ def test_require_auth_via_bearer_admin_key():
         require_auth(bad, settings, validator=None)
 
 
+def test_admin_key_header_carries_raw_token_not_a_hash():
+    """The API hashes the incoming token itself, so the header must carry the RAW
+    token. Sending the sha256 hash of the key must NOT authenticate (otherwise the
+    stored/transmitted hash would itself be a replayable credential)."""
+    import hashlib
+    from types import SimpleNamespace
+
+    from app.auth.deps import require_auth
+    from app.core.errors import UnauthenticatedError
+
+    settings = _settings_with_admin_key("opaque-s3cret")
+    hashed = hashlib.sha256(b"opaque-s3cret").hexdigest()
+    req = SimpleNamespace(headers={"Authorization": f"Bearer {hashed}"})
+    with pytest.raises(UnauthenticatedError):
+        require_auth(req, settings, validator=None)
+
+
+def test_empty_admin_key_disables_key_auth():
+    """Setting the admin key empty disables API-key auth entirely; no opaque token
+    (including the empty string) is accepted."""
+    from types import SimpleNamespace
+
+    from app.auth.deps import require_auth
+    from app.core.errors import UnauthenticatedError
+
+    settings = _settings_with_admin_key("")
+    req = SimpleNamespace(headers={"Authorization": "Bearer anything"})
+    with pytest.raises(UnauthenticatedError):
+        require_auth(req, settings, validator=None)
+
+
+def test_verify_admin_key_constant_time_match():
+    from app.auth.apikey import verify_admin_key
+
+    assert verify_admin_key("opaque-s3cret", "opaque-s3cret") is True
+    assert verify_admin_key("wrong", "opaque-s3cret") is False
+    assert verify_admin_key("", "opaque-s3cret") is False
+    assert verify_admin_key("anything", "") is False
+
+
 def test_oidc_discovery_resolved_once_and_client_reused(monkeypatch):
     from app.auth.oidc import TokenValidator
 

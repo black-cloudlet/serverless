@@ -108,8 +108,11 @@ class Settings(BaseSettings):
     # data that is uniform across sites (list, the spec/describe block) prefer
     # it; defaults to the first site when unset/unknown.
     local_site: str | None = None
-    # Static API keys (sha256-hashed) for non-OIDC service accounts. From Vault
-    # via ESO. env: SERVERLESS_API_KEYS (JSON list).
+    # Static admin API key for non-OIDC service accounts (opaque bearer token).
+    # The RAW token, sourced from Vault via ESO (env SERVERLESS_ADMIN_API_KEY).
+    # The API hashes it before a constant-time compare (see app/auth/apikey.py),
+    # so it is never compared as plaintext. Falls back to a well-known dev value
+    # when unset; set it empty ("") to disable API-key auth entirely.
     admin_api_key: str = "Aa123456"
 
     @property
