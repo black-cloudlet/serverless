@@ -45,8 +45,8 @@ from app.services import route as route_svc
 from app.services import secrets as secret_svc
 from app.services.builder import Builder
 from app.services.deployer import Deployer, aggregate, overall_status, status_code_for
-from app.services.env import resolve_env
-from app.services.files import resolve_files
+from app.services.env import env_secret_name, resolve_env
+from app.services.files import files_name, resolve_files
 from app.clients.cluster import Cluster, ResourceKind
 
 logger = get_logger(__name__)
@@ -216,6 +216,26 @@ class WorkloadService:
             name=oname, group=group, owner=user.username, offering=offering, host=host
         )
 
+        # A workload owns a fixed set of derived backing objects; the resolvers
+        # only emit a manifest for the ones the new spec still needs. On update,
+        # prune the rest so dropping the last secret env var / config file / secret
+        # file removes its now-stale Secret/ConfigMap instead of orphaning it
+        # (which would otherwise leak old secret values until the workload is
+        # deleted). Same name is shared by the files ConfigMap and Secret.
+        applied_derived = {
+            (
+                ResourceKind.SECRET if m["kind"] == "Secret" else ResourceKind.CONFIG_MAP,
+                m["metadata"]["name"],
+            )
+            for m in backing
+        }
+        managed_derived = {
+            (ResourceKind.SECRET, env_secret_name(oname)),
+            (ResourceKind.CONFIG_MAP, files_name(oname)),
+            (ResourceKind.SECRET, files_name(oname)),
+        }
+        to_prune = () if created else managed_derived - applied_derived
+
         def apply(cluster: Cluster) -> SiteStatus:
             # Apply the KSVC first so every derived resource can carry an
             # ownerReference to it (by UID). Kubernetes then garbage-collects them
@@ -232,6 +252,13 @@ class WorkloadService:
             # DomainMapping exposes the custom host; the Serverless Operator
             # auto-creates the OpenShift Route for it.
             cluster.apply(res.with_owner(mapping, owner))
+            # Remove backing objects this update no longer references (best-effort:
+            # a NotFound just means it never existed in this site).
+            for pkind, pname in to_prune:
+                try:
+                    cluster.delete(pkind, pname)
+                except Exception:  # noqa: BLE001 - best-effort prune; absence is fine
+                    logger.debug("prune skipped %s/%s in %s", pkind.kind, pname, cluster.site)
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             status, revision = _ksvc_status(obj)
             return SiteStatus(site=cluster.site, status=status, revision=revision)

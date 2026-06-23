@@ -649,6 +649,7 @@ class _ApplyCluster:
         self.name = name
         self._existing = existing  # oname -> ksvc dict
         self.applied = []
+        self.deleted = []  # [(ResourceKind, name)] from prune
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
         from app.clients.cluster import ResourceKind
@@ -664,11 +665,76 @@ class _ApplyCluster:
         # server would assign (used to build ownerReferences for derived objects).
         meta = manifest.get("metadata", {}) or {}
         applied = {**manifest, "metadata": {**meta, "uid": f"uid-{meta.get('name')}"}}
+        if manifest.get("kind") == "Service":  # now readable back by get()
+            self._existing[meta.get("name")] = applied
         return [applied]
+
+    def delete(self, kind, name):
+        self.deleted.append((kind, name))
 
 
 def _applied_kind(cluster, kind):
     return [m for m in cluster.applied if m.get("kind") == kind]
+
+
+async def test_update_prunes_backing_no_longer_referenced():
+    """Dropping the last secret env var / secret file on update must remove the
+    now-stale {workload}-env / {workload}-files objects, while a still-referenced
+    files ConfigMap is kept."""
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.models.common import EnvVar, FileMount, Scaling
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+    from app.services.ksvc import build_ksvc
+
+    existing = build_ksvc(
+        name="api-team", group="team", owner="alice", image="reg/app:1",
+        offering="container", host="api-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",
+    )
+    cluster = _ApplyCluster("site-a", {"api-team": existing})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # New spec keeps only a PLAIN env var and a NON-secret file -> no env Secret,
+    # a files ConfigMap, but no files Secret.
+    await csvc.update(
+        "api",
+        ContainerUpdate(
+            group="team",
+            env=[EnvVar(name="LOG", value="debug")],          # plain -> no env Secret
+            files=[FileMount(mountPath="/etc/app.conf", content="x")],  # -> files ConfigMap
+        ),
+        user,
+    )
+
+    deleted = set(cluster.deleted)
+    assert (ResourceKind.SECRET, "api-team-env") in deleted     # no secret env -> pruned
+    assert (ResourceKind.SECRET, "api-team-files") in deleted   # no secret files -> pruned
+    # the files ConfigMap is still referenced -> applied, never pruned
+    assert (ResourceKind.CONFIG_MAP, "api-team-files") not in deleted
+    assert any(m["kind"] == "ConfigMap" and m["metadata"]["name"] == "api-team-files"
+               for m in cluster.applied)
+
+
+async def test_create_does_not_prune():
+    """On create there is nothing to prune; no deletes are issued."""
+    from app.auth.claims import Principal
+    from app.models.common import Scaling
+    from app.services.container import ContainerService
+
+    cluster = _ApplyCluster("site-a", {})  # nothing exists yet
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    from app.models.container import ContainerCreate
+    await csvc.create(
+        ContainerCreate(name="api", group="team", image="reg/x:1"), user
+    )
+    assert cluster.deleted == []
 
 
 async def test_container_update_rotates_pull_secret():
