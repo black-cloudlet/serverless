@@ -443,12 +443,49 @@ class WorkloadService:
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
+            # Tear down everything derived from the workload too (docs §7.3),
+            # selected by the workload label. Crucially the DomainMapping's name
+            # IS the host, so leaving it behind would keep the host "Taken" and
+            # 409 any later reuse; the {workload}-env / {workload}-files Secret &
+            # ConfigMap and the imagePullSecret would otherwise be orphaned.
+            self._delete_derived(cluster, oname)
             return SiteStatus(site=cluster.site, status="Deleted")
 
         targets = self.deployer.resolve_targets(None)
         statuses = await self.deployer.fanout(targets, remove)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
+
+    def _delete_derived(self, cluster: Cluster, oname: str) -> None:
+        """Best-effort delete of every resource derived from a workload, selected
+        by the workload label. A failed cleanup of one object is logged, not
+        fatal: the KSVC (the authoritative object) is already gone, and operations
+        are idempotent so a retry heals any leftovers."""
+        selector = f"{LABEL_WORKLOAD}={oname}"
+        for derived in (
+            ResourceKind.DOMAIN_MAPPING,
+            ResourceKind.SECRET,
+            ResourceKind.CONFIG_MAP,
+        ):
+            try:
+                items = cluster.get(derived, label_selector=selector)
+            except Exception:  # noqa: BLE001 - best-effort cleanup, never fatal
+                logger.warning(
+                    "could not list %s for cleanup of %s in %s",
+                    derived.kind, oname, cluster.site,
+                )
+                continue
+            for item in items:
+                obj_name = (item.get("metadata", {}) or {}).get("name")
+                if not obj_name:
+                    continue
+                try:
+                    cluster.delete(derived, obj_name)
+                except Exception:  # noqa: BLE001 - best-effort cleanup, never fatal
+                    logger.warning(
+                        "could not delete %s/%s in %s",
+                        derived.kind, obj_name, cluster.site,
+                    )
 
     async def list_workloads(
         self, kind: str, user: Principal, group: str, sort: str = "name"
