@@ -157,6 +157,40 @@ def test_aggregate_total_failure():
         aggregate(statuses, "Ready")
 
 
+def test_overall_status_rollup():
+    from app.services.deployer import overall_status
+
+    assert overall_status(["Ready", "Ready"]) == "Ready"
+    assert overall_status(["Deploying", "Deploying"]) == "Deploying"
+    # a normal rollout where one site is ahead is still in-progress, not Degraded
+    assert overall_status(["Ready", "Deploying"]) == "Deploying"
+    # any failed (or unreachable, mapped to Failed) site -> Degraded
+    assert overall_status(["Ready", "Failed"]) == "Degraded"
+    assert overall_status(["Deploying", "Failed"]) == "Degraded"
+    assert overall_status([]) == "Degraded"
+
+
+def test_status_code_for_deploying_is_non_terminal():
+    # Deploying is an accepted, still-rolling-out state, not a partial failure
+    assert status_code_for("Deploying", created=True) == 202
+    assert status_code_for("Deploying", created=False) == 202
+    assert status_code_for("Ready", created=False) == 200
+
+
+def test_ksvc_status_distinguishes_failed_from_deploying():
+    from app.services.workloads import _ksvc_status
+
+    def _obj(ready_status):
+        conditions = [{"type": "Ready", "status": ready_status}] if ready_status else []
+        return {"status": {"conditions": conditions, "latestCreatedRevisionName": "rev-1"}}
+
+    assert _ksvc_status(_obj("True")) == ("Ready", "rev-1")
+    assert _ksvc_status(_obj("False")) == ("Failed", "rev-1")  # terminal failure
+    assert _ksvc_status(_obj("Unknown")) == ("Deploying", "rev-1")  # still progressing
+    assert _ksvc_status(_obj(None)) == ("Deploying", "rev-1")  # no condition yet
+    assert _ksvc_status({}) == ("Deploying", None)  # brand-new, no status block
+
+
 def _settings_with_sites():
     return Settings(
         sites=[
@@ -540,6 +574,65 @@ async def test_get_returns_redacted_spec():
     assert files["/etc/secret"].secret is True and files["/etc/secret"].content is None
     # registry username shown, token never returned
     assert body.registryUsername == "bob"
+
+
+def _bare_ksvc(name="app-team"):
+    from app.models.common import Scaling
+    from app.services.ksvc import build_ksvc
+
+    return build_ksvc(
+        name=name, group="team", owner="alice", image="reg/app:1",
+        offering="container", host=f"{name}.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",
+    )
+
+
+async def test_get_overall_status_reflects_rollout_state():
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+
+    ksvc = _bare_ksvc()
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("replicas/usage/spec extras are best-effort here")
+
+    engine = _workload_service({"site-a": _C()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    async def _overall():
+        return (await engine.get("container", "app", user, "team")).overallStatus
+
+    # no Ready condition yet -> Deploying (regression: this used to be Degraded)
+    assert await _overall() == "Deploying"
+    # Ready=True -> Ready
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+    assert await _overall() == "Ready"
+    # Ready=False -> terminal failure surfaces as Degraded
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+    assert await _overall() == "Degraded"
+
+
+async def test_list_overall_status_per_workload():
+    from app.auth.claims import Principal
+
+    deploying = _bare_ksvc("app-team")  # no conditions -> Deploying
+    failed = _bare_ksvc("bad-team")
+    failed["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+
+    engine = _workload_service(
+        {"site-a": _ListCluster("site-a", [deploying, failed])}, local_site="site-a"
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    summaries = {s.name: s.overallStatus for s in await engine.list_workloads("container", user, "team")}
+
+    assert summaries["app"] == "Deploying"  # not a false Degraded
+    assert summaries["bad"] == "Degraded"
 
 
 class _ApplyCluster:

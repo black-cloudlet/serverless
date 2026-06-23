@@ -44,7 +44,7 @@ from app.services import resources as res
 from app.services import route as route_svc
 from app.services import secrets as secret_svc
 from app.services.builder import Builder
-from app.services.deployer import Deployer, aggregate, status_code_for
+from app.services.deployer import Deployer, aggregate, overall_status, status_code_for
 from app.services.env import resolve_env
 from app.services.files import resolve_files
 from app.clients.cluster import Cluster, ResourceKind
@@ -85,8 +85,15 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     revision = status.get("latestReadyRevisionName") or status.get(
         "latestCreatedRevisionName"
     )
-    if ready and ready.get("status") == "True":
+    # Knative condition convention: status True = Ready, False = a terminal
+    # failure (e.g. RevisionFailed, ProgressDeadlineExceeded, image-pull error),
+    # Unknown or absent = still progressing. Distinguishing False from Unknown is
+    # what lets a poller stop on a real failure instead of spinning until timeout.
+    state = (ready or {}).get("status")
+    if state == "True":
         return "Ready", revision
+    if state == "False":
+        return "Failed", revision
     return "Deploying", revision
 
 
@@ -354,8 +361,12 @@ class WorkloadService:
         host = meta_holder.get(
             "host", route_svc.host_for(name, group, self.settings.route_domain)
         )
-        ok = [s for s in statuses if s.error is None]
-        overall = "Ready" if all(s.status == "Ready" for s in ok) else "Degraded"
+        # An unreachable site counts as Failed (a down site -> Degraded);
+        # otherwise the per-site KSVC status drives the rollup, so a workload
+        # still coming up reads as Deploying rather than a false Degraded.
+        overall = overall_status(
+            [s.status if s.error is None else "Failed" for s in statuses]
+        )
         spec = None
         obj = None
         if reps:
@@ -512,13 +523,7 @@ class WorkloadService:
             host = entry["host"] or route_svc.host_for(
                 name, group, self.settings.route_domain
             )
-            statuses = entry["statuses"]
-            if all(s == "Ready" for s in statuses):
-                overall = "Ready"
-            elif all(s == "Deploying" for s in statuses):
-                overall = "Deploying"
-            else:
-                overall = "Degraded"
+            overall = overall_status(entry["statuses"])
             summaries.append(
                 WorkloadSummary(
                     name=name,

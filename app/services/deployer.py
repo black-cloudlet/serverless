@@ -120,9 +120,31 @@ def aggregate(statuses: list[SiteStatus], success_label: str) -> str:
     return success_label if len(ok) == len(statuses) else "Degraded"
 
 
+def overall_status(statuses: list[str]) -> str:
+    """Collapse per-site KSVC statuses into one overall status for the read paths
+    (GET / list).
+
+    A site reporting ``Failed`` (or, on GET, an unreachable site mapped to
+    ``Failed``) makes the deployment ``Degraded``. Otherwise an all-``Ready`` set
+    is ``Ready`` and anything still in flight is ``Deploying`` — including a mixed
+    ``Ready`` + ``Deploying`` set, which is a normal rollout where one site is
+    ahead, NOT a failure. This is what keeps the create→poll loop from seeing a
+    false ``Degraded`` while the workload is still coming up.
+    """
+    if not statuses:
+        return "Degraded"
+    if any(s == "Failed" for s in statuses):
+        return "Degraded"
+    if all(s == "Ready" for s in statuses):
+        return "Ready"
+    return "Deploying"
+
+
 def status_code_for(overall: str, created: bool) -> int:
     if overall == "Degraded":
         return 207
+    if overall == "Deploying":
+        return 202  # accepted, still rolling out — a non-terminal poll state
     return 201 if created else 200
 
 
