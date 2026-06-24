@@ -88,12 +88,11 @@ class Cluster:
 
     def get(self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None) -> dict | list[dict]:
         dynamic_api = self._dynamic_api(kind)
-        try:
-            if name is not None:
-                return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
-
+        if name is None:
             results = dynamic_api.get(namespace=self._namespace, label_selector=label_selector, **self._opts)
             return [i.to_dict() for i in results.items]
+        try:
+            return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
         except Exception as exc:  # noqa: BLE001 - translate only "absent"; re-raise the rest
             # A genuine 404 means the object is absent (callers rely on this to mean
             # "free"/"not yet created"). Any other failure — site unreachable, 401,

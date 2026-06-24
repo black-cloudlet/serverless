@@ -68,10 +68,10 @@ def resolve_files(
 
         if f.contentBase64 is not None:
             try:
-                # binascii.Error and UnicodeDecodeError both subclass ValueError
-                raw = base64.b64decode(f.contentBase64, validate=True).decode(
-                    "utf-8", "surrogateescape"
-                )
+                # Lenient decode (no validate=) tolerates whitespace/newlines, e.g.
+                # line-wrapped PEM bodies; still raises on bad padding/length.
+                # binascii.Error and UnicodeDecodeError both subclass ValueError.
+                raw = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
             except ValueError as exc:
                 raise ValidationError(
                     f"file '{f.mountPath}' has invalid base64 content"

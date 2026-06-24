@@ -170,9 +170,37 @@ def test_resolve_files_invalid_base64_rejected():
 
     from app.core.errors import ValidationError
 
-    files = [FileMount(mountPath="/a/conf", contentBase64="not valid base64!!")]
+    # "abc" has incorrect padding -> binascii.Error (a ValueError) even on a
+    # lenient decode, so it surfaces as a 400.
+    files = [FileMount(mountPath="/a/conf", contentBase64="abc")]
     with pytest.raises(ValidationError):
         resolve_files("app", "team", "alice", files)
+
+
+def test_resolve_files_accepts_linewrapped_base64():
+    import base64
+
+    from app.models.common import FileMount
+
+    # PEM-style line-wrapped base64 (newlines) must still decode, not 400.
+    wrapped = base64.encodebytes(b"hello world, this is a longer body") .decode()
+    resolved = resolve_files(
+        "app", "team", "alice", [FileMount(mountPath="/a/conf", contentBase64=wrapped)]
+    )
+    cm = next(b for b in resolved.backing if b["kind"] == "ConfigMap")
+    assert "hello world" in next(iter(cm["data"].values()))
+
+
+def test_resolve_env_duplicate_name_rejected():
+    import pytest
+
+    from app.core.errors import ValidationError
+    from app.models.common import EnvVar
+    from app.services.env import resolve_env
+
+    env = [EnvVar(name="DUP", value="1"), EnvVar(name="DUP", value="2")]
+    with pytest.raises(ValidationError):  # surfaced synchronously as 400
+        resolve_env("app", "team", "alice", env)
 
 
 def test_host_and_domain_mapping():

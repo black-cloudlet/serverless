@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.core.errors import ValidationError
 from app.models.common import EnvVar
 from app.services import resources as res
 from app.services.ksvc import ContainerEnv
@@ -31,8 +32,12 @@ def resolve_env(
     secret_name = env_secret_name(workload)
     secret_data: dict[str, str] = {}
     resolved: list[ContainerEnv] = []
+    seen: set[str] = set()
 
     for e in env:
+        if e.name in seen:
+            raise ValidationError(f"duplicate env variable name '{e.name}'")
+        seen.add(e.name)
         if e.secret:
             secret_data[e.name] = e.value
             resolved.append(
