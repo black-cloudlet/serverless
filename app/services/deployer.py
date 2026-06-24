@@ -123,6 +123,13 @@ def aggregate(statuses: list[SiteStatus]) -> str:
             "Deployment failed in all sites.",
             details=[{"site": s.site, "message": s.error} for s in statuses],
         )
+    return overall_status_for_sites(statuses)
+
+
+def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
+    """Roll up SiteStatus objects: an unreachable site (``error`` set) counts as
+    ``Failed``. Single projection shared by the create path (aggregate) and the
+    GET read path so the two can't drift."""
     return overall_status([s.status if s.error is None else "Failed" for s in statuses])
 
 

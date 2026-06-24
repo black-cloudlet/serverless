@@ -45,7 +45,13 @@ from app.services import resources as res
 from app.services import route as route_svc
 from app.services import secrets as secret_svc
 from app.services.builder import Builder
-from app.services.deployer import Deployer, aggregate, overall_status, status_code_for
+from app.services.deployer import (
+    Deployer,
+    aggregate,
+    overall_status,
+    overall_status_for_sites,
+    status_code_for,
+)
 from app.services.env import env_secret_name, resolve_env
 from app.services.files import files_name, resolve_files
 from app.clients.cluster import Cluster, ResourceKind
@@ -422,9 +428,7 @@ class WorkloadService:
         # An unreachable site counts as Failed (a down site -> Degraded);
         # otherwise the per-site KSVC status drives the rollup, so a workload
         # still coming up reads as Deploying rather than a false Degraded.
-        overall = overall_status(
-            [s.status if s.error is None else "Failed" for s in statuses]
-        )
+        overall = overall_status_for_sites(statuses)
         spec = None
         obj = None
         if reps:

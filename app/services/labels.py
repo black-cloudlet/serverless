@@ -39,11 +39,6 @@ def workload_labels(
     return labels
 
 
-def group_selector(groups: list[str]) -> str:
-    """Label selector restricting a list/get to the caller's group(s)."""
-    return f"{LABEL_GROUP} in ({','.join(groups)})"
-
-
 def _sanitize(value: str) -> str:
     """Make an arbitrary identifier safe for a label value (<=63 chars)."""
     safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in value)

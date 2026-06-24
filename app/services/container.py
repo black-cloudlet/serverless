@@ -48,11 +48,11 @@ class ContainerService:
 
     async def accept_update(self, name: str, spec: ContainerUpdate, user: Principal, background) -> ContainerResponse:
         group = spec.group
-        await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
+        existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
 
-        background.add_task(self._engine.run, self.update, name, spec, user)
+        background.add_task(self._engine.run, self.update, name, spec, user, existing)
 
         return self._engine.accepted(
             OFFERING_CONTAINER,
@@ -102,10 +102,15 @@ class ContainerService:
         body.registryUsername = spec.registryUsername
         return body, code
 
-    async def update(self, name: str, spec: ContainerUpdate, user: Principal) -> tuple[ContainerResponse, int]:
+    async def update(
+        self, name: str, spec: ContainerUpdate, user: Principal, existing: dict | None = None
+    ) -> tuple[ContainerResponse, int]:
         group = spec.group
         oname = object_name(name, group)
-        existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
+        # accept_update already fetched (and authorized) this; reuse it to avoid a
+        # second multi-site fanout. Falls back to a fresh fetch for direct callers.
+        if existing is None:
+            existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         image = spec.image or existing["image"]
 
         # New creds -> (re)build the pull secret; otherwise carry the existing one

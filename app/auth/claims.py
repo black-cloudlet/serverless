@@ -19,13 +19,6 @@ class Principal(BaseModel):
         """Admins can access any group; others only their own."""
         return self.is_admin or group in self.groups
 
-    @property
-    def primary_group(self) -> str:
-        """Default group used to stamp newly-created resources."""
-        if not self.groups:
-            raise ValueError("principal has no groups")
-        return self.groups[0]
-
 
 def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
     groups = claims.get(config.groups_claim, []) or []

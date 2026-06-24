@@ -210,7 +210,7 @@ def test_global_cert_and_ca_paths():
     s = Settings(client_cert_dir="/etc/serverless/client")
     assert s.client_cert_file == "/etc/serverless/client/tls.crt"
     assert s.client_key_file == "/etc/serverless/client/tls.key"
-    assert s.ca_bundle.file == "/etc/ssl/certs/ca-bundle.crt"
+    assert s.ca_bundle.file == "/etc/serverless/trusted-ca/ca-bundle.crt"
 
 
 def test_resolve_targets_default_all():
@@ -1087,3 +1087,34 @@ async def test_accept_rejects_invalid_spec_synchronously():
     with pytest.raises(ValidationError):
         await svc.accept(spec, user, bg)
     assert bg.tasks == []  # validation ran before the background deploy was queued
+
+
+async def test_update_reuses_existing_without_refetch():
+    # accept_update passes the loaded `existing` into update(); update must reuse
+    # it and NOT trigger a second load_existing fanout.
+    from app.auth.claims import Principal
+    from app.models.common import Scaling
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+    from app.services.ksvc import build_ksvc
+
+    existing_ksvc = build_ksvc(
+        name="api-team", group="team", owner="alice", image="reg/app:1",
+        offering="container", host="api-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",
+    )
+    engine = _workload_service({"site-a": _ApplyCluster("site-a", {"api-team": existing_ksvc})})
+
+    calls = {"n": 0}
+    original = engine.load_existing
+
+    async def counting(*a, **k):
+        calls["n"] += 1
+        return await original(*a, **k)
+
+    engine.load_existing = counting
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+    preloaded = {"image": "reg/app:1", "pull_secret": None}
+    await csvc.update("api", ContainerUpdate(group="team"), user, existing=preloaded)
+    assert calls["n"] == 0  # reused the passed-in existing, no second fanout

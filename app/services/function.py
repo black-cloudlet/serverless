@@ -48,10 +48,10 @@ class FunctionService:
 
     async def accept_update(self, name: str, spec: FunctionUpdate, user: Principal, background) -> FunctionResponse:
         group = spec.group
-        await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
+        existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
-        background.add_task(self._engine.run, self.update, name, spec, user)
+        background.add_task(self._engine.run, self.update, name, spec, user, existing)
         return self._engine.accepted(
             OFFERING_FUNCTION, name, group,
             self._engine.host_for(name, spec.hostname, group),
@@ -100,9 +100,14 @@ class FunctionService:
         )
         return body, code
 
-    async def update(self, name: str, spec: FunctionUpdate, user: Principal) -> tuple[FunctionResponse, int]:
+    async def update(
+        self, name: str, spec: FunctionUpdate, user: Principal, existing: dict | None = None
+    ) -> tuple[FunctionResponse, int]:
         group = spec.group
-        existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
+        # Reuse the load_existing result from accept_update (already authorized) to
+        # avoid a second multi-site fanout; fall back to a fresh fetch otherwise.
+        if existing is None:
+            existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
 
         # Build inputs default to the existing ones; supplying a gitToken triggers
         # a rebuild from source, otherwise the current image is kept.

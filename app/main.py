@@ -71,7 +71,9 @@ def create_app() -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_allow_origins,
-            allow_credentials=True,
+            # Auth is a bearer token in the Authorization header, not cookies, so
+            # credentials mode isn't needed (and it's invalid alongside "*").
+            allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
@@ -92,7 +94,7 @@ if __name__ == "__main__":
     settings = get_settings()
     
     uvicorn.run(
-        "main:app",
-        host="0.0.0.0", 
+        "app.main:app",
+        host="0.0.0.0",
         port=settings.port
     )
