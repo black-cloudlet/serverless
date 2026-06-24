@@ -55,9 +55,8 @@ def test_require_auth_via_bearer_admin_key():
 
 
 def test_admin_key_header_carries_raw_token_not_a_hash():
-    """The API hashes the incoming token itself, so the header must carry the RAW
-    token. Sending the sha256 hash of the key must NOT authenticate (otherwise the
-    stored/transmitted hash would itself be a replayable credential)."""
+    """The header must carry the RAW token, matched directly against the configured
+    key. A sha256 hash of the key is not the key, so it must not authenticate."""
     import hashlib
     from types import SimpleNamespace
 
