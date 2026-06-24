@@ -35,6 +35,8 @@ class ContainerService:
 
         targets = self._engine.deployer.resolve_targets(spec.sites)
         host = self._engine.host_for(spec.name, spec.hostname, group)
+        # Surface deploy-time spec validation synchronously (400), before the 202.
+        self._engine.validate_spec(spec.name, group, user.username, spec.env, spec.files)
 
         await self._engine.assert_host_available(host, oname, targets)
         await self._engine.assert_workload_absent(spec.name, oname, targets)
@@ -47,6 +49,8 @@ class ContainerService:
     async def accept_update(self, name: str, spec: ContainerUpdate, user: Principal, background) -> ContainerResponse:
         group = spec.group
         await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
+        # Surface deploy-time spec validation synchronously (400), before the 202.
+        self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
 
         background.add_task(self._engine.run, self.update, name, spec, user)
 

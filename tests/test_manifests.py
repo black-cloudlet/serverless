@@ -155,11 +155,23 @@ def test_resolve_files_aggregates_one_cm_and_one_secret():
 def test_resolve_files_duplicate_key_rejected():
     import pytest
 
+    from app.core.errors import ValidationError
+
     files = [
         FileMount(mountPath="/a/conf", content="1"),
         FileMount(mountPath="/a/conf", content="2"),
     ]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):  # 400, not a raw ValueError (500)
+        resolve_files("app", "team", "alice", files)
+
+
+def test_resolve_files_invalid_base64_rejected():
+    import pytest
+
+    from app.core.errors import ValidationError
+
+    files = [FileMount(mountPath="/a/conf", contentBase64="not valid base64!!")]
+    with pytest.raises(ValidationError):
         resolve_files("app", "team", "alice", files)
 
 

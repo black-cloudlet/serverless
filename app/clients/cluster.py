@@ -5,6 +5,7 @@ from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
 from app.core.config import SiteConfig, Settings
+from app.core.errors import NotFoundError
 
 
 class ResourceKind(Enum):
@@ -87,11 +88,19 @@ class Cluster:
 
     def get(self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None) -> dict | list[dict]:
         dynamic_api = self._dynamic_api(kind)
-        if name is not None:
-            return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
+        try:
+            if name is not None:
+                return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
 
-        results = dynamic_api.get(namespace=self._namespace, label_selector=label_selector, **self._opts)
-        return [i.to_dict() for i in results.items]
+            results = dynamic_api.get(namespace=self._namespace, label_selector=label_selector, **self._opts)
+            return [i.to_dict() for i in results.items]
+        except Exception as exc:  # noqa: BLE001 - translate only "absent"; re-raise the rest
+            # A genuine 404 means the object is absent (callers rely on this to mean
+            # "free"/"not yet created"). Any other failure — site unreachable, 401,
+            # 5xx — must propagate so it is NOT mistaken for absence.
+            if getattr(exc, "status", None) == 404:
+                raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
+            raise
 
     def delete(self, kind: ResourceKind, name: str) -> None:
         dynamic_api = self._dynamic_api(kind)

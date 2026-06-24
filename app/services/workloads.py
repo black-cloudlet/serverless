@@ -18,6 +18,7 @@ from app.core.errors import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ServiceUnavailableError,
     SiteTotalFailure,
     ValidationError,
 )
@@ -319,13 +320,27 @@ class WorkloadService:
             raise NotFoundError(f"{offering} workload '{name}' not found")
         return holder
 
+    def validate_spec(self, name: str, group: str, owner: str, env, files) -> None:
+        """Run the pure, in-memory spec resolution that apply_workload will later
+        perform, so malformed input (duplicate file mount paths, invalid base64)
+        fails synchronously as a 400 at accept time — instead of being accepted
+        (202) and then dying silently in the background deploy."""
+        oname = object_name(name, group)
+        resolve_files(oname, group, owner, files)
+        resolve_env(oname, group, owner, env)
+
     async def assert_host_available(self, host: str, oname: str, targets: list[Cluster]) -> None:
-        """Raise ConflictError if `host` is a DomainMapping owned by another workload."""
+        """Raise ConflictError if `host` is a DomainMapping owned by another workload.
+
+        Only a real 404 means "free"; an unreachable site can't prove the host is
+        free, so we fail closed (503) rather than treat it as available — otherwise
+        a create against a down peer could hijack its existing DomainMapping.
+        """
 
         def check(cluster: Cluster) -> SiteStatus:
             try:
                 existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
-            except Exception:
+            except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Available")
             labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
             owner_workload = labels.get(LABEL_WORKLOAD)
@@ -335,20 +350,36 @@ class WorkloadService:
         statuses = await self.deployer.fanout(targets, check)
         if any(s.status == "Taken" for s in statuses):
             raise ConflictError(f"hostname '{host}' is already assigned")
+        self._assert_all_sites_checked(statuses, f"verify hostname '{host}' is available")
 
     async def assert_workload_absent(self, name: str, oname: str, targets: list[Cluster]) -> None:
-        """Raise ConflictError if a workload named `oname` already exists (create only)."""
+        """Raise ConflictError if a workload named `oname` already exists (create only).
+
+        Only a real 404 means "absent"; an unreachable site can't prove absence, so
+        we fail closed (503) rather than risk creating over an existing workload.
+        """
 
         def probe(cluster: Cluster) -> SiteStatus:
             try:
                 cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
                 return SiteStatus(site=cluster.site, status="Exists")
-            except Exception:
+            except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
 
         statuses = await self.deployer.fanout(targets, probe)
         if any(s.status == "Exists" for s in statuses):
             raise ConflictError(f"workload '{name}' already exists")
+        self._assert_all_sites_checked(statuses, f"verify workload '{name}' is absent")
+
+    @staticmethod
+    def _assert_all_sites_checked(statuses: list[SiteStatus], action: str) -> None:
+        """Fail closed if any site could not be reached during a conflict check: a
+        missing answer is not evidence of "no conflict"."""
+        unreachable = [s.site for s in statuses if s.error is not None]
+        if unreachable:
+            raise ServiceUnavailableError(
+                f"cannot {action}: site(s) unreachable: {', '.join(sorted(unreachable))}"
+            )
 
     # -- read / delete (offering-scoped via kind) ------------------------
     async def get(

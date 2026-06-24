@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 
+from app.core.errors import ValidationError
 from app.models.common import FileMount
 from app.services import resources as res
 from app.services.labels import workload_labels
@@ -60,11 +61,21 @@ def resolve_files(
     for f in files:
         key = _key(f.mountPath)
         if key in seen:
-            raise ValueError(f"duplicate file mount path resolves to key '{key}'")
+            raise ValidationError(
+                f"duplicate file mount path '{f.mountPath}' resolves to key '{key}'"
+            )
         seen.add(key)
 
         if f.contentBase64 is not None:
-            raw = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
+            try:
+                # binascii.Error and UnicodeDecodeError both subclass ValueError
+                raw = base64.b64decode(f.contentBase64, validate=True).decode(
+                    "utf-8", "surrogateescape"
+                )
+            except ValueError as exc:
+                raise ValidationError(
+                    f"file '{f.mountPath}' has invalid base64 content"
+                ) from exc
         else:
             raw = f.content or ""
 

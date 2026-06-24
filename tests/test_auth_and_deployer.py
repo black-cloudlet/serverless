@@ -1023,3 +1023,67 @@ async def test_apply_sets_owner_references_on_derived():
         assert ref["name"] == "api-team"
         assert ref["uid"] == "uid-api-team"
         assert ref["blockOwnerDeletion"] is False
+
+
+class _DownCluster:
+    """A site that is unreachable: every read fails with a non-404 error."""
+
+    def __init__(self, name="site-a"):
+        self.site = name
+        self.name = name
+
+    def get(self, *a, **k):
+        raise RuntimeError("connection refused")  # not a NotFoundError
+
+
+async def test_host_check_fails_closed_when_site_unreachable():
+    # An unreachable site can't prove the host is free -> 503, not a silent pass.
+    from app.core.errors import ServiceUnavailableError
+
+    svc = _workload_service({"site-a": _DownCluster()})
+    with pytest.raises(ServiceUnavailableError):
+        await svc.assert_host_available(
+            "h.example.com", "app-team", svc.deployer.resolve_targets(None)
+        )
+
+
+async def test_absent_check_fails_closed_when_site_unreachable():
+    from app.core.errors import ServiceUnavailableError
+
+    svc = _workload_service({"site-a": _DownCluster()})
+    with pytest.raises(ServiceUnavailableError):
+        await svc.assert_workload_absent(
+            "app", "app-team", svc.deployer.resolve_targets(None)
+        )
+
+
+async def test_host_check_still_available_on_real_404():
+    # A genuine NotFound (404) still reads as available across a reachable site.
+    svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get -> NotFoundError
+    await svc.assert_host_available(
+        "h.example.com", "app-team", svc.deployer.resolve_targets(None)
+    )
+
+
+async def test_accept_rejects_invalid_spec_synchronously():
+    # A malformed spec must 400 at accept time, before anything is scheduled.
+    from fastapi import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.core.errors import ValidationError
+    from app.models.common import FileMount
+    from app.models.container import ContainerCreate
+    from app.services.container import ContainerService
+
+    engine = _workload_service({"site-a": _DownCluster()})  # would error if reached
+    svc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+    bg = BackgroundTasks()
+    spec = ContainerCreate(
+        name="app", group="team", image="reg/x:1",
+        files=[FileMount(mountPath="/a/conf", content="1"),
+               FileMount(mountPath="/a/conf", content="2")],  # duplicate key
+    )
+    with pytest.raises(ValidationError):
+        await svc.accept(spec, user, bg)
+    assert bg.tasks == []  # validation ran before the background deploy was queued

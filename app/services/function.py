@@ -39,6 +39,8 @@ class FunctionService:
         oname = object_name(spec.name, group)
         targets = self._engine.deployer.resolve_targets(spec.sites)
         host = self._engine.host_for(spec.name, spec.hostname, group)
+        # Surface deploy-time spec validation synchronously (400), before the 202.
+        self._engine.validate_spec(spec.name, group, user.username, spec.env, spec.files)
         await self._engine.assert_host_available(host, oname, targets)
         await self._engine.assert_workload_absent(spec.name, oname, targets)
         background.add_task(self._engine.run, self.create, spec, user)
@@ -47,6 +49,8 @@ class FunctionService:
     async def accept_update(self, name: str, spec: FunctionUpdate, user: Principal, background) -> FunctionResponse:
         group = spec.group
         await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
+        # Surface deploy-time spec validation synchronously (400), before the 202.
+        self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
         background.add_task(self._engine.run, self.update, name, spec, user)
         return self._engine.accepted(
             OFFERING_FUNCTION, name, group,
