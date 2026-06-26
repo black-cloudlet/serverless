@@ -416,10 +416,15 @@ class WorkloadService:
         # once, after the fan-out — see _pick_rep.
         reps: dict[str, tuple] = {}
 
-        def fetch(cluster: Cluster) -> SiteStatus:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            self._assert_access(obj, user)
-            self._assert_offering(obj, offering)
+        def fetch(cluster: Cluster) -> SiteStatus | None:
+            # A clean 404 means the workload isn't deployed on this site -> omit it
+            # from the per-site report (return None) rather than counting it as a
+            # failure. Any other error (site down, 5xx) propagates to fanout and is
+            # recorded as a per-site error, so a down site stays visible/Degraded.
+            try:
+                obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            except NotFoundError:
+                return None
             annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
             for key, ann in (("host", ANNOTATION_HOST), ("size", ANNOTATION_SIZE)):
                 if ann in annotations and key not in meta_holder:
@@ -435,23 +440,32 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        statuses = await self.deployer.fanout(targets, fetch)
-        if all(s.error is not None for s in statuses):
+        results = await self.deployer.fanout(targets, fetch)
+        statuses = [s for s in results if s is not None]  # drop sites without it
+
+        if not reps:
+            # Present on no reachable site. If a site was unreachable we can't be
+            # sure it's absent -> 503; otherwise it's genuinely gone -> 404.
+            self._assert_all_sites_checked(statuses, f"get workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
+
+        # The spec is uniform across sites: read it (and authorize) from the local
+        # site if it has the workload, else any site that does.
+        obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
+        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+        # An object_name collision could resolve to another group/offering; hide as 404.
+        if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+            labels.get(LABEL_OFFERING) != offering
+        ):
+            raise NotFoundError(f"{kind} '{name}' not found")
+
         host = meta_holder.get(
             "host", route_svc.host_for(name, group, self.settings.route_domain)
         )
-        # An unreachable site counts as Failed (a down site -> Degraded);
-        # otherwise the per-site KSVC status drives the rollup, so a workload
-        # still coming up reads as Deploying rather than a false Degraded.
+        # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
+        # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
-        spec = None
-        obj = None
-        if reps:
-            # the desired-state spec is uniform across sites: read it from the
-            # local site if it answered, else any site that did.
-            obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
-            spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
+        spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
         common = dict(
             name=name,
             group=group,

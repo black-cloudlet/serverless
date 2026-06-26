@@ -1139,3 +1139,59 @@ async def test_load_existing_truly_absent_is_404():
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await svc.load_existing("app", "container", user, "team")
+
+
+def _ready_ksvc(name="app-team"):
+    k = _bare_ksvc(name)
+    k["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+    return k
+
+
+async def test_get_omits_404_site_and_stays_healthy():
+    # A site that returns a clean 404 (workload not deployed there) is omitted from
+    # the per-site report and does NOT drag the rollup to Degraded.
+    from app.auth.claims import Principal
+
+    engine = _workload_service({
+        "site-a": _FakeCluster("site-a", existing={"app-team": _ready_ksvc()}),
+        "site-b": _FakeCluster("site-b"),  # 404 here
+    })
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+    assert body.overallStatus == "Ready"
+    assert [s.site for s in body.sites] == ["site-a"]  # site-b omitted, not Failed
+
+
+async def test_get_down_site_still_degrades():
+    # An UNREACHABLE site is different from a 404: it stays visible and degrades.
+    from app.auth.claims import Principal
+
+    engine = _workload_service({
+        "site-a": _FakeCluster("site-a", existing={"app-team": _ready_ksvc()}),
+        "site-b": _DownCluster("site-b"),  # unreachable
+    })
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+    assert body.overallStatus == "Degraded"
+    assert {s.site for s in body.sites} == {"site-a", "site-b"}
+
+
+async def test_get_absent_everywhere_is_404():
+    from app.auth.claims import Principal
+    from app.core.errors import NotFoundError
+
+    engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(NotFoundError):
+        await engine.get("container", "app", user, "team")
+
+
+async def test_get_all_sites_down_is_503():
+    # Can't confirm absence when every site is unreachable -> 503, not a false 404.
+    from app.auth.claims import Principal
+    from app.core.errors import ServiceUnavailableError
+
+    engine = _workload_service({"site-a": _DownCluster("site-a"), "site-b": _DownCluster("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(ServiceUnavailableError):
+        await engine.get("container", "app", user, "team")
