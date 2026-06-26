@@ -212,13 +212,37 @@ class FunctionService:
 
     # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
-        """Get one function with live per-site status (see WorkloadService.get)."""
+        """Get one function with live per-site status.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The full single-function response.
+        """
         return await self._engine.get(OFFERING_FUNCTION, name, user, group)
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        """List the group's functions (see WorkloadService.list)."""
+        """List the group's functions.
+
+        Args:
+            group: The owning group.
+            user: The authenticated caller.
+            sort: Sort key, "name" or "createdAt".
+
+        Returns:
+            The per-workload summaries.
+        """
         return await self._engine.list(OFFERING_FUNCTION, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
-        """Delete a function and its derived resources (see WorkloadService.delete)."""
+        """Delete a function and its derived resources.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+        """
         await self._engine.delete(OFFERING_FUNCTION, name, user, group)

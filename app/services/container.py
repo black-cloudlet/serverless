@@ -200,13 +200,37 @@ class ContainerService:
 
     # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
-        """Get one container with live per-site status (see WorkloadService.get)."""
+        """Get one container with live per-site status.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The full single-container response.
+        """
         return await self._engine.get(OFFERING_CONTAINER, name, user, group)
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        """List the group's containers (see WorkloadService.list)."""
+        """List the group's containers.
+
+        Args:
+            group: The owning group.
+            user: The authenticated caller.
+            sort: Sort key, "name" or "createdAt".
+
+        Returns:
+            The per-workload summaries.
+        """
         return await self._engine.list(OFFERING_CONTAINER, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
-        """Delete a container and its derived resources (see WorkloadService.delete)."""
+        """Delete a container and its derived resources.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+        """
         await self._engine.delete(OFFERING_CONTAINER, name, user, group)

@@ -43,6 +43,15 @@ def workload_labels(
     Every resource the API creates for a function/container carries both the SSO
     group and the workload name so it is unambiguously attributable and
     selectable.
+
+    Args:
+        group: The owning group.
+        owner: The creating username.
+        workload: The object name (``{name}-{group}``).
+        offering: The offering, when applicable.
+
+    Returns:
+        The label dict including the workload label.
     """
     labels = ownership_labels(group, owner, offering)
     labels[LABEL_WORKLOAD] = workload

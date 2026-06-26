@@ -35,12 +35,26 @@ def _parse(quantity: str, units: dict[str, float]) -> float:
 
 
 def parse_cpu_millicores(quantity: str) -> float:
-    """Parse a Kubernetes CPU quantity (e.g. ``250m``, ``1``) into millicores."""
+    """Parse a Kubernetes CPU quantity (e.g. ``250m``, ``1``) into millicores.
+
+    Args:
+        quantity: The CPU quantity string.
+
+    Returns:
+        The value in millicores.
+    """
     return _parse(quantity, _CPU_UNITS)
 
 
 def parse_memory_bytes(quantity: str) -> float:
-    """Parse a Kubernetes memory quantity (e.g. ``512Mi``, ``1Gi``) into bytes."""
+    """Parse a Kubernetes memory quantity (e.g. ``512Mi``, ``1Gi``) into bytes.
+
+    Args:
+        quantity: The memory quantity string.
+
+    Returns:
+        The value in bytes.
+    """
     return _parse(quantity, _MEM_UNITS)
 
 
@@ -51,6 +65,9 @@ _SIDECAR = "queue-proxy"
 
 def sum_usage(pod_metrics: list[dict]) -> ResourceUsage | None:
     """Sum cpu/memory over each pod's user container(s), ignoring queue-proxy.
+
+    Args:
+        pod_metrics: PodMetrics items for the workload's pods.
 
     Returns:
         The summed usage, or None if there's nothing (e.g. the workload is

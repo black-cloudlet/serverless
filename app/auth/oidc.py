@@ -16,7 +16,14 @@ logger = get_logger(__name__)
 
 
 def looks_like_jwt(token: str) -> bool:
-    """True if the bearer token is structurally a JWT (vs an opaque API key)."""
+    """True if the bearer token is structurally a JWT (vs an opaque API key).
+
+    Args:
+        token: The bearer token to inspect.
+
+    Returns:
+        True if the token parses as a JWT header.
+    """
     try:
         jwt.get_unverified_header(token)
         return True
@@ -66,7 +73,14 @@ class TokenValidator:
         return self._jwk_client
 
     def _discover_jwks_uri(self) -> str:
-        """Fetch the OIDC discovery document and return its ``jwks_uri``."""
+        """Fetch the OIDC discovery document and return its ``jwks_uri``.
+
+        Returns:
+            The JWKS URI from the discovery document.
+
+        Raises:
+            ServiceUnavailableError: If discovery fails or lacks ``jwks_uri``.
+        """
         try:
             resp = httpx.get(
                 self._config.discovery_url, timeout=self._config.discovery_timeout
@@ -81,7 +95,17 @@ class TokenValidator:
         return jwks_uri
 
     def validate(self, token: str) -> dict:
-        """Return the decoded claims, or raise UnauthenticatedError."""
+        """Verify a JWT against the cached JWKS and return its claims.
+
+        Args:
+            token: The JWT bearer token.
+
+        Returns:
+            The decoded token claims.
+
+        Raises:
+            UnauthenticatedError: If the token is invalid, expired, or untrusted.
+        """
         try:
             signing_key = self._client().get_signing_key_from_jwt(token)
             return jwt.decode(

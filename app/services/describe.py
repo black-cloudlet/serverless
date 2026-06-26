@@ -24,7 +24,14 @@ from app.models.common import (
 
 
 def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
-    """Submitted env -> response view: secret values are dropped (value=None)."""
+    """Convert submitted env to response views, dropping secret values.
+
+    Args:
+        env: The submitted env vars.
+
+    Returns:
+        Views with secret values set to None.
+    """
     return [
         EnvVarView(name=e.name, value=None if e.secret else e.value, secret=e.secret)
         for e in env
@@ -32,7 +39,14 @@ def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
 
 
 def redact_files(files: list[FileMount]) -> list[FileView]:
-    """Submitted files -> response view: secret file contents are dropped."""
+    """Convert submitted files to response views, dropping secret contents.
+
+    Args:
+        files: The submitted file mounts.
+
+    Returns:
+        Views with secret file contents set to None.
+    """
     out: list[FileView] = []
     for f in files:
         if f.secret:
@@ -74,7 +88,14 @@ def _meta_annotations(ksvc: dict) -> dict:
 
 
 def pull_secret_name(ksvc: dict) -> str | None:
-    """The imagePullSecret name referenced by the pod, or None (public image)."""
+    """The imagePullSecret name referenced by the pod, or None (public image).
+
+    Args:
+        ksvc: The Knative Service object.
+
+    Returns:
+        The pull-secret name, or None.
+    """
     secrets = _pod_spec(ksvc).get("imagePullSecrets") or []
     return secrets[0].get("name") if secrets else None
 
@@ -84,6 +105,12 @@ def configmap_refs(ksvc: dict) -> set[str]:
 
     So the caller can fetch them to fill in ``content``. Excludes the platform CA
     volume.
+
+    Args:
+        ksvc: The Knative Service object.
+
+    Returns:
+        The set of backing ConfigMap names.
     """
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     names: set[str] = set()

@@ -90,6 +90,13 @@ def with_owner(manifest: dict, owner_ref: dict | None) -> dict:
 
     A no-op returning the original if ``owner_ref`` is None. Does not mutate the
     input.
+
+    Args:
+        manifest: The manifest to own.
+        owner_ref: The ownerReference to set, or None.
+
+    Returns:
+        The manifest (copy) carrying the owner reference, or the original.
     """
     if not owner_ref:
         return manifest

@@ -16,7 +16,14 @@ class Principal(BaseModel):
     is_admin: bool = False
 
     def can_access_group(self, group: str) -> bool:
-        """Admins can access any group; others only their own."""
+        """Whether the principal may act for ``group``.
+
+        Args:
+            group: The group to check.
+
+        Returns:
+            True if the principal is an admin or a member of ``group``.
+        """
         return self.is_admin or group in self.groups
 
 

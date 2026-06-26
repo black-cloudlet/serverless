@@ -48,6 +48,12 @@ class Deployer:
         name), falling back to the first configured site. Used for reads of data
         that is uniform across sites (active/active), to avoid a cross-cluster
         round trip.
+
+        Returns:
+            The local cluster.
+
+        Raises:
+            ValidationError: If no sites are configured.
         """
         if not self._clusters:
             raise ValidationError("no sites are configured")
@@ -130,6 +136,13 @@ class Deployer:
         A site whose call fails or times out yields ``(site, None)`` instead of
         aborting the whole fan-out — for reads (e.g. listings) where a down site
         should be skipped, not fatal.
+
+        Args:
+            targets: The clusters to run on.
+            fn: The per-site read returning any result.
+
+        Returns:
+            One ``(site, result_or_None)`` tuple per target.
         """
 
         async def run(cluster: Cluster) -> tuple[str, object | None]:
@@ -153,6 +166,15 @@ def aggregate(statuses: list[SiteStatus]) -> str:
     to ``Failed``. This keeps a single definition of "how per-site statuses roll
     up" shared with the read paths — so a just-applied workload honestly reports
     ``Deploying`` rather than an optimistic ``Ready``.
+
+    Args:
+        statuses: The per-site results of the apply fan-out.
+
+    Returns:
+        The overall status (Ready/Deploying/Degraded).
+
+    Raises:
+        SiteTotalFailure: If every site failed.
     """
     if all(s.error is not None for s in statuses):
         raise SiteTotalFailure(
@@ -167,6 +189,12 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
 
     Single projection shared by the create path (aggregate) and the GET read path
     so the two can't drift.
+
+    Args:
+        statuses: The per-site statuses.
+
+    Returns:
+        The overall status (Ready/Deploying/Degraded).
     """
     return overall_status([s.status if s.error is None else "Failed" for s in statuses])
 
@@ -180,6 +208,12 @@ def overall_status(statuses: list[str]) -> str:
     ``Ready`` + ``Deploying`` set, which is a normal rollout where one site is
     ahead, NOT a failure. This is what keeps the create→poll loop from seeing a
     false ``Degraded`` while the workload is still coming up.
+
+    Args:
+        statuses: The per-site status strings.
+
+    Returns:
+        The overall status (Ready/Deploying/Degraded).
     """
     if not statuses:
         return "Degraded"

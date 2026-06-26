@@ -59,7 +59,14 @@ class Builder(Protocol):
     """Builds a function image from source and pushes it to the registry."""
 
     def build(self, req: BuildRequest) -> BuildResult:
-        """Build and push the image for ``req``, returning the result."""
+        """Build and push the image for ``req``.
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The build result (image and digest).
+        """
         ...
 
 

@@ -33,7 +33,17 @@ class ResourceKind(Enum):
 
     @classmethod
     def from_kind(cls, kind: str) -> "ResourceKind":
-        """Map a manifest's ``kind`` string (e.g. "Secret") to its ResourceKind."""
+        """Map a manifest's ``kind`` string (e.g. "Secret") to its ResourceKind.
+
+        Args:
+            kind: The PascalCase kind string.
+
+        Returns:
+            The matching ResourceKind.
+
+        Raises:
+            ValueError: If no member has that kind.
+        """
         for member in cls:
             if member.kind == kind:
                 return member

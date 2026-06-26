@@ -151,7 +151,18 @@ class WorkloadService:
         - a single label -> the base domain is appended (``{label}.{route_domain}``)
         - an FQDN -> accepted only if it is exactly one label under the base
           domain (``{label}.{route_domain}``); deeper names are rejected
-        Anything else raises ValidationError (surfaced synchronously as 400).
+
+        Args:
+            name: The workload name.
+            hostname: The caller-supplied custom host, or None for the default.
+            group: The owning group.
+
+        Returns:
+            The resolved external host.
+
+        Raises:
+            ValidationError: If a custom host isn't exactly one label under the
+                platform base domain.
         """
         domain = self.settings.route_domain
         if not hostname:
@@ -196,7 +207,14 @@ class WorkloadService:
         )
 
     async def run(self, fn, *args) -> None:
-        """Run background work; failures surface via status polling, not the caller."""
+        """Run background work, logging (not raising) any failure.
+
+        Failures surface to the client via status polling, not the caller.
+
+        Args:
+            fn: The coroutine function to run (e.g. create/update).
+            *args: Positional arguments passed to ``fn``.
+        """
         try:
             await fn(*args)
         except Exception:  # noqa: BLE001 - background work; surfaced via status polling
@@ -356,11 +374,24 @@ class WorkloadService:
     async def load_existing(
         self, name: str, offering: str, user: Principal, group: str
     ) -> dict:
-        """Fetch an existing workload (offering-scoped); return {'image','host',...}.
+        """Fetch an existing workload's carried-forward state (offering-scoped).
 
-        Raises NotFoundError if it doesn't exist or isn't this offering/group, and
-        ServiceUnavailableError if it couldn't be confirmed absent because a site
-        was unreachable (so a down site is never reported as a missing workload).
+        Reads from whichever site has the workload; a down site is never reported
+        as a missing workload.
+
+        Args:
+            name: The workload name.
+            offering: The expected offering ("function" or "container").
+            user: The authenticated caller.
+            group: The owning group.
+
+        Returns:
+            A dict with the image and carried-forward build/pull metadata.
+
+        Raises:
+            NotFoundError: If it doesn't exist or isn't this offering/group.
+            ServiceUnavailableError: If it couldn't be confirmed absent because a
+                site was unreachable.
         """
         self.assert_group(user, group)
         oname = object_name(name, group)
@@ -425,11 +456,20 @@ class WorkloadService:
         resolve_env(oname, group, owner, env)
 
     async def assert_host_available(self, host: str, oname: str, targets: list[Cluster]) -> None:
-        """Raise ConflictError if `host` is a DomainMapping owned by another workload.
+        """Assert ``host`` is free, failing closed if a site is unreachable.
 
         Only a real 404 means "free"; an unreachable site can't prove the host is
         free, so we fail closed (503) rather than treat it as available — otherwise
         a create against a down peer could hijack its existing DomainMapping.
+
+        Args:
+            host: The external host (== the DomainMapping name) to check.
+            oname: The object name of the workload claiming the host.
+            targets: The clusters to check.
+
+        Raises:
+            ConflictError: If the host is a DomainMapping owned by another workload.
+            ServiceUnavailableError: If any site was unreachable.
         """
 
         def check(cluster: Cluster) -> SiteStatus:
@@ -448,10 +488,19 @@ class WorkloadService:
         self._assert_all_sites_checked(statuses, f"verify hostname '{host}' is available")
 
     async def assert_workload_absent(self, name: str, oname: str, targets: list[Cluster]) -> None:
-        """Raise ConflictError if a workload named `oname` already exists (create only).
+        """Assert no workload named ``oname`` exists yet (create only).
 
         Only a real 404 means "absent"; an unreachable site can't prove absence, so
         we fail closed (503) rather than risk creating over an existing workload.
+
+        Args:
+            name: The display name (for the error message).
+            oname: The object name to probe for.
+            targets: The clusters to check.
+
+        Raises:
+            ConflictError: If a workload named ``oname`` already exists.
+            ServiceUnavailableError: If any site was unreachable.
         """
 
         def probe(cluster: Cluster) -> SiteStatus:

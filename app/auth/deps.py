@@ -46,8 +46,21 @@ def require_auth(
 ) -> Principal:
     """Validate the bearer token and return the Principal.
 
-    When ``auth_enabled`` is false (local dev only) a synthetic principal is
-    returned so the API is usable without a live SSO.
+    A structural JWT is validated as an OIDC token; an opaque token is matched
+    against the admin API key. When ``auth_enabled`` is false (local dev only) a
+    synthetic admin principal is returned so the API is usable without a live SSO.
+
+    Args:
+        request: The incoming request (carries the Authorization header).
+        settings: Application settings (auth toggle, admin key, SSO config).
+        validator: The OIDC token validator.
+
+    Returns:
+        The authenticated :class:`Principal`.
+
+    Raises:
+        UnauthenticatedError: If the token is missing/malformed or unrecognized.
+        ForbiddenError: If a valid OIDC token carries no group membership.
     """
     if not settings.auth_enabled:
         return Principal(

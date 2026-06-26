@@ -53,6 +53,9 @@ async def lifespan(app: FastAPI):
 
     Everything before the ``yield`` runs on startup; everything after runs on
     shutdown.
+
+    Args:
+        app: The FastAPI application (provided by the framework).
     """
     service = get_workload_service()  # build the service graph (no network)
     await _warmup(get_settings(), service.deployer)  # warm caches, best effort

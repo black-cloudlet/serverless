@@ -68,6 +68,9 @@ def registry_username(secret: dict) -> str | None:
 
     The password (token) is deliberately never returned.
 
+    Args:
+        secret: The dockerconfigjson Secret object.
+
     Returns:
         The username, or None if it can't be read.
     """

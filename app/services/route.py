@@ -28,7 +28,20 @@ def build_domain_mapping(
     offering: str,
     host: str,
 ) -> dict:
-    """Bind a custom host to the KSVC; the operator creates the Route for it."""
+    """Build a DomainMapping binding ``host`` to the workload's KSVC.
+
+    The Serverless Operator creates the OpenShift Route for it.
+
+    Args:
+        name: The object name of the workload (KSVC) to bind to.
+        group: Owning group (for labels).
+        owner: Creating username (for labels).
+        offering: The offering (for labels).
+        host: The external host (and the DomainMapping's name).
+
+    Returns:
+        The DomainMapping manifest dict.
+    """
     return {
         "apiVersion": DOMAIN_MAPPING_API,
         "kind": "DomainMapping",
