@@ -114,9 +114,19 @@ class WorkloadService:
 
     # -- access control --------------------------------------------------
     def assert_group(self, user: Principal, group: str) -> None:
-        """Reject the request unless the caller is a member of ``group`` (admins
-        may act for any group). The group is caller-supplied, so this is checked
-        on every entry point."""
+        """Reject the request unless the caller may act for ``group``.
+
+        Admins may act for any group. The group is caller-supplied, so this is
+        checked on every entry point.
+
+        Args:
+            user: The authenticated caller.
+            group: The group the request targets.
+
+        Raises:
+            ForbiddenError: If ``user`` is not a member of ``group`` (and not an
+                admin).
+        """
         if not user.can_access_group(group):
             raise ForbiddenError(f"not a member of group '{group}'")
 
@@ -339,10 +349,23 @@ class WorkloadService:
         raise NotFoundError(f"{offering} workload '{name}' not found")
 
     def validate_spec(self, name: str, group: str, owner: str, env, files) -> None:
-        """Run the pure, in-memory spec resolution that apply_workload will later
+        """Validate a spec synchronously, before the request is accepted.
+
+        Runs the pure, in-memory resolution that :meth:`apply_workload` will later
         perform, so malformed input (duplicate file mount paths, invalid base64)
-        fails synchronously as a 400 at accept time — instead of being accepted
-        (202) and then dying silently in the background deploy."""
+        fails as a 400 at accept time instead of being accepted (202) and then
+        dying silently in the background deploy.
+
+        Args:
+            name: Workload name.
+            group: Owning group.
+            owner: Username stamped on derived resources.
+            env: The submitted env vars.
+            files: The submitted file mounts.
+
+        Raises:
+            ValidationError: If the env or files cannot be resolved.
+        """
         oname = object_name(name, group)
         resolve_files(oname, group, owner, files)
         resolve_env(oname, group, owner, env)
@@ -391,8 +414,17 @@ class WorkloadService:
 
     @staticmethod
     def _assert_all_sites_checked(statuses: list[SiteStatus], action: str) -> None:
-        """Fail closed if any site could not be reached during a conflict check: a
-        missing answer is not evidence of "no conflict"."""
+        """Fail closed if any site could not be reached during a conflict check.
+
+        A missing answer is not evidence of "no conflict".
+
+        Args:
+            statuses: The per-site results of the conflict check.
+            action: Human phrase describing the check, for the error message.
+
+        Raises:
+            ServiceUnavailableError: If any site reported an error.
+        """
         unreachable = [s.site for s in statuses if s.error is not None]
         if unreachable:
             raise ServiceUnavailableError(
@@ -492,10 +524,12 @@ class WorkloadService:
         )
 
     def _describe_spec(self, cluster: Cluster, obj: dict):
-        """Read the desired-state spec (secrets redacted) from a KSVC. Fetches the
-        file ConfigMap(s) for non-secret file contents and the pull secret for the
-        registry username (never the token). Best-effort: a failed read just leaves
-        the corresponding field null."""
+        """Read the desired-state spec (secrets redacted) from a KSVC.
+
+        Fetches the file ConfigMap(s) for non-secret file contents and the pull
+        secret for the registry username (never the token). Best-effort: a failed
+        read just leaves the corresponding field null.
+        """
         configmaps: dict[str, dict] = {}
         for cm_name in describe_svc.configmap_refs(obj):
             try:
@@ -514,9 +548,15 @@ class WorkloadService:
         return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
 
     def _site_replicas(self, cluster: Cluster, revision: str | None) -> int | None:
-        """Best-effort running pod count from the revision the KSVC points at —
-        the autoscaler's authoritative scale (`Revision.status.actualReplicas`),
-        which doesn't depend on the metrics API. None if it can't be read."""
+        """Best-effort running pod count from the revision the KSVC points at.
+
+        Uses the autoscaler's authoritative scale
+        (``Revision.status.actualReplicas``), which doesn't depend on the metrics
+        API.
+
+        Returns:
+            The replica count, or None if it can't be read.
+        """
         if not revision:
             return None
         try:
@@ -527,8 +567,11 @@ class WorkloadService:
 
     def _site_usage(self, cluster: Cluster, oname: str):
         """Best-effort live cpu/memory summed over the workload's running pods.
-        None if the metrics API is unavailable or the workload is scaled to
-        zero (no running pods)."""
+
+        Returns:
+            The usage summary, or None if the metrics API is unavailable or the
+            workload is scaled to zero (no running pods).
+        """
         try:
             items = cluster.get(
                 ResourceKind.POD_METRICS,
@@ -564,11 +607,24 @@ class WorkloadService:
     async def list(
         self, kind: str, user: Principal, group: str, sort: str = "name"
     ) -> list[WorkloadSummary]:
-        """General info for every workload of this offering owned by `group`,
-        sorted by `sort` ("name" or "createdAt"; default name).
+        """Summarize every workload of this offering owned by ``group``.
+
         Reads only the **local site**: workloads are active/active and identical
         across sites, so one cluster is authoritative and we skip the cross-site
-        fan-out. Raises if the local site is unreachable."""
+        fan-out.
+
+        Args:
+            kind: The offering ("function" or "container").
+            user: The authenticated caller.
+            group: The owning group.
+            sort: Sort key, "name" or "createdAt" (default "name").
+
+        Returns:
+            The per-workload summaries.
+
+        Raises:
+            SiteTotalFailure: If the local site is unreachable.
+        """
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"
@@ -638,8 +694,14 @@ class WorkloadService:
             raise ForbiddenError("not permitted for this resource's group")
 
     def _assert_offering(self, obj: dict, offering: str) -> None:
-        """Ensure the object is the expected offering, so /functions can't act on
-        a container of the same name (and vice versa). Raises NotFoundError."""
+        """Ensure the object is the expected offering.
+
+        Prevents /functions acting on a container of the same name (and vice
+        versa).
+
+        Raises:
+            NotFoundError: If the object's offering label doesn't match.
+        """
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
         if labels.get(LABEL_OFFERING) != offering:
             raise NotFoundError("workload not found")

@@ -36,10 +36,13 @@ class Deployer:
         }
 
     def local_cluster(self) -> Cluster:
-        """The cluster this API instance sits in (config `local_site`, matched by
-        site name then cluster name), falling back to the first configured site.
-        Used for reads of data that is uniform across sites (active/active), to
-        avoid a cross-cluster round trip."""
+        """The cluster this API instance sits in.
+
+        Selected by config ``local_site`` (matched by site name then cluster
+        name), falling back to the first configured site. Used for reads of data
+        that is uniform across sites (active/active), to avoid a cross-cluster
+        round trip.
+        """
         if not self._clusters:
             raise ValidationError("no sites are configured")
         if self._local_site:
@@ -91,10 +94,12 @@ class Deployer:
     async def gather_each(
         self, targets: list[Cluster], fn: Callable[[Cluster], object]
     ) -> list[tuple[str, object | None]]:
-        """Run fn(cluster) on each target concurrently, returning [(site, result)].
-        A site whose call fails or times out yields (site, None) instead of
+        """Run ``fn`` on each target concurrently, returning ``[(site, result)]``.
+
+        A site whose call fails or times out yields ``(site, None)`` instead of
         aborting the whole fan-out — for reads (e.g. listings) where a down site
-        should be skipped, not fatal."""
+        should be skipped, not fatal.
+        """
 
         async def run(cluster: Cluster) -> tuple[str, object | None]:
             try:
@@ -127,15 +132,16 @@ def aggregate(statuses: list[SiteStatus]) -> str:
 
 
 def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
-    """Roll up SiteStatus objects: an unreachable site (``error`` set) counts as
-    ``Failed``. Single projection shared by the create path (aggregate) and the
-    GET read path so the two can't drift."""
+    """Roll up SiteStatus objects, mapping an unreachable site to ``Failed``.
+
+    Single projection shared by the create path (aggregate) and the GET read path
+    so the two can't drift.
+    """
     return overall_status([s.status if s.error is None else "Failed" for s in statuses])
 
 
 def overall_status(statuses: list[str]) -> str:
-    """Collapse per-site KSVC statuses into one overall status for the read paths
-    (GET / list).
+    """Collapse per-site KSVC statuses into one overall status (GET / list).
 
     A site reporting ``Failed`` (or, on GET, an unreachable site mapped to
     ``Failed``) makes the deployment ``Degraded``. Otherwise an all-``Ready`` set

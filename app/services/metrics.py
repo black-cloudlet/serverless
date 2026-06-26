@@ -43,8 +43,12 @@ _SIDECAR = "queue-proxy"
 
 
 def sum_usage(pod_metrics: list[dict]) -> ResourceUsage | None:
-    """Sum cpu/memory over each pod's user container(s), ignoring the queue-proxy
-    sidecar. None if there's nothing (e.g. the workload is scaled to zero)."""
+    """Sum cpu/memory over each pod's user container(s), ignoring queue-proxy.
+
+    Returns:
+        The summed usage, or None if there's nothing (e.g. the workload is
+        scaled to zero).
+    """
     cpu_milli = 0.0
     mem_bytes = 0.0
     seen = False

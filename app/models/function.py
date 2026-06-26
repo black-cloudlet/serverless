@@ -40,9 +40,12 @@ class FunctionCreate(BaseModel):
 
 
 class FunctionUpdate(BaseModel):
-    """Full replace of the mutable spec. Supplying any build input (gitRepo,
-    branch, runtime) — or just a gitToken — triggers a rebuild from source;
-    otherwise the existing image is kept and only config is updated."""
+    """Full replace of the mutable spec.
+
+    Supplying any build input (gitRepo, branch, runtime) — or just a gitToken —
+    triggers a rebuild from source; otherwise the existing image is kept and only
+    config is updated.
+    """
 
     group: Group  # the SSO group that owns the workload; caller must be a member
     # Rebuild inputs (all optional). gitRepo/branch/runtime default to the existing
@@ -77,7 +80,8 @@ class FunctionResponse(WorkloadResponse):
     """A function, shaped like FunctionCreate (gitToken redacted) + live status.
 
     No image is exposed: the built image is an internal artifact — the client
-    deals in source (gitRepo/branch), not images."""
+    deals in source (gitRepo/branch), not images.
+    """
 
     type: Literal["function", "container"] = "function"
     runtime: str | None = None

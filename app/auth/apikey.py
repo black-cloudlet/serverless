@@ -16,9 +16,18 @@ import hmac
 
 
 def verify_admin_key(token: str, admin_api_key: str) -> bool:
-    """Constant-time check that the opaque bearer ``token`` matches the configured
-    admin API key. An empty configured key disables key auth entirely (returns
-    ``False`` for every token)."""
+    """Constant-time check that the bearer ``token`` matches the admin API key.
+
+    An empty configured key disables key auth entirely (returns ``False`` for
+    every token).
+
+    Args:
+        token: The bearer token from the Authorization header.
+        admin_api_key: The configured admin key; empty disables key auth.
+
+    Returns:
+        True if ``token`` matches ``admin_api_key``.
+    """
     if not token or not admin_api_key:
         return False
     return hmac.compare_digest(token, admin_api_key)

@@ -74,8 +74,11 @@ class Cluster:
         return self._dynamic_client.resources.get(kind.api_version, kind.kind)
 
     def connect(self) -> None:
-        """Eagerly establish the connection (API discovery) so the first request
-        doesn't pay for it. Idempotent — a no-op once connected. Blocking."""
+        """Eagerly establish the connection (API discovery).
+
+        So the first request doesn't pay for it. Idempotent — a no-op once
+        connected. Blocking.
+        """
         _ = self._dynamic_client
 
     def apply(self, manifest: dict) -> list[dict]:

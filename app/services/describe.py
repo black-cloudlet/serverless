@@ -75,8 +75,11 @@ def pull_secret_name(ksvc: dict) -> str | None:
 
 
 def configmap_refs(ksvc: dict) -> set[str]:
-    """ConfigMap names backing the user's (non-secret) file mounts, so the caller
-    can fetch them to fill in `content`. Excludes the platform CA volume."""
+    """ConfigMap names backing the user's (non-secret) file mounts.
+
+    So the caller can fetch them to fill in ``content``. Excludes the platform CA
+    volume.
+    """
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     names: set[str] = set()
     for mount in _container(ksvc).get("volumeMounts") or []:

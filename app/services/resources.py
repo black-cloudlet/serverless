@@ -37,13 +37,18 @@ def build_secret(
 
 
 def owner_reference(owner: dict) -> dict | None:
-    """Build an ownerReference pointing at an already-applied object (its live
-    ``metadata.uid`` is required). A resource carrying this reference is
-    garbage-collected by Kubernetes when the owner is deleted.
+    """Build an ownerReference pointing at an already-applied object.
 
+    The owner's live ``metadata.uid`` is required. A resource carrying this
+    reference is garbage-collected by Kubernetes when the owner is deleted.
     ``blockOwnerDeletion``/``controller`` are left ``false`` so the API needs no
     extra permission on the owner's finalizers; cascade is ordinary background GC.
-    Returns ``None`` if the owner has no uid yet (then no reference is set).
+
+    Args:
+        owner: The already-applied owner object (must include ``metadata.uid``).
+
+    Returns:
+        The ownerReference dict, or None if the owner has no uid yet.
     """
     meta = owner.get("metadata", {}) or {}
     uid = meta.get("uid")
@@ -60,9 +65,11 @@ def owner_reference(owner: dict) -> dict | None:
 
 
 def with_owner(manifest: dict, owner_ref: dict | None) -> dict:
-    """Return a shallow copy of ``manifest`` with ``owner_ref`` as its sole
-    ownerReference (a no-op returning the original if ``owner_ref`` is None).
-    Does not mutate the input."""
+    """Return a shallow copy of ``manifest`` with ``owner_ref`` set as its owner.
+
+    A no-op returning the original if ``owner_ref`` is None. Does not mutate the
+    input.
+    """
     if not owner_ref:
         return manifest
     out = dict(manifest)

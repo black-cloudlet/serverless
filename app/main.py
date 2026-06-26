@@ -30,10 +30,12 @@ async def _warm(label: str, fn, timeout: float) -> None:
 
 
 async def _warmup(settings: Settings, deployer: Deployer) -> None:
-    """Best-effort: warm the one-time caches (OIDC discovery, cluster
-    connections) at startup so the first request is fast and misconfig shows up
-    in the logs now. A down dependency is logged, not fatal — it is retried
-    lazily on first use, preserving active/active startup."""
+    """Warm the one-time caches (OIDC discovery, cluster connections) at startup.
+
+    Best-effort: makes the first request fast and surfaces misconfig in the logs
+    now. A down dependency is logged, not fatal — it is retried lazily on first
+    use, preserving active/active startup.
+    """
     timeout = settings.cluster_connect_timeout + settings.cluster_read_timeout
     tasks = []
     if settings.auth_enabled:
@@ -47,10 +49,10 @@ async def _warmup(settings: Settings, deployer: Deployer) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Executes startup and shutdown logic.
-    Everything before the 'yield' runs on startup.
-    Everything after the 'yield' runs on shutdown.
+    """Execute startup and shutdown logic.
+
+    Everything before the ``yield`` runs on startup; everything after runs on
+    shutdown.
     """
     service = get_workload_service()  # build the service graph (no network)
     await _warmup(get_settings(), service.deployer)  # warm caches, best effort

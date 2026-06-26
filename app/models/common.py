@@ -166,15 +166,20 @@ class WorkloadBase(BaseModel):
 
 
 class WorkloadSummary(WorkloadBase):
-    """Lightweight list item: general info only, no per-site live usage. Use the
-    single-workload GET for replicas/usage."""
+    """Lightweight list item: general info only, no per-site live usage.
+
+    Use the single-workload GET for replicas/usage.
+    """
 
     sites: list[str] = []  # site names where the workload is deployed
 
 
 class EnvVarView(BaseModel):
-    """An env var as read back from a deployed workload. Secret-backed values are
-    never returned — `secret: true` with `value: null` signals one is set."""
+    """An env var as read back from a deployed workload.
+
+    Secret-backed values are never returned — ``secret: true`` with
+    ``value: null`` signals one is set.
+    """
 
     name: str
     value: str | None = None
@@ -182,8 +187,11 @@ class EnvVarView(BaseModel):
 
 
 class FileView(BaseModel):
-    """A mounted file as read back. `content` is returned only for non-secret
-    (ConfigMap-backed) files; it is always null for secret files."""
+    """A mounted file as read back from a deployed workload.
+
+    ``content`` is returned only for non-secret (ConfigMap-backed) files; it is
+    always null for secret files.
+    """
 
     mountPath: str
     readOnly: bool = True
@@ -192,11 +200,14 @@ class FileView(BaseModel):
 
 
 class WorkloadResponse(WorkloadBase):
-    """Full single-workload view: identity (WorkloadBase) + live per-site status +
-    the desired-state config common to both offerings (secrets redacted).
-    Per-offering responses subclass this — see FunctionResponse (in
-    models.function) / ContainerResponse (in models.container) — so the response
-    mirrors the create body of that offering."""
+    """Full single-workload view: identity, live per-site status, and config.
+
+    Identity (WorkloadBase) plus live per-site status plus the desired-state
+    config common to both offerings (secrets redacted). Per-offering responses
+    subclass this — see FunctionResponse (in models.function) / ContainerResponse
+    (in models.container) — so the response mirrors the create body of that
+    offering.
+    """
 
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
@@ -207,9 +218,11 @@ class WorkloadResponse(WorkloadBase):
 
 
 class WorkloadSpec(BaseModel):
-    """The desired-state spec read back from a deployed workload, with all secret
-    material redacted (secret env values, secret file contents, the registry token
-    and the git token)."""
+    """The desired-state spec read back from a deployed workload, secrets redacted.
+
+    Redacts all secret material: secret env values, secret file contents, the
+    registry token and the git token.
+    """
 
     scaling: "Scaling | None" = None
     env: list[EnvVarView] = []
