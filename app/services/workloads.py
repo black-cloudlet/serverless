@@ -230,11 +230,7 @@ class WorkloadService:
         # (which would otherwise leak old secret values until the workload is
         # deleted). Same name is shared by the files ConfigMap and Secret.
         applied_derived = {
-            (
-                ResourceKind.SECRET if m["kind"] == "Secret" else ResourceKind.CONFIG_MAP,
-                m["metadata"]["name"],
-            )
-            for m in backing
+            (ResourceKind.from_kind(m["kind"]), m["metadata"]["name"]) for m in backing
         }
         managed_derived = {
             (ResourceKind.SECRET, env_secret_name(oname)),

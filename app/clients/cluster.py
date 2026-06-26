@@ -26,6 +26,14 @@ class ResourceKind(Enum):
     def kind(self) -> str:
         return self.value[1]
 
+    @classmethod
+    def from_kind(cls, kind: str) -> "ResourceKind":
+        """Map a manifest's ``kind`` string (e.g. "Secret") to its ResourceKind."""
+        for member in cls:
+            if member.kind == kind:
+                return member
+        raise ValueError(f"unknown resource kind: {kind!r}")
+
 
 class Cluster:
     def __init__(self, site_config: SiteConfig, settings: Settings):
