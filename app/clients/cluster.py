@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from enum import Enum
+
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
-from app.core.config import SiteConfig, Settings
+from app.core.config import Settings, SiteConfig
 from app.core.errors import NotFoundError
 
 
@@ -77,7 +78,6 @@ class Cluster:
         doesn't pay for it. Idempotent — a no-op once connected. Blocking."""
         _ = self._dynamic_client
 
-
     def apply(self, manifest: dict) -> list[dict]:
         results = utils.create_from_dict(
             self._api_client,
@@ -90,11 +90,14 @@ class Cluster:
         )
         return [i.to_dict() for i in results]
 
-
-    def get(self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None) -> dict | list[dict]:
+    def get(
+        self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None
+    ) -> dict | list[dict]:
         dynamic_api = self._dynamic_api(kind)
         if name is None:
-            results = dynamic_api.get(namespace=self._namespace, label_selector=label_selector, **self._opts)
+            results = dynamic_api.get(
+                namespace=self._namespace, label_selector=label_selector, **self._opts
+            )
             return [i.to_dict() for i in results.items]
         try:
             return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()

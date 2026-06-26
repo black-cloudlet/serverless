@@ -12,7 +12,7 @@ from typing import Awaitable, Callable
 
 from app.clients.cluster import Cluster
 from app.core.config import Settings
-from app.core.errors import ValidationError, SiteTotalFailure
+from app.core.errors import SiteTotalFailure, ValidationError
 from app.core.logging import get_logger
 from app.models.common import SiteStatus
 

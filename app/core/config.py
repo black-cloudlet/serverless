@@ -25,6 +25,7 @@ class SiteConfig(BaseModel):
     name: str  # site/region, e.g. "central"
     cluster: str  # cluster instance name, e.g. "central-0"
 
+
 class CABundleConfig(BaseModel):
     """The OpenShift-injected trusted CA bundle ConfigMap.
 

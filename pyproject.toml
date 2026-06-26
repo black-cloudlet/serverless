@@ -22,7 +22,21 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "ruff>=0.4",
 ]
+
+# PEP 8 enforcement. Run `ruff check .` to lint and `ruff format .` to format.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# pycodestyle (E/W), pyflakes (F), isort (I) — PEP 8 plus import ordering.
+select = ["E", "W", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests carry long literal assertions (hosts, encoded blobs); don't reflow them.
+"tests/**" = ["E501"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

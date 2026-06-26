@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -56,10 +57,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
+
 def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
-    
+
     app = FastAPI(
         title="Serverless API",
         version=__version__,
@@ -90,9 +92,9 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     settings = get_settings()
-    
+
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",

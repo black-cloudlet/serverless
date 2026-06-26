@@ -46,7 +46,9 @@ class ContainerService:
             OFFERING_CONTAINER, spec.name, group, host, image=spec.image, **self._echo(spec)
         )
 
-    async def accept_update(self, name: str, spec: ContainerUpdate, user: Principal, background) -> ContainerResponse:
+    async def accept_update(
+        self, name: str, spec: ContainerUpdate, user: Principal, background
+    ) -> ContainerResponse:
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.

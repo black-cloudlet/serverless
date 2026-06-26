@@ -1,8 +1,8 @@
 import pytest
 
 from app.auth.claims import principal_from_claims
-from app.core.config import SSOConfig, Settings, SiteConfig
-from app.core.errors import ValidationError, SiteTotalFailure
+from app.core.config import Settings, SiteConfig, SSOConfig
+from app.core.errors import SiteTotalFailure, ValidationError
 from app.models.common import SiteStatus
 from app.services.deployer import Deployer, aggregate, status_code_for
 
@@ -721,7 +721,6 @@ async def test_update_prunes_backing_no_longer_referenced():
 async def test_create_does_not_prune():
     """On create there is nothing to prune; no deletes are issued."""
     from app.auth.claims import Principal
-    from app.models.common import Scaling
     from app.services.container import ContainerService
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
@@ -759,7 +758,8 @@ async def test_container_update_rotates_pull_secret():
                if m.get("type") == "kubernetes.io/dockerconfigjson"]
     assert secrets and secrets[0]["metadata"]["name"] == "api-team-pull"
     # the pull secret is keyed to the client image's registry, not our platform one
-    import base64 as _b64, json as _json
+    import base64 as _b64
+    import json as _json
     cfg = _json.loads(_b64.b64decode(secrets[0]["data"][".dockerconfigjson"]))
     assert set(cfg["auths"]) == {"reg.acme.com"}
     ksvc = _applied_kind(cluster, "Service")[0]

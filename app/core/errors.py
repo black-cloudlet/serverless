@@ -74,7 +74,7 @@ def _envelope(
     details: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
     ) -> dict[str, Any]:
-    
+
     return {
         "error": {
             "code": code,

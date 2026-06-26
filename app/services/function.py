@@ -46,7 +46,9 @@ class FunctionService:
         background.add_task(self._engine.run, self.create, spec, user)
         return self._engine.accepted(OFFERING_FUNCTION, spec.name, group, host, **self._echo(spec))
 
-    async def accept_update(self, name: str, spec: FunctionUpdate, user: Principal, background) -> FunctionResponse:
+    async def accept_update(
+        self, name: str, spec: FunctionUpdate, user: Principal, background
+    ) -> FunctionResponse:
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.

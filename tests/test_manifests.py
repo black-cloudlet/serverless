@@ -9,9 +9,9 @@ from app.services import ksvc as ksvc_svc
 from app.services import resources as res
 from app.services import route as route_svc
 from app.services import secrets as secret_svc
-from app.services.ksvc import ContainerEnv
 from app.services.env import env_secret_name, resolve_env
 from app.services.files import resolve_files
+from app.services.ksvc import ContainerEnv
 
 
 def test_build_ksvc_basic():
