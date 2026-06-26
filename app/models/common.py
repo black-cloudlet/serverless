@@ -129,6 +129,7 @@ class FileMount(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
+        """Require exactly one of ``content`` or ``contentBase64``."""
         if (self.content is None) == (self.contentBase64 is None):
             raise ValueError(
                 "file requires exactly one of 'content' or 'contentBase64'"
@@ -170,6 +171,7 @@ class Scaling(BaseModel):
 
     @model_validator(mode="after")
     def _bounds(self) -> "Scaling":
+        """Validate replica bounds and HPA-metric constraints."""
         if self.maxScale < self.minScale:
             raise ValueError("maxScale must be >= minScale")
         if self.metric not in _KPA_METRICS and self.minScale < 1:

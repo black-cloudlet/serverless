@@ -65,6 +65,7 @@ class FunctionUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _rebuild_needs_token(self) -> "FunctionUpdate":
+        """Require a gitToken when any build input (gitRepo/branch/runtime) changes."""
         if any(v is not None for v in (self.gitRepo, self.branch, self.runtime)) and (
             self.gitToken is None
         ):

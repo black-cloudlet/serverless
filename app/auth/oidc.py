@@ -34,6 +34,11 @@ class TokenValidator:
     """
 
     def __init__(self, config: SSOConfig):
+        """Initialize the validator; discovery is deferred until first use.
+
+        Args:
+            config: The SSO configuration (issuer, audience, discovery URL, ...).
+        """
         self._config = config
         self._jwk_client: PyJWKClient | None = None
         self._lock = threading.Lock()
@@ -43,8 +48,12 @@ class TokenValidator:
         self._client()
 
     def _client(self) -> PyJWKClient:
-        # Resolve the JWKS URI from discovery once, then reuse the client. The
-        # lock keeps concurrent first requests from each running discovery.
+        """Return the cached JWK client, resolving discovery once under a lock.
+
+        Returns:
+            The shared :class:`PyJWKClient`.
+        """
+        # The lock keeps concurrent first requests from each running discovery.
         if self._jwk_client is None:
             with self._lock:
                 if self._jwk_client is None:

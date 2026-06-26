@@ -48,6 +48,12 @@ class Cluster:
     """
 
     def __init__(self, site_config: SiteConfig, settings: Settings):
+        """Configure the client for one site (the connection stays lazy).
+
+        Args:
+            site_config: The site's name and cluster identifiers.
+            settings: Global settings (namespace, TLS material, timeouts).
+        """
         self.site: str = site_config.name
         self.name: str = site_config.cluster
         self._namespace: str = settings.workloads_namespace
@@ -70,17 +76,20 @@ class Cluster:
 
     @property
     def _api_client(self) -> client.ApiClient:
+        """The lazily-built Kubernetes API client for this site."""
         if self._api_client_obj is None:
             self._api_client_obj = client.ApiClient(self._configuration)
         return self._api_client_obj
 
     @property
     def _dynamic_client(self) -> DynamicClient:
+        """The lazily-built dynamic client (does API discovery on first use)."""
         if self._dynamic_client_obj is None:
             self._dynamic_client_obj = DynamicClient(self._api_client)
         return self._dynamic_client_obj
 
     def _dynamic_api(self, kind: ResourceKind):
+        """Resolve the dynamic resource API for a ResourceKind (apiVersion + kind)."""
         return self._dynamic_client.resources.get(kind.api_version, kind.kind)
 
     def connect(self) -> None:

@@ -17,6 +17,12 @@ class APIError(Exception):
     code: str = "INTERNAL"
 
     def __init__(self, message: str, details: list[dict[str, Any]] | None = None):
+        """Initialize the error.
+
+        Args:
+            message: Human-readable error message.
+            details: Optional structured details (e.g. per-site failures).
+        """
         super().__init__(message)
         self.message = message
         self.details = details or []
@@ -83,8 +89,18 @@ def _envelope(
     message: str,
     details: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
-    ) -> dict[str, Any]:
+) -> dict[str, Any]:
+    """Build the standard error response body.
 
+    Args:
+        code: The machine-readable error code.
+        message: The human-readable message.
+        details: Optional structured details.
+        request_id: Optional correlation id.
+
+    Returns:
+        The error envelope dict.
+    """
     return {
         "error": {
             "code": code,

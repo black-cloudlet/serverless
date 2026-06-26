@@ -21,6 +21,17 @@ def get_validator() -> TokenValidator:
 
 
 def _bearer_token(request: Request) -> str:
+    """Extract the raw bearer token from the Authorization header.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The token (the part after ``Bearer ``).
+
+    Raises:
+        UnauthenticatedError: If the header is missing or malformed.
+    """
     header = request.headers.get("Authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token:

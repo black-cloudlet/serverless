@@ -26,8 +26,12 @@ class Deployer:
     """Owns the per-site cluster clients and runs work across them concurrently."""
 
     def __init__(self, settings: Settings):
-        # `settings` is a construction input (each Cluster needs it); we don't
-        # retain it — only the per-site timeout and the built Clusters.
+        """Build one cluster client per configured site (connections stay lazy).
+
+        Args:
+            settings: Global settings; only the per-site timeout, local site, and
+                the built Clusters are retained.
+        """
         self._op_timeout = settings.site_op_timeout
         self._local_site = settings.local_site
         # One Cluster per configured site, built once up front (not per request).

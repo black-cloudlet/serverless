@@ -48,23 +48,28 @@ def redact_files(files: list[FileMount]) -> list[FileView]:
 
 
 def _template(ksvc: dict) -> dict:
-    return ((ksvc.get("spec") or {}).get("template") or {})
+    """The KSVC's ``spec.template`` block (or empty)."""
+    return (ksvc.get("spec") or {}).get("template") or {}
 
 
 def _pod_spec(ksvc: dict) -> dict:
+    """The pod spec under the KSVC template (or empty)."""
     return _template(ksvc).get("spec") or {}
 
 
 def _container(ksvc: dict) -> dict:
+    """The first (user) container of the KSVC pod spec (or empty)."""
     containers = _pod_spec(ksvc).get("containers") or [{}]
     return containers[0] or {}
 
 
 def _annotations(ksvc: dict) -> dict:
+    """The template (revision) annotations of the KSVC (or empty)."""
     return (_template(ksvc).get("metadata") or {}).get("annotations") or {}
 
 
 def _meta_annotations(ksvc: dict) -> dict:
+    """The top-level (service) metadata annotations of the KSVC (or empty)."""
     return (ksvc.get("metadata") or {}).get("annotations") or {}
 
 
@@ -92,6 +97,7 @@ def configmap_refs(ksvc: dict) -> set[str]:
 
 
 def _scaling(ksvc: dict) -> Scaling | None:
+    """Reconstruct Scaling from the KSVC autoscaling annotations, or None."""
     ann = _annotations(ksvc)
     mn = ann.get("autoscaling.knative.dev/min-scale")
     mx = ann.get("autoscaling.knative.dev/max-scale")
@@ -111,6 +117,7 @@ def _scaling(ksvc: dict) -> Scaling | None:
 
 
 def _env(ksvc: dict) -> list[EnvVarView]:
+    """Read back the container env as views (secretKeyRef values redacted)."""
     out: list[EnvVarView] = []
     for e in _container(ksvc).get("env") or []:
         if "valueFrom" in e:  # secretKeyRef -> value is redacted
@@ -121,6 +128,7 @@ def _env(ksvc: dict) -> list[EnvVarView]:
 
 
 def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
+    """Read back mounted files as views; non-secret content from ``configmaps``."""
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     out: list[FileView] = []
     for mount in _container(ksvc).get("volumeMounts") or []:

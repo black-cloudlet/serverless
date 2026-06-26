@@ -42,6 +42,7 @@ class ContainerCreate(BaseModel):
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerCreate":
+        """Require registry username and token to be provided together (or neither)."""
         if (self.registryUsername is None) != (self.registryToken is None):
             raise ValueError(
                 "registryUsername and registryToken must be provided together "
@@ -67,6 +68,7 @@ class ContainerUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerUpdate":
+        """Require registry username and token to be provided together (or neither)."""
         if (self.registryUsername is None) != (self.registryToken is None):
             raise ValueError(
                 "registryUsername and registryToken must be provided together"

@@ -68,6 +68,7 @@ def object_name(name: str, group: str) -> str:
 
 
 def _extract_image(obj: dict) -> str | None:
+    """The first container image of a KSVC, or None if absent."""
     containers = (
         ((obj.get("spec", {}) or {}).get("template", {}) or {}).get("spec", {}) or {}
     ).get("containers", []) or []
@@ -86,6 +87,11 @@ def _creation_time(obj: dict) -> datetime | None:
 
 
 def _ksvc_status(obj: dict) -> tuple[str, str | None]:
+    """Map a KSVC's Ready condition to a (status, revision) pair.
+
+    Returns:
+        ``("Ready"|"Failed"|"Deploying", revision_name_or_None)``.
+    """
     status = obj.get("status", {}) or {}
     conditions = status.get("conditions", []) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)
@@ -108,6 +114,13 @@ class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
     def __init__(self, settings: Settings, deployer: Deployer, builder: Builder):
+        """Initialize the engine.
+
+        Args:
+            settings: Global settings.
+            deployer: The multi-site fan-out helper.
+            builder: The function image builder.
+        """
         self.settings = settings
         self.deployer = deployer
         self.builder = builder
@@ -759,6 +772,11 @@ class WorkloadService:
         return summaries
 
     def _assert_access(self, obj: dict, user: Principal) -> None:
+        """Ensure the caller may access the object's group.
+
+        Raises:
+            ForbiddenError: If the caller can't access the resource's group.
+        """
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
         group = labels.get(LABEL_GROUP, "")
         if not user.can_access_group(group):

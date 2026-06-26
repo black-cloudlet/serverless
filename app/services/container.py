@@ -15,6 +15,11 @@ class ContainerService:
     """Container-specific orchestration; delegates the shared work to WorkloadService."""
 
     def __init__(self, engine: WorkloadService):
+        """Initialize the service.
+
+        Args:
+            engine: The shared workload engine doing the cross-site work.
+        """
         self._engine = engine
 
     # -- async accept (202 + poll) ---------------------------------------

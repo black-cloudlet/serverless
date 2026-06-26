@@ -67,6 +67,11 @@ class FuncBuilder:
     """Default builder targeting `func`/buildpacks against the internal registry."""
 
     def __init__(self, registry: RegistryConfig):
+        """Initialize the builder.
+
+        Args:
+            registry: The internal registry images are pushed to.
+        """
         self._registry = registry
 
     def image_ref(self, req: BuildRequest) -> str:

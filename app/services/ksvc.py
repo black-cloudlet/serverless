@@ -29,6 +29,7 @@ _SIZES: dict[str, tuple[str, str]] = {
 
 
 def _resources(size: str) -> dict:
+    """Container resources for a t-shirt size (memory request==limit, cpu request-only)."""
     cpu_request, memory = _SIZES[size]
     return {
         "requests": {"cpu": cpu_request, "memory": memory},
@@ -50,6 +51,7 @@ class ContainerEnv:
 
 
 def _env(env: list[ContainerEnv]) -> list[dict]:
+    """Render resolved env entries as Knative container env (inline or secretKeyRef)."""
     out: list[dict] = []
     for e in env:
         if e.secret_ref is not None:
@@ -63,8 +65,14 @@ def _env(env: list[ContainerEnv]) -> list[dict]:
 
 
 def _volumes(volumes: list[VolumeSpec]) -> tuple[list[dict], list[dict]]:
-    # Multiple files share one ConfigMap/Secret volume; declare each volume once
-    # but emit a mount (with its own subPath) per file.
+    """Render volume specs into (volumes, volumeMounts) for the pod.
+
+    Multiple files share one ConfigMap/Secret volume; each volume is declared once
+    but gets a mount (with its own subPath) per file.
+
+    Returns:
+        A ``(volumes, mounts)`` tuple of manifest fragments.
+    """
     vols: dict[str, dict] = {}
     mounts: list[dict] = []
     for v in volumes:

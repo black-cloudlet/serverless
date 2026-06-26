@@ -23,6 +23,11 @@ _MEM_UNITS = {
 
 
 def _parse(quantity: str, units: dict[str, float]) -> float:
+    """Parse a ``<number><unit>`` quantity into a float using ``units``.
+
+    Raises:
+        ValueError: If the quantity is malformed or the unit is unknown.
+    """
     m = _QUANTITY.match(quantity.strip())
     if not m or m.group(2) not in units:
         raise ValueError(f"unparseable quantity: {quantity!r}")
