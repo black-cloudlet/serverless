@@ -634,7 +634,7 @@ async def test_list_overall_status_per_workload():
         {"site-a": _ListCluster("site-a", [deploying, failed])}, local_site="site-a"
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    summaries = {s.name: s.overallStatus for s in await engine.list_workloads("container", user, "team")}
+    summaries = {s.name: s.overallStatus for s in await engine.list("container", user, "team")}
 
     assert summaries["app"] == "Deploying"  # not a false Degraded
     assert summaries["bad"] == "Degraded"
@@ -840,7 +840,7 @@ async def test_function_update_without_token_keeps_image():
     assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
 
 
-async def test_list_workloads_reads_only_local_site():
+async def test_list_reads_only_local_site():
     from app.auth.claims import Principal
 
     class _Boom:
@@ -861,7 +861,7 @@ async def test_list_workloads_reads_only_local_site():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    out = await engine.list_workloads("container", user, "team")
+    out = await engine.list("container", user, "team")
     assert [w.name for w in out] == ["orders", "web"]  # sorted, suffix stripped
     orders = next(w for w in out if w.name == "orders")
     assert orders.sites == ["site-a"]  # only the local site is reported
@@ -870,7 +870,7 @@ async def test_list_workloads_reads_only_local_site():
     assert orders.overallStatus == "Ready"
 
 
-async def test_list_workloads_sort_by_created_at():
+async def test_list_sort_by_created_at():
     from app.auth.claims import Principal
 
     def _with_created(oname, created):
@@ -885,15 +885,15 @@ async def test_list_workloads_sort_by_created_at():
     engine = _workload_service({"site-a": local}, local_site="site-a")
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    by_name = await engine.list_workloads("container", user, "team")  # default
+    by_name = await engine.list("container", user, "team")  # default
     assert [w.name for w in by_name] == ["aaa", "bbb"]
     assert by_name[0].createdAt is not None  # creation time populated
 
-    by_created = await engine.list_workloads("container", user, "team", sort="createdAt")
+    by_created = await engine.list("container", user, "team", sort="createdAt")
     assert [w.name for w in by_created] == ["bbb", "aaa"]  # oldest first
 
 
-async def test_list_workloads_errors_when_local_site_fails():
+async def test_list_errors_when_local_site_fails():
     from app.auth.claims import Principal
     from app.core.errors import SiteTotalFailure
 
@@ -908,7 +908,7 @@ async def test_list_workloads_errors_when_local_site_fails():
     engine = _workload_service({"site-a": _Boom("site-a")}, local_site="site-a")
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(SiteTotalFailure):
-        await engine.list_workloads("container", user, "team")
+        await engine.list("container", user, "team")
 
 
 async def test_accept_rejects_group_caller_is_not_member_of():

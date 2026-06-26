@@ -151,7 +151,7 @@ class ContainerService:
         return await self._engine.get(OFFERING_CONTAINER, name, user, group)
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        return await self._engine.list_workloads(OFFERING_CONTAINER, user, group, sort)
+        return await self._engine.list(OFFERING_CONTAINER, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
         await self._engine.delete(OFFERING_CONTAINER, name, user, group)

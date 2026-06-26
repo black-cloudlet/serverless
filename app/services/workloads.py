@@ -535,7 +535,7 @@ class WorkloadService:
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 
-    async def list_workloads(
+    async def list(
         self, kind: str, user: Principal, group: str, sort: str = "name"
     ) -> list[WorkloadSummary]:
         """General info for every workload of this offering owned by `group`,

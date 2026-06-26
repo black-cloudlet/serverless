@@ -8,7 +8,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-# Ownership / management labels stamped on every resource (docs §6.2).
 LABEL_GROUP = "serverless.platform/group"
 LABEL_MANAGED_BY = "serverless.platform/managed-by"
 LABEL_OWNER = "serverless.platform/owner"
@@ -16,13 +15,8 @@ LABEL_OFFERING = "serverless.platform/offering"
 LABEL_WORKLOAD = "serverless.platform/workload"
 MANAGED_BY_VALUE = "serverless-api"
 
-# Annotation recording the external host chosen for a workload (so reads can
-# report the URL without recomputing/guessing it).
 ANNOTATION_HOST = "serverless.platform/host"
-# Annotation recording the chosen t-shirt size (so reads can report it).
 ANNOTATION_SIZE = "serverless.platform/size"
-# Function build inputs, stamped so reads can report what was submitted. The git
-# token is deliberately NOT among these — it is never persisted (docs §7.2).
 ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
@@ -111,13 +105,7 @@ class FileMount(BaseModel):
 class Scaling(BaseModel):
     minScale: int = Field(0, ge=0)
     maxScale: int = Field(3, ge=1)
-    # The signal the Knative autoscaler scales on, and the target value for it:
-    #   concurrency -> in-flight requests per replica (default KPA)
-    #   rps         -> requests per second per replica (KPA)
-    #   cpu/memory  -> % CPU/memory utilization (HPA class; cannot scale to zero)
     metric: ScalingMetric = "concurrency"
-    # Omitted -> a metric-aware default is used (see effective_target): 100 for
-    # concurrency/rps, 70 (%) for cpu/memory so we scale before saturation.
     target: int | None = Field(None, ge=1)
 
     @property

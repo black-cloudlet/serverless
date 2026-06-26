@@ -40,9 +40,6 @@ class Cluster:
         self._configuration.cert_file = settings.client_cert_file
         self._configuration.key_file = settings.client_key_file
 
-        # Connection stays lazy (built on first use) so that one unreachable
-        # cluster can't fail or block API startup (DynamicClient does API
-        # discovery against the cluster the first time it is touched).
         self._api_client_obj: client.ApiClient | None = None
         self._dynamic_client_obj: DynamicClient | None = None
         self._opts: dict = {
@@ -93,10 +90,7 @@ class Cluster:
             return [i.to_dict() for i in results.items]
         try:
             return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
-        except Exception as exc:  # noqa: BLE001 - translate only "absent"; re-raise the rest
-            # A genuine 404 means the object is absent (callers rely on this to mean
-            # "free"/"not yet created"). Any other failure — site unreachable, 401,
-            # 5xx — must propagate so it is NOT mistaken for absence.
+        except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
             raise
