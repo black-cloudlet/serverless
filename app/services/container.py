@@ -29,6 +29,16 @@ class ContainerService:
         )
 
     async def accept(self, spec: ContainerCreate, user: Principal, background) -> ContainerResponse:
+        """Validate and accept a create request, scheduling the deploy (202).
+
+        Args:
+            spec: The container create request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
         group = spec.group
         self._engine.assert_group(user, group)
         oname = object_name(spec.name, group)
@@ -49,6 +59,17 @@ class ContainerService:
     async def accept_update(
         self, name: str, spec: ContainerUpdate, user: Principal, background
     ) -> ContainerResponse:
+        """Validate and accept an update request, scheduling the deploy (202).
+
+        Args:
+            name: The workload name.
+            spec: The container update request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
@@ -67,6 +88,18 @@ class ContainerService:
 
     # -- create / update -------------------------------------------------
     async def create(self, spec: ContainerCreate, user: Principal) -> tuple[ContainerResponse, int]:
+        """Deploy a new container (runs in the background after accept).
+
+        Builds the pull secret (if registry creds were given) and applies the
+        workload to all target sites.
+
+        Args:
+            spec: The container create request.
+            user: The authenticated caller.
+
+        Returns:
+            The response body and HTTP status code.
+        """
         group = spec.group
         oname = object_name(spec.name, group)
         # Registry creds are optional (public image -> no pull secret).
@@ -107,6 +140,18 @@ class ContainerService:
     async def update(
         self, name: str, spec: ContainerUpdate, user: Principal, existing: dict | None = None
     ) -> tuple[ContainerResponse, int]:
+        """Apply an update to a container (runs in the background after accept).
+
+        Args:
+            name: The workload name.
+            spec: The container update request.
+            user: The authenticated caller.
+            existing: The workload state preloaded by accept_update, if any; a
+                fresh fetch is done when None.
+
+        Returns:
+            The response body and HTTP status code.
+        """
         group = spec.group
         oname = object_name(name, group)
         # accept_update already fetched (and authorized) this; reuse it to avoid a
@@ -150,10 +195,13 @@ class ContainerService:
 
     # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
+        """Get one container with live per-site status (see WorkloadService.get)."""
         return await self._engine.get(OFFERING_CONTAINER, name, user, group)
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
+        """List the group's containers (see WorkloadService.list)."""
         return await self._engine.list(OFFERING_CONTAINER, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
+        """Delete a container and its derived resources (see WorkloadService.delete)."""
         await self._engine.delete(OFFERING_CONTAINER, name, user, group)

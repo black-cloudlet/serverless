@@ -39,6 +39,18 @@ def build_pull_secret(
     username: str,
     token: str,
 ) -> dict:
+    """Build a dockerconfigjson image-pull Secret for one registry.
+
+    Args:
+        name: The Secret name.
+        labels: Labels to stamp on it.
+        registry: The registry host the credentials are scoped to.
+        username: The registry username.
+        token: The registry password/token.
+
+    Returns:
+        The pull-secret manifest dict.
+    """
     auth = base64.b64encode(f"{username}:{token}".encode()).decode("ascii")
     dockercfg = {"auths": {registry: {"username": username, "password": token, "auth": auth}}}
     encoded = base64.b64encode(json.dumps(dockercfg).encode()).decode("ascii")

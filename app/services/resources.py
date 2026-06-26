@@ -10,6 +10,16 @@ import base64
 
 
 def build_configmap(name: str, labels: dict[str, str], data: dict[str, str]) -> dict:
+    """Build a ConfigMap manifest.
+
+    Args:
+        name: The ConfigMap name.
+        labels: Labels to stamp on it.
+        data: The (plaintext) key/value data.
+
+    Returns:
+        The ConfigMap manifest dict.
+    """
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
@@ -24,6 +34,17 @@ def build_secret(
     data: dict[str, str],
     secret_type: str = "Opaque",
 ) -> dict:
+    """Build a Secret manifest, base64-encoding the data values.
+
+    Args:
+        name: The Secret name.
+        labels: Labels to stamp on it.
+        data: The plaintext key/value data (encoded into ``data``).
+        secret_type: The Kubernetes Secret type.
+
+    Returns:
+        The Secret manifest dict.
+    """
     encoded = {
         k: base64.b64encode(v.encode("utf-8")).decode("ascii") for k, v in data.items()
     }

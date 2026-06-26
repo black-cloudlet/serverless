@@ -34,9 +34,10 @@ target-version = "py311"
 # pycodestyle (E/W), pyflakes (F), isort (I), pydocstyle (D) — PEP 8, import
 # ordering, and Google-style docstrings.
 select = ["E", "W", "F", "I", "D"]
-# Don't require a docstring on every object — only enforce Google *format* on the
-# docstrings we do write. (D1xx are the "missing docstring" rules.)
-ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107"]
+# Require docstrings on modules, packages, classes, and public functions/methods.
+# D105 (dunder methods) and D107 (__init__ — documented in the class docstring)
+# stay optional, per the Google example.
+ignore = ["D105", "D107"]
 
 [tool.ruff.lint.pydocstyle]
 # Google docstring style (Args:/Returns:/Raises:), per

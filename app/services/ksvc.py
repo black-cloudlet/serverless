@@ -103,6 +103,32 @@ def build_ksvc(
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
 ) -> dict:
+    """Build the Knative Service (KSVC) manifest for a workload.
+
+    Assembles labels/annotations, the autoscaling config, container env/volumes,
+    resource sizing, the optional pull secret, and the trusted-CA mount.
+
+    Args:
+        name: The object name (``{name}-{group}``).
+        group: Owning group.
+        owner: Creating username.
+        image: The image (or digest) to run.
+        offering: "function" or "container".
+        host: The external host (stamped as an annotation).
+        env: Resolved container env entries.
+        volumes: Resolved file volume specs.
+        scaling: Autoscaling settings.
+        size: Resource t-shirt size.
+        pull_secret: Image pull secret name, if any.
+        runtime: Function runtime annotation, if any.
+        git_url: Function source repo annotation, if any.
+        branch: Function source branch annotation, if any.
+        ca_config_map: Trusted-CA ConfigMap to mount, if configured.
+        ca_mount_path: Mount path for the trusted CA, if configured.
+
+    Returns:
+        The KSVC manifest dict.
+    """
     annotations = {
         "autoscaling.knative.dev/min-scale": str(scaling.minScale),
         "autoscaling.knative.dev/max-scale": str(scaling.maxScale),

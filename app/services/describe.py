@@ -151,6 +151,16 @@ def parse_spec(
     configmaps: dict[str, dict] | None = None,
     registry_username: str | None = None,
 ) -> WorkloadSpec:
+    """Reconstruct the redacted desired-state spec from a KSVC and its ConfigMaps.
+
+    Args:
+        ksvc: The Knative Service object.
+        configmaps: Fetched file ConfigMaps keyed by name, for non-secret content.
+        registry_username: The pull-secret username, if read (token never shown).
+
+    Returns:
+        The reconstructed :class:`WorkloadSpec` with secrets redacted.
+    """
     configmaps = configmaps or {}
     meta = _meta_annotations(ksvc)
     return WorkloadSpec(

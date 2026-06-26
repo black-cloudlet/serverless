@@ -23,6 +23,8 @@ SiteFn = Callable[[Cluster], SiteStatus]
 
 
 class Deployer:
+    """Owns the per-site cluster clients and runs work across them concurrently."""
+
     def __init__(self, settings: Settings):
         # `settings` is a construction input (each Cluster needs it); we don't
         # retain it — only the per-site timeout and the built Clusters.
@@ -55,9 +57,21 @@ class Deployer:
         return next(iter(self._clusters.values()))
 
     def local_site(self) -> str:
+        """The name of the local site (see :meth:`local_cluster`)."""
         return self.local_cluster().site
 
     def resolve_targets(self, requested: list[str] | None) -> list[Cluster]:
+        """Resolve the clusters to act on for a request.
+
+        Args:
+            requested: Explicit site names, or None for all configured sites.
+
+        Returns:
+            The target clusters.
+
+        Raises:
+            ValidationError: If no sites are configured or a name is unknown.
+        """
         if not self._clusters:
             raise ValidationError("no sites are configured")
         if not requested:
@@ -71,6 +85,19 @@ class Deployer:
         return targets
 
     async def fanout(self, targets: list[Cluster], fn: SiteFn) -> list[SiteStatus]:
+        """Run ``fn`` on every target concurrently, collecting per-site results.
+
+        Each call runs in a thread with a timeout; a site that times out or raises
+        yields a ``SiteStatus`` with ``error`` set rather than aborting the others.
+
+        Args:
+            targets: The clusters to run on.
+            fn: The per-site operation returning a SiteStatus.
+
+        Returns:
+            One SiteStatus per target.
+        """
+
         async def run(cluster: Cluster) -> SiteStatus:
             try:
                 # Backstop: a down/slow site fails fast and is reported as an
@@ -160,6 +187,15 @@ def overall_status(statuses: list[str]) -> str:
 
 
 def status_code_for(overall: str, created: bool) -> int:
+    """Map an overall status to an HTTP status code.
+
+    Args:
+        overall: The rolled-up status (Ready/Deploying/Degraded).
+        created: Whether the call created a new workload (vs updated one).
+
+    Returns:
+        207 for Degraded, 202 for Deploying, 201 for a create, else 200.
+    """
     if overall == "Degraded":
         return 207
     if overall == "Deploying":

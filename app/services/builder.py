@@ -23,6 +23,17 @@ logger = get_logger(__name__)
 
 @dataclass
 class BuildRequest:
+    """Inputs for building a function image from source.
+
+    Attributes:
+        name: Workload name.
+        group: Owning group.
+        git_url: Source repository URL.
+        branch: Branch to build.
+        git_token: Transient git token (used to clone, never persisted).
+        runtime: Function runtime (python/go/javascript).
+    """
+
     name: str
     group: str
     git_url: str
@@ -33,12 +44,23 @@ class BuildRequest:
 
 @dataclass
 class BuildResult:
+    """The result of a build: the pushed image and (optionally) its digest.
+
+    Attributes:
+        image: The pushed image reference.
+        digest: The immutable digest, when known (deployed for cross-site parity).
+    """
+
     image: str
     digest: str | None = None
 
 
 class Builder(Protocol):
-    def build(self, req: BuildRequest) -> BuildResult: ...
+    """Builds a function image from source and pushes it to the registry."""
+
+    def build(self, req: BuildRequest) -> BuildResult:
+        """Build and push the image for ``req``, returning the result."""
+        ...
 
 
 class FuncBuilder:
@@ -48,13 +70,34 @@ class FuncBuilder:
         self._registry = registry
 
     def image_ref(self, req: BuildRequest) -> str:
+        """The image reference for a build: ``{registry}/{group}/{name}:{branch}``.
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The fully-qualified image reference.
+        """
         registry = self._registry.url.rstrip("/")
         return f"{registry}/{req.group}/{req.name}:{req.branch}"
 
     def build(self, req: BuildRequest) -> BuildResult:
-        # The build runs once and the resulting digest is deployed to every site
-        # to guarantee parity (docs §4). Backend invocation (func/Tekton) is
-        # configured per environment; see deploy docs.
+        """Build the function image and push it to the internal registry.
+
+        The build runs once and the resulting digest is deployed to every site to
+        guarantee parity (docs §4). The backend invocation (func/Tekton) is
+        configured per environment.
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The build result (image and digest).
+
+        Raises:
+            NotImplementedError: When no build backend is wired in this
+                environment.
+        """
         image = self.image_ref(req)
         logger.info(
             "function build requested: name=%s runtime=%s git=%s@%s -> %s",

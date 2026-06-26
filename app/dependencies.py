@@ -17,6 +17,7 @@ from app.services.workloads import WorkloadService
 
 @lru_cache
 def get_deployer() -> Deployer:
+    """The cached multi-site Deployer (one set of cluster clients per process)."""
     return Deployer(get_settings())
 
 
@@ -29,11 +30,13 @@ def get_workload_service() -> WorkloadService:
 
 @lru_cache
 def get_function_service() -> FunctionService:
+    """The cached FunctionService (composes the shared workload engine)."""
     return FunctionService(get_workload_service())
 
 
 @lru_cache
 def get_container_service() -> ContainerService:
+    """The cached ContainerService (composes the shared workload engine)."""
     return ContainerService(get_workload_service())
 
 

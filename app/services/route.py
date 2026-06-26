@@ -16,6 +16,7 @@ DOMAIN_MAPPING_API = "serving.knative.dev/v1beta1"
 
 
 def host_for(name: str, group: str, route_domain: str) -> str:
+    """The default external host for a workload: ``{name}-{group}.{route_domain}``."""
     return f"{name}-{group}.{route_domain}"
 
 

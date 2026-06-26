@@ -1,3 +1,5 @@
+"""Per-site Kubernetes/OpenShift cluster client (server-side apply, get, delete)."""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -21,10 +23,12 @@ class ResourceKind(Enum):
 
     @property
     def api_version(self) -> str:
+        """The resource's ``apiVersion`` (e.g. ``serving.knative.dev/v1``)."""
         return self.value[0]
 
     @property
     def kind(self) -> str:
+        """The resource's PascalCase ``kind`` (e.g. ``Service``)."""
         return self.value[1]
 
     @classmethod
@@ -37,6 +41,12 @@ class ResourceKind(Enum):
 
 
 class Cluster:
+    """A single site's cluster connection and resource operations.
+
+    The Kubernetes client is synchronous and the connection is established lazily
+    (on first use) so one unreachable site can't fail or block API startup.
+    """
+
     def __init__(self, site_config: SiteConfig, settings: Settings):
         self.site: str = site_config.name
         self.name: str = site_config.cluster
@@ -82,6 +92,14 @@ class Cluster:
         _ = self._dynamic_client
 
     def apply(self, manifest: dict) -> list[dict]:
+        """Server-side apply a manifest (create-or-update), forcing conflicts.
+
+        Args:
+            manifest: The resource manifest dict to apply.
+
+        Returns:
+            The applied object(s) as dicts (including server-assigned fields).
+        """
         results = utils.create_from_dict(
             self._api_client,
             manifest,
@@ -96,6 +114,19 @@ class Cluster:
     def get(
         self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None
     ) -> dict | list[dict]:
+        """Get a resource by name, or list a kind by label selector.
+
+        Args:
+            kind: The resource kind to fetch.
+            name: The object name for a single get; None to list.
+            label_selector: Label selector for the list form.
+
+        Returns:
+            The object dict (named get) or a list of object dicts (list form).
+
+        Raises:
+            NotFoundError: If a named get returns a 404. Other errors propagate.
+        """
         dynamic_api = self._dynamic_api(kind)
         if name is None:
             results = dynamic_api.get(
@@ -110,5 +141,11 @@ class Cluster:
             raise
 
     def delete(self, kind: ResourceKind, name: str) -> None:
+        """Delete a resource by name.
+
+        Args:
+            kind: The resource kind to delete.
+            name: The object name.
+        """
         dynamic_api = self._dynamic_api(kind)
         dynamic_api.delete(name=name, namespace=self._namespace, **self._opts)

@@ -15,6 +15,16 @@ from app.models.common import (
 def ownership_labels(
     group: str, owner: str, offering: str | None = None
 ) -> dict[str, str]:
+    """Build the ownership/management labels stamped on every resource.
+
+    Args:
+        group: The owning group.
+        owner: The creating username.
+        offering: The offering ("function"/"container"), when applicable.
+
+    Returns:
+        The label dict (group, managed-by, owner, and offering when given).
+    """
     labels = {
         LABEL_GROUP: group,
         LABEL_MANAGED_BY: MANAGED_BY_VALUE,

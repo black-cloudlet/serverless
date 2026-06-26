@@ -16,6 +16,7 @@ from app.core.errors import ForbiddenError, UnauthenticatedError
 
 @lru_cache
 def get_validator() -> TokenValidator:
+    """The cached OIDC token validator (one JWKS client per process)."""
     return TokenValidator(get_settings().sso)
 
 
@@ -45,8 +46,8 @@ def require_auth(
     token = _bearer_token(request)
 
     # A structural JWT -> OIDC user/service token; otherwise an opaque admin API
-    # key. The header always carries the RAW token; for the API key the raw token
-    # is hashed and constant-time compared (see app.auth.apikey).
+    # key. The header always carries the RAW token; the API key is matched with a
+    # constant-time compare (see app.auth.apikey).
     if looks_like_jwt(token):
         claims = validator.validate(token)
         principal = principal_from_claims(claims, settings.sso)

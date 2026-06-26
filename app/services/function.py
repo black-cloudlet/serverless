@@ -34,6 +34,16 @@ class FunctionService:
         )
 
     async def accept(self, spec: FunctionCreate, user: Principal, background) -> FunctionResponse:
+        """Validate and accept a create request, scheduling the build+deploy (202).
+
+        Args:
+            spec: The function create request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the build+deploy on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
         group = spec.group
         self._engine.assert_group(user, group)
         oname = object_name(spec.name, group)
@@ -49,6 +59,17 @@ class FunctionService:
     async def accept_update(
         self, name: str, spec: FunctionUpdate, user: Principal, background
     ) -> FunctionResponse:
+        """Validate and accept an update request, scheduling the deploy (202).
+
+        Args:
+            name: The workload name.
+            spec: The function update request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
         group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
@@ -62,6 +83,18 @@ class FunctionService:
 
     # -- create / update -------------------------------------------------
     async def create(self, spec: FunctionCreate, user: Principal) -> tuple[FunctionResponse, int]:
+        """Build from Git and deploy a new function (runs in the background).
+
+        Args:
+            spec: The function create request.
+            user: The authenticated caller.
+
+        Returns:
+            The response body and HTTP status code.
+
+        Raises:
+            ServiceUnavailableError: If the build pipeline is unavailable.
+        """
         group = spec.group
         oname = object_name(spec.name, group)
         try:
@@ -105,6 +138,22 @@ class FunctionService:
     async def update(
         self, name: str, spec: FunctionUpdate, user: Principal, existing: dict | None = None
     ) -> tuple[FunctionResponse, int]:
+        """Apply an update to a function, rebuilding only when a gitToken is given.
+
+        Args:
+            name: The workload name.
+            spec: The function update request.
+            user: The authenticated caller.
+            existing: The workload state preloaded by accept_update, if any; a
+                fresh fetch is done when None.
+
+        Returns:
+            The response body and HTTP status code.
+
+        Raises:
+            ServiceUnavailableError: If a rebuild is requested but the build
+                pipeline is unavailable.
+        """
         group = spec.group
         # Reuse the load_existing result from accept_update (already authorized) to
         # avoid a second multi-site fanout; fall back to a fresh fetch otherwise.
@@ -158,10 +207,13 @@ class FunctionService:
 
     # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
+        """Get one function with live per-site status (see WorkloadService.get)."""
         return await self._engine.get(OFFERING_FUNCTION, name, user, group)
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
+        """List the group's functions (see WorkloadService.list)."""
         return await self._engine.list(OFFERING_FUNCTION, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
+        """Delete a function and its derived resources (see WorkloadService.delete)."""
         await self._engine.delete(OFFERING_FUNCTION, name, user, group)

@@ -21,6 +21,18 @@ class Principal(BaseModel):
 
 
 def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
+    """Build a Principal from validated OIDC token claims.
+
+    Normalizes group names (strips Keycloak's leading "/") and marks the caller
+    an admin if any group is in the configured admin groups.
+
+    Args:
+        claims: The validated JWT claims.
+        config: The SSO configuration (groups claim, admin groups).
+
+    Returns:
+        The resolved :class:`Principal`.
+    """
     groups = claims.get(config.groups_claim, []) or []
     if isinstance(groups, str):
         groups = [groups]

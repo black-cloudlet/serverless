@@ -42,6 +42,7 @@ class CABundleConfig(BaseModel):
 
     @property
     def file(self) -> str:
+        """Absolute path to the mounted CA bundle file (``mount_path/key``)."""
         return f"{self.mount_path.rstrip('/')}/{self.key}"
 
 
@@ -70,6 +71,11 @@ class RegistryConfig(BaseModel):
 
 
 class Settings(BaseSettings):
+    """Application settings, loaded from env (prefix ``SERVERLESS_``) and ``.env``.
+
+    Nested config uses a ``__`` delimiter (e.g. ``SERVERLESS_SSO__ISSUER``).
+    """
+
     model_config = SettingsConfigDict(
         env_prefix="SERVERLESS_",
         env_nested_delimiter="__",
@@ -117,17 +123,28 @@ class Settings(BaseSettings):
 
     @property
     def client_cert_file(self) -> str:
+        """Absolute path to the client TLS certificate (``client_cert_dir/tls.crt``)."""
         return f"{self.client_cert_dir.rstrip('/')}/tls.crt"
 
     @property
     def client_key_file(self) -> str:
+        """Absolute path to the client TLS key (``client_cert_dir/tls.key``)."""
         return f"{self.client_cert_dir.rstrip('/')}/tls.key"
 
     def site(self, name: str) -> SiteConfig | None:
+        """Return the configured site with ``name``, or None if there isn't one.
+
+        Args:
+            name: The site name to look up.
+
+        Returns:
+            The matching :class:`SiteConfig`, or None.
+        """
         return next((z for z in self.sites if z.name == name), None)
 
     @property
     def site_names(self) -> list[str]:
+        """The names of all configured sites."""
         return [z.name for z in self.sites]
 
 

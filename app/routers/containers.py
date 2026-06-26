@@ -21,7 +21,10 @@ async def create_container(
     svc: ContainerDep,
     background: BackgroundTasks,
 ) -> ContainerResponse:
-    # Validated synchronously; deployed in the background. Poll statusUrl.
+    """Create a container (202): validate synchronously, deploy in the background.
+
+    The response carries a ``statusUrl`` to poll for the deploy outcome.
+    """
     return await svc.accept(spec, user, background)
 
 
@@ -33,6 +36,7 @@ async def update_container(
     svc: ContainerDep,
     background: BackgroundTasks,
 ) -> ContainerResponse:
+    """Update a container (202): full replace of the mutable spec, applied async."""
     return await svc.accept_update(name, spec, user, background)
 
 
@@ -43,7 +47,7 @@ async def list_containers(
     svc: ContainerDep,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    # General info for every container the group owns (local site).
+    """List general info for every container the group owns (local site)."""
     return await svc.list(group, user, sort)
 
 
@@ -51,8 +55,11 @@ async def list_containers(
 async def get_container(
     name: str, group: str, user: CurrentUser, svc: ContainerDep
 ) -> ContainerResponse:
-    # Also the poll target advertised as `statusUrl` on the 202 accept response;
-    # the response already carries overallStatus + per-site status.
+    """Get one container, including overallStatus and per-site status.
+
+    This is the poll target advertised as ``statusUrl`` on the 202 accept
+    response.
+    """
     return await svc.get(name, group, user)
 
 
@@ -60,4 +67,5 @@ async def get_container(
 async def delete_container(
     name: str, group: str, user: CurrentUser, svc: ContainerDep
 ) -> None:
+    """Delete a container and its derived resources (204)."""
     await svc.delete(name, group, user)

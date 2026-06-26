@@ -30,10 +30,12 @@ def _parse(quantity: str, units: dict[str, float]) -> float:
 
 
 def parse_cpu_millicores(quantity: str) -> float:
+    """Parse a Kubernetes CPU quantity (e.g. ``250m``, ``1``) into millicores."""
     return _parse(quantity, _CPU_UNITS)
 
 
 def parse_memory_bytes(quantity: str) -> float:
+    """Parse a Kubernetes memory quantity (e.g. ``512Mi``, ``1Gi``) into bytes."""
     return _parse(quantity, _MEM_UNITS)
 
 

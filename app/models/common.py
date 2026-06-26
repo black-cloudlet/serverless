@@ -43,6 +43,17 @@ HOSTNAME = re.compile(
 
 
 def validate_name(name: str) -> str:
+    """Validate a workload name as a DNS-1123 label.
+
+    Args:
+        name: The candidate workload name.
+
+    Returns:
+        The name unchanged.
+
+    Raises:
+        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
+    """
     if not DNS1123.match(name) or len(name) > 63:
         raise ValueError(
             "name must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
@@ -51,6 +62,17 @@ def validate_name(name: str) -> str:
 
 
 def validate_group(group: str) -> str:
+    """Validate a group name as a DNS-1123 label.
+
+    Args:
+        group: The candidate group name.
+
+    Returns:
+        The group unchanged.
+
+    Raises:
+        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
+    """
     if not DNS1123.match(group) or len(group) > 63:
         raise ValueError(
             "group must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
@@ -59,9 +81,21 @@ def validate_group(group: str) -> str:
 
 
 def validate_hostname(host: str) -> str:
-    # Either a single DNS-1123 label (the platform base domain is appended by the
-    # API) or a full lowercase FQDN. That the FQDN sits under the platform base
-    # domain is enforced in the service layer, where the base domain is known.
+    """Validate a custom hostname as a DNS-1123 label or a lowercase FQDN.
+
+    Either a single DNS-1123 label (the platform base domain is appended by the
+    API) or a full lowercase FQDN. That the FQDN sits under the platform base
+    domain is enforced in the service layer, where the base domain is known.
+
+    Args:
+        host: The candidate hostname.
+
+    Returns:
+        The host unchanged.
+
+    Raises:
+        ValueError: If it is neither a DNS-1123 label nor a valid lowercase FQDN.
+    """
     if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
         return host
     raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
@@ -103,6 +137,15 @@ class FileMount(BaseModel):
 
 
 class Scaling(BaseModel):
+    """Autoscaling settings: replica bounds, the metric, and its target.
+
+    Attributes:
+        minScale: Minimum replicas (0 allows scale-to-zero for KPA metrics).
+        maxScale: Maximum replicas.
+        metric: The signal the autoscaler scales on (concurrency/rps/cpu/memory).
+        target: Target value for the metric; None uses a metric-aware default.
+    """
+
     minScale: int = Field(0, ge=0)
     maxScale: int = Field(3, ge=1)
     metric: ScalingMetric = "concurrency"
@@ -110,6 +153,12 @@ class Scaling(BaseModel):
 
     @property
     def effective_target(self) -> int:
+        """The target value to apply, defaulting by metric when unset.
+
+        Returns:
+            ``target`` if set, else 100 for concurrency/rps or 70 (%) for
+            cpu/memory.
+        """
         if self.target is not None:
             return self.target
         return 100 if self.metric in _KPA_METRICS else 70
@@ -138,6 +187,15 @@ class Scaling(BaseModel):
 
 
 class SiteStatus(BaseModel):
+    """The deploy/health state of a workload at a single site.
+
+    Attributes:
+        site: The site name.
+        status: Per-site status (Ready/Deploying/Failed/Timeout/...).
+        revision: The Knative revision the site is serving, if known.
+        error: The failure message when the site errored, else None.
+    """
+
     site: str
     status: str
     revision: str | None = None

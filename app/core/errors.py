@@ -23,26 +23,36 @@ class APIError(Exception):
 
 
 class ValidationError(APIError):
+    """Invalid request input (HTTP 400)."""
+
     status_code = 400
     code = "VALIDATION_ERROR"
 
 
 class UnauthenticatedError(APIError):
+    """Missing or invalid credentials (HTTP 401)."""
+
     status_code = 401
     code = "UNAUTHENTICATED"
 
 
 class ForbiddenError(APIError):
+    """Authenticated but not permitted for this resource/group (HTTP 403)."""
+
     status_code = 403
     code = "FORBIDDEN"
 
 
 class NotFoundError(APIError):
+    """The requested resource does not exist (HTTP 404)."""
+
     status_code = 404
     code = "NOT_FOUND"
 
 
 class ConflictError(APIError):
+    """The request conflicts with current state, e.g. a duplicate (HTTP 409)."""
+
     status_code = 409
     code = "CONFLICT"
 
@@ -86,6 +96,12 @@ def _envelope(
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    """Register handlers rendering domain/HTTP errors as the standard envelope.
+
+    Args:
+        app: The FastAPI application to attach the handlers to.
+    """
+
     @app.exception_handler(APIError)
     async def _api_error(request: Request, exc: APIError) -> JSONResponse:
         return JSONResponse(

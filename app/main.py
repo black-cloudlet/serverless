@@ -61,6 +61,11 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """Build and configure the FastAPI application.
+
+    Returns:
+        The application with logging, CORS, error handlers, and routers wired.
+    """
     configure_logging()
     settings = get_settings()
 

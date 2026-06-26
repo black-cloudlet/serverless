@@ -34,11 +34,19 @@ class VolumeSpec:
 
 @dataclass
 class ResolvedFiles:
+    """Resolved file mounts: the volume specs plus their backing objects.
+
+    Attributes:
+        volumes: One VolumeSpec per file mount.
+        backing: The backing manifests (at most one ConfigMap + one Secret).
+    """
+
     volumes: list[VolumeSpec] = field(default_factory=list)
     backing: list[dict] = field(default_factory=list)  # at most one CM + one Secret
 
 
 def files_name(workload: str) -> str:
+    """The shared name of a workload's files ConfigMap and Secret: ``{workload}-files``."""
     return f"{workload}-files"
 
 
@@ -51,6 +59,23 @@ def _key(mount_path: str) -> str:
 def resolve_files(
     workload: str, group: str, owner: str, files: list[FileMount]
 ) -> ResolvedFiles:
+    """Resolve file mounts into volume specs and backing ConfigMap/Secret.
+
+    Non-secret files aggregate into one ConfigMap and secret files into one
+    Secret, both named ``{workload}-files``; each file is mounted via subPath.
+
+    Args:
+        workload: The object name (``{name}-{group}``).
+        group: Owning group (for labels).
+        owner: Username (for labels).
+        files: The submitted file mounts.
+
+    Returns:
+        The resolved volumes and backing manifests.
+
+    Raises:
+        ValidationError: On a duplicate mount-path key or invalid base64 content.
+    """
     name = files_name(workload)
     labels = workload_labels(group, owner, workload)
     config_data: dict[str, str] = {}

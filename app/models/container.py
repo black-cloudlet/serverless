@@ -23,6 +23,8 @@ Hostname = Annotated[str, AfterValidator(validate_hostname)]
 
 
 class ContainerCreate(BaseModel):
+    """Request body to deploy a pre-built container image."""
+
     name: Name
     group: Group  # the SSO group to act as; caller must be a member
     image: str

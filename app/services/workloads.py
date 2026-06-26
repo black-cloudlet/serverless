@@ -158,6 +158,18 @@ class WorkloadService:
     def accepted(
         self, kind: str, name: str, group: str, host: str, **extra
     ) -> WorkloadResponse:
+        """Build the Pending 202 body returned by accept/accept_update.
+
+        Args:
+            kind: The offering ("function" or "container").
+            name: Workload name.
+            group: Owning group.
+            host: The resolved external host.
+            **extra: Offering-specific fields echoed back (secrets redacted).
+
+        Returns:
+            A response with ``overallStatus="Pending"`` and a ``statusUrl``.
+        """
         cls = FunctionResponse if kind == OFFERING_FUNCTION else ContainerResponse
         return cls(
             name=name,
@@ -199,6 +211,35 @@ class WorkloadService:
         git_url: str | None = None,
         branch: str | None = None,
     ) -> tuple[WorkloadResponse, int]:
+        """Build the manifests once and apply the workload to every target site.
+
+        Applies the KSVC, its derived resources (owned via ownerReferences), and
+        the DomainMapping to each site, pruning backing objects the new spec no
+        longer references. Offering-agnostic; the function/container services
+        supply the offering-specific inputs.
+
+        Args:
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            image: The image (or built digest) to deploy.
+            offering: "function" or "container".
+            env: Env vars to resolve onto the workload.
+            files: File mounts to resolve onto the workload.
+            scaling: Autoscaling settings.
+            size: Resource t-shirt size.
+            hostname: Optional custom host.
+            sites: Target site names, or None for all.
+            pull_secret_name: Name of the image pull secret, if any.
+            pull_secret_manifest: The pull secret manifest to apply, if any.
+            created: True for a create (affects the success status code).
+            runtime: Function runtime, stamped as an annotation.
+            git_url: Function source repo, stamped as an annotation.
+            branch: Function source branch, stamped as an annotation.
+
+        Returns:
+            The response body and HTTP status code.
+        """
         self.assert_group(user, group)
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(sites)
@@ -435,6 +476,25 @@ class WorkloadService:
     async def get(
         self, kind: str, name: str, user: Principal, group: str
     ) -> WorkloadResponse:
+        """Read one workload with live per-site status and its redacted spec.
+
+        Fans out to all sites; a site that returns a clean 404 is omitted, while
+        an unreachable site stays visible and degrades the rollup.
+
+        Args:
+            kind: The offering ("function" or "container").
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+
+        Returns:
+            The full single-workload response.
+
+        Raises:
+            NotFoundError: If the workload exists on no reachable site.
+            ServiceUnavailableError: If it can't be confirmed absent because a
+                site was unreachable.
+        """
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
@@ -584,6 +644,17 @@ class WorkloadService:
     async def delete(
         self, kind: str, name: str, user: Principal, group: str
     ) -> None:
+        """Delete a workload from every site; GC cascades its derived resources.
+
+        Args:
+            kind: The offering ("function" or "container").
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+
+        Raises:
+            NotFoundError: If the workload exists on no site.
+        """
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)

@@ -24,6 +24,8 @@ Hostname = Annotated[str, AfterValidator(validate_hostname)]
 
 
 class FunctionCreate(BaseModel):
+    """Request body to create a function from source (built into an image)."""
+
     name: Name
     group: Group  # the SSO group to act as; caller must be a member
     gitRepo: str
@@ -73,6 +75,7 @@ class FunctionUpdate(BaseModel):
 
     @property
     def rebuild_requested(self) -> bool:
+        """Whether this update should rebuild from source (a gitToken was given)."""
         return self.gitToken is not None
 
 
