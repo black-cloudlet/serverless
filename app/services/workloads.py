@@ -296,35 +296,51 @@ class WorkloadService:
     async def load_existing(
         self, name: str, offering: str, user: Principal, group: str
     ) -> dict:
-        """Fetch an existing workload (offering-scoped); return {'image','host'}.
+        """Fetch an existing workload (offering-scoped); return {'image','host',...}.
 
-        Raises NotFoundError if it doesn't exist, isn't this offering, or the
-        caller can't access its group.
+        Raises NotFoundError if it doesn't exist or isn't this offering/group, and
+        ServiceUnavailableError if it couldn't be confirmed absent because a site
+        was unreachable (so a down site is never reported as a missing workload).
         """
         self.assert_group(user, group)
         oname = object_name(name, group)
-        holder: dict = {}
+        found: dict = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            self._assert_access(obj, user)
-            self._assert_offering(obj, offering)
-            image = _extract_image(obj)
-            if image and "image" not in holder:
-                holder["image"] = image
-                ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-                # carry build metadata + pull secret forward across updates so a
-                # config-only update doesn't drop them
-                holder["runtime"] = ann.get(ANNOTATION_RUNTIME)
-                holder["gitUrl"] = ann.get(ANNOTATION_GIT_URL)
-                holder["branch"] = ann.get(ANNOTATION_GIT_BRANCH)
-                holder["pull_secret"] = describe_svc.pull_secret_name(obj)
+            # Only a genuine 404 means "absent here"; any other error (site down,
+            # 5xx) must propagate so fanout records it as a per-site error rather
+            # than being mistaken for absence.
+            try:
+                obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            except NotFoundError:
+                return SiteStatus(site=cluster.site, status="Absent")
+            found.setdefault("obj", obj)
             return SiteStatus(site=cluster.site, status="Present")
 
-        await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
-        if "image" not in holder:
-            raise NotFoundError(f"{offering} workload '{name}' not found")
-        return holder
+        statuses = await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
+
+        obj = found.get("obj")
+        if obj is not None:
+            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+            # An object_name collision could resolve to another group's workload or
+            # the other offering; both mean "not this workload" -> hide as 404.
+            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+                labels.get(LABEL_OFFERING) != offering
+            ):
+                raise NotFoundError(f"{offering} workload '{name}' not found")
+            ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+            return {
+                "image": _extract_image(obj),
+                "runtime": ann.get(ANNOTATION_RUNTIME),
+                "gitUrl": ann.get(ANNOTATION_GIT_URL),
+                "branch": ann.get(ANNOTATION_GIT_BRANCH),
+                "pull_secret": describe_svc.pull_secret_name(obj),
+            }
+
+        # Absent on every site we could reach. If one was unreachable we can't be
+        # sure it's truly gone -> fail closed (503), not a misleading 404.
+        self._assert_all_sites_checked(statuses, f"load workload '{name}'")
+        raise NotFoundError(f"{offering} workload '{name}' not found")
 
     def validate_spec(self, name: str, group: str, owner: str, env, files) -> None:
         """Run the pure, in-memory spec resolution that apply_workload will later

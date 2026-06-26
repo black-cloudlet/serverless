@@ -1117,3 +1117,25 @@ async def test_update_reuses_existing_without_refetch():
     preloaded = {"image": "reg/app:1", "pull_secret": None}
     await csvc.update("api", ContainerUpdate(group="team"), user, existing=preloaded)
     assert calls["n"] == 0  # reused the passed-in existing, no second fanout
+
+
+async def test_load_existing_unreachable_site_is_503_not_404():
+    # A workload that can't be confirmed absent because the site is down must
+    # surface ServiceUnavailable, not a misleading NotFound.
+    from app.auth.claims import Principal
+    from app.core.errors import ServiceUnavailableError
+
+    svc = _workload_service({"site-a": _DownCluster()})  # get() raises RuntimeError
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(ServiceUnavailableError):
+        await svc.load_existing("app", "container", user, "team")
+
+
+async def test_load_existing_truly_absent_is_404():
+    from app.auth.claims import Principal
+    from app.core.errors import NotFoundError
+
+    svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get() -> NotFoundError
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(NotFoundError):
+        await svc.load_existing("app", "container", user, "team")
