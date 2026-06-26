@@ -10,7 +10,7 @@ from app.models.common import (
     ANNOTATION_HOST,
     ANNOTATION_RUNTIME,
     ANNOTATION_SIZE,
-    TRUSTED_CA_VOLUME,
+    CA_BUNDLE_VOLUME,
     Scaling,
 )
 from app.services.files import VolumeSpec
@@ -152,9 +152,9 @@ def build_ksvc(
 
     # Mount the trusted CA bundle so the workload trusts internal TLS.
     if ca_config_map and ca_mount_path:
-        vols.append({"name": TRUSTED_CA_VOLUME, "configMap": {"name": ca_config_map}})
+        vols.append({"name": CA_BUNDLE_VOLUME, "configMap": {"name": ca_config_map}})
         mounts.append(
-            {"name": TRUSTED_CA_VOLUME, "mountPath": ca_mount_path, "readOnly": True}
+            {"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True}
         )
 
     container: dict = {"image": image, "resources": _resources(size)}

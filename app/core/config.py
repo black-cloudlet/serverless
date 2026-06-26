@@ -38,7 +38,7 @@ class CABundleConfig(BaseModel):
 
     config_map: str = "ca-bundle"
     key: str = "ca-bundle.crt"
-    mount_path: str = "/etc/serverless/trusted-ca"
+    mount_path: str = "/etc/ssl/certs"
 
     @property
     def file(self) -> str:

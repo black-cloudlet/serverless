@@ -93,13 +93,13 @@ def test_build_ksvc_mounts_ca_bundle():
         env=[],
         volumes=[],
         scaling=Scaling(),
-        ca_config_map="trusted-ca-bundle",
-        ca_mount_path="/etc/serverless/trusted-ca",
+        ca_config_map="ca-bundle",
+        ca_mount_path="/etc/ssl/certs",
     )
     spec = m["spec"]["template"]["spec"]
-    assert {"name": "trusted-ca", "configMap": {"name": "trusted-ca-bundle"}} in spec["volumes"]
+    assert {"name": "ca-bundle", "configMap": {"name": "ca-bundle"}} in spec["volumes"]
     mount = spec["containers"][0]["volumeMounts"][0]
-    assert mount["mountPath"] == "/etc/serverless/trusted-ca"
+    assert mount["mountPath"] == "/etc/ssl/certs"
     assert mount["readOnly"] is True
 
 

@@ -209,7 +209,7 @@ def test_global_cert_and_ca_paths():
     s = Settings(client_cert_dir="/etc/serverless/client")
     assert s.client_cert_file == "/etc/serverless/client/tls.crt"
     assert s.client_key_file == "/etc/serverless/client/tls.key"
-    assert s.ca_bundle.file == "/etc/serverless/trusted-ca/ca-bundle.crt"
+    assert s.ca_bundle.file == "/etc/ssl/certs/ca-bundle.crt"
 
 
 def test_resolve_targets_default_all():

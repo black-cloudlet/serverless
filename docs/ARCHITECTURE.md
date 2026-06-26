@@ -312,9 +312,9 @@ routeDomain: serverless.{base_domain}     # shared; same host in both clusters
 workloadsNamespace: serverless-workloads  # where the API creates workloads (global)
 clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
 caBundle:                                 # OpenShift-injected, global
-  configMap: trusted-ca-bundle
+  configMap: ca-bundle
   key: ca-bundle.crt
-  mountPath: /etc/serverless/trusted-ca
+  mountPath: /etc/ssl/certs
 sites:
   - name: central                          # site/region
     cluster: central-0                     # cluster instance
@@ -1057,16 +1057,16 @@ spec:
           volumeMounts:
             - name: app-config
               mountPath: /etc/app
-            - name: trusted-ca           # injected CA bundle, mounted into every workload
-              mountPath: /etc/serverless/trusted-ca
+            - name: ca-bundle            # injected CA bundle, mounted into every workload
+              mountPath: /etc/ssl/certs
               readOnly: true
       volumes:
         - name: app-config
           configMap:
             name: orders-config
-        - name: trusted-ca
+        - name: ca-bundle
           configMap:
-            name: trusted-ca-bundle
+            name: ca-bundle
 ```
 
 ### 12.1a Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
@@ -1075,7 +1075,7 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: trusted-ca-bundle
+  name: ca-bundle
   namespace: serverless-workloads   # also created in serverless-api
   labels:
     config.openshift.io/inject-trusted-cabundle: "true"   # OpenShift fills .data

@@ -13,7 +13,7 @@ import base64
 from app.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_URL,
-    TRUSTED_CA_VOLUME,
+    CA_BUNDLE_VOLUME,
     EnvVar,
     EnvVarView,
     FileMount,
@@ -115,7 +115,7 @@ def configmap_refs(ksvc: dict) -> set[str]:
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     names: set[str] = set()
     for mount in _container(ksvc).get("volumeMounts") or []:
-        if mount.get("name") == TRUSTED_CA_VOLUME:
+        if mount.get("name") == CA_BUNDLE_VOLUME:
             continue
         cm = (volumes.get(mount.get("name")) or {}).get("configMap")
         if cm and cm.get("name"):
@@ -159,7 +159,7 @@ def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     out: list[FileView] = []
     for mount in _container(ksvc).get("volumeMounts") or []:
-        if mount.get("name") == TRUSTED_CA_VOLUME:
+        if mount.get("name") == CA_BUNDLE_VOLUME:
             continue
         volume = volumes.get(mount.get("name")) or {}
         # secret-backed volumes carry a "secret" key; configMap-backed a "configMap"

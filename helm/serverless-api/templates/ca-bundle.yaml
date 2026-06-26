@@ -9,7 +9,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ $.Values.caBundle.configMap }}
+  name: {{ $.Values.caBundle.name }}
   namespace: {{ $ns }}
   labels:
     config.openshift.io/inject-trusted-cabundle: "true"
