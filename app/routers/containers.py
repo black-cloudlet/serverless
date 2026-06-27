@@ -65,7 +65,7 @@ async def list_containers(
     svc: ContainerDep,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    """List general info for every container the group owns (local site).
+    """List general info for every container the group owns (merged across sites).
 
     Args:
         group: The owning group.

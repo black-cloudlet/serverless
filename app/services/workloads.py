@@ -747,9 +747,12 @@ class WorkloadService:
     ) -> list[WorkloadSummary]:
         """Summarize every workload of this offering owned by ``group``.
 
-        Reads only the **local site**: workloads are active/active and identical
-        across sites, so one cluster is authoritative and we skip the cross-site
-        fan-out.
+        Fans out to **all sites** and merges the results best-effort: each
+        workload's ``sites`` lists only the sites that returned it, and its rollup
+        status is computed over just those sites (so a workload deployed to a
+        single site reads ``Ready``, not ``Degraded``). A site that is unreachable
+        is skipped rather than failing the whole list; only when *every* site is
+        down is the call failed.
 
         Args:
             kind: The offering ("function" or "container").
@@ -761,7 +764,7 @@ class WorkloadService:
             The per-workload summaries.
 
         Raises:
-            SiteTotalFailure: If the local site is unreachable.
+            SiteTotalFailure: If every site is unreachable.
         """
         group = normalize_group(group)
         self.assert_group(user, group)
@@ -771,7 +774,7 @@ class WorkloadService:
         def fetch(cluster: Cluster) -> list[dict]:
             return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
 
-        results = await self.deployer.gather_each([self.deployer.local_cluster()], fetch)
+        results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
         if all(items is None for _, items in results):
             raise SiteTotalFailure(
                 "Listing failed in all sites.",

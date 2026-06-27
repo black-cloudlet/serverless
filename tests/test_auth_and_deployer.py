@@ -840,7 +840,36 @@ async def test_function_update_without_token_keeps_image():
     assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
 
 
-async def test_list_reads_only_local_site():
+async def test_list_fans_out_and_merges_sites():
+    from app.auth.claims import Principal
+
+    # orders is deployed to both sites; web only to site-a.
+    site_a = _ListCluster("site-a", [
+        _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
+        _list_ksvc("web-team", "small", "web-team.ex.com"),
+    ])
+    site_b = _ListCluster("site-b", [
+        _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
+    ])
+    engine = _workload_service({"site-a": site_a, "site-b": site_b})
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    out = await engine.list("container", user, "team")
+    assert [w.name for w in out] == ["orders", "web"]  # sorted, suffix stripped
+
+    orders = next(w for w in out if w.name == "orders")
+    assert orders.sites == ["site-a", "site-b"]  # merged across both sites
+    assert orders.size == "medium"
+    assert orders.hostname == "orders-team.ex.com"
+    assert orders.overallStatus == "Ready"
+
+    web = next(w for w in out if w.name == "web")
+    # single-site workload: only the site that has it, status over just that site
+    assert web.sites == ["site-a"]
+    assert web.overallStatus == "Ready"  # not a false Degraded for the absent site
+
+
+async def test_list_skips_unreachable_site_best_effort():
     from app.auth.claims import Principal
 
     class _Boom:
@@ -849,25 +878,18 @@ async def test_list_reads_only_local_site():
             self.name = name
 
         def get(self, *a, **k):
-            raise AssertionError("remote site must not be queried for a list")
+            raise RuntimeError("site down")
 
-    local = _ListCluster("site-a", [
+    # site-a answers, site-b is down -> merge what site-a returned, don't fail.
+    site_a = _ListCluster("site-a", [
         _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
-        _list_ksvc("web-team", "small", "web-team.ex.com"),
     ])
-    # local_site=site-a -> only site-a is read; site-b would raise if touched
-    engine = _workload_service(
-        {"site-a": local, "site-b": _Boom("site-b")}, local_site="site-a"
-    )
+    engine = _workload_service({"site-a": site_a, "site-b": _Boom("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     out = await engine.list("container", user, "team")
-    assert [w.name for w in out] == ["orders", "web"]  # sorted, suffix stripped
-    orders = next(w for w in out if w.name == "orders")
-    assert orders.sites == ["site-a"]  # only the local site is reported
-    assert orders.size == "medium"
-    assert orders.hostname == "orders-team.ex.com"
-    assert orders.overallStatus == "Ready"
+    assert [w.name for w in out] == ["orders"]
+    assert out[0].sites == ["site-a"]  # only the reachable site contributes
 
 
 async def test_list_sort_by_created_at():
@@ -893,7 +915,7 @@ async def test_list_sort_by_created_at():
     assert [w.name for w in by_created] == ["bbb", "aaa"]  # oldest first
 
 
-async def test_list_errors_when_local_site_fails():
+async def test_list_errors_when_all_sites_fail():
     from app.auth.claims import Principal
     from app.core.errors import SiteTotalFailure
 
@@ -905,7 +927,8 @@ async def test_list_errors_when_local_site_fails():
         def get(self, *a, **k):
             raise RuntimeError("site down")
 
-    engine = _workload_service({"site-a": _Boom("site-a")}, local_site="site-a")
+    # Only when *every* site is unreachable is the list failed.
+    engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(SiteTotalFailure):
         await engine.list("container", user, "team")

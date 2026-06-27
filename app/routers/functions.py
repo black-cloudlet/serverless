@@ -65,7 +65,7 @@ async def list_functions(
     svc: FunctionDep,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    """List general info for every function the group owns (local site).
+    """List general info for every function the group owns (merged across sites).
 
     Args:
         group: The owning group.
