@@ -36,6 +36,7 @@ from app.models.common import (
     SiteStatus,
     WorkloadResponse,
     WorkloadSummary,
+    normalize_group,
 )
 from app.models.container import ContainerResponse
 from app.models.function import FunctionResponse
@@ -142,27 +143,6 @@ class WorkloadService:
         """
         if not user.can_access_group(group):
             raise ForbiddenError(f"not a member of group '{group}'")
-
-    def effective_group(self, group: str | None, user: Principal) -> str:
-        """Resolve the group for a request, defaulting to the caller's first group.
-
-        Args:
-            group: The group from the request (query param or body), or None.
-            user: The authenticated caller.
-
-        Returns:
-            ``group`` when given, else the caller's primary (first) group.
-
-        Raises:
-            ValidationError: If no group is given and the caller has none to
-                default to (e.g. an admin token with no group membership).
-        """
-        resolved = group or user.primary_group
-        if not resolved:
-            raise ValidationError(
-                "no group given and the caller has no group to default to"
-            )
-        return resolved
 
     # -- async accept helpers --------------------------------------------
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
@@ -292,7 +272,7 @@ class WorkloadService:
         Returns:
             The response body and HTTP status code.
         """
-        group = self.effective_group(group, user)
+        group = normalize_group(group)
         self.assert_group(user, group)
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(sites)
@@ -415,7 +395,7 @@ class WorkloadService:
             ServiceUnavailableError: If it couldn't be confirmed absent because a
                 site was unreachable.
         """
-        group = self.effective_group(group, user)
+        group = normalize_group(group)
         self.assert_group(user, group)
         oname = object_name(name, group)
         found: dict = {}
@@ -580,7 +560,7 @@ class WorkloadService:
             ServiceUnavailableError: If it can't be confirmed absent because a
                 site was unreachable.
         """
-        group = self.effective_group(group, user)
+        group = normalize_group(group)
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
@@ -741,7 +721,7 @@ class WorkloadService:
         Raises:
             NotFoundError: If the workload exists on no site.
         """
-        group = self.effective_group(group, user)
+        group = normalize_group(group)
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
@@ -783,7 +763,7 @@ class WorkloadService:
         Raises:
             SiteTotalFailure: If the local site is unreachable.
         """
-        group = self.effective_group(group, user)
+        group = normalize_group(group)
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"

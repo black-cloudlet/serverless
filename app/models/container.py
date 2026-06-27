@@ -26,8 +26,7 @@ class ContainerCreate(BaseModel):
     """Request body to deploy a pre-built container image."""
 
     name: Name
-    # SSO group to act as; caller must be a member. Omitted -> caller's first group.
-    group: Group | None = None
+    group: Group  # the SSO group to act as; caller must be a member
     image: str
     # Registry credentials are optional: omit both for a public image. When
     # supplied, both are required together (a username alone can't authenticate).
@@ -55,8 +54,7 @@ class ContainerCreate(BaseModel):
 class ContainerUpdate(BaseModel):
     """Full replace of the mutable spec; image defaults to the current one."""
 
-    # SSO group that owns the workload. Omitted -> caller's first group.
-    group: Group | None = None
+    group: Group  # the SSO group that owns the workload; caller must be a member
     image: str | None = None
     # Rotate/add registry creds; omit both to keep the existing pull secret. If
     # either is given, both are required together.

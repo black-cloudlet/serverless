@@ -60,9 +60,9 @@ async def update_function(
 
 @router.get("", response_model=list[WorkloadSummary])
 async def list_functions(
+    group: str,
     user: CurrentUser,
     svc: FunctionDep,
-    group: str | None = None,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
     """List general info for every function the group owns (local site).
@@ -81,7 +81,7 @@ async def list_functions(
 
 @router.get("/{name}", response_model=FunctionResponse)
 async def get_function(
-    name: str, user: CurrentUser, svc: FunctionDep, group: str | None = None
+    name: str, group: str, user: CurrentUser, svc: FunctionDep
 ) -> FunctionResponse:
     """Get one function, including overallStatus and per-site status.
 
@@ -102,7 +102,7 @@ async def get_function(
 
 @router.delete("/{name}", status_code=204)
 async def delete_function(
-    name: str, user: CurrentUser, svc: FunctionDep, group: str | None = None
+    name: str, group: str, user: CurrentUser, svc: FunctionDep
 ) -> None:
     """Delete a function and its derived resources (204).
 

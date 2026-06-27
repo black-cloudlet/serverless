@@ -1210,18 +1210,15 @@ def test_principal_normalizes_slash_and_ggd_prefixes():
     assert p.is_admin is True  # matched after normalization
 
 
-def test_effective_group_defaults_to_first_group():
-    from app.auth.claims import Principal
-    from app.core.errors import ValidationError
+def test_validate_group_strips_ggd_prefix_on_input():
+    # A request-supplied group with the ggd- prefix normalizes to the bare name,
+    # so "ggd-1234-platforms" and "platforms" are the same group.
+    from app.models.common import normalize_group, validate_group
 
-    svc = _workload_service({})
-    user = Principal(subject="u", username="alice", groups=["team-a", "team-b"])
-    assert svc.effective_group("explicit", user) == "explicit"   # honored when given
-    assert svc.effective_group(None, user) == "team-a"           # else first group
-
-    no_groups = Principal(subject="a", username="admin", groups=[], is_admin=True)
-    with pytest.raises(ValidationError):
-        svc.effective_group(None, no_groups)  # nothing to default to
+    assert validate_group("ggd-1234-platforms") == "platforms"
+    assert validate_group("platforms") == "platforms"
+    assert normalize_group("/ggd-7-team-a") == "team-a"
+    assert normalize_group("ggd-1234platforms") == "ggd-1234platforms"  # no dash -> kept
 
 
 def test_sso_endpoints_derived_from_issuer():

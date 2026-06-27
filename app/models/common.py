@@ -41,6 +41,25 @@ DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 HOSTNAME = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
 )
+# Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
+# "ggd-1234-platforms" is the group "platforms").
+_GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
+
+
+def normalize_group(group: str) -> str:
+    """Normalize a group name to its bare form.
+
+    Strips the Keycloak path prefix ("/") and a leading ``ggd-<1-4 digits>-``
+    prefix, so e.g. "/ggd-1234-platforms" and "platforms" name the same group.
+    Applied both to groups from the OIDC token and to a request-supplied group.
+
+    Args:
+        group: The raw group name.
+
+    Returns:
+        The normalized group name.
+    """
+    return _GGD_PREFIX.sub("", group.lstrip("/"))
 
 
 def validate_name(name: str) -> str:
@@ -63,17 +82,18 @@ def validate_name(name: str) -> str:
 
 
 def validate_group(group: str) -> str:
-    """Validate a group name as a DNS-1123 label.
+    """Normalize and validate a group name as a DNS-1123 label.
 
     Args:
-        group: The candidate group name.
+        group: The candidate group name (a ``ggd-<digits>-`` prefix is stripped).
 
     Returns:
-        The group unchanged.
+        The normalized group name.
 
     Raises:
         ValueError: If it isn't a DNS-1123 label of at most 63 characters.
     """
+    group = normalize_group(group)
     if not DNS1123.match(group) or len(group) > 63:
         raise ValueError(
             "group must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"

@@ -60,9 +60,9 @@ async def update_container(
 
 @router.get("", response_model=list[WorkloadSummary])
 async def list_containers(
+    group: str,
     user: CurrentUser,
     svc: ContainerDep,
-    group: str | None = None,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
     """List general info for every container the group owns (local site).
@@ -81,7 +81,7 @@ async def list_containers(
 
 @router.get("/{name}", response_model=ContainerResponse)
 async def get_container(
-    name: str, user: CurrentUser, svc: ContainerDep, group: str | None = None
+    name: str, group: str, user: CurrentUser, svc: ContainerDep
 ) -> ContainerResponse:
     """Get one container, including overallStatus and per-site status.
 
@@ -102,7 +102,7 @@ async def get_container(
 
 @router.delete("/{name}", status_code=204)
 async def delete_container(
-    name: str, user: CurrentUser, svc: ContainerDep, group: str | None = None
+    name: str, group: str, user: CurrentUser, svc: ContainerDep
 ) -> None:
     """Delete a container and its derived resources (204).
 

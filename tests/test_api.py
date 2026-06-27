@@ -200,9 +200,9 @@ def test_get_container_shape(client):
     assert "gitRepo" not in body and "runtime" not in body
 
 
-def test_get_function_group_optional(client):
-    r = client.get("/api/v1/functions/foo")  # no ?group= -> defaults to caller's group
-    assert r.status_code == 200
+def test_get_function_requires_group(client):
+    r = client.get("/api/v1/functions/foo")  # missing ?group=
+    assert r.status_code == 400
 
 
 def test_list_functions(client):
@@ -228,9 +228,9 @@ def test_list_accepts_sort_and_rejects_unknown(client):
     assert client.get("/api/v1/functions?group=team&sort=bogus").status_code == 400
 
 
-def test_list_group_optional(client):
-    r = client.get("/api/v1/containers")  # no ?group= -> defaults to caller's group
-    assert r.status_code == 200
+def test_list_requires_group(client):
+    r = client.get("/api/v1/containers")  # missing ?group=
+    assert r.status_code == 400
 
 
 def test_update_container_accepted(client):

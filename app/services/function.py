@@ -49,7 +49,7 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        group = self._engine.effective_group(spec.group, user)
+        group = spec.group
         self._engine.assert_group(user, group)
         oname = object_name(spec.name, group)
         targets = self._engine.deployer.resolve_targets(spec.sites)
@@ -75,7 +75,7 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        group = self._engine.effective_group(spec.group, user)
+        group = spec.group
         existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
@@ -100,7 +100,7 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        group = self._engine.effective_group(spec.group, user)
+        group = spec.group
         oname = object_name(spec.name, group)
         try:
             build = self._engine.builder.build(
@@ -159,7 +159,7 @@ class FunctionService:
             ServiceUnavailableError: If a rebuild is requested but the build
                 pipeline is unavailable.
         """
-        group = self._engine.effective_group(spec.group, user)
+        group = spec.group
         # Reuse the load_existing result from accept_update (already authorized) to
         # avoid a second multi-site fanout; fall back to a fresh fetch otherwise.
         if existing is None:
