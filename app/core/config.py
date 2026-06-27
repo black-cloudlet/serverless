@@ -54,10 +54,10 @@ class SSOConfig(BaseModel):
     """
 
     issuer: str = "https://sso.internal/realms/serverless"
-    audience: str = "serverless-api"
-    # Verify the token's `aud` claim equals `audience`. Off by default so tokens
-    # are accepted without a Keycloak audience mapper; enable for stricter checks.
-    verify_audience: bool = False
+    # Expected token audience. When set, the `aud` claim is verified to contain it;
+    # when empty (the default), audience verification is skipped — so tokens work
+    # without a Keycloak audience mapper unless an audience is explicitly configured.
+    audience: str = ""
     # Public Keycloak client Swagger UI uses for its "Authorize" login
     # (Authorization Code + PKCE; no secret). From Helm values, not a secret.
     swagger_client_id: str = "serverless-api-swagger"

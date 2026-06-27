@@ -1228,10 +1228,10 @@ def test_sso_endpoints_derived_from_issuer():
     assert cfg.discovery_url == "https://sso.x/realms/r/.well-known/openid-configuration"
     assert cfg.authorization_url == "https://sso.x/realms/r/protocol/openid-connect/auth"
     assert cfg.token_url == "https://sso.x/realms/r/protocol/openid-connect/token"
-    assert cfg.verify_audience is False  # off by default
+    assert cfg.audience == ""  # empty by default -> audience not verified
 
 
-def test_validate_audience_is_opt_in(monkeypatch):
+def test_validate_audience_verified_only_when_configured(monkeypatch):
     import app.auth.oidc as oidc_mod
     from app.auth.oidc import TokenValidator
     from app.core.config import SSOConfig
@@ -1252,14 +1252,16 @@ def test_validate_audience_is_opt_in(monkeypatch):
 
     monkeypatch.setattr(oidc_mod.jwt, "decode", fake_decode)
 
-    off = TokenValidator(SSOConfig(verify_audience=False, audience="serverless-api"))
-    monkeypatch.setattr(off, "_client", lambda: _Client())
-    off.validate("tok")
+    # No audience configured -> aud not checked.
+    none = TokenValidator(SSOConfig(audience=""))
+    monkeypatch.setattr(none, "_client", lambda: _Client())
+    none.validate("tok")
     assert captured["audience"] is None
-    assert captured["options"]["verify_aud"] is False  # aud not checked
+    assert captured["options"]["verify_aud"] is False
 
-    on = TokenValidator(SSOConfig(verify_audience=True, audience="serverless-api"))
+    # Audience configured -> aud enforced.
+    on = TokenValidator(SSOConfig(audience="serverless-api"))
     monkeypatch.setattr(on, "_client", lambda: _Client())
     on.validate("tok")
     assert captured["audience"] == "serverless-api"
-    assert "verify_aud" not in captured["options"]  # aud enforced
+    assert "verify_aud" not in captured["options"]

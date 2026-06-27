@@ -33,9 +33,8 @@ corsAllowOrigins: []
 # SSO OIDC (docs §6). clientSecret comes from Vault via ESO, not here.
 sso:
   issuer: https://sso.internal/realms/serverless
-  audience: serverless-api
-  # Verify the token `aud` equals `audience` (needs a Keycloak audience mapper).
-  verifyAudience: false
+  # Set to verify the token `aud` (needs a Keycloak audience mapper); empty skips it.
+  audience: ""
   # Public Keycloak client for Swagger UI's "Authorize" (Auth Code + PKCE, no secret).
   swaggerClientId: serverless-api-swagger
   # discovery / authorize / token URLs are derived from the issuer in-app.

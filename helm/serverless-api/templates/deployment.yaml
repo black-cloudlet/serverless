@@ -43,11 +43,10 @@ spec:
               value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
+            # Audience is verified only when set; empty skips the check.
             - name: SERVERLESS_SSO__AUDIENCE
               value: {{ .Values.sso.audience | quote }}
             # Discovery/auth/token URLs are derived from the issuer in-app.
-            - name: SERVERLESS_SSO__VERIFY_AUDIENCE
-              value: {{ .Values.sso.verifyAudience | quote }}
             - name: SERVERLESS_SSO__SWAGGER_CLIENT_ID
               value: {{ .Values.sso.swaggerClientId | quote }}
             - name: SERVERLESS_SSO__GROUPS_CLAIM

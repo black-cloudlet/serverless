@@ -109,12 +109,10 @@ class TokenValidator:
         try:
             signing_key = self._client().get_signing_key_from_jwt(token)
             options = {"require": ["exp", "iss"]}
-            audience = None
-            # Audience is opt-in: only enforced when verify_audience is set, so
-            # tokens work without a Keycloak audience mapper by default.
-            if self._config.verify_audience:
-                audience = self._config.audience
-            else:
+            # Audience is verified only when one is configured; an empty audience
+            # skips the check (no Keycloak audience mapper required).
+            audience = self._config.audience or None
+            if audience is None:
                 options["verify_aud"] = False
             return jwt.decode(
                 token,
