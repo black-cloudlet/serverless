@@ -1195,3 +1195,74 @@ async def test_get_all_sites_down_is_503():
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
         await engine.get("container", "app", user, "team")
+
+
+def test_principal_normalizes_slash_and_ggd_prefixes():
+    from app.auth.claims import principal_from_claims
+    from app.core.config import SSOConfig
+
+    cfg = SSOConfig(groups_claim="groups", admin_groups=["platform-admins"])
+    p = principal_from_claims(
+        {"sub": "u", "groups": ["/ggd-1234-team-a", "ggd-7-platform-admins", "/plain"]},
+        cfg,
+    )
+    assert p.groups == ["team-a", "platform-admins", "plain"]  # / and ggd-NNNN stripped
+    assert p.is_admin is True  # matched after normalization
+
+
+def test_effective_group_defaults_to_first_group():
+    from app.auth.claims import Principal
+    from app.core.errors import ValidationError
+
+    svc = _workload_service({})
+    user = Principal(subject="u", username="alice", groups=["team-a", "team-b"])
+    assert svc.effective_group("explicit", user) == "explicit"   # honored when given
+    assert svc.effective_group(None, user) == "team-a"           # else first group
+
+    no_groups = Principal(subject="a", username="admin", groups=[], is_admin=True)
+    with pytest.raises(ValidationError):
+        svc.effective_group(None, no_groups)  # nothing to default to
+
+
+def test_sso_endpoints_derived_from_issuer():
+    from app.core.config import SSOConfig
+
+    cfg = SSOConfig(issuer="https://sso.x/realms/r")
+    assert cfg.discovery_url == "https://sso.x/realms/r/.well-known/openid-configuration"
+    assert cfg.authorization_url == "https://sso.x/realms/r/protocol/openid-connect/auth"
+    assert cfg.token_url == "https://sso.x/realms/r/protocol/openid-connect/token"
+    assert cfg.verify_audience is False  # off by default
+
+
+def test_validate_audience_is_opt_in(monkeypatch):
+    import app.auth.oidc as oidc_mod
+    from app.auth.oidc import TokenValidator
+    from app.core.config import SSOConfig
+
+    captured: dict = {}
+
+    class _Key:
+        key = "k"
+
+    class _Client:
+        def get_signing_key_from_jwt(self, _t):
+            return _Key()
+
+    def fake_decode(_token, _key, **kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return {"sub": "u"}
+
+    monkeypatch.setattr(oidc_mod.jwt, "decode", fake_decode)
+
+    off = TokenValidator(SSOConfig(verify_audience=False, audience="serverless-api"))
+    monkeypatch.setattr(off, "_client", lambda: _Client())
+    off.validate("tok")
+    assert captured["audience"] is None
+    assert captured["options"]["verify_aud"] is False  # aud not checked
+
+    on = TokenValidator(SSOConfig(verify_audience=True, audience="serverless-api"))
+    monkeypatch.setattr(on, "_client", lambda: _Client())
+    on.validate("tok")
+    assert captured["audience"] == "serverless-api"
+    assert "verify_aud" not in captured["options"]  # aud enforced

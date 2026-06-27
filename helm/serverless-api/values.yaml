@@ -34,7 +34,11 @@ corsAllowOrigins: []
 sso:
   issuer: https://sso.internal/realms/serverless
   audience: serverless-api
-  discoveryUrl: https://sso.internal/realms/serverless/.well-known/openid-configuration
+  # Verify the token `aud` equals `audience` (needs a Keycloak audience mapper).
+  verifyAudience: false
+  # Public Keycloak client for Swagger UI's "Authorize" (Auth Code + PKCE, no secret).
+  swaggerClientId: serverless-api-swagger
+  # discovery / authorize / token URLs are derived from the issuer in-app.
   groupsClaim: groups
   adminGroups:
     - platform-admins

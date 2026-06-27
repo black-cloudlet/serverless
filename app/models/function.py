@@ -27,7 +27,8 @@ class FunctionCreate(BaseModel):
     """Request body to create a function from source (built into an image)."""
 
     name: Name
-    group: Group  # the SSO group to act as; caller must be a member
+    # SSO group to act as; caller must be a member. Omitted -> caller's first group.
+    group: Group | None = None
     gitRepo: str
     branch: str = "main"
     gitToken: str
@@ -49,7 +50,8 @@ class FunctionUpdate(BaseModel):
     config is updated.
     """
 
-    group: Group  # the SSO group that owns the workload; caller must be a member
+    # SSO group that owns the workload. Omitted -> caller's first group.
+    group: Group | None = None
     # Rebuild inputs (all optional). gitRepo/branch/runtime default to the existing
     # values when omitted; gitToken is never stored, so it must be supplied to
     # rebuild (it can't be carried forward).

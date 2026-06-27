@@ -200,9 +200,9 @@ def test_get_container_shape(client):
     assert "gitRepo" not in body and "runtime" not in body
 
 
-def test_get_function_requires_group(client):
-    r = client.get("/api/v1/functions/foo")  # missing ?group=
-    assert r.status_code == 400
+def test_get_function_group_optional(client):
+    r = client.get("/api/v1/functions/foo")  # no ?group= -> defaults to caller's group
+    assert r.status_code == 200
 
 
 def test_list_functions(client):
@@ -228,9 +228,9 @@ def test_list_accepts_sort_and_rejects_unknown(client):
     assert client.get("/api/v1/functions?group=team&sort=bogus").status_code == 400
 
 
-def test_list_requires_group(client):
-    r = client.get("/api/v1/containers")  # missing ?group=
-    assert r.status_code == 400
+def test_list_group_optional(client):
+    r = client.get("/api/v1/containers")  # no ?group= -> defaults to caller's group
+    assert r.status_code == 200
 
 
 def test_update_container_accepted(client):
@@ -298,3 +298,22 @@ def test_docs_served_offline_from_vendored_assets():
     assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
     assert client.get("/static/swagger-ui-bundle.js").status_code == 200
     assert client.get("/static/redoc.standalone.js").status_code == 200
+
+
+def test_swagger_sso_login_wired_in_openapi():
+    """Swagger UI's Authorize uses an OAuth2 PKCE flow with the public client id;
+    no secret, and require_auth still enforces (this is docs-only)."""
+    from app.main import create_app
+
+    app = create_app()  # auth_enabled defaults True
+    schema = app.openapi()
+    sso = schema["components"]["securitySchemes"]["SSO"]
+    assert sso["type"] == "oauth2"
+    flow = sso["flows"]["authorizationCode"]
+    assert flow["authorizationUrl"].endswith("/protocol/openid-connect/auth")
+    assert flow["tokenUrl"].endswith("/protocol/openid-connect/token")
+
+    init = app.swagger_ui_init_oauth
+    assert init["clientId"] == "serverless-api-swagger"
+    assert init["usePkceWithAuthorizationCodeGrant"] is True
+    assert "clientSecret" not in init  # public client — no secret

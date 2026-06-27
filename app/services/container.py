@@ -44,7 +44,7 @@ class ContainerService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        group = spec.group
+        group = self._engine.effective_group(spec.group, user)
         self._engine.assert_group(user, group)
         oname = object_name(spec.name, group)
 
@@ -75,7 +75,7 @@ class ContainerService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        group = spec.group
+        group = self._engine.effective_group(spec.group, user)
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
@@ -105,7 +105,7 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        group = spec.group
+        group = self._engine.effective_group(spec.group, user)
         oname = object_name(spec.name, group)
         # Registry creds are optional (public image -> no pull secret).
         pull_name: str | None = None
@@ -157,7 +157,7 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        group = spec.group
+        group = self._engine.effective_group(spec.group, user)
         oname = object_name(name, group)
         # accept_update already fetched (and authorized) this; reuse it to avoid a
         # second multi-site fanout. Falls back to a fresh fetch for direct callers.

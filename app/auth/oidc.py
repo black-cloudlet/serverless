@@ -108,13 +108,21 @@ class TokenValidator:
         """
         try:
             signing_key = self._client().get_signing_key_from_jwt(token)
+            options = {"require": ["exp", "iss"]}
+            audience = None
+            # Audience is opt-in: only enforced when verify_audience is set, so
+            # tokens work without a Keycloak audience mapper by default.
+            if self._config.verify_audience:
+                audience = self._config.audience
+            else:
+                options["verify_aud"] = False
             return jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                audience=self._config.audience,
+                audience=audience,
                 issuer=self._config.issuer,
-                options={"require": ["exp", "iss"]},
+                options=options,
             )
         except jwt.PyJWTError as exc:
             raise UnauthenticatedError(f"Invalid token: {exc}") from exc

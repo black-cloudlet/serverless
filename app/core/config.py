@@ -47,21 +47,41 @@ class CABundleConfig(BaseModel):
 
 
 class SSOConfig(BaseModel):
-    """SSO (Keycloak) OIDC settings used by the auth component."""
+    """SSO (Keycloak) OIDC settings used by the auth component.
+
+    Only the ``issuer`` is configured; the discovery, authorization and token
+    endpoints are all fixed Keycloak paths under it and are derived as properties.
+    """
 
     issuer: str = "https://sso.internal/realms/serverless"
     audience: str = "serverless-api"
-    # OIDC discovery document; the JWKS URI is read from it once at startup
-    # rather than configuring the JWKS endpoint directly.
-    discovery_url: str = (
-        "https://sso.internal/realms/serverless/.well-known/openid-configuration"
-    )
+    # Verify the token's `aud` claim equals `audience`. Off by default so tokens
+    # are accepted without a Keycloak audience mapper; enable for stricter checks.
+    verify_audience: bool = False
+    # Public Keycloak client Swagger UI uses for its "Authorize" login
+    # (Authorization Code + PKCE; no secret). From Helm values, not a secret.
+    swagger_client_id: str = "serverless-api-swagger"
     groups_claim: str = "groups"
     admin_groups: list[str] = Field(default_factory=list)
     # Seconds the JWK set is cached before it is refetched from the JWKS URI.
     jwks_cache_seconds: int = 3600
     # Timeout (seconds) for the one-off OIDC discovery request.
     discovery_timeout: float = 5.0
+
+    @property
+    def discovery_url(self) -> str:
+        """The OIDC discovery document URL (issuer + the fixed well-known path)."""
+        return f"{self.issuer.rstrip('/')}/.well-known/openid-configuration"
+
+    @property
+    def authorization_url(self) -> str:
+        """The Keycloak authorization endpoint (derived from the issuer)."""
+        return f"{self.issuer.rstrip('/')}/protocol/openid-connect/auth"
+
+    @property
+    def token_url(self) -> str:
+        """The Keycloak token endpoint (derived from the issuer)."""
+        return f"{self.issuer.rstrip('/')}/protocol/openid-connect/token"
 
 
 class RegistryConfig(BaseModel):
