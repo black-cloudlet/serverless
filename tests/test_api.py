@@ -270,3 +270,31 @@ def test_update_function_build_change_requires_token(client):
         json={"group": "team", "branch": "release"},  # gitToken missing
     )
     assert r.status_code == 400
+
+
+def test_docs_served_offline_from_vendored_assets():
+    """Swagger UI / ReDoc must load local assets, not the jsdelivr CDN (airgap)."""
+    from app.main import create_app
+
+    client = TestClient(create_app())
+
+    # OpenAPI schema is served by the app itself.
+    assert client.get("/openapi.json").status_code == 200
+
+    docs = client.get("/docs")
+    assert docs.status_code == 200
+    assert "/static/swagger-ui-bundle.js" in docs.text
+    assert "/static/swagger-ui.css" in docs.text
+    assert "cdn.jsdelivr.net" not in docs.text  # no CDN dependency
+
+    redoc = client.get("/redoc")
+    assert redoc.status_code == 200
+    assert "/static/redoc.standalone.js" in redoc.text
+    assert "cdn.jsdelivr.net" not in redoc.text
+    assert "fonts.googleapis.com" not in redoc.text  # google fonts disabled
+
+    # The vendored static files are actually served.
+    css = client.get("/static/swagger-ui.css")
+    assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
+    assert client.get("/static/swagger-ui-bundle.js").status_code == 200
+    assert client.get("/static/redoc.standalone.js").status_code == 200

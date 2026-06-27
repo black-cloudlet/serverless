@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import (
+    get_redoc_html,
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.auth.deps import get_validator
@@ -18,6 +26,48 @@ from app.routers import containers, functions, health
 from app.services.deployer import Deployer
 
 logger = get_logger(__name__)
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _mount_offline_docs(app: FastAPI) -> None:
+    """Serve Swagger UI and ReDoc from vendored assets (no CDN, for airgap).
+
+    FastAPI's default ``/docs`` and ``/redoc`` load JS/CSS from the jsdelivr CDN,
+    which is unreachable in an airgapped cluster. The app is built with
+    ``docs_url=None``/``redoc_url=None``; this mounts the vendored
+    ``app/static`` assets at ``/static`` and re-adds the docs routes pointing at
+    them. ReDoc's Google Fonts request is disabled for the same reason.
+
+    Args:
+        app: The FastAPI application to attach the offline docs to.
+    """
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_ui_html() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            swagger_js_url="/static/swagger-ui-bundle.js",
+            swagger_css_url="/static/swagger-ui.css",
+            swagger_favicon_url="/static/favicon-32x32.png",
+        )
+
+    @app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
+    async def swagger_ui_redirect() -> HTMLResponse:
+        return get_swagger_ui_oauth2_redirect_html()
+
+    @app.get("/redoc", include_in_schema=False)
+    async def redoc_html() -> HTMLResponse:
+        return get_redoc_html(
+            openapi_url=app.openapi_url,
+            title=f"{app.title} - ReDoc",
+            redoc_js_url="/static/redoc.standalone.js",
+            redoc_favicon_url="/static/favicon-32x32.png",
+            with_google_fonts=False,
+        )
 
 
 async def _warm(label: str, fn, timeout: float) -> None:
@@ -76,8 +126,13 @@ def create_app() -> FastAPI:
         title="Serverless API",
         version=__version__,
         description="REST API for functions and containers on the OpenShift Serverless Operator.",
-        lifespan=lifespan
+        lifespan=lifespan,
+        # Disable the CDN-backed docs; we serve them from vendored assets so the
+        # API works in an airgapped cluster (see _mount_offline_docs).
+        docs_url=None,
+        redoc_url=None,
     )
+    _mount_offline_docs(app)
 
     if settings.cors_allow_origins:
         app.add_middleware(
