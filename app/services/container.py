@@ -22,7 +22,6 @@ class ContainerService:
         """
         self._engine = engine
 
-    # -- async accept (202 + poll) ---------------------------------------
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets redacted)."""
         return dict(
@@ -91,7 +90,6 @@ class ContainerService:
             **self._echo(spec),
         )
 
-    # -- create / update -------------------------------------------------
     async def create(self, spec: ContainerCreate, user: Principal) -> tuple[ContainerResponse, int]:
         """Deploy a new container (runs in the background after accept).
 
@@ -198,7 +196,6 @@ class ContainerService:
         body.registryUsername = spec.registryUsername
         return body, code
 
-    # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
         """Get one container with live per-site status.
 

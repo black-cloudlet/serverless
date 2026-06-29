@@ -161,7 +161,6 @@ class WorkloadService:
         self.deployer = deployer
         self.builder = builder
 
-    # -- access control --------------------------------------------------
     def assert_group(self, user: Principal, group: str) -> None:
         """Reject the request unless the caller may act for ``group``.
 
@@ -179,7 +178,6 @@ class WorkloadService:
         if not user.can_access_group(group):
             raise ForbiddenError(f"not a member of group '{group}'")
 
-    # -- async accept helpers --------------------------------------------
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host for a workload, validating any custom one.
 
@@ -256,7 +254,6 @@ class WorkloadService:
         except Exception:  # noqa: BLE001 - background work; surfaced via status polling
             logger.exception("background deploy failed for %s", args)
 
-    # -- apply (full replace of the mutable spec) ------------------------
     async def apply_workload(
         self,
         *,
@@ -622,7 +619,6 @@ class WorkloadService:
                 f"cannot {action}: site(s) unreachable: {', '.join(sorted(unreachable))}"
             )
 
-    # -- read / delete (offering-scoped via kind) ------------------------
     async def get(
         self, kind: str, name: str, user: Principal, group: str
     ) -> WorkloadResponse:

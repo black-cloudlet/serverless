@@ -22,7 +22,6 @@ class FunctionService:
         """
         self._engine = engine
 
-    # -- async accept (202 + poll) ---------------------------------------
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a
     # status URL to poll. Deploys (esp. function builds) can be slow.
@@ -86,7 +85,6 @@ class FunctionService:
             **self._echo(spec),
         )
 
-    # -- create / update -------------------------------------------------
     async def create(self, spec: FunctionCreate, user: Principal) -> tuple[FunctionResponse, int]:
         """Build from Git and deploy a new function (runs in the background).
 
@@ -210,7 +208,6 @@ class FunctionService:
         )
         return body, code
 
-    # -- read / delete ---------------------------------------------------
     async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
         """Get one function with live per-site status.
 
