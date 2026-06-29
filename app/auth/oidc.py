@@ -24,6 +24,8 @@ def looks_like_jwt(token: str) -> bool:
     Returns:
         True if the token parses as a JWT header.
     """
+    if not isinstance(token, str) or not token:
+        return False
     try:
         jwt.get_unverified_header(token)
         return True

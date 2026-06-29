@@ -41,6 +41,11 @@ class Deployer:
             site.name: Cluster(site, settings) for site in settings.sites
         }
 
+    def close(self) -> None:
+        """Release every site's cluster client (connection pools) at shutdown."""
+        for cluster in self._clusters.values():
+            cluster.close()
+
     def local_cluster(self) -> Cluster:
         """The cluster this API instance sits in.
 

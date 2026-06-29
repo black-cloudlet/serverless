@@ -1288,3 +1288,171 @@ def test_validate_audience_verified_only_when_configured(monkeypatch):
     on.validate("tok")
     assert captured["audience"] == "serverless-api"
     assert "verify_aud" not in captured["options"]
+
+
+# --- Review fixes: fail-closed prune (A1/A3), client cleanup (B1), guards (A2, D1) ---
+
+
+def _existing_container_ksvc():
+    from app.models.common import Scaling
+    from app.services.ksvc import build_ksvc
+
+    return build_ksvc(
+        name="api-team", group="team", owner="alice", image="reg/app:1",
+        offering="container", host="api-team.ex.com", env=[], volumes=[],
+        scaling=Scaling(), size="small",
+    )
+
+
+async def test_prune_failure_aborts_update_fail_closed():
+    """A non-404 prune error must abort the site's update: the new spec never goes
+    live, so it can't sit alongside the stale, now-unreferenced secret."""
+    from app.auth.claims import Principal
+    from app.models.common import EnvVar
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+
+    class _PruneFails(_ApplyCluster):
+        def delete(self, kind, name):  # a real API error, not a 404
+            raise RuntimeError("boom: API error, not a 404")
+
+    cluster = _PruneFails("site-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(SiteTotalFailure):  # single site failed -> total failure
+        await csvc.update(
+            "api",
+            ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+            user,
+        )
+    # fail-closed: the KSVC was never (re)applied after the prune failed
+    assert _applied_kind(cluster, "Service") == []
+
+
+async def test_prune_not_found_is_tolerated():
+    """A 404 during prune just means the object never existed here; the update
+    proceeds normally."""
+    from app.auth.claims import Principal
+    from app.core.errors import NotFoundError
+    from app.models.common import EnvVar
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+
+    class _PruneMissing(_ApplyCluster):
+        def delete(self, kind, name):
+            self.deleted.append((kind, name))
+            raise NotFoundError("already gone")
+
+    cluster = _PruneMissing("site-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await csvc.update(  # must not raise
+        "api",
+        ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+        user,
+    )
+    assert _applied_kind(cluster, "Service")  # KSVC applied -> update proceeded
+
+
+async def test_prune_runs_before_apply_on_update():
+    """Fail-closed ordering: every prune happens before the new spec is applied."""
+    from app.auth.claims import Principal
+    from app.models.common import EnvVar
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+
+    class _OpLog(_ApplyCluster):
+        def __init__(self, name, existing):
+            super().__init__(name, existing)
+            self.ops = []
+
+        def apply(self, manifest):
+            self.ops.append("apply")
+            return super().apply(manifest)
+
+        def delete(self, kind, name):
+            self.ops.append("delete")
+            return super().delete(kind, name)
+
+    cluster = _OpLog("site-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await csvc.update(
+        "api",
+        ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+        user,
+    )
+    first_apply = cluster.ops.index("apply")
+    last_delete = max(i for i, op in enumerate(cluster.ops) if op == "delete")
+    assert last_delete < first_apply  # all prunes precede the first apply
+
+
+async def test_list_total_failure_details_have_message_key():
+    """The list total-failure details share deployer.aggregate's {site, message}
+    shape so clients parse one envelope."""
+    from app.auth.claims import Principal
+
+    class _Boom:
+        def __init__(self, name):
+            self.site = name
+            self.name = name
+
+        def get(self, *a, **k):
+            raise RuntimeError("site down")
+
+    engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(SiteTotalFailure) as ei:
+        await engine.list("container", user, "team")
+    assert all(set(d) == {"site", "message"} for d in ei.value.details)
+
+
+def test_looks_like_jwt_rejects_non_string_and_empty():
+    """A None/empty/non-str token returns False (a clean 401 path) instead of
+    raising a 500 from the JWT parser."""
+    from app.auth.oidc import looks_like_jwt
+
+    assert looks_like_jwt(None) is False
+    assert looks_like_jwt("") is False
+    assert looks_like_jwt(123) is False  # type: ignore[arg-type]
+    assert looks_like_jwt("not-a-jwt") is False
+
+
+def test_deployer_close_releases_every_cluster():
+    closed = []
+
+    class _C:
+        def __init__(self, name):
+            self.name = name
+            self.site = name
+
+        def close(self):
+            closed.append(self.site)
+
+    d = Deployer(_settings_with_sites())
+    d._clusters = {"a": _C("a"), "b": _C("b")}
+    d.close()
+    assert sorted(closed) == ["a", "b"]
+
+
+def test_cluster_close_closes_api_client_and_resets():
+    from app.clients.cluster import Cluster
+
+    settings = _settings_with_sites()
+    c = Cluster(settings.sites[0], settings)
+    calls = {"n": 0}
+
+    class _Api:
+        def close(self):
+            calls["n"] += 1
+
+    c._api_client_obj = _Api()
+    c._dynamic_client_obj = object()
+    c.close()
+    assert calls["n"] == 1
+    assert c._api_client_obj is None and c._dynamic_client_obj is None
+    c.close()  # idempotent: no client to close now
+    assert calls["n"] == 1

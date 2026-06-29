@@ -10,6 +10,7 @@ here. See docs §3, §4, §6.2.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from app.auth.claims import Principal
@@ -68,17 +69,39 @@ def object_name(name: str, group: str) -> str:
     return f"{name}-{group}"
 
 
+def _dig(obj: dict, *path: str, default=None):
+    """Walk a nested dict by ``path``, treating a missing/None level as absent.
+
+    Replaces the repeated ``(d.get(k, {}) or {})`` chains used to read Kubernetes
+    objects defensively.
+
+    Args:
+        obj: The dict to walk.
+        path: The successive keys to follow.
+        default: Returned if any level is missing or not a dict.
+
+    Returns:
+        The nested value, or ``default``.
+    """
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(key)
+        if cur is None:
+            return default
+    return cur
+
+
 def _extract_image(obj: dict) -> str | None:
     """The first container image of a KSVC, or None if absent."""
-    containers = (
-        ((obj.get("spec", {}) or {}).get("template", {}) or {}).get("spec", {}) or {}
-    ).get("containers", []) or []
+    containers = _dig(obj, "spec", "template", "spec", "containers", default=[]) or []
     return containers[0].get("image") if containers else None
 
 
 def _creation_time(obj: dict) -> datetime | None:
     """The workload's creation time from `metadata.creationTimestamp` (RFC3339)."""
-    ts = (obj.get("metadata", {}) or {}).get("creationTimestamp")
+    ts = _dig(obj, "metadata", "creationTimestamp")
     if not ts:
         return None
     try:
@@ -93,7 +116,7 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     Returns:
         ``("Ready"|"Failed"|"Deploying", revision_name_or_None)``.
     """
-    status = obj.get("status", {}) or {}
+    status = _dig(obj, "status", default={}) or {}
     conditions = status.get("conditions", []) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)
     revision = status.get("latestReadyRevisionName") or status.get(
@@ -324,31 +347,15 @@ class WorkloadService:
         to_prune = () if created else managed_derived - applied_derived
 
         def apply(cluster: Cluster) -> SiteStatus:
-            # Apply the KSVC first so every derived resource can carry an
-            # ownerReference to it (by UID). Kubernetes then garbage-collects them
-            # when the KSVC is deleted — including the DomainMapping, whose name is
-            # the host (so the host is freed for reuse). The brief window where a
-            # fresh revision precedes its env/files Secret/ConfigMap is healed by
-            # Knative's reconcile (the kubelet retries the mount).
-            applied = cluster.apply(ksvc)
-            owner = res.owner_reference(applied[0]) if applied else None
-            for manifest in backing:
-                cluster.apply(res.with_owner(manifest, owner))
-            if pull_secret_manifest:
-                cluster.apply(res.with_owner(pull_secret_manifest, owner))
-            # DomainMapping exposes the custom host; the Serverless Operator
-            # auto-creates the OpenShift Route for it.
-            cluster.apply(res.with_owner(mapping, owner))
-            # Remove backing objects this update no longer references (best-effort:
-            # a NotFound just means it never existed in this site).
-            for pkind, pname in to_prune:
-                try:
-                    cluster.delete(pkind, pname)
-                except Exception:  # noqa: BLE001 - best-effort prune; absence is fine
-                    logger.debug("prune skipped %s/%s in %s", pkind.kind, pname, cluster.site)
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            status, revision = _ksvc_status(obj)
-            return SiteStatus(site=cluster.site, status=status, revision=revision)
+            return self._apply_to_site(
+                cluster,
+                oname=oname,
+                ksvc=ksvc,
+                backing=backing,
+                pull_secret_manifest=pull_secret_manifest,
+                mapping=mapping,
+                to_prune=to_prune,
+            )
 
         statuses = await self.deployer.fanout(targets, apply)
         overall = aggregate(statuses)
@@ -372,6 +379,72 @@ class WorkloadService:
         else:
             body = ContainerResponse(**common, image=image)
         return body, status_code_for(overall, created=created)
+
+    def _apply_to_site(
+        self,
+        cluster: Cluster,
+        *,
+        oname: str,
+        ksvc: dict,
+        backing: list[dict],
+        pull_secret_manifest: dict | None,
+        mapping: dict,
+        to_prune,
+    ) -> SiteStatus:
+        """Apply one workload to a single site, fail-closed (runs in a thread).
+
+        Order matters for the no-stale-secret guarantee:
+
+        1. **Prune first.** Delete the backing objects the new spec no longer
+           references *before* anything goes live. A 404 means it never existed
+           here (fine); any other error is raised — aborting this site's update
+           (reported as ``Failed`` by the fan-out) rather than letting the new
+           spec go live alongside a stale, now-unreferenced Secret/ConfigMap that
+           would leak old secret values. ``to_prune`` is empty on create.
+        2. **KSVC, then owner-stamped backing, then DomainMapping.** Applying the
+           KSVC first yields its UID for the ownerReferences, so every derived
+           resource is GC'd when the KSVC is deleted (including the DomainMapping,
+           whose name is the host, freeing it for reuse). Stamping the owner ref
+           on backing immediately after keeps them from ever being orphaned (an
+           orphan would itself leak secret data). The brief window where a fresh
+           revision precedes its env/files Secret/ConfigMap is healed by Knative's
+           reconcile (the kubelet retries the mount); it creates no leak.
+
+        Args:
+            cluster: The target site's cluster client.
+            oname: The object name (``{name}-{group}``).
+            ksvc: The Knative Service manifest.
+            backing: The derived backing manifests (env/files Secret/ConfigMap).
+            pull_secret_manifest: The image-pull Secret manifest, if any.
+            mapping: The DomainMapping manifest.
+            to_prune: ``(ResourceKind, name)`` pairs to remove first.
+
+        Returns:
+            The per-site status.
+
+        Raises:
+            Exception: Any non-404 prune/apply error, surfaced as a per-site
+                failure by the fan-out.
+        """
+        for pkind, pname in to_prune:
+            try:
+                cluster.delete(pkind, pname)
+            except NotFoundError:
+                pass  # never existed in this site — nothing to prune
+
+        applied = cluster.apply(ksvc)
+        owner = res.owner_reference(applied[0]) if applied else None
+        for manifest in backing:
+            cluster.apply(res.with_owner(manifest, owner))
+        if pull_secret_manifest:
+            cluster.apply(res.with_owner(pull_secret_manifest, owner))
+        # DomainMapping exposes the custom host; the Serverless Operator
+        # auto-creates the OpenShift Route for it.
+        cluster.apply(res.with_owner(mapping, owner))
+
+        obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+        status, revision = _ksvc_status(obj)
+        return SiteStatus(site=cluster.site, status=status, revision=revision)
 
     async def load_existing(
         self, name: str, offering: str, user: Principal, group: str
@@ -585,12 +658,18 @@ class WorkloadService:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
             status, revision = _ksvc_status(obj)
+            # Replica count and live usage are two independent cluster reads;
+            # fetch them concurrently to cut this site's read latency.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                replicas_f = pool.submit(self._site_replicas, cluster, revision)
+                usage_f = pool.submit(self._site_usage, cluster, oname)
+                replicas, usage = replicas_f.result(), usage_f.result()
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
-                replicas=self._site_replicas(cluster, revision),
-                usage=self._site_usage(cluster, oname),
+                replicas=replicas,
+                usage=usage,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -607,10 +686,16 @@ class WorkloadService:
         # site if it has the workload, else any site that does.
         obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-        # An object_name collision could resolve to another group/offering; hide as 404.
+        # An object_name collision could resolve to another group/offering; hide as
+        # 404 (privacy-preserving — don't leak that it exists). Log the real reason
+        # server-side so denied-vs-absent is still debuggable from the logs.
         if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
             labels.get(LABEL_OFFERING) != offering
         ):
+            logger.debug(
+                "get %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
+                kind, name, user.username, labels.get(LABEL_GROUP), labels.get(LABEL_OFFERING),
+            )
             raise NotFoundError(f"{kind} '{name}' not found")
 
         host = meta_holder.get(
@@ -776,9 +861,12 @@ class WorkloadService:
 
         results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
         if all(items is None for _, items in results):
+            # Same details shape as deployer.aggregate's total-failure ({site,
+            # message}); gather_each doesn't retain the per-site error, so message
+            # is None.
             raise SiteTotalFailure(
                 "Listing failed in all sites.",
-                details=[{"site": site} for site, _ in results],
+                details=[{"site": site, "message": None} for site, _ in results],
             )
 
         suffix = f"-{group}"

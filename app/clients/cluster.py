@@ -165,6 +165,26 @@ class Cluster:
         Args:
             kind: The resource kind to delete.
             name: The object name.
+
+        Raises:
+            NotFoundError: If the resource is already absent (404). Other errors
+                propagate, so callers can tell "already gone" from a real failure.
         """
         dynamic_api = self._dynamic_api(kind)
-        dynamic_api.delete(name=name, namespace=self._namespace, **self._opts)
+        try:
+            dynamic_api.delete(name=name, namespace=self._namespace, **self._opts)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
+            raise
+
+    def close(self) -> None:
+        """Release the underlying HTTP client (connection pool) for this site.
+
+        Idempotent and safe to call at shutdown; the lazy clients are rebuilt on
+        next use if the Cluster is reused afterwards.
+        """
+        if self._api_client_obj is not None:
+            self._api_client_obj.close()
+            self._api_client_obj = None
+        self._dynamic_client_obj = None

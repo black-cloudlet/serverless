@@ -137,9 +137,10 @@ class Settings(BaseSettings):
     local_site: str | None = None
     # Static admin API key for non-OIDC service accounts (opaque bearer token).
     # The RAW token, sourced from Vault via ESO (env SERVERLESS_ADMIN_API_KEY).
-    # Matched with a constant-time compare (see app/auth/apikey.py). Falls back to
-    # a well-known dev value when unset; set it empty ("") to disable API-key auth.
-    admin_api_key: str = "Aa123456"
+    # Matched with a constant-time compare (see app/auth/apikey.py). Defaults to
+    # empty, which disables API-key auth (OIDC stays primary); never ship a usable
+    # default credential. Set it to enable key auth for admin automation.
+    admin_api_key: str = ""
 
     @property
     def client_cert_file(self) -> str:
