@@ -30,6 +30,7 @@ app/        FastAPI application
   routers/  FaaS / CaaS / resources / health endpoints
 helm/       Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
 tests/      unit + API tests
+.github/    CI/CD workflow (ruff, pytest, helm lint + template, image build/push)
 Containerfile
 ```
 

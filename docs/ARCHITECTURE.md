@@ -4,9 +4,10 @@ A self-service **FaaS (Function as a Service)** and **CaaS (Container as a Servi
 platform that wraps the open-source **Knative** project on **OpenShift**, exposed through a
 **Python / FastAPI** REST API.
 
-> **Status:** Design document (no implementation yet). This document is the source of truth
-> for the architecture and is intended to be detailed enough for engineers to implement the
-> FastAPI application, the Helm chart, and the GitOps manifests against an **airgapped**
+> **Status:** Implemented. This document is the source of truth for the architecture; the
+> FastAPI application (`app/`), the Helm chart (`helm/serverless-api`), and a CI/CD workflow
+> (`.github/workflows/ci.yml`) are in this repo. The GitOps manifests (ArgoCD
+> `ApplicationSet`) live in a separate central GitOps repo, targeting an **airgapped**
 > OpenShift environment.
 
 ---
@@ -33,7 +34,7 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 
 | Topic | Decision |
 |-------|----------|
-| Deliverable | Architecture/design doc only (this document) |
+| Deliverable | FastAPI app + Helm chart + CI/CD in this repo (GitOps `ApplicationSet` lives elsewhere) |
 | FaaS build | **Knative Functions** (`func` + Cloud Native Buildpacks), mirrored builder images for airgap |
 | Cluster auth | **cert-manager `Certificate` CR** (shipped in Helm chart) → client TLS cert; **CN is a DNS name** `serverless-api.clients.{base_domain}` (ACME-issued); that name is the Kubernetes user, bound via RBAC |
 | Topology | **Two separate OpenShift clusters** ("sites") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
@@ -356,7 +357,7 @@ sites:
 |----------|----------|
 | Both sites succeed | `overallStatus = Ready`, `201`/`200`. |
 | One site fails | `overallStatus = Degraded`, `207 Multi-Status`; the per-site object carries the error. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
-| Both sites fail | `overallStatus = Failed`, `502`; the API attempts best-effort cleanup of any partially-created resources. |
+| Both sites fail | `502 SITE_TOTAL_FAILURE` error envelope (no workload body); the per-site errors are in `details[]`. Re-apply is idempotent (server-side apply), so a retry heals any partial state. |
 
 - **An unavailable site does not freeze the API.** Per-site work runs concurrently in
   threads; every cluster call has a **connect/read timeout** and each site has an overall
@@ -464,13 +465,14 @@ sequenceDiagram
 
 #### Static API keys (admin/operator automation, non-OIDC)
 
-For **admin** automation that can't do OIDC, the API also accepts a **static API key** in the
-**same `Authorization: Bearer <key>` header**. The API distinguishes the two by shape: a
-structural JWT (`header.payload.signature`) is validated as an OIDC token; an opaque token is
-matched against the configured API keys. Keys are platform-issued and stored in Vault
-(projected via ESO into `SERVERLESS_API_KEYS`) as `{name, sha256, groups}` — only the
-**sha256 hash** is stored, matched constant-time. A matching key yields an **admin** Principal
-(API keys are admin-only; regular users go through OIDC). Enable via Helm `apiKeys.enabled`.
+For **admin** automation that can't do OIDC, the API also accepts a **static admin API key**
+in the **same `Authorization: Bearer <key>` header**. The API distinguishes the two by shape:
+a structural JWT (`header.payload.signature`) is validated as an OIDC token; an opaque token is
+compared against the single configured admin key. The key is the **raw token** (not a hash),
+sourced from Vault via ESO into `SERVERLESS_ADMIN_API_KEY` and matched with a **constant-time**
+compare (`app/auth/apikey.py`). A match yields an **admin** Principal (the key is admin-only;
+regular users go through OIDC). It defaults to empty, which **disables** key auth; set the env
+var to enable it.
 
 #### Auth as an internal component (not a separate microservice)
 
@@ -482,7 +484,8 @@ hop, another deployment to secure in both clusters, and a failure point. The com
 
 - SSO OIDC discovery + **JWKS fetch/cache** and **token validation** (`oidc.py`),
 - **claims → group** mapping and admin/tenant policy (`claims.py`),
-- the FastAPI **`require_auth` / `require_groups`** dependencies the routers use (`deps.py`).
+- the FastAPI **`require_auth`** dependency (and the `CurrentUser` annotation) the routers
+  use (`deps.py`); per-group authorization is asserted in the service layer (`assert_group`).
 
 > If auth-at-the-edge is ever wanted (to keep tokens out of app code / defense-in-depth), the
 > OpenShift-native drop-ins are **oauth2-proxy** or **Authorino** as a sidecar/gateway — an
@@ -692,19 +695,20 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 ## 10. REST API Specification
 
 Base path: `/api/v1`. All endpoints require a valid SSO bearer token (§6). All responses
-are JSON. Times are RFC 3339 UTC.
+are JSON. Times are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are
+rendered in **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving aware).
 
 ### Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, hostname, overallStatus, size, createdAt). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/v1/functions` | List the group's functions — general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
 | `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
 | `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** — deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, hostname, overallStatus, size, createdAt). Read from the **local site** (workloads are active/active and identical), so no cross-site fan-out. Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/v1/containers` | List the group's containers — general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
@@ -807,7 +811,7 @@ body (secrets redacted) with the live status alongside:
   "hostname": "image-resizer-team.serverless.example.com",
   "overallStatus": "Ready",
   "size": "small",
-  "createdAt": "2026-06-21T12:00:00Z",
+  "createdAt": "2026-06-21T15:00:00+03:00",
   "runtime": "python",
   "gitRepo": "https://git.example.com/team/image-resizer.git",
   "branch": "main",
@@ -869,18 +873,18 @@ info only (no live usage/replicas; use the single-workload GET for those):
     "hostname": "image-resizer-team.serverless.example.com",
     "overallStatus": "Ready",
     "size": "small",
-    "createdAt": "2026-06-21T12:00:00Z",
+    "createdAt": "2026-06-21T15:00:00+03:00",
     "sites": ["central", "south"]
   }
 ]
 ```
 
-> The list reads only the **local site** (the API's own cluster): workloads are
-> active/active and identical across sites, so one cluster is authoritative and we
-> skip the cross-site fan-out. `overallStatus` is the local site's readiness
-> (`Ready`/`Deploying`/`Degraded`); `sites` reflects the local site. If the local
-> site is unreachable the call errors (502). For per-site live health across all
-> sites, use the single-workload GET.
+> The list **fans out to all sites** and merges by workload name (best-effort):
+> each workload's `sites` lists the sites that returned it and `overallStatus` is
+> rolled up across them (`Ready`/`Deploying`/`Degraded`, or `Terminating` while a
+> workload is being deleted). A site that is unreachable is skipped; only if
+> **every** site is down does the call fail (502). It returns general info only (no
+> live replicas/usage) — use the single-workload GET for per-site live health.
 
 ### CaaS — `POST /api/v1/containers`
 
@@ -929,7 +933,7 @@ Standard envelope for all non-2xx responses:
     "code": "SITE_PARTIAL_FAILURE",
     "message": "Deployment succeeded in central but failed in south.",
     "details": [
-      { "site": "south", "reason": "ImagePullBackOff", "message": "registry auth failed" }
+      { "site": "south", "message": "registry auth failed" }
     ],
     "requestId": "b1c2..."
   }
@@ -958,6 +962,8 @@ Serverless/
 │   └── ARCHITECTURE.md              # this document
 ├── app/                             # FastAPI application
 │   ├── main.py                      # app factory, router registration, middleware
+│   ├── dependencies.py              # FastAPI DI: cached service singletons
+│   ├── static/                      # vendored Swagger UI / ReDoc assets (airgap)
 │   ├── core/
 │   │   ├── config.py                # settings (site profiles, SSO, registry) via env/Secret
 │   │   └── logging.py
@@ -984,8 +990,10 @@ Serverless/
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
 │   │   ├── env.py                   # env resolution (+ {workload}-env Secret)
 │   │   ├── files.py                 # file resolution (+ {workload}-files CM/Secret)
-│   │   ├── resources.py             # Secret/ConfigMap manifest builders
+│   │   ├── resources.py             # Secret/ConfigMap manifest builders (owner refs)
 │   │   ├── secrets.py               # imagePullSecret builder
+│   │   ├── describe.py              # read desired-state spec back from a KSVC (redacted)
+│   │   ├── metrics.py               # parse/sum pod cpu/memory from PodMetrics
 │   │   └── labels.py                # ownership / workload labels
 │   └── clients/
 │       └── cluster.py               # Cluster: wraps the k8s library for one site (mTLS cert)
@@ -1005,14 +1013,14 @@ Serverless/
 │           └── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
 │   # NOTE: no secretstore.yaml — the ClusterSecretStore already exists in the clusters.
 │   # NOTE: the ArgoCD ApplicationSet lives in a SEPARATE central GitOps repo, not here.
-├── manifests/                       # standalone reference manifests / examples
-│   └── examples/
-├── tests/
-│   ├── unit/
-│   └── integration/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                   # CI/CD: ruff, pytest, helm lint+template, image build/push
+├── tests/                           # flat pytest modules (test_api.py, test_*.py)
 ├── Containerfile                    # build the API image (airgap-friendly base)
-├── pyproject.toml                   # pinned deps (internal PyPI mirror)
-└── .helmignore / .dockerignore
+├── requirements.txt                 # runtime deps (mirrored to internal PyPI)
+├── pyproject.toml                   # project metadata, deps, ruff/pytest config
+└── .env.example                     # sample SERVERLESS_* configuration
 ```
 
 ---
@@ -1186,10 +1194,10 @@ spec:
   target:
     name: serverless-api-keys      # consumed by the API via envFrom
   data:
-    - secretKey: SERVERLESS_API_KEYS
+    - secretKey: SERVERLESS_ADMIN_API_KEY
       remoteRef:
-        key: serverless/api
-        property: api_keys
+        key: cloudlet/platforms/serverless-api
+        property: admin-api-key
 ```
 
 ### 12.6 ArgoCD ApplicationSet — *reference only (lives in the separate GitOps repo)*
