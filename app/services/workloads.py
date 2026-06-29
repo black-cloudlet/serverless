@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from app.auth.claims import Principal
 from app.clients.cluster import Cluster, ResourceKind
@@ -63,6 +64,12 @@ logger = get_logger(__name__)
 OFFERING_FUNCTION = "function"
 OFFERING_CONTAINER = "container"
 
+# Workload timestamps are surfaced in Israel local time. ZoneInfo reads the IANA
+# tz database, so the IDT/IST daylight-saving offset (+03:00 summer, +02:00
+# winter) is applied automatically; `tzdata` is a dependency so this resolves in
+# slim containers that ship no system zoneinfo.
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+
 
 def object_name(name: str, group: str) -> str:
     """The OpenShift name of a workload and its derived resources: {name}-{group}."""
@@ -100,12 +107,13 @@ def _extract_image(obj: dict) -> str | None:
 
 
 def _creation_time(obj: dict) -> datetime | None:
-    """The workload's creation time from `metadata.creationTimestamp` (RFC3339)."""
+    """The workload's creation time (`metadata.creationTimestamp`) in Israel time."""
     ts = _dig(obj, "metadata", "creationTimestamp")
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        # Kubernetes stamps RFC3339 UTC; present it in Israel local time.
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(ISRAEL_TZ)
     except (ValueError, AttributeError):
         return None
 
@@ -114,7 +122,7 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     """Map a KSVC's Ready condition to a (status, revision) pair.
 
     Returns:
-        ``("Ready"|"Failed"|"Deploying", revision_name_or_None)``.
+        ``("Ready"|"Failed"|"Deploying"|"Terminating", revision_name_or_None)``.
     """
     status = _dig(obj, "status", default={}) or {}
     conditions = status.get("conditions", []) or []
@@ -122,6 +130,10 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     revision = status.get("latestReadyRevisionName") or status.get(
         "latestCreatedRevisionName"
     )
+    # A deletionTimestamp means the KSVC is being garbage-collected: report it as
+    # Terminating so a GET during the delete window doesn't misreport it as Ready.
+    if _dig(obj, "metadata", "deletionTimestamp"):
+        return "Terminating", revision
     # Knative condition convention: status True = Ready, False = a terminal
     # failure (e.g. RevisionFailed, ProgressDeadlineExceeded, image-pull error),
     # Unknown or absent = still progressing. Distinguishing False from Unknown is
@@ -370,7 +382,7 @@ class WorkloadService:
             scaling=scaling,
             env=describe_svc.redact_env(env),
             files=describe_svc.redact_files(files),
-            createdAt=datetime.now(timezone.utc) if created else None,
+            createdAt=datetime.now(ISRAEL_TZ) if created else None,
         )
         if offering == OFFERING_FUNCTION:
             body: WorkloadResponse = FunctionResponse(

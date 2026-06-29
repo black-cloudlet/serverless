@@ -208,22 +208,26 @@ def overall_status(statuses: list[str]) -> str:
     """Collapse per-site KSVC statuses into one overall status (GET / list).
 
     A site reporting ``Failed`` (or, on GET, an unreachable site mapped to
-    ``Failed``) makes the deployment ``Degraded``. Otherwise an all-``Ready`` set
-    is ``Ready`` and anything still in flight is ``Deploying`` — including a mixed
-    ``Ready`` + ``Deploying`` set, which is a normal rollout where one site is
-    ahead, NOT a failure. This is what keeps the create→poll loop from seeing a
-    false ``Degraded`` while the workload is still coming up.
+    ``Failed``) makes the deployment ``Degraded``. A site being garbage-collected
+    (``Terminating``) makes the deployment ``Terminating`` (delete in progress).
+    Otherwise an all-``Ready`` set is ``Ready`` and anything still in flight is
+    ``Deploying`` — including a mixed ``Ready`` + ``Deploying`` set, which is a
+    normal rollout where one site is ahead, NOT a failure. This is what keeps the
+    create→poll loop from seeing a false ``Degraded`` while the workload is still
+    coming up.
 
     Args:
         statuses: The per-site status strings.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded).
+        The overall status (Ready/Deploying/Degraded/Terminating).
     """
     if not statuses:
         return "Degraded"
     if any(s == "Failed" for s in statuses):
         return "Degraded"
+    if any(s == "Terminating" for s in statuses):
+        return "Terminating"
     if all(s == "Ready" for s in statuses):
         return "Ready"
     return "Deploying"

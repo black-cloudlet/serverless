@@ -1456,3 +1456,51 @@ def test_cluster_close_closes_api_client_and_resets():
     assert c._api_client_obj is None and c._dynamic_client_obj is None
     c.close()  # idempotent: no client to close now
     assert calls["n"] == 1
+
+
+# --- Terminating status (#3) and Israel-local timestamps (#2) ---
+
+
+async def test_get_reports_terminating_during_delete():
+    """A KSVC carrying a deletionTimestamp (being garbage-collected) reports
+    Terminating rather than a stale Ready."""
+    from app.auth.claims import Principal
+
+    terminating = _ready_ksvc()  # would otherwise read Ready
+    terminating["metadata"]["deletionTimestamp"] = "2026-06-29T12:00:00Z"
+    engine = _workload_service({
+        "site-a": _FakeCluster("site-a", existing={"app-team": terminating}),
+        "site-b": _FakeCluster("site-b"),  # 404 here
+    })
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+    assert body.overallStatus == "Terminating"
+    assert body.sites[0].status == "Terminating"
+
+
+def test_overall_status_terminating_precedence():
+    from app.services.deployer import overall_status
+
+    assert overall_status(["Terminating", "Ready"]) == "Terminating"
+    assert overall_status(["Terminating", "Deploying"]) == "Terminating"
+    # A real failure still outranks a termination in progress.
+    assert overall_status(["Failed", "Terminating"]) == "Degraded"
+
+
+def test_creation_time_is_israel_local_time_with_dst():
+    """metadata.creationTimestamp (UTC) is surfaced in Israel local time, with the
+    DST-aware offset: +03:00 (IDT) in summer, +02:00 (IST) in winter."""
+    from zoneinfo import ZoneInfo
+
+    from app.services.workloads import _creation_time
+
+    summer = _creation_time({"metadata": {"creationTimestamp": "2026-07-01T09:00:00Z"}})
+    assert summer.tzinfo == ZoneInfo("Asia/Jerusalem")
+    assert summer.utcoffset().total_seconds() == 3 * 3600  # IDT
+    assert (summer.hour, summer.minute) == (12, 0)  # 09:00Z -> 12:00 IDT
+
+    winter = _creation_time({"metadata": {"creationTimestamp": "2026-01-01T09:00:00Z"}})
+    assert winter.utcoffset().total_seconds() == 2 * 3600  # IST
+    assert winter.hour == 11  # 09:00Z -> 11:00 IST
+
+    assert _creation_time({"metadata": {}}) is None  # absent -> None

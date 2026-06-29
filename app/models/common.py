@@ -214,7 +214,7 @@ class SiteStatus(BaseModel):
 
     Attributes:
         site: The site name.
-        status: Per-site status (Ready/Deploying/Failed/Timeout/...).
+        status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
         revision: The Knative revision the site is serving, if known.
         error: The failure message when the site errored, else None.
     """
@@ -241,9 +241,10 @@ class WorkloadBase(BaseModel):
     group: str  # the owning SSO group
     type: Literal["function", "container"]
     hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
-    overallStatus: str  # Pending | Ready | Deploying | Degraded
+    overallStatus: str  # Pending | Ready | Deploying | Degraded | Terminating
     size: str | None = None  # resource t-shirt size (uniform across sites)
-    createdAt: datetime | None = None  # workload creation time (metadata.creationTimestamp)
+    # workload creation time (metadata.creationTimestamp), in Israel local time
+    createdAt: datetime | None = None
 
 
 class WorkloadSummary(WorkloadBase):
