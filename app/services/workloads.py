@@ -364,6 +364,7 @@ class WorkloadService:
                 pull_secret_manifest=pull_secret_manifest,
                 mapping=mapping,
                 to_prune=to_prune,
+                created=created,
             )
 
         statuses = await self.deployer.fanout(targets, apply)
@@ -399,6 +400,7 @@ class WorkloadService:
         pull_secret_manifest: dict | None,
         mapping: dict,
         to_prune,
+        created: bool,
     ) -> SiteStatus:
         """Apply one workload to a single site, fail-closed (runs in a thread).
 
@@ -415,9 +417,16 @@ class WorkloadService:
            resource is GC'd when the KSVC is deleted (including the DomainMapping,
            whose name is the host, freeing it for reuse). Stamping the owner ref
            on backing immediately after keeps them from ever being orphaned (an
-           orphan would itself leak secret data). The brief window where a fresh
-           revision precedes its env/files Secret/ConfigMap is healed by Knative's
-           reconcile (the kubelet retries the mount); it creates no leak.
+           orphan would itself leak secret data).
+        3. **Roll back a failed create, never a failed update.** If a backing /
+           pull-secret / mapping apply fails *after* the KSVC was applied, the KSVC
+           briefly references a Secret/ConfigMap that isn't there. On a **create**
+           we delete the KSVC (best-effort; cascades to anything already created)
+           so a partial workload isn't left occupying the name + host. On an
+           **update** we must NOT delete: the KSVC is serving live traffic, and
+           Knative keeps routing to the last-good revision (a new revision that
+           can't mount its Secret never becomes Ready), so the failure self-heals
+           on retry without taking the workload down or releasing its host.
 
         Args:
             cluster: The target site's cluster client.
@@ -427,6 +436,8 @@ class WorkloadService:
             pull_secret_manifest: The image-pull Secret manifest, if any.
             mapping: The DomainMapping manifest.
             to_prune: ``(ResourceKind, name)`` pairs to remove first.
+            created: True for a create (enables rollback of the new KSVC on a
+                mid-apply failure); False for an update (no destructive rollback).
 
         Returns:
             The per-site status.
@@ -443,13 +454,25 @@ class WorkloadService:
 
         applied = cluster.apply(ksvc)
         owner = res.owner_reference(applied[0]) if applied else None
-        for manifest in backing:
-            cluster.apply(res.with_owner(manifest, owner))
-        if pull_secret_manifest:
-            cluster.apply(res.with_owner(pull_secret_manifest, owner))
-        # DomainMapping exposes the custom host; the Serverless Operator
-        # auto-creates the OpenShift Route for it.
-        cluster.apply(res.with_owner(mapping, owner))
+        try:
+            for manifest in backing:
+                cluster.apply(res.with_owner(manifest, owner))
+            if pull_secret_manifest:
+                cluster.apply(res.with_owner(pull_secret_manifest, owner))
+            # DomainMapping exposes the custom host; the Serverless Operator
+            # auto-creates the OpenShift Route for it.
+            cluster.apply(res.with_owner(mapping, owner))
+        except Exception:
+            # Backing/mapping apply failed after the KSVC went live. On a create,
+            # roll the KSVC back (best-effort; cascades to any derived object via
+            # ownerReferences) so no half-built workload lingers on the name/host;
+            # on an update, leave it — Knative keeps serving the last-good revision.
+            if created:
+                try:
+                    cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
+                except Exception:  # noqa: BLE001 - rollback is best-effort
+                    logger.exception("rollback of %s failed in %s", oname, cluster.site)
+            raise
 
         obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
         status, revision = _ksvc_status(obj)

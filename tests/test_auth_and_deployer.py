@@ -1504,3 +1504,54 @@ def test_creation_time_is_israel_local_time_with_dst():
     assert winter.hour == 11  # 09:00Z -> 11:00 IST
 
     assert _creation_time({"metadata": {}}) is None  # absent -> None
+
+
+# --- A1: roll back a failed create, never a failed update ---
+
+
+class _BackingFails(_ApplyCluster):
+    """Applies the KSVC fine, but fails on any derived backing/mapping apply."""
+
+    def apply(self, manifest):
+        if manifest.get("kind") == "Service":
+            return super().apply(manifest)
+        raise RuntimeError("backing apply failed")
+
+
+async def test_create_rolls_back_ksvc_on_backing_failure():
+    """If a backing/mapping apply fails mid-create, the just-created KSVC is
+    deleted (rolled back) so no half-built workload lingers on the name/host."""
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.models.container import ContainerCreate
+    from app.services.container import ContainerService
+
+    cluster = _BackingFails("site-a", {})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(SiteTotalFailure):  # single site failed
+        await csvc.create(ContainerCreate(name="api", group="team", image="reg/x:1"), user)
+    assert (ResourceKind.KNATIVE_SERVICE, "api-team") in cluster.deleted
+
+
+async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
+    """A backing/mapping failure on update must NOT delete the live KSVC — Knative
+    keeps serving the last-good revision; deleting would take it down + free the host."""
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.models.common import EnvVar
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+
+    cluster = _BackingFails("site-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(SiteTotalFailure):
+        await csvc.update(
+            "api",
+            ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+            user,
+        )
+    assert (ResourceKind.KNATIVE_SERVICE, "api-team") not in cluster.deleted
