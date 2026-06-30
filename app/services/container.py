@@ -78,6 +78,15 @@ class ContainerService:
         existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
+        oname = object_name(name, group)
+        host = self._engine.host_for(name, spec.hostname, group)
+        # The host can change on update; verify it's free (or already ours) now so a
+        # collision is a synchronous 409 instead of a silently-swallowed background
+        # failure. assert_host_available treats the workload's own mapping as
+        # available, so this is a no-op when the host is unchanged.
+        await self._engine.assert_host_available(
+            host, oname, self._engine.deployer.resolve_targets(None)
+        )
 
         background.add_task(self._engine.run, self.update, name, spec, user, existing)
 
@@ -85,7 +94,7 @@ class ContainerService:
             OFFERING_CONTAINER,
             name,
             group,
-            self._engine.host_for(name, spec.hostname, group),
+            host,
             image=spec.image,
             **self._echo(spec),
         )
@@ -192,6 +201,7 @@ class ContainerService:
             pull_secret_name=pull_name,
             pull_secret_manifest=pull,
             created=False,
+            prev_host=existing.get("host"),
         )
         body.registryUsername = spec.registryUsername
         return body, code

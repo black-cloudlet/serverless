@@ -274,6 +274,7 @@ class WorkloadService:
         runtime: str | None = None,
         git_url: str | None = None,
         branch: str | None = None,
+        prev_host: str | None = None,
     ) -> tuple[WorkloadResponse, int]:
         """Build the manifests once and apply the workload to every target site.
 
@@ -300,6 +301,9 @@ class WorkloadService:
             runtime: Function runtime, stamped as an annotation.
             git_url: Function source repo, stamped as an annotation.
             branch: Function source branch, stamped as an annotation.
+            prev_host: The host the workload currently uses (update only); when it
+                differs from the resolved host, the old DomainMapping is retired so
+                the old host doesn't stay claimed.
 
         Returns:
             The response body and HTTP status code.
@@ -365,6 +369,7 @@ class WorkloadService:
                 mapping=mapping,
                 to_prune=to_prune,
                 created=created,
+                prev_host=prev_host,
             )
 
         statuses = await self.deployer.fanout(targets, apply)
@@ -401,6 +406,7 @@ class WorkloadService:
         mapping: dict,
         to_prune,
         created: bool,
+        prev_host: str | None = None,
     ) -> SiteStatus:
         """Apply one workload to a single site, fail-closed (runs in a thread).
 
@@ -427,6 +433,13 @@ class WorkloadService:
            Knative keeps routing to the last-good revision (a new revision that
            can't mount its Secret never becomes Ready), so the failure self-heals
            on retry without taking the workload down or releasing its host.
+        4. **Retire the old host last (update only).** If the host changed, the
+           new DomainMapping is now live; only then delete the old host's mapping
+           (whose name *is* the old host). Pruning it *last* — not via
+           ``to_prune``, which prunes first — keeps the old host serving until the
+           new one is in place (no custom-host gap) and leaves it intact if an
+           apply above failed. Best-effort: a leftover old mapping only re-claims a
+           host this same workload owns, and is GC'd on delete.
 
         Args:
             cluster: The target site's cluster client.
@@ -438,6 +451,9 @@ class WorkloadService:
             to_prune: ``(ResourceKind, name)`` pairs to remove first.
             created: True for a create (enables rollback of the new KSVC on a
                 mid-apply failure); False for an update (no destructive rollback).
+            prev_host: The host the workload currently uses; when it differs from
+                this apply's host, the old DomainMapping is retired after the new
+                one is live (update only).
 
         Returns:
             The per-site status.
@@ -473,6 +489,23 @@ class WorkloadService:
                 except Exception:  # noqa: BLE001 - rollback is best-effort
                     logger.exception("rollback of %s failed in %s", oname, cluster.site)
             raise
+
+        # The host changed on this update: the new DomainMapping is live now, so
+        # retire the old host's mapping (its name == the old host). Best-effort —
+        # a 404 means it was never here; any other error is logged but not fatal,
+        # since the new host already works and a stale old mapping only re-claims a
+        # host this same workload owns (and is GC'd on delete).
+        new_host = mapping["metadata"]["name"]
+        if not created and prev_host and prev_host != new_host:
+            try:
+                cluster.delete(ResourceKind.DOMAIN_MAPPING, prev_host)
+            except NotFoundError:
+                pass
+            except Exception:  # noqa: BLE001 - old-host cleanup is best-effort
+                logger.exception(
+                    "retiring old host %s for %s failed in %s",
+                    prev_host, oname, cluster.site,
+                )
 
         obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
         status, revision = _ksvc_status(obj)
@@ -533,6 +566,7 @@ class WorkloadService:
                 "runtime": ann.get(ANNOTATION_RUNTIME),
                 "gitUrl": ann.get(ANNOTATION_GIT_URL),
                 "branch": ann.get(ANNOTATION_GIT_BRANCH),
+                "host": ann.get(ANNOTATION_HOST),
                 "pull_secret": describe_svc.pull_secret_name(obj),
             }
 

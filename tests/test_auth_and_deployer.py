@@ -1357,8 +1357,11 @@ async def test_prune_not_found_is_tolerated():
 
 
 async def test_prune_runs_before_apply_on_update():
-    """Fail-closed ordering: every prune happens before the new spec is applied."""
+    """Ordering: the fail-closed secret/configmap prunes happen before the new
+    spec is applied, while the old host's DomainMapping is retired *after* (prune-
+    last) so a host move never drops the old host before the new one is live."""
     from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
     from app.models.common import EnvVar
     from app.models.container import ContainerUpdate
     from app.services.container import ContainerService
@@ -1366,28 +1369,101 @@ async def test_prune_runs_before_apply_on_update():
     class _OpLog(_ApplyCluster):
         def __init__(self, name, existing):
             super().__init__(name, existing)
-            self.ops = []
+            self.ops = []  # [(op, kind)]
 
         def apply(self, manifest):
-            self.ops.append("apply")
+            self.ops.append(("apply", manifest.get("kind")))
             return super().apply(manifest)
 
         def delete(self, kind, name):
-            self.ops.append("delete")
+            self.ops.append(("delete", kind))
             return super().delete(kind, name)
 
     cluster = _OpLog("site-a", {"api-team": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"site-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
+    # The fixture KSVC sits on a custom host; an update with no hostname resolves
+    # to the default host -> the host changes, exercising the old-host retirement.
     await csvc.update(
         "api",
         ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
         user,
     )
-    first_apply = cluster.ops.index("apply")
-    last_delete = max(i for i, op in enumerate(cluster.ops) if op == "delete")
-    assert last_delete < first_apply  # all prunes precede the first apply
+    first_apply = next(i for i, (op, _) in enumerate(cluster.ops) if op == "apply")
+    # Every fail-closed prune (stale env/files Secret & ConfigMap) precedes apply.
+    prune_deletes = [
+        i for i, (op, kind) in enumerate(cluster.ops)
+        if op == "delete" and kind != ResourceKind.DOMAIN_MAPPING
+    ]
+    assert prune_deletes and all(i < first_apply for i in prune_deletes)
+    # The old host's DomainMapping is retired last — after the new mapping is live.
+    dm_deletes = [
+        i for i, (op, kind) in enumerate(cluster.ops)
+        if op == "delete" and kind == ResourceKind.DOMAIN_MAPPING
+    ]
+    assert dm_deletes and all(i > first_apply for i in dm_deletes)
+
+
+async def test_accept_update_rejects_taken_host_synchronously():
+    """A host already owned by another workload must 409 at accept time, not be
+    swallowed in the background deploy where the client would never see it."""
+    from fastapi import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.core.errors import ConflictError, NotFoundError
+    from app.models.common import LABEL_WORKLOAD
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+
+    existing = _existing_container_ksvc()
+
+    class _HostTaken:
+        def __init__(self, name):
+            self.site = name
+            self.name = name
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE and name == "api-team":
+                return existing
+            if kind == ResourceKind.DOMAIN_MAPPING and name == "shop.serverless.example.com":
+                # owned by a DIFFERENT workload -> the host is taken
+                return {"metadata": {"name": name, "labels": {LABEL_WORKLOAD: "shop-team"}}}
+            raise NotFoundError("not found")
+
+    csvc = ContainerService(_workload_service({"site-a": _HostTaken("site-a")}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+    bg = BackgroundTasks()
+    with pytest.raises(ConflictError):
+        await csvc.accept_update(
+            "api", ContainerUpdate(group="team", hostname="shop"), user, bg
+        )
+    assert bg.tasks == []  # rejected before the background deploy was queued
+
+
+async def test_update_unchanged_host_retires_no_mapping():
+    """When the host is unchanged, no DomainMapping is retired (no spurious delete)."""
+    from app.auth.claims import Principal
+    from app.clients.cluster import ResourceKind
+    from app.models.common import Scaling
+    from app.models.container import ContainerUpdate
+    from app.services.container import ContainerService
+    from app.services.ksvc import build_ksvc
+
+    existing = build_ksvc(
+        name="api-team", group="team", owner="alice", image="reg/app:1",
+        offering="container", host="api-team.serverless.example.com",  # the default host
+        env=[], volumes=[], scaling=Scaling(), size="small",
+    )
+    cluster = _ApplyCluster("site-a", {"api-team": existing})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await csvc.update("api", ContainerUpdate(group="team"), user)  # no hostname -> default
+
+    dm_deletes = [n for k, n in cluster.deleted if k == ResourceKind.DOMAIN_MAPPING]
+    assert dm_deletes == []  # host unchanged -> nothing retired
 
 
 async def test_list_total_failure_details_have_message_key():
