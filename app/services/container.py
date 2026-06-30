@@ -43,21 +43,14 @@ class ContainerService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        group = spec.group
-        self._engine.assert_group(user, group)
-        oname = object_name(spec.name, group)
-
-        targets = self._engine.deployer.resolve_targets(spec.sites)
-        host = self._engine.host_for(spec.name, spec.hostname, group)
-        # Surface deploy-time spec validation synchronously (400), before the 202.
-        self._engine.validate_spec(spec.name, group, user.username, spec.env, spec.files)
-
-        await self._engine.assert_host_available(host, oname, targets)
-        await self._engine.assert_workload_absent(spec.name, oname, targets)
-
-        background.add_task(self._engine.run, self.create, spec, user)
-        return self._engine.accepted(
-            OFFERING_CONTAINER, spec.name, group, host, image=spec.image, **self._echo(spec)
+        return await self._engine.accept_create(
+            offering=OFFERING_CONTAINER,
+            spec=spec,
+            user=user,
+            background=background,
+            work=self.create,
+            image=spec.image,
+            **self._echo(spec),
         )
 
     async def accept_update(
@@ -74,27 +67,13 @@ class ContainerService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        group = spec.group
-        existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
-        # Surface deploy-time spec validation synchronously (400), before the 202.
-        self._engine.validate_spec(name, group, user.username, spec.env, spec.files)
-        oname = object_name(name, group)
-        host = self._engine.host_for(name, spec.hostname, group)
-        # The host can change on update; verify it's free (or already ours) now so a
-        # collision is a synchronous 409 instead of a silently-swallowed background
-        # failure. assert_host_available treats the workload's own mapping as
-        # available, so this is a no-op when the host is unchanged.
-        await self._engine.assert_host_available(
-            host, oname, self._engine.deployer.resolve_targets(None)
-        )
-
-        background.add_task(self._engine.run, self.update, name, spec, user, existing)
-
-        return self._engine.accepted(
-            OFFERING_CONTAINER,
-            name,
-            group,
-            host,
+        return await self._engine.accept_update(
+            offering=OFFERING_CONTAINER,
+            name=name,
+            spec=spec,
+            user=user,
+            background=background,
+            work=self.update,
             image=spec.image,
             **self._echo(spec),
         )

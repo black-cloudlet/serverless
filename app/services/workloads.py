@@ -254,6 +254,79 @@ class WorkloadService:
         except Exception:  # noqa: BLE001 - background work; surfaced via status polling
             logger.exception("background deploy failed for %s", args)
 
+    async def accept_create(
+        self, *, offering: str, spec, user: Principal, background, work, **extra
+    ) -> WorkloadResponse:
+        """Run a create's synchronous pre-flight, then schedule the deploy (202).
+
+        Shared by both offering services: validate the spec and verify the host is
+        free and the name unused (so malformed input or a conflict is an immediate
+        400/403/409/503), then queue the offering-specific build+deploy and return
+        the Pending 202 body. Only the offering label, the background callable, and
+        the echoed fields differ between offerings.
+
+        Args:
+            offering: "function" or "container".
+            spec: The create request (carries name/group/sites/hostname/env/files).
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+            work: The offering's background create coroutine, run as
+                ``work(spec, user)``.
+            **extra: Offering-specific fields echoed onto the accepted body.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
+        group = spec.group
+        self.assert_group(user, group)
+        oname = object_name(spec.name, group)
+        targets = self.deployer.resolve_targets(spec.sites)
+        host = self.host_for(spec.name, spec.hostname, group)
+        # Surface deploy-time spec validation synchronously (400), before the 202.
+        self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
+        await self.assert_host_available(host, oname, targets)
+        await self.assert_workload_absent(spec.name, oname, targets)
+        background.add_task(self.run, work, spec, user)
+        return self.accepted(offering, spec.name, group, host, **extra)
+
+    async def accept_update(
+        self, *, offering: str, name: str, spec, user: Principal, background, work, **extra
+    ) -> WorkloadResponse:
+        """Run an update's synchronous pre-flight, then schedule the deploy (202).
+
+        Loads (and authorizes) the existing workload, validates the spec, and —
+        since the host can change on update — verifies the (possibly new) host is
+        free or already this workload's, all synchronously (immediate
+        400/404/409/503). Then queues the offering-specific deploy, passing the
+        loaded state through so the background work needn't re-fetch it.
+
+        Args:
+            offering: "function" or "container".
+            name: The workload name.
+            spec: The update request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+            work: The offering's background update coroutine, run as
+                ``work(name, spec, user, existing)``.
+            **extra: Offering-specific fields echoed onto the accepted body.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
+        group = spec.group
+        existing = await self.load_existing(name, offering, user, group)
+        # Surface deploy-time spec validation synchronously (400), before the 202.
+        self.validate_spec(name, group, user.username, spec.env, spec.files)
+        oname = object_name(name, group)
+        host = self.host_for(name, spec.hostname, group)
+        # The host can change on update; verify it's free (or already ours) now so a
+        # collision is a synchronous 409 instead of a silently-swallowed background
+        # failure. assert_host_available treats the workload's own mapping as
+        # available, so this is a no-op when the host is unchanged.
+        await self.assert_host_available(host, oname, self.deployer.resolve_targets(None))
+        background.add_task(self.run, work, name, spec, user, existing)
+        return self.accepted(offering, name, group, host, **extra)
+
     async def apply_workload(
         self,
         *,
