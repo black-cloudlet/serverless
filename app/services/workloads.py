@@ -923,8 +923,7 @@ class WorkloadService:
                 entry["statuses"].append(status)
 
         summaries = []
-        for name in merged:
-            entry = merged[name]
+        for name, entry in merged:
             host = entry["host"] or route_svc.host_for(
                 name, group, self.settings.route_domain
             )
@@ -933,7 +932,7 @@ class WorkloadService:
                 WorkloadSummary(
                     name=name,
                     group=group,
-                    type=kind,  # type: ignore[arg-type]
+                    type=kind,
                     hostname=host,
                     overallStatus=overall,
                     size=entry["size"],
