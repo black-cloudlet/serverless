@@ -3,6 +3,13 @@
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-311:latest
 FROM ${BASE_IMAGE}
 
+# Apply the latest OS security errata (patches base-image CVEs flagged by the
+# image scan) and refresh pip's build tooling (setuptools/pip CVEs). Runs as
+# root; the runtime drops back to the non-root UBI user below.
+USER 0
+RUN dnf -y update && dnf -y clean all \
+    && python3 -m pip install --no-cache-dir --upgrade pip setuptools
+
 ARG PIP_INDEX_URL
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PYTHONUNBUFFERED=1 \
