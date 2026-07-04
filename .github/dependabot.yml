@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # Python runtime deps. Dependabot bumps the pins in requirements.in/txt and
-  # the abstract ranges in pyproject; grouped so one PR covers a weekly sweep.
+  # Python deps in requirements.txt and pyproject; grouped so one PR covers a
+  # weekly sweep.
   - package-ecosystem: pip
     directory: "/"
     schedule:

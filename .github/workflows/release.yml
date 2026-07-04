@@ -1,0 +1,147 @@
+name: Release
+
+# Publish path: on pushes to main and on version tags, run the full check suite
+# and — only if it passes — build/scan/sign/publish the image and chart, and cut
+# a GitHub Release on a tag.
+#
+# Actions are pinned to commit SHAs (Dependabot keeps them current) so a
+# retagged action can't run unreviewed code with our GHCR-write token.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["**.md"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Same validation as CI; publishing is gated on it via `needs`.
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  image:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            # main publishes :latest, matching the chart's "latest" appVersion.
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The checks suite (a `needs`) already built + Trivy-scanned this exact
+      # context; the gha cache makes this a fast rebuild. Attaches an SBOM and
+      # provenance attestation to the published image.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      # Keyless signature (OIDC -> Fulcio/Rekor); no long-lived keys to manage.
+      # GHCR names must be lowercase (the repo name is mixed-case).
+      - name: Sign image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+  chart:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      # On a tagged release, stamp Chart.yaml version + appVersion to the tag
+      # (e.g. v1.2.3 -> 1.2.3); on main keep the 0.0.0 / "latest" development
+      # baseline already committed in Chart.yaml.
+      - name: Stamp chart version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            sed -i "s/^version:.*/version: ${VERSION}/" charts/serverless-api/Chart.yaml
+            sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/serverless-api/Chart.yaml
+          fi
+          grep -E '^(version|appVersion):' charts/serverless-api/Chart.yaml
+
+      - name: Package
+        run: helm package charts/serverless-api --destination dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Push + sign
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+          helm push dist/serverless-api-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts 2>&1 | tee push.log
+          DIGEST=$(grep -oE 'sha256:[0-9a-f]+' push.log | head -1)
+          cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/serverless-api@${DIGEST}"
+
+  release:
+    needs: [image, chart]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          REPO_LC="${GITHUB_REPOSITORY,,}"
+          cat > notes.md <<EOF
+          ## Artifacts
+
+          - **Image:** \`ghcr.io/${REPO_LC}:${VERSION}\`
+          - **Chart:** \`oci://ghcr.io/${{ github.repository_owner }}/charts/serverless-api:${VERSION}\`
+
+          Both are cosign-signed (keyless) and carry an SBOM.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --generate-notes
