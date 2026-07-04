@@ -2,8 +2,8 @@
 
 Pure functions (no cluster access). Everything here is recoverable from the KSVC
 itself except non-secret file contents, which the caller supplies via
-``configmaps`` (one extra read). Secret material — secret env values, secret file
-contents, registry creds — is deliberately never reconstructed.
+``configmaps`` (one extra read). Secret material - secret env values, secret file
+contents, registry creds - is deliberately never reconstructed.
 """
 
 from __future__ import annotations

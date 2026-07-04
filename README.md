@@ -4,9 +4,9 @@ A self-service **FaaS (Function as a Service)** and **CaaS (Container as a Servi
 platform that wraps the open-source [Knative](https://knative.dev/) project on **OpenShift**,
 exposed through a **Python / FastAPI** REST API.
 
-- **FaaS** — clients provide a Git repo (URL, branch, token) and source code; supported
+- **FaaS** - clients provide a Git repo (URL, branch, token) and source code; supported
   runtimes are **Python, Go, JavaScript**. Built with Knative Functions / buildpacks.
-- **CaaS** — clients provide a container image plus registry credentials.
+- **CaaS** - clients provide a container image plus registry credentials.
 - Both support **env vars**, **mounted secrets/config files**, and **scaling options**, and
   are exposed externally via **OpenShift Routes**.
 - Auth via **SSO (Keycloak) OIDC** with **SSO group-based** authorization.
@@ -16,7 +16,7 @@ exposed through a **Python / FastAPI** REST API.
 
 ## Documentation
 
-- **[Architecture & Design](docs/ARCHITECTURE.md)** — the full design document: component and
+- **[Architecture & Design](docs/ARCHITECTURE.md)** - the full design document: component and
   sequence diagrams, REST API specification, repository layout, and sample manifests.
 
 ## Layout
@@ -34,7 +34,7 @@ tests/      unit + API tests
 Containerfile
 ```
 
-The ArgoCD `ApplicationSet` is **not** in this repo — it lives in the central GitOps repo
+The ArgoCD `ApplicationSet` is **not** in this repo - it lives in the central GitOps repo
 and renders `charts/serverless-api` once per site (docs §8).
 
 ## Develop
@@ -57,4 +57,4 @@ values are projected from Vault via the External Secrets Operator (docs §7).
 
 > **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
 > builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
-> (`func`/Tekton) is the remaining integration point — see `app/services/builder.py`.
+> (`func`/Tekton) is the remaining integration point - see `app/services/builder.py`.

@@ -3,7 +3,7 @@
 Offering-agnostic. :class:`~app.services.function.FunctionService` and
 :class:`~app.services.container.ContainerService` compose this engine and
 add only the offering-specific prep (build-from-Git vs image + pull secret);
-everything else — apply, host/absence checks, access control, get/delete — lives
+everything else - apply, host/absence checks, access control, get/delete - lives
 here. See docs §3, §4, §6.2.
 """
 
@@ -286,8 +286,8 @@ class WorkloadService:
     ) -> WorkloadResponse:
         """Run an update's synchronous pre-flight, then schedule the deploy (202).
 
-        Loads (and authorizes) the existing workload, validates the spec, and —
-        since the host can change on update — verifies the (possibly new) host is
+        Loads (and authorizes) the existing workload, validates the spec, and -
+        since the host can change on update - verifies the (possibly new) host is
         free or already this workload's, all synchronously (immediate
         400/404/409/503). Then queues the offering-specific deploy, passing the
         loaded state through so the background work needn't re-fetch it.
@@ -477,7 +477,7 @@ class WorkloadService:
 
         1. **Prune first.** Delete the backing objects the new spec no longer
            references *before* anything goes live. A 404 means it never existed
-           here (fine); any other error is raised — aborting this site's update
+           here (fine); any other error is raised - aborting this site's update
            (reported as ``Failed`` by the fan-out) rather than letting the new
            spec go live alongside a stale, now-unreferenced Secret/ConfigMap that
            would leak old secret values. ``to_prune`` is empty on create.
@@ -498,8 +498,8 @@ class WorkloadService:
            on retry without taking the workload down or releasing its host.
         4. **Retire the old host last (update only).** If the host changed, the
            new DomainMapping is now live; only then delete the old host's mapping
-           (whose name *is* the old host). Pruning it *last* — not via
-           ``to_prune``, which prunes first — keeps the old host serving until the
+           (whose name *is* the old host). Pruning it *last* - not via
+           ``to_prune``, which prunes first - keeps the old host serving until the
            new one is in place (no custom-host gap) and leaves it intact if an
            apply above failed. Best-effort: a leftover old mapping only re-claims a
            host this same workload owns, and is GC'd on delete.
@@ -529,7 +529,7 @@ class WorkloadService:
             try:
                 cluster.delete(pkind, pname)
             except NotFoundError:
-                pass  # never existed in this site — nothing to prune
+                pass  # never existed in this site - nothing to prune
 
         applied = cluster.apply(ksvc)
         owner = res.owner_reference(applied[0]) if applied else None
@@ -545,7 +545,7 @@ class WorkloadService:
             # Backing/mapping apply failed after the KSVC went live. On a create,
             # roll the KSVC back (best-effort; cascades to any derived object via
             # ownerReferences) so no half-built workload lingers on the name/host;
-            # on an update, leave it — Knative keeps serving the last-good revision.
+            # on an update, leave it - Knative keeps serving the last-good revision.
             if created:
                 try:
                     cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
@@ -554,7 +554,7 @@ class WorkloadService:
             raise
 
         # The host changed on this update: the new DomainMapping is live now, so
-        # retire the old host's mapping (its name == the old host). Best-effort —
+        # retire the old host's mapping (its name == the old host). Best-effort -
         # a 404 means it was never here; any other error is logged but not fatal,
         # since the new host already works and a stale old mapping only re-claims a
         # host this same workload owns (and is GC'd on delete).
@@ -665,7 +665,7 @@ class WorkloadService:
         """Assert ``host`` is free, failing closed if a site is unreachable.
 
         Only a real 404 means "free"; an unreachable site can't prove the host is
-        free, so we fail closed (503) rather than treat it as available — otherwise
+        free, so we fail closed (503) rather than treat it as available - otherwise
         a create against a down peer could hijack its existing DomainMapping.
 
         Args:
@@ -769,7 +769,7 @@ class WorkloadService:
         meta_holder: dict[str, str] = {}
         # Each OK site donates its KSVC; the spec is uniform across sites, so we
         # read the desired-state spec back from the local site (most reliable hop)
-        # once, after the fan-out — see _pick_rep.
+        # once, after the fan-out - see _pick_rep.
         reps: dict[str, tuple] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
@@ -816,7 +816,7 @@ class WorkloadService:
         obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
         # An object_name collision could resolve to another group/offering; hide as
-        # 404 (privacy-preserving — don't leak that it exists). Log the real reason
+        # 404 (privacy-preserving - don't leak that it exists). Log the real reason
         # server-side so denied-vs-absent is still debuggable from the logs.
         if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
             labels.get(LABEL_OFFERING) != offering

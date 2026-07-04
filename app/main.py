@@ -34,7 +34,7 @@ async def _warmup(settings: Settings, deployer: Deployer) -> None:
     """Warm the one-time caches (OIDC discovery, cluster connections) at startup.
 
     Best-effort: makes the first request fast and surfaces misconfig in the logs
-    now. A down dependency is logged, not fatal — it is retried lazily on first
+    now. A down dependency is logged, not fatal - it is retried lazily on first
     use, preserving active/active startup.
     """
     timeout = settings.cluster_connect_timeout + settings.cluster_read_timeout

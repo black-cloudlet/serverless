@@ -2,7 +2,7 @@
 
 In the airgapped cluster, the build uses the mirrored buildpack builder/run
 images for Python/Go/JS (docs §3.1, §9). The source is cloned with the
-caller-supplied git token (used transiently, never persisted — §7.2) and the
+caller-supplied git token (used transiently, never persisted - §7.2) and the
 resulting image is pushed to the internal registry.
 
 The concrete in-cluster build invocation (a `func` build or a Tekton pipeline)

@@ -139,7 +139,7 @@ class Deployer:
         """Run ``fn`` on each target concurrently, returning ``[(site, result)]``.
 
         A site whose call fails or times out yields ``(site, None)`` instead of
-        aborting the whole fan-out — for reads (e.g. listings) where a down site
+        aborting the whole fan-out - for reads (e.g. listings) where a down site
         should be skipped, not fatal.
 
         Args:
@@ -169,7 +169,7 @@ def aggregate(statuses: list[SiteStatus]) -> str:
     Raises SiteTotalFailure if every site failed (nothing deployed anywhere);
     otherwise delegates the rollup to overall_status, mapping an unreachable site
     to ``Failed``. This keeps a single definition of "how per-site statuses roll
-    up" shared with the read paths — so a just-applied workload honestly reports
+    up" shared with the read paths - so a just-applied workload honestly reports
     ``Deploying`` rather than an optimistic ``Ready``.
 
     Args:
@@ -211,7 +211,7 @@ def overall_status(statuses: list[str]) -> str:
     ``Failed``) makes the deployment ``Degraded``. A site being garbage-collected
     (``Terminating``) makes the deployment ``Terminating`` (delete in progress).
     Otherwise an all-``Ready`` set is ``Ready`` and anything still in flight is
-    ``Deploying`` — including a mixed ``Ready`` + ``Deploying`` set, which is a
+    ``Deploying`` - including a mixed ``Ready`` + ``Deploying`` set, which is a
     normal rollout where one site is ahead, NOT a failure. This is what keeps the
     create→poll loop from seeing a false ``Degraded`` while the workload is still
     coming up.
@@ -246,7 +246,7 @@ def status_code_for(overall: str, created: bool) -> int:
     if overall == "Degraded":
         return 207
     if overall == "Deploying":
-        return 202  # accepted, still rolling out — a non-terminal poll state
+        return 202  # accepted, still rolling out - a non-terminal poll state
     return 201 if created else 200
 
 

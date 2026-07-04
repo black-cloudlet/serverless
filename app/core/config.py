@@ -55,7 +55,7 @@ class SSOConfig(BaseModel):
 
     issuer: str = "https://sso.internal/realms/serverless"
     # Expected token audience. When set, the `aud` claim is verified to contain it;
-    # when empty (the default), audience verification is skipped — so tokens work
+    # when empty (the default), audience verification is skipped - so tokens work
     # without a Keycloak audience mapper unless an audience is explicitly configured.
     audience: str = ""
     # Public Keycloak client Swagger UI uses for its "Authorize" login

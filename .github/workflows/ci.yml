@@ -1,8 +1,5 @@
 name: CI
 
-# Validation for PRs and feature branches. Pushes to main and version tags are
-# handled by release.yml (which runs the same checks before publishing), so they
-# are excluded here to avoid running the suite twice.
 on:
   pull_request:
   push:

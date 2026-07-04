@@ -105,7 +105,7 @@ class Cluster:
     def connect(self) -> None:
         """Eagerly establish the connection (API discovery).
 
-        So the first request doesn't pay for it. Idempotent — a no-op once
+        So the first request doesn't pay for it. Idempotent - a no-op once
         connected. Blocking.
         """
         _ = self._dynamic_client

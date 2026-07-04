@@ -22,7 +22,7 @@ ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
 
 # Name of the platform-injected CA-bundle volume/mount on every pod (matches the
-# default ConfigMap name). An internal pod-spec handle — owned by the KSVC
+# default ConfigMap name). An internal pod-spec handle - owned by the KSVC
 # builder; read-back filters it out as it isn't part of the user's spec.
 CA_BUNDLE_VOLUME = "ca-bundle"
 
@@ -124,7 +124,7 @@ def validate_hostname(host: str) -> str:
 
 # Validated string types shared by request models and query params. The group
 # validator also NORMALIZES ("/ggd-1234-team" -> "team"), so every group entering
-# the app is already in bare, canonical form at the edge — nothing downstream
+# the app is already in bare, canonical form at the edge - nothing downstream
 # re-normalizes.
 Name = Annotated[str, AfterValidator(validate_name)]
 Group = Annotated[str, AfterValidator(validate_group)]
@@ -147,7 +147,7 @@ class FileMount(BaseModel):
     """An inline file to load into the workload at ``mountPath``.
 
     The API stores the content in the workload's shared ConfigMap (or Secret when
-    ``secret: true``) — one ConfigMap and one Secret per workload — and mounts
+    ``secret: true``) - one ConfigMap and one Secret per workload - and mounts
     each file at its ``mountPath`` via ``subPath``.
     """
 
@@ -266,7 +266,7 @@ class WorkloadSummary(WorkloadBase):
 class EnvVarView(BaseModel):
     """An env var as read back from a deployed workload.
 
-    Secret-backed values are never returned — ``secret: true`` with
+    Secret-backed values are never returned - ``secret: true`` with
     ``value: null`` signals one is set.
     """
 
@@ -293,8 +293,8 @@ class WorkloadResponse(WorkloadBase):
 
     Identity (WorkloadBase) plus live per-site status plus the desired-state
     config common to both offerings (secrets redacted). Per-offering responses
-    subclass this — see FunctionResponse (in models.function) / ContainerResponse
-    (in models.container) — so the response mirrors the create body of that
+    subclass this - see FunctionResponse (in models.function) / ContainerResponse
+    (in models.container) - so the response mirrors the create body of that
     offering.
     """
 

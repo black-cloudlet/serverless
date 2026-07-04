@@ -1037,7 +1037,7 @@ class _DeleteCluster:
 
 async def test_delete_removes_ksvc_and_relies_on_gc():
     """Delete removes only the KSVC; the derived resources are garbage-collected
-    by Kubernetes via their ownerReferences (set at apply time — see
+    by Kubernetes via their ownerReferences (set at apply time - see
     test_apply_sets_owner_references_on_derived)."""
     from app.auth.claims import Principal
     from app.clients.cluster import ResourceKind
@@ -1490,7 +1490,7 @@ async def test_prune_runs_before_apply_on_update():
         if op == "delete" and kind != ResourceKind.DOMAIN_MAPPING
     ]
     assert prune_deletes and all(i < first_apply for i in prune_deletes)
-    # The old host's DomainMapping is retired last — after the new mapping is live.
+    # The old host's DomainMapping is retired last - after the new mapping is live.
     dm_deletes = [
         i
         for i, (op, kind) in enumerate(cluster.ops)
@@ -1713,7 +1713,7 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
 
 
 async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
-    """A backing/mapping failure on update must NOT delete the live KSVC — Knative
+    """A backing/mapping failure on update must NOT delete the live KSVC - Knative
     keeps serving the last-good revision; deleting would take it down + free the host."""
     from app.auth.claims import Principal
     from app.clients.cluster import ResourceKind

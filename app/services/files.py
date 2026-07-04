@@ -3,7 +3,7 @@
 All non-secret files are aggregated into a single ``{workload}-files`` ConfigMap
 and all secret files into a single ``{workload}-files`` Secret, one key per file.
 Each file is mounted at its ``mountPath`` via ``subPath`` (so it appears as a
-single file, not a directory). Pure functions — no cluster access.
+single file, not a directory). Pure functions - no cluster access.
 """
 
 from __future__ import annotations

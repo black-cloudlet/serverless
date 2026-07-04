@@ -41,7 +41,7 @@ class FunctionCreate(BaseModel):
 class FunctionUpdate(BaseModel):
     """Full replace of the mutable spec.
 
-    Supplying any build input (gitRepo, branch, runtime) — or just a gitToken —
+    Supplying any build input (gitRepo, branch, runtime) - or just a gitToken -
     triggers a rebuild from source; otherwise the existing image is kept and only
     config is updated.
     """
@@ -78,7 +78,7 @@ class FunctionUpdate(BaseModel):
 class FunctionResponse(WorkloadResponse):
     """A function, shaped like FunctionCreate (gitToken redacted) + live status.
 
-    No image is exposed: the built image is an internal artifact — the client
+    No image is exposed: the built image is an internal artifact - the client
     deals in source (gitRepo/branch), not images.
     """
 

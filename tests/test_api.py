@@ -219,7 +219,7 @@ def test_get_function_requires_group(client):
 
 def test_path_name_validated_at_the_edge(client):
     """A path {name} that isn't a DNS-1123 label is rejected at the boundary (400),
-    like the request-body name — not passed through to a cluster lookup."""
+    like the request-body name - not passed through to a cluster lookup."""
     assert client.get("/api/v1/functions/Bad_Name?group=team").status_code == 400
     assert client.delete("/api/v1/containers/UPPER?group=team").status_code == 400
 
@@ -254,7 +254,7 @@ def test_list_requires_group(client):
 
 def test_query_group_is_normalized_at_the_edge():
     """A ggd-/slash-prefixed group in the query string is normalized before it
-    reaches the service — the same one-place-at-the-edge normalization the request
+    reaches the service - the same one-place-at-the-edge normalization the request
     body already gets, so nothing downstream re-normalizes."""
     seen = {}
 
@@ -358,4 +358,4 @@ def test_swagger_sso_login_wired_in_openapi():
     init = app.swagger_ui_init_oauth
     assert init["clientId"] == "serverless-api-swagger"
     assert init["usePkceWithAuthorizationCodeGrant"] is True
-    assert "clientSecret" not in init  # public client — no secret
+    assert "clientSecret" not in init  # public client - no secret

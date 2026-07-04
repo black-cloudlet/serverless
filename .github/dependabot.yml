@@ -10,7 +10,7 @@ updates:
       python-deps:
         patterns: ["*"]
 
-  # GitHub Actions — keeps the SHA-pinned actions current (Dependabot updates the
+  # GitHub Actions - keeps the SHA-pinned actions current (Dependabot updates the
   # pin and the version comment together).
   - package-ecosystem: github-actions
     directory: "/"
