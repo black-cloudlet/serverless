@@ -20,7 +20,6 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
-      # Pinned so lint is reproducible; matches the ruff pin in pyproject [dev].
       - run: pip install ruff==0.15.20
       - run: ruff check .
       - run: ruff format --check .
@@ -78,8 +77,6 @@ jobs:
             | tar -xz -C /usr/local/bin kubeconform
           helm template serverless-api charts/serverless-api \
             | kubeconform -strict -summary -ignore-missing-schemas
-      # Unit-test chart templating logic (e.g. the image tag/appVersion default).
-      # --verify=false: the plugin source ships no provenance for helm to verify.
       - name: helm unittest
         run: |
           helm plugin install https://github.com/helm-unittest/helm-unittest --verify=false

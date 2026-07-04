@@ -22,5 +22,4 @@ USER 1001
 # ENTRYPOINT fixes the server binary + app; CMD holds the default runtime flags
 # so they can be overridden (e.g. --port, --workers) without replacing the
 # entrypoint. Both exec-form so signals reach uvicorn (clean shutdown).
-ENTRYPOINT ["uvicorn", "app.main:app"]
-CMD ["--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["python", "-m", "app.main"]

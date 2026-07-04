@@ -80,8 +80,6 @@ def create_app() -> FastAPI:
         version=__version__,
         description="REST API for functions and containers on the OpenShift Serverless Operator.",
         lifespan=lifespan,
-        # Disable the CDN-backed docs; we serve them from vendored assets so the
-        # API works in an airgapped cluster (see app.docs.mount_offline_docs).
         docs_url=None,
         redoc_url=None,
     )
@@ -93,8 +91,6 @@ def create_app() -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_allow_origins,
-            # Auth is a bearer token in the Authorization header, not cookies, so
-            # credentials mode isn't needed (and it's invalid alongside "*").
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
@@ -115,6 +111,4 @@ if __name__ == "__main__":
 
     settings = get_settings()
 
-    # Bind all interfaces: this is the container entrypoint; the pod network
-    # namespace is the isolation boundary, not the bind address.
     uvicorn.run("app.main:app", host="0.0.0.0", port=settings.port)  # noqa: S104

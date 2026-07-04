@@ -1,4 +1,3 @@
-# Runtime dependencies (mirror in the airgapped internal PyPI).
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.6
@@ -7,5 +6,4 @@ httpx>=0.27
 pyjwt[crypto]>=2.8
 kubernetes>=29.0
 pyyaml>=6.0
-# IANA tz database for ZoneInfo("Asia/Jerusalem") in slim containers.
 tzdata>=2024.1
