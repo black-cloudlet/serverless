@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import ContainerDep
-from app.models.common import Group, WorkloadSummary
+from app.models.common import Group, Name, WorkloadSummary
 from app.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 
 router = APIRouter(prefix="/api/v1/containers", tags=["containers"])
@@ -37,7 +37,7 @@ async def create_container(
 
 @router.put("/{name}", response_model=ContainerResponse, status_code=202)
 async def update_container(
-    name: str,
+    name: Name,
     spec: ContainerUpdate,
     user: CurrentUser,
     svc: ContainerDep,
@@ -81,7 +81,7 @@ async def list_containers(
 
 @router.get("/{name}", response_model=ContainerResponse)
 async def get_container(
-    name: str, group: Group, user: CurrentUser, svc: ContainerDep
+    name: Name, group: Group, user: CurrentUser, svc: ContainerDep
 ) -> ContainerResponse:
     """Get one container, including overallStatus and per-site status.
 
@@ -102,7 +102,7 @@ async def get_container(
 
 @router.delete("/{name}", status_code=204)
 async def delete_container(
-    name: str, group: Group, user: CurrentUser, svc: ContainerDep
+    name: Name, group: Group, user: CurrentUser, svc: ContainerDep
 ) -> None:
     """Delete a container and its derived resources (204).
 

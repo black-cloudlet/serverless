@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks
 
 from app.auth.deps import CurrentUser
 from app.dependencies import FunctionDep
-from app.models.common import Group, WorkloadSummary
+from app.models.common import Group, Name, WorkloadSummary
 from app.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 
 router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
@@ -37,7 +37,7 @@ async def create_function(
 
 @router.put("/{name}", response_model=FunctionResponse, status_code=202)
 async def update_function(
-    name: str,
+    name: Name,
     spec: FunctionUpdate,
     user: CurrentUser,
     svc: FunctionDep,
@@ -81,7 +81,7 @@ async def list_functions(
 
 @router.get("/{name}", response_model=FunctionResponse)
 async def get_function(
-    name: str, group: Group, user: CurrentUser, svc: FunctionDep
+    name: Name, group: Group, user: CurrentUser, svc: FunctionDep
 ) -> FunctionResponse:
     """Get one function, including overallStatus and per-site status.
 
@@ -102,7 +102,7 @@ async def get_function(
 
 @router.delete("/{name}", status_code=204)
 async def delete_function(
-    name: str, group: Group, user: CurrentUser, svc: FunctionDep
+    name: Name, group: Group, user: CurrentUser, svc: FunctionDep
 ) -> None:
     """Delete a function and its derived resources (204).
 
