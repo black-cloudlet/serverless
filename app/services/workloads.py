@@ -38,7 +38,6 @@ from app.models.common import (
     SiteStatus,
     WorkloadResponse,
     WorkloadSummary,
-    normalize_group,
 )
 from app.models.container import ContainerResponse
 from app.models.function import FunctionResponse
@@ -279,13 +278,12 @@ class WorkloadService:
         """
         group = spec.group
         self.assert_group(user, group)
-        oname = object_name(spec.name, group)
         targets = self.deployer.resolve_targets(spec.sites)
         host = self.host_for(spec.name, spec.hostname, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
-        await self.assert_host_available(host, oname, targets)
-        await self.assert_workload_absent(spec.name, oname, targets)
+        await self.assert_host_available(host, spec.name, group, targets)
+        await self.assert_workload_absent(spec.name, group, targets)
         background.add_task(self.run, work, spec, user)
         return self.accepted(offering, spec.name, group, host, **extra)
 
@@ -317,13 +315,12 @@ class WorkloadService:
         existing = await self.load_existing(name, offering, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         self.validate_spec(name, group, user.username, spec.env, spec.files)
-        oname = object_name(name, group)
         host = self.host_for(name, spec.hostname, group)
         # The host can change on update; verify it's free (or already ours) now so a
         # collision is a synchronous 409 instead of a silently-swallowed background
         # failure. assert_host_available treats the workload's own mapping as
         # available, so this is a no-op when the host is unchanged.
-        await self.assert_host_available(host, oname, self.deployer.resolve_targets(None))
+        await self.assert_host_available(host, name, group, self.deployer.resolve_targets(None))
         background.add_task(self.run, work, name, spec, user, existing)
         return self.accepted(offering, name, group, host, **extra)
 
@@ -381,7 +378,6 @@ class WorkloadService:
         Returns:
             The response body and HTTP status code.
         """
-        group = normalize_group(group)
         self.assert_group(user, group)
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(sites)
@@ -389,7 +385,7 @@ class WorkloadService:
 
         # The DomainMapping name IS the host, so an idempotent apply would hijack
         # another workload's mapping. Reject a host already owned by someone else.
-        await self.assert_host_available(host, oname, targets)
+        await self.assert_host_available(host, name, group, targets)
 
         resolved = resolve_files(oname, group, user.username, files)
         resolved_env = resolve_env(oname, group, user.username, env)
@@ -606,7 +602,6 @@ class WorkloadService:
             ServiceUnavailableError: If it couldn't be confirmed absent because a
                 site was unreachable.
         """
-        group = normalize_group(group)
         self.assert_group(user, group)
         oname = object_name(name, group)
         found: dict = {}
@@ -670,7 +665,9 @@ class WorkloadService:
         resolve_files(oname, group, owner, files)
         resolve_env(oname, group, owner, env)
 
-    async def assert_host_available(self, host: str, oname: str, targets: list[Cluster]) -> None:
+    async def assert_host_available(
+        self, host: str, name: str, group: str, targets: list[Cluster]
+    ) -> None:
         """Assert ``host`` is free, failing closed if a site is unreachable.
 
         Only a real 404 means "free"; an unreachable site can't prove the host is
@@ -679,13 +676,15 @@ class WorkloadService:
 
         Args:
             host: The external host (== the DomainMapping name) to check.
-            oname: The object name of the workload claiming the host.
+            name: The workload name claiming the host.
+            group: The workload's owning group.
             targets: The clusters to check.
 
         Raises:
             ConflictError: If the host is a DomainMapping owned by another workload.
             ServiceUnavailableError: If any site was unreachable.
         """
+        oname = object_name(name, group)
 
         def check(cluster: Cluster) -> SiteStatus:
             try:
@@ -702,21 +701,22 @@ class WorkloadService:
             raise ConflictError(f"hostname '{host}' is already assigned")
         self._assert_all_sites_checked(statuses, f"verify hostname '{host}' is available")
 
-    async def assert_workload_absent(self, name: str, oname: str, targets: list[Cluster]) -> None:
-        """Assert no workload named ``oname`` exists yet (create only).
+    async def assert_workload_absent(self, name: str, group: str, targets: list[Cluster]) -> None:
+        """Assert no workload named ``{name}-{group}`` exists yet (create only).
 
         Only a real 404 means "absent"; an unreachable site can't prove absence, so
         we fail closed (503) rather than risk creating over an existing workload.
 
         Args:
-            name: The display name (for the error message).
-            oname: The object name to probe for.
+            name: The workload name (also used in the error message).
+            group: The workload's owning group.
             targets: The clusters to check.
 
         Raises:
-            ConflictError: If a workload named ``oname`` already exists.
+            ConflictError: If a workload named ``{name}-{group}`` already exists.
             ServiceUnavailableError: If any site was unreachable.
         """
+        oname = object_name(name, group)
 
         def probe(cluster: Cluster) -> SiteStatus:
             try:
@@ -771,7 +771,6 @@ class WorkloadService:
             ServiceUnavailableError: If it can't be confirmed absent because a
                 site was unreachable.
         """
-        group = normalize_group(group)
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
@@ -944,7 +943,6 @@ class WorkloadService:
         Raises:
             NotFoundError: If the workload exists on no site.
         """
-        group = normalize_group(group)
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
@@ -989,7 +987,6 @@ class WorkloadService:
         Raises:
             SiteTotalFailure: If every site is unreachable.
         """
-        group = normalize_group(group)
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"

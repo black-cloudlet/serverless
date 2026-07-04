@@ -322,7 +322,7 @@ async def test_host_available_when_unused():
     svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     # no DomainMapping exists -> no raise
     await svc.assert_host_available(
-        "app-team.serverless.example.com", "app-team", svc.deployer.resolve_targets(None)
+        "app-team.serverless.example.com", "app", "team", svc.deployer.resolve_targets(None)
     )
 
 
@@ -339,7 +339,7 @@ async def test_host_taken_by_other_workload_conflicts():
         }
     )
     with pytest.raises(ConflictError):
-        await svc.assert_host_available(host, "app-team", svc.deployer.resolve_targets(None))
+        await svc.assert_host_available(host, "app", "team", svc.deployer.resolve_targets(None))
 
 
 async def test_host_owned_by_same_workload_ok():
@@ -354,7 +354,7 @@ async def test_host_owned_by_same_workload_ok():
         }
     )
     # same owner -> update, no conflict
-    await svc.assert_host_available(host, "app-team", svc.deployer.resolve_targets(None))
+    await svc.assert_host_available(host, "app", "team", svc.deployer.resolve_targets(None))
 
 
 async def test_workload_absent_ok():
@@ -362,7 +362,7 @@ async def test_workload_absent_ok():
         {"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")}
     )
     await svc.assert_workload_absent(
-        "app", "app-team", svc.deployer.resolve_targets(None)
+        "app", "team", svc.deployer.resolve_targets(None)
     )
 
 
@@ -378,7 +378,7 @@ async def test_workload_already_exists_conflicts():
     )
     with pytest.raises(ConflictError):
         await svc.assert_workload_absent(
-            "app", "app-team", svc.deployer.resolve_targets(None)
+            "app", "team", svc.deployer.resolve_targets(None)
         )
 
 
@@ -1065,7 +1065,7 @@ async def test_host_check_fails_closed_when_site_unreachable():
     svc = _workload_service({"site-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_host_available(
-            "h.example.com", "app-team", svc.deployer.resolve_targets(None)
+            "h.example.com", "app", "team", svc.deployer.resolve_targets(None)
         )
 
 
@@ -1075,7 +1075,7 @@ async def test_absent_check_fails_closed_when_site_unreachable():
     svc = _workload_service({"site-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_workload_absent(
-            "app", "app-team", svc.deployer.resolve_targets(None)
+            "app", "team", svc.deployer.resolve_targets(None)
         )
 
 
@@ -1083,7 +1083,7 @@ async def test_host_check_still_available_on_real_404():
     # A genuine NotFound (404) still reads as available across a reachable site.
     svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get -> NotFoundError
     await svc.assert_host_available(
-        "h.example.com", "app-team", svc.deployer.resolve_targets(None)
+        "h.example.com", "app", "team", svc.deployer.resolve_targets(None)
     )
 
 

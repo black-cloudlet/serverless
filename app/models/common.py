@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 LABEL_GROUP = "serverless.platform/group"
 LABEL_MANAGED_BY = "serverless.platform/managed-by"
@@ -120,6 +120,15 @@ def validate_hostname(host: str) -> str:
     if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
         return host
     raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
+
+
+# Validated string types shared by request models and query params. The group
+# validator also NORMALIZES ("/ggd-1234-team" -> "team"), so every group entering
+# the app is already in bare, canonical form at the edge — nothing downstream
+# re-normalizes.
+Name = Annotated[str, AfterValidator(validate_name)]
+Group = Annotated[str, AfterValidator(validate_group)]
+Hostname = Annotated[str, AfterValidator(validate_hostname)]
 
 
 class EnvVar(BaseModel):

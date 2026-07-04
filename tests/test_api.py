@@ -233,6 +233,29 @@ def test_list_requires_group(client):
     assert r.status_code == 400
 
 
+def test_query_group_is_normalized_at_the_edge():
+    """A ggd-/slash-prefixed group in the query string is normalized before it
+    reaches the service — the same one-place-at-the-edge normalization the request
+    body already gets, so nothing downstream re-normalizes."""
+    seen = {}
+
+    class _Capture(FakeFunctions):
+        async def get(self, name, group, user):
+            seen["group"] = group
+            return _ready("function", name, runtime="python")
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: Principal(
+        subject="u", username="alice", groups=["platforms"], is_admin=False
+    )
+    app.dependency_overrides[get_function_service] = lambda: _Capture()
+    c = TestClient(app)
+
+    r = c.get("/api/v1/functions/foo?group=ggd-1234-platforms")
+    assert r.status_code == 200
+    assert seen["group"] == "platforms"  # normalized at the router boundary
+
+
 def test_update_container_accepted(client):
     r = client.put(
         "/api/v1/containers/orders-api",

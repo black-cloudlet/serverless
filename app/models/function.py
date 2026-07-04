@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.common import (
     EnvVar,
     FileMount,
+    Group,
+    Hostname,
+    Name,
     Scaling,
     WorkloadResponse,
     WorkloadSize,
-    validate_group,
-    validate_hostname,
-    validate_name,
 )
 
 Runtime = Literal["python", "go", "javascript"]
-Name = Annotated[str, AfterValidator(validate_name)]
-Group = Annotated[str, AfterValidator(validate_group)]
-Hostname = Annotated[str, AfterValidator(validate_hostname)]
 
 
 class FunctionCreate(BaseModel):

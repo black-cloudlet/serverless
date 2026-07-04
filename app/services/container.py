@@ -107,7 +107,7 @@ class ContainerService:
             )
 
         await self._engine.assert_workload_absent(
-            spec.name, oname, self._engine.deployer.resolve_targets(spec.sites)
+            spec.name, group, self._engine.deployer.resolve_targets(spec.sites)
         )
         body, code = await self._engine.apply_workload(
             name=spec.name,

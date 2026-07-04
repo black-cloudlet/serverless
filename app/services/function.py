@@ -8,7 +8,7 @@ from app.models.common import WorkloadSummary
 from app.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from app.services import describe as describe_svc
 from app.services.builder import BuildRequest
-from app.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
+from app.services.workloads import OFFERING_FUNCTION, WorkloadService
 
 
 class FunctionService:
@@ -95,7 +95,6 @@ class FunctionService:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
         group = spec.group
-        oname = object_name(spec.name, group)
         try:
             build = self._engine.builder.build(
                 BuildRequest(
@@ -111,7 +110,7 @@ class FunctionService:
             raise ServiceUnavailableError(str(exc)) from exc
 
         await self._engine.assert_workload_absent(
-            spec.name, oname, self._engine.deployer.resolve_targets(spec.sites)
+            spec.name, group, self._engine.deployer.resolve_targets(spec.sites)
         )
         body, code = await self._engine.apply_workload(
             name=spec.name,
