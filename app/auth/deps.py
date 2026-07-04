@@ -63,9 +63,7 @@ def require_auth(
         ForbiddenError: If a valid OIDC token carries no group membership.
     """
     if not settings.auth_enabled:
-        return Principal(
-            subject="dev", username="dev", groups=["dev"], is_admin=True
-        )
+        return Principal(subject="dev", username="dev", groups=["dev"], is_admin=True)
 
     token = _bearer_token(request)
 

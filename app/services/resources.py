@@ -32,7 +32,7 @@ def build_secret(
     name: str,
     labels: dict[str, str],
     data: dict[str, str],
-    secret_type: str = "Opaque",
+    secret_type: str = "Opaque",  # noqa: S107 - the k8s Secret `type` field, not a password
 ) -> dict:
     """Build a Secret manifest, base64-encoding the data values.
 
@@ -45,9 +45,7 @@ def build_secret(
     Returns:
         The Secret manifest dict.
     """
-    encoded = {
-        k: base64.b64encode(v.encode("utf-8")).decode("ascii") for k, v in data.items()
-    }
+    encoded = {k: base64.b64encode(v.encode("utf-8")).decode("ascii") for k, v in data.items()}
     return {
         "apiVersion": "v1",
         "kind": "Secret",

@@ -66,9 +66,7 @@ class FunctionUpdate(BaseModel):
         if any(v is not None for v in (self.gitRepo, self.branch, self.runtime)) and (
             self.gitToken is None
         ):
-            raise ValueError(
-                "changing gitRepo/branch/runtime requires gitToken to rebuild"
-            )
+            raise ValueError("changing gitRepo/branch/runtime requires gitToken to rebuild")
         return self
 
     @property

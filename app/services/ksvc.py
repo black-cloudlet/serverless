@@ -56,9 +56,7 @@ def _env(env: list[ContainerEnv]) -> list[dict]:
     for e in env:
         if e.secret_ref is not None:
             name, key = e.secret_ref
-            out.append(
-                {"name": e.name, "valueFrom": {"secretKeyRef": {"name": name, "key": key}}}
-            )
+            out.append({"name": e.name, "valueFrom": {"secretKeyRef": {"name": name, "key": key}}})
         else:
             out.append({"name": e.name, "value": e.value})
     return out
@@ -153,9 +151,7 @@ def build_ksvc(
     # Mount the trusted CA bundle so the workload trusts internal TLS.
     if ca_config_map and ca_mount_path:
         vols.append({"name": CA_BUNDLE_VOLUME, "configMap": {"name": ca_config_map}})
-        mounts.append(
-            {"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True}
-        )
+        mounts.append({"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True})
 
     container: dict = {"image": image, "resources": _resources(size)}
     if env:

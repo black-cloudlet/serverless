@@ -115,8 +115,6 @@ if __name__ == "__main__":
 
     settings = get_settings()
 
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=settings.port
-    )
+    # Bind all interfaces: this is the container entrypoint; the pod network
+    # namespace is the isolation boundary, not the bind address.
+    uvicorn.run("app.main:app", host="0.0.0.0", port=settings.port)  # noqa: S104

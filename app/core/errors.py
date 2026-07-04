@@ -126,9 +126,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(RequestValidationError)
-    async def _validation(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             status_code=400,
             content=_envelope(

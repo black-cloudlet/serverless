@@ -17,8 +17,12 @@ def _ksvc():
             ContainerEnv(name="API_KEY", secret_ref=("app-team-env", "API_KEY")),
         ],
         volumes=[
-            VolumeSpec("files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf", True),
-            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret", True),
+            VolumeSpec(
+                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf", True
+            ),
+            VolumeSpec(
+                "files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret", True
+            ),
         ],
         scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
         size="medium",
@@ -62,10 +66,19 @@ def test_parse_spec_reports_function_build_inputs():
     from app.models.common import Scaling as _Scaling
 
     ksvc = build_ksvc(
-        name="fn-team", group="team", owner="alice", image="reg/fn:main",
-        offering="function", host="fn-team.ex.com", env=[], volumes=[],
-        scaling=_Scaling(), size="small",
-        runtime="python", git_url="https://git.example.com/app.git", branch="release",
+        name="fn-team",
+        group="team",
+        owner="alice",
+        image="reg/fn:main",
+        offering="function",
+        host="fn-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=_Scaling(),
+        size="small",
+        runtime="python",
+        git_url="https://git.example.com/app.git",
+        branch="release",
     )
     spec = parse_spec(ksvc)
     assert spec.gitRepo == "https://git.example.com/app.git"

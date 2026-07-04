@@ -33,8 +33,7 @@ def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
         Views with secret values set to None.
     """
     return [
-        EnvVarView(name=e.name, value=None if e.secret else e.value, secret=e.secret)
-        for e in env
+        EnvVarView(name=e.name, value=None if e.secret else e.value, secret=e.secret) for e in env
     ]
 
 

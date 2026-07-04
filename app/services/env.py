@@ -34,9 +34,7 @@ def env_secret_name(workload: str) -> str:
     return f"{workload}-env"
 
 
-def resolve_env(
-    workload: str, group: str, owner: str, env: list[EnvVar]
-) -> ResolvedEnv:
+def resolve_env(workload: str, group: str, owner: str, env: list[EnvVar]) -> ResolvedEnv:
     """Resolve env vars into container entries and a backing Secret.
 
     Plain entries stay inline; ``secret: true`` values move into the
@@ -65,9 +63,7 @@ def resolve_env(
         seen.add(e.name)
         if e.secret:
             secret_data[e.name] = e.value
-            resolved.append(
-                ContainerEnv(name=e.name, secret_ref=(secret_name, e.name))
-            )
+            resolved.append(ContainerEnv(name=e.name, secret_ref=(secret_name, e.name)))
         else:
             resolved.append(ContainerEnv(name=e.name, value=e.value))
 

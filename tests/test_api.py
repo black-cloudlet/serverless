@@ -52,15 +52,22 @@ class FakeFunctions:
         return _accepted("function", name, spec.group)
 
     async def get(self, name, group, user):
-        return _ready("function", name, runtime="python", gitRepo="https://git/x.git", branch="main")
+        return _ready(
+            "function", name, runtime="python", gitRepo="https://git/x.git", branch="main"
+        )
 
     async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
 
         return [
             WorkloadSummary(
-                name="fn-a", group="team", type="function", hostname="fn-a.example.com",
-                overallStatus="Ready", size="small", sites=["central"],
+                name="fn-a",
+                group="team",
+                type="function",
+                hostname="fn-a.example.com",
+                overallStatus="Ready",
+                size="small",
+                sites=["central"],
             )
         ]
 
@@ -83,8 +90,13 @@ class FakeContainers:
 
         return [
             WorkloadSummary(
-                name="ctr-a", group="team", type="container", hostname="ctr-a.example.com",
-                overallStatus="Ready", size="medium", sites=["central", "south"],
+                name="ctr-a",
+                group="team",
+                type="container",
+                hostname="ctr-a.example.com",
+                overallStatus="Ready",
+                size="medium",
+                sites=["central", "south"],
             )
         ]
 

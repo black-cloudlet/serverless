@@ -30,7 +30,10 @@ def test_build_ksvc_basic():
     )
     assert m["apiVersion"] == "serving.knative.dev/v1"
     assert m["metadata"]["name"] == "app-team"
-    assert m["metadata"]["annotations"]["serverless.platform/host"] == "app-team.serverless.example.com"
+    assert (
+        m["metadata"]["annotations"]["serverless.platform/host"]
+        == "app-team.serverless.example.com"
+    )
     assert m["metadata"]["labels"][LABEL_GROUP] == "team"
     tmpl = m["spec"]["template"]
     ann = tmpl["metadata"]["annotations"]
@@ -183,7 +186,7 @@ def test_resolve_files_accepts_linewrapped_base64():
     from app.models.common import FileMount
 
     # PEM-style line-wrapped base64 (newlines) must still decode, not 400.
-    wrapped = base64.encodebytes(b"hello world, this is a longer body") .decode()
+    wrapped = base64.encodebytes(b"hello world, this is a longer body").decode()
     resolved = resolve_files(
         "app", "team", "alice", [FileMount(mountPath="/a/conf", contentBase64=wrapped)]
     )
@@ -222,9 +225,7 @@ def test_pull_secret_dockerconfig():
     from app.services.labels import workload_labels
 
     labels = workload_labels("team", "o", "app", "container")
-    s = secret_svc.build_pull_secret(
-        "p", labels, "registry.internal", "user", "tok"
-    )
+    s = secret_svc.build_pull_secret("p", labels, "registry.internal", "user", "tok")
     assert s["type"] == "kubernetes.io/dockerconfigjson"
     assert s["metadata"]["labels"][LABEL_GROUP] == "team"
     cfg = json.loads(base64.b64decode(s["data"][".dockerconfigjson"]))

@@ -101,9 +101,7 @@ async def get_container(
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_container(
-    name: Name, group: Group, user: CurrentUser, svc: ContainerDep
-) -> None:
+async def delete_container(name: Name, group: Group, user: CurrentUser, svc: ContainerDep) -> None:
     """Delete a container and its derived resources (204).
 
     Args:

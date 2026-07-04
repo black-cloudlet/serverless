@@ -126,9 +126,7 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     status = _dig(obj, "status", default={}) or {}
     conditions = status.get("conditions", []) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)
-    revision = status.get("latestReadyRevisionName") or status.get(
-        "latestCreatedRevisionName"
-    )
+    revision = status.get("latestReadyRevisionName") or status.get("latestCreatedRevisionName")
     # A deletionTimestamp means the KSVC is being garbage-collected: report it as
     # Terminating so a GET during the delete window doesn't misreport it as Ready.
     if _dig(obj, "metadata", "deletionTimestamp"):
@@ -207,14 +205,10 @@ class WorkloadService:
         else:
             raise ValidationError(f"hostname must be a single label under '{domain}'")
         if not label or "." in label:
-            raise ValidationError(
-                f"hostname must be exactly one label under '{domain}'"
-            )
+            raise ValidationError(f"hostname must be exactly one label under '{domain}'")
         return f"{label}.{domain}"
 
-    def accepted(
-        self, kind: str, name: str, group: str, host: str, **extra
-    ) -> WorkloadResponse:
+    def accepted(self, kind: str, name: str, group: str, host: str, **extra) -> WorkloadResponse:
         """Build the Pending 202 body returned by accept/accept_update.
 
         Args:
@@ -573,16 +567,16 @@ class WorkloadService:
             except Exception:  # noqa: BLE001 - old-host cleanup is best-effort
                 logger.exception(
                     "retiring old host %s for %s failed in %s",
-                    prev_host, oname, cluster.site,
+                    prev_host,
+                    oname,
+                    cluster.site,
                 )
 
         obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
         status, revision = _ksvc_status(obj)
         return SiteStatus(site=cluster.site, status=status, revision=revision)
 
-    async def load_existing(
-        self, name: str, offering: str, user: Principal, group: str
-    ) -> dict:
+    async def load_existing(self, name: str, offering: str, user: Principal, group: str) -> dict:
         """Fetch an existing workload's carried-forward state (offering-scoped).
 
         Reads from whichever site has the workload; a down site is never reported
@@ -749,9 +743,7 @@ class WorkloadService:
                 f"cannot {action}: site(s) unreachable: {', '.join(sorted(unreachable))}"
             )
 
-    async def get(
-        self, kind: str, name: str, user: Principal, group: str
-    ) -> WorkloadResponse:
+    async def get(self, kind: str, name: str, user: Principal, group: str) -> WorkloadResponse:
         """Read one workload with live per-site status and its redacted spec.
 
         Fans out to all sites; a site that returns a clean 404 is omitted, while
@@ -831,13 +823,15 @@ class WorkloadService:
         ):
             logger.debug(
                 "get %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
-                kind, name, user.username, labels.get(LABEL_GROUP), labels.get(LABEL_OFFERING),
+                kind,
+                name,
+                user.username,
+                labels.get(LABEL_GROUP),
+                labels.get(LABEL_OFFERING),
             )
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        host = meta_holder.get(
-            "host", route_svc.host_for(name, group, self.settings.route_domain)
-        )
+        host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
         # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
@@ -883,7 +877,7 @@ class WorkloadService:
             try:
                 cm = cluster.get(ResourceKind.CONFIG_MAP, cm_name)
                 configmaps[cm_name] = cm.get("data") or {}
-            except Exception:  # noqa: BLE001 - content is best-effort
+            except Exception:  # noqa: BLE001, S110 - content is best-effort, skip silently
                 pass
         registry_username = None
         ps_name = describe_svc.pull_secret_name(obj)
@@ -891,7 +885,7 @@ class WorkloadService:
             try:
                 secret = cluster.get(ResourceKind.SECRET, ps_name)
                 registry_username = secret_svc.registry_username(secret)
-            except Exception:  # noqa: BLE001 - username is best-effort
+            except Exception:  # noqa: BLE001, S110 - username is best-effort, skip silently
                 pass
         return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
 
@@ -929,9 +923,7 @@ class WorkloadService:
         except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
             return None
 
-    async def delete(
-        self, kind: str, name: str, user: Principal, group: str
-    ) -> None:
+    async def delete(self, kind: str, name: str, user: Principal, group: str) -> None:
         """Delete a workload from every site; GC cascades its derived resources.
 
         Args:
@@ -1029,9 +1021,7 @@ class WorkloadService:
 
         summaries = []
         for name, entry in merged.items():
-            host = entry["host"] or route_svc.host_for(
-                name, group, self.settings.route_domain
-            )
+            host = entry["host"] or route_svc.host_for(name, group, self.settings.route_domain)
             overall = overall_status(entry["statuses"])
             summaries.append(
                 WorkloadSummary(

@@ -1,0 +1,4 @@
+# Keep test fixtures and CI scaffolding out of the packaged chart.
+tests/
+*_test.yaml
+.helmignore

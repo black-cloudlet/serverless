@@ -101,9 +101,7 @@ async def get_function(
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_function(
-    name: Name, group: Group, user: CurrentUser, svc: FunctionDep
-) -> None:
+async def delete_function(name: Name, group: Group, user: CurrentUser, svc: FunctionDep) -> None:
     """Delete a function and its derived resources (204).
 
     Args:

@@ -161,9 +161,7 @@ class FileMount(BaseModel):
     def _check(self) -> "FileMount":
         """Require exactly one of ``content`` or ``contentBase64``."""
         if (self.content is None) == (self.contentBase64 is None):
-            raise ValueError(
-                "file requires exactly one of 'content' or 'contentBase64'"
-            )
+            raise ValueError("file requires exactly one of 'content' or 'contentBase64'")
         return self
 
 
@@ -324,4 +322,3 @@ class WorkloadSpec(BaseModel):
     # Function source: what the build was run from. The git token is never stored.
     gitRepo: str | None = None
     branch: str | None = None
-

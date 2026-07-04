@@ -33,8 +33,9 @@ def test_container_registry_creds_optional_but_paired():
     c = ContainerCreate(name="api", group="team", image="reg/api:1")
     assert c.registryUsername is None and c.registryToken is None
     # both provided -> fine
-    ContainerCreate(name="api", group="team", image="reg/api:1",
-                    registryUsername="bob", registryToken="t")
+    ContainerCreate(
+        name="api", group="team", image="reg/api:1", registryUsername="bob", registryToken="t"
+    )
     # only one provided -> rejected
     with pytest.raises(ValidationError):
         ContainerCreate(name="api", group="team", image="reg/api:1", registryUsername="bob")
@@ -70,9 +71,7 @@ def test_size_default_and_choices():
         == "large"
     )
     with pytest.raises(ValidationError):  # unknown size
-        FunctionCreate(
-            name="x", group="team", gitRepo="g", gitToken="t", runtime="go", size="xl"
-        )
+        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go", size="xl")
 
 
 def test_envvar_requires_value():
@@ -140,14 +139,18 @@ def test_scaling_hpa_metric_cannot_scale_to_zero():
 def test_optional_hostname_validated():
     fn = FunctionCreate(
         name="my-fn",
-        group="team", gitRepo="g",
+        group="team",
+        gitRepo="g",
         gitToken="t",
         runtime="python",
         hostname="app.example.com",
     )
     assert fn.hostname == "app.example.com"
     # default (no hostname) is allowed
-    assert FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go").hostname is None
+    assert (
+        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go").hostname
+        is None
+    )
     # invalid hostnames rejected
     for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
         with pytest.raises(ValidationError):

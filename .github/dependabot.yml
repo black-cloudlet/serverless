@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Python runtime deps. Dependabot bumps the pins in requirements.in/txt and
+  # the abstract ranges in pyproject; grouped so one PR covers a weekly sweep.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  # GitHub Actions — keeps the SHA-pinned actions current (Dependabot updates the
+  # pin and the version comment together).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base image in the Containerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
