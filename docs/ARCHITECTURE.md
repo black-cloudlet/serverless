@@ -5,7 +5,7 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 **Python / FastAPI** REST API.
 
 > **Status:** Implemented. This document is the source of truth for the architecture; the
-> FastAPI application (`app/`), the Helm chart (`helm/serverless-api`), and a CI/CD workflow
+> FastAPI application (`app/`), the Helm chart (`charts/serverless-api`), and a CI/CD workflow
 > (`.github/workflows/ci.yml`) are in this repo. The GitOps manifests (ArgoCD
 > `ApplicationSet`) live in a separate central GitOps repo, targeting an **airgapped**
 > OpenShift environment.
@@ -997,7 +997,7 @@ Serverless/
 │   │   └── labels.py                # ownership / workload labels
 │   └── clients/
 │       └── cluster.py               # Cluster: wraps the k8s library for one site (mTLS cert)
-├── helm/
+├── charts/
 │   └── serverless-api/
 │       ├── Chart.yaml
 │       ├── values.yaml              # site profiles, image refs, SSO, registry
@@ -1204,7 +1204,7 @@ spec:
 
 > This manifest is **not** part of this repository. It is shown so the platform team can wire
 > this chart into the central GitOps repo's `ApplicationSet`, generating one Application per
-> site that renders `helm/serverless-api` with a per-site values file.
+> site that renders `charts/serverless-api` with a per-site values file.
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -1230,7 +1230,7 @@ spec:
       source:
         repoURL: https://git.internal/team/serverless.git   # THIS repo (the chart)
         targetRevision: main
-        path: helm/serverless-api
+        path: charts/serverless-api
         helm:
           valueFiles:
             - "{{valuesFile}}"

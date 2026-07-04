@@ -7,8 +7,14 @@ global:
 name: serverless-api
 
 image:
-  repository: registry.internal/serverless/serverless-api
-  tag: "0.1.0"
+  # Split registry/repository so the registry can be swapped per environment
+  # (e.g. the airgapped mirror). registry is optional; leave empty to bake it
+  # into repository instead.
+  registry: registry.internal
+  repository: serverless/serverless-api
+  # Empty -> defaults to the chart appVersion (see the serverless-api.image
+  # helper): "latest" on main, the release version on a tagged build.
+  tag: ""
   pullPolicy: IfNotPresent
 
 replicaCount: 2

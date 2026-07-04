@@ -28,14 +28,14 @@ app/        FastAPI application
   services/ pure manifest builders + multi-site deployer + build/orchestration
   clients/  per-site Kubernetes/OpenShift client (mTLS client cert)
   routers/  FaaS / CaaS / resources / health endpoints
-helm/       Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
+charts/     Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
 tests/      unit + API tests
 .github/    CI/CD workflow (ruff, pytest, helm lint + template, image build/push)
 Containerfile
 ```
 
 The ArgoCD `ApplicationSet` is **not** in this repo — it lives in the central GitOps repo
-and renders `helm/serverless-api` once per site (docs §8).
+and renders `charts/serverless-api` once per site (docs §8).
 
 ## Develop
 

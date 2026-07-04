@@ -1,0 +1,9 @@
+apiVersion: v2
+name: serverless-api
+description: FaaS/CaaS REST API wrapping Knative on OpenShift
+type: application
+# Development baseline. CI stamps both to the git tag (e.g. 1.2.3) on a tagged
+# release; on main they stay 0.0.0 / "latest". The container image tracks
+# appVersion via the serverless-api.image helper.
+version: 0.0.0
+appVersion: "latest"
