@@ -1,14 +1,10 @@
-# Default values for serverless-api.
-# Per-site overrides live in the central GitOps repo (values-site-a.yaml, ...).
-
-# Base name for the API's resources (Deployment, Service, Route, RBAC, labels).
-name: serverless-api
-
 global:
   clusterName: example
   baseDomain: example.com
   site: example
   env: example
+
+name: serverless-api
 
 image:
   repository: registry.internal/serverless/serverless-api
@@ -17,27 +13,19 @@ image:
 
 replicaCount: 2
 
-# Namespaces created by this chart, guarded against ArgoCD delete/prune.
 namespaces:
-  api: serverless-api               # where the API runs
-  workloads: serverless-workloads   # where the API creates functions/containers
+  api: serverless-api
+  workloads: serverless-workloads
 
-# Single platform wildcard domain (docs §5).
 routeDomain: serverless.example.com
 
-# Browser origins allowed to call the API (e.g. the ServiceNow portal).
-# Empty disables CORS (server-side callers don't need it).
 corsAllowOrigins: []
 #  - https://acme.service-now.com
 
-# SSO OIDC (docs §6). clientSecret comes from Vault via ESO, not here.
 sso:
   issuer: https://sso.internal/realms/serverless
-  # Set to verify the token `aud` (needs a Keycloak audience mapper); empty skips it.
   audience: ""
-  # Public Keycloak client for Swagger UI's "Authorize" (Auth Code + PKCE, no secret).
-  swaggerClientId: serverless-api-swagger
-  # discovery / authorize / token URLs are derived from the issuer in-app.
+  swaggerClientId: serverless-api
   groupsClaim: groups
   adminGroups:
     - platform-admins
@@ -45,16 +33,12 @@ sso:
 registry:
   url: registry.internal
 
-# Site connection profiles the API talks to (active/active, both clusters).
-# Only endpoint + namespace per site; the client cert and CA are global.
 sites:
-  - name: central                 # site/region
-    cluster: central-0            # cluster instance
+  - name: central                 
+    cluster: central-0        
   - name: south
     cluster: south-0
 
-# cert-manager client certificate (CN = DNS name, ACME-issued). docs §6.3
-# Same identity is valid in every cluster; mounted at mountPath as tls.crt/tls.key.
 certificate:
   name: serverless-client-cert
   user: serverless-api.client.example.com
@@ -63,34 +47,19 @@ certificate:
     name: client-cert-acme
     kind: ClusterIssuer
 
-# OpenShift-injected trusted CA bundle (same for every cluster). Created in both
-# namespaces and mounted into the API and every workload.
 caBundle:
   name: ca-bundle
   key: ca-bundle.crt
   mountPath: /etc/ssl/certs
 
-# ESO: reference the PRE-EXISTING ClusterSecretStore; we ship ExternalSecret(s) only.
-# Each kind of data is its own Secret (separate rotation/exposure). Every listed
-# Secret is projected from Vault and loaded into the API via envFrom — so each
-# `secretKey` must be a valid environment variable name. Add an entry to create a
-# Secret; remove it to skip.
 externalSecrets:
-  clusterSecretStore: vault-backend
+  clusterSecretStore: cloudlet-cloudlet
   refreshInterval: 1h
   secrets:
-    - name: serverless-api-sso
-      data:
-        - secretKey: SSO_CLIENT_SECRET
-          key: cloudlet/platforms/serverless-api
-          property: sso-client-secret
-        - secretKey: SSO_CLIENT_ID
-          key: cloudlet/platforms/serverless-api
-          property: sso-client-secret
     - name: serverless-api-keys
       data:
         - secretKey: SERVERLESS_ADMIN_API_KEY
-          key: cloudlet/platforms/serverless-api
+          key: cloudlet/platforms/serverless
           property: admin-api-key
 
 service:
@@ -100,8 +69,8 @@ service:
 
 resources:
   requests:
-    cpu: 100m
-    memory: 256Mi
+    cpu: 250m
+    memory: 512Mi
   limits:
     cpu: "1"
     memory: 512Mi
