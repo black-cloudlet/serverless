@@ -98,8 +98,8 @@ jobs:
           cache-to: type=gha,mode=max
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
-      # even when nothing in our code changed. The Dockerfile applies the
-      # available OS/pip patches (dnf update) to keep HIGH low regardless.
+      # even when nothing in our code changed. The python:3.13-slim base is
+      # rebuilt on Debian security updates, keeping HIGH low without a patch step.
       - name: Vulnerability report (Trivy)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:

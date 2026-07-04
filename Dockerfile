@@ -11,8 +11,10 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app
 
 COPY pyproject.toml ./
-COPY app .
-RUN pip install . 
+# Must land in ./app so setuptools finds the `app` package; `COPY app .` would
+# flatten the contents into /app and `pip install .` would install nothing.
+COPY app ./app
+RUN pip install .
 RUN chown -R 1001:0 /app && \
     chmod -R g=u /app
 
