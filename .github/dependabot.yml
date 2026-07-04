@@ -20,7 +20,7 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Base image in the Containerfile.
+  # Base image in the Dockerfile.
   - package-ecosystem: docker
     directory: "/"
     schedule:

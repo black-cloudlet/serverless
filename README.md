@@ -31,7 +31,7 @@ app/        FastAPI application
 charts/     Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
 tests/      unit + API tests
 .github/    CI/CD workflow (ruff, pytest, helm lint + template, image build/push)
-Containerfile
+Dockerfile
 ```
 
 The ArgoCD `ApplicationSet` is **not** in this repo - it lives in the central GitOps repo

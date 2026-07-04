@@ -78,7 +78,7 @@ jobs:
           helm template serverless-api charts/serverless-api \
             | kubeconform -strict -summary -ignore-missing-schemas
 
-  # Verify the Containerfile builds and scan the image on every run; this gates
+  # Verify the Dockerfile builds and scan the image on every run; this gates
   # publishing (release.yml's push job `needs` this suite), so the pushed image
   # is the scanned one. No push here.
   image-scan:
@@ -91,14 +91,14 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          file: ./Containerfile
+          file: ./Dockerfile
           load: true
           tags: serverless-api:scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
-      # even when nothing in our code changed. The Containerfile applies the
+      # even when nothing in our code changed. The Dockerfile applies the
       # available OS/pip patches (dnf update) to keep HIGH low regardless.
       - name: Vulnerability report (Trivy)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
