@@ -41,7 +41,7 @@ and renders `charts/serverless-api` once per site (docs §8).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -e ".[dev]"
+pip install -e ".[dev]"
 
 # Run the test suite
 pytest

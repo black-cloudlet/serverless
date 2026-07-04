@@ -1018,8 +1018,7 @@ Serverless/
 │       └── ci.yml                   # CI/CD: ruff, pytest, helm lint+template, image build/push
 ├── tests/                           # flat pytest modules (test_api.py, test_*.py)
 ├── Containerfile                    # build the API image (airgap-friendly base)
-├── requirements.txt                 # runtime deps (mirrored to internal PyPI)
-├── pyproject.toml                   # project metadata, deps, ruff/pytest config
+├── pyproject.toml                   # project metadata, deps (single source), ruff/pytest config
 └── .env.example                     # sample SERVERLESS_* configuration
 ```
 

@@ -57,7 +57,7 @@ jobs:
         with:
           python-version: "3.11"
       # Audit the runtime deps that ship in the image for known CVEs.
-      - run: pip install -r requirements.txt pip-audit
+      - run: pip install . pip-audit
       - run: pip-audit
 
   helm:

@@ -8,7 +8,7 @@ FROM ${BASE_IMAGE}
 # root; the runtime drops back to the non-root UBI user below.
 USER 0
 RUN dnf -y update && dnf -y clean all \
-    && python3 -m pip install --no-cache-dir --upgrade pip setuptools
+    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 ARG PIP_INDEX_URL
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
@@ -17,10 +17,11 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
+# Install the app and its runtime deps from pyproject.toml — the single source
+# of truth for dependencies (no separate requirements.txt).
+COPY pyproject.toml ./
 COPY app ./app
+RUN pip install --no-cache-dir .
 
 EXPOSE 8080
 # Non-root (UBI default user 1001).

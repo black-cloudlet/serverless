@@ -1,7 +1,6 @@
 version: 2
 updates:
-  # Python deps in requirements.txt and pyproject; grouped so one PR covers a
-  # weekly sweep.
+  # Python deps in pyproject.toml; grouped so one PR covers a weekly sweep.
   - package-ecosystem: pip
     directory: "/"
     schedule:
