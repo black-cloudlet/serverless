@@ -1,9 +1,11 @@
 name: CI
 
+# Validation for PRs and branch pushes (including main). Publishing is done only
+# by release.yml (manual workflow_dispatch), so nothing here pushes artifacts.
 on:
   pull_request:
   push:
-    branches-ignore: [main]
+    branches: ["**"]
     paths-ignore: ["**.md"]
 
 permissions:

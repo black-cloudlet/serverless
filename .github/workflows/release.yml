@@ -1,31 +1,70 @@
 name: Release
 
-# Publish path: on pushes to main and on version tags, run the full check suite
-# and - only if it passes - build/scan/sign/publish the image and chart, and cut
-# a GitHub Release on a tag.
+# One-click release (manual). Enter a version (e.g. 1.2.0) and this workflow:
+#   1. bumps the version in pyproject.toml + Chart.yaml, commits it to the branch
+#      it was run from, and creates the vX.Y.Z tag;
+#   2. runs the full check suite;
+#   3. builds/scans/signs and publishes the image (:X.Y.Z + :latest) and chart,
+#      then cuts a GitHub Release.
 #
-# Actions are pinned to commit SHAs (Dependabot keeps them current) so a
-# retagged action can't run unreviewed code with our GHCR-write token.
+# Self-contained on purpose: a tag pushed by GITHUB_TOKEN does NOT re-trigger a
+# tag-listening workflow, so we do the whole release in this one run — no PAT.
+# Note: the version-bump commit is pushed to the run's branch; if that branch is
+# protected against direct pushes, run this from an unprotected release branch or
+# grant the Actions bot bypass.
+#
+# Actions are pinned to commit SHAs (Dependabot keeps them current).
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths-ignore: ["**.md"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 1.2.0 (no leading v)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # commit the version bump + push the tag
+    outputs:
+      version: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Validate, bump, commit, tag
+        run: |
+          VERSION="${{ inputs.version }}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z with no leading v"; exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::tag v$VERSION already exists"; exit 1
+          fi
+          sed -i -E "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          sed -i -E "s/^version:.*/version: $VERSION/" charts/serverless-api/Chart.yaml
+          sed -i -E "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/serverless-api/Chart.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release: v$VERSION"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v$VERSION"
+
   # Same validation as CI; publishing is gated on it via `needs`.
   checks:
+    needs: prepare
     uses: ./.github/workflows/checks.yml
 
   image:
-    needs: checks
+    needs: [prepare, checks]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -34,6 +73,8 @@ jobs:
       id-token: write # cosign keyless signing
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: "v${{ needs.prepare.outputs.version }}" # build the tagged code
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Image metadata
@@ -42,10 +83,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            # main publishes :latest, matching the chart's "latest" appVersion.
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -54,9 +93,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The checks suite (a `needs`) already built + Trivy-scanned this exact
-      # context; the gha cache makes this a fast rebuild. Attaches an SBOM and
-      # provenance attestation to the published image.
+      # The checks suite (a `needs`) already built + Trivy-scanned this context;
+      # the gha cache makes this a fast rebuild. Attaches an SBOM + provenance.
       - name: Build and push
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -74,15 +112,14 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
-      # Keyless signature (OIDC -> Fulcio/Rekor); no long-lived keys to manage.
-      # GHCR names must be lowercase (the repo name is mixed-case).
+      # Keyless signature (OIDC -> Fulcio/Rekor). GHCR names must be lowercase.
       - name: Sign image
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
 
   chart:
-    needs: checks
+    needs: [prepare, checks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -91,19 +128,9 @@ jobs:
       id-token: write # cosign keyless signing
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: "v${{ needs.prepare.outputs.version }}" # Chart.yaml already stamped by prepare
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
-
-      # On a tagged release, stamp Chart.yaml version + appVersion to the tag
-      # (e.g. v1.2.3 -> 1.2.3); on main keep the 0.0.0 / "latest" development
-      # baseline already committed in Chart.yaml.
-      - name: Stamp chart version
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            sed -i "s/^version:.*/version: ${VERSION}/" charts/serverless-api/Chart.yaml
-            sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/serverless-api/Chart.yaml
-          fi
-          grep -E '^(version|appVersion):' charts/serverless-api/Chart.yaml
 
       - name: Package
         run: helm package charts/serverless-api --destination dist
@@ -118,20 +145,19 @@ jobs:
           DIGEST=$(grep -oE 'sha256:[0-9a-f]+' push.log | head -1)
           cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/serverless-api@${DIGEST}"
 
-  release:
-    needs: [image, chart]
-    if: startsWith(github.ref, 'refs/tags/v')
+  github-release:
+    needs: [prepare, image, chart]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # create the GitHub Release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.prepare.outputs.version }}"
           REPO_LC="${GITHUB_REPOSITORY,,}"
           cat > notes.md <<EOF
           ## Artifacts
@@ -141,7 +167,7 @@ jobs:
 
           Both are cosign-signed (keyless) and carry an SBOM.
           EOF
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
             --notes-file notes.md \
             --generate-notes
