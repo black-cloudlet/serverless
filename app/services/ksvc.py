@@ -145,6 +145,9 @@ def build_ksvc(
     # default KPA, so the class annotation is omitted for them.
     if scaling.autoscaler_class:
         annotations["autoscaling.knative.dev/class"] = scaling.autoscaler_class
+    # Optional: delay scale-down to smooth bursty traffic (Knative default otherwise).
+    if scaling.scaleDownDelay:
+        annotations["autoscaling.knative.dev/scale-down-delay"] = scaling.scaleDownDelay
     labels = workload_labels(group, owner, name, offering)
     vols, mounts = _volumes(volumes)
 

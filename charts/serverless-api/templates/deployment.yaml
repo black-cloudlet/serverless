@@ -61,6 +61,10 @@ spec:
             - name: REQUESTS_CA_BUNDLE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
+            # Non-secret sites list (SERVERLESS_SITES); edited without touching
+            # the Deployment.
+            - configMapRef:
+                name: "{{ .Values.name }}-sites"
             {{- range .Values.externalSecrets.secrets }}
             - secretRef:
                 name: {{ .name }}

@@ -109,6 +109,16 @@ def test_scaling_metric_default_and_choices():
         Scaling(metric="bananas")
 
 
+def test_scaling_scale_down_delay():
+    # Accepts single-unit durations up to 1h.
+    for good in ("0s", "30s", "5m", "1h", "60m", "3600s"):
+        assert Scaling(scaleDownDelay=good).scaleDownDelay == good
+    # Bad format or over the 1h cap is rejected.
+    for bad in ("5", "5min", "1h30m", "-5s", "2h", "61m", "3601s"):
+        with pytest.raises(ValidationError):
+            Scaling(scaleDownDelay=bad)
+
+
 def test_scaling_effective_target_is_metric_aware():
     # KPA metrics default to 100; cpu/memory default to 70% so we scale early.
     assert Scaling().effective_target == 100

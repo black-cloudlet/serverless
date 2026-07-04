@@ -129,6 +129,7 @@ def _scaling(ksvc: dict) -> Scaling | None:
     mx = ann.get("autoscaling.knative.dev/max-scale")
     metric = ann.get("autoscaling.knative.dev/metric")
     target = ann.get("autoscaling.knative.dev/target")
+    scale_down_delay = ann.get("autoscaling.knative.dev/scale-down-delay")
     if mn is None or mx is None or metric is None:
         return None
     try:
@@ -137,6 +138,7 @@ def _scaling(ksvc: dict) -> Scaling | None:
             maxScale=int(mx),
             metric=metric,
             target=int(target) if target is not None else None,
+            scaleDownDelay=scale_down_delay,
         )
     except Exception:  # noqa: BLE001 - unparseable annotations -> omit scaling
         return None

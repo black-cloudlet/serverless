@@ -45,6 +45,11 @@ HOSTNAME = re.compile(
 # "ggd-1234-platforms" is the group "platforms").
 _GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
 
+# Knative scale-down-delay: a single-unit Go duration ("30s"/"5m"/"1h"),
+# capped by Knative at 1h.
+_DURATION = re.compile(r"^(\d+)(s|m|h)$")
+_DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
+
 
 def normalize_group(group: str) -> str:
     """Normalize a group name to its bare form.
@@ -173,12 +178,16 @@ class Scaling(BaseModel):
         maxScale: Maximum replicas.
         metric: The signal the autoscaler scales on (concurrency/rps/cpu/memory).
         target: Target value for the metric; None uses a metric-aware default.
+        scaleDownDelay: How long the autoscaler waits before scaling a revision
+            down (e.g. "30s", "5m", "1h"); None leaves the Knative default.
+            Smooths bursty traffic by avoiding rapid scale-down/up churn.
     """
 
     minScale: int = Field(0, ge=0)
     maxScale: int = Field(3, ge=1)
     metric: ScalingMetric = "concurrency"
     target: int | None = Field(None, ge=1)
+    scaleDownDelay: str | None = None
 
     @property
     def effective_target(self) -> int:
@@ -213,6 +222,12 @@ class Scaling(BaseModel):
                 f"metric '{self.metric}' target is a utilization percentage; "
                 "it must be between 1 and 100"
             )
+        if self.scaleDownDelay is not None:
+            match = _DURATION.fullmatch(self.scaleDownDelay)
+            if not match:
+                raise ValueError("scaleDownDelay must be a duration like '30s', '5m', or '1h'")
+            if int(match.group(1)) * _DURATION_SECONDS[match.group(2)] > 3600:
+                raise ValueError("scaleDownDelay must be at most 1h (Knative maximum)")
         return self
 
 

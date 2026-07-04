@@ -69,14 +69,19 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - run: helm lint charts/serverless-api
-      # Render with defaults and validate the manifests against the Kubernetes
-      # schemas; CRDs (Knative, DomainMapping, cert-manager, ESO) are skipped.
+      # Render with defaults and validate the manifests. Core Kubernetes kinds
+      # use the built-in schemas; CRDs (Knative Service/DomainMapping,
+      # cert-manager, ESO) are validated against the community CRDs-catalog, with
+      # -ignore-missing-schemas as a fallback for anything not catalogued (e.g.
+      # OpenShift Route).
       - name: kubeconform
         run: |
           curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
             | tar -xz -C /usr/local/bin kubeconform
           helm template serverless-api charts/serverless-api \
-            | kubeconform -strict -summary -ignore-missing-schemas
+            | kubeconform -strict -summary -ignore-missing-schemas \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
   # Verify the Dockerfile builds and scan the image on every run; this gates
   # publishing (release.yml's push job `needs` this suite), so the pushed image

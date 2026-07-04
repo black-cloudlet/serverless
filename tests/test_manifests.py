@@ -85,6 +85,28 @@ def test_build_ksvc_cpu_metric_sets_hpa_class():
     assert ann["autoscaling.knative.dev/class"] == "hpa.autoscaling.knative.dev"
 
 
+def test_build_ksvc_scale_down_delay_annotation():
+    common = dict(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[],
+        volumes=[],
+    )
+    # Set -> annotation present; unset -> annotation omitted.
+    m = ksvc_svc.build_ksvc(scaling=Scaling(minScale=1, maxScale=3, scaleDownDelay="5m"), **common)
+    ann = m["spec"]["template"]["metadata"]["annotations"]
+    assert ann["autoscaling.knative.dev/scale-down-delay"] == "5m"
+    m2 = ksvc_svc.build_ksvc(scaling=Scaling(minScale=1, maxScale=3), **common)
+    assert (
+        "autoscaling.knative.dev/scale-down-delay"
+        not in m2["spec"]["template"]["metadata"]["annotations"]
+    )
+
+
 def test_build_ksvc_mounts_ca_bundle():
     m = ksvc_svc.build_ksvc(
         name="app-team",
