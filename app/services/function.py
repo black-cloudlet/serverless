@@ -50,6 +50,7 @@ class FunctionService:
         """
         group = spec.group
         self._engine.assert_group(user, group)
+        
         oname = object_name(spec.name, group)
         targets = self._engine.deployer.resolve_targets(spec.sites)
         host = self._engine.host_for(spec.name, spec.hostname, group)

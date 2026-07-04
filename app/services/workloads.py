@@ -908,6 +908,7 @@ class WorkloadService:
             for obj in items:
                 meta = obj.get("metadata", {}) or {}
                 oname = meta.get("name", "")
+
                 # object name is "{name}-{group}"; recover the display name
                 name = oname[: -len(suffix)] if oname.endswith(suffix) else oname
                 annotations = meta.get("annotations", {}) or {}
@@ -923,7 +924,7 @@ class WorkloadService:
                 entry["statuses"].append(status)
 
         summaries = []
-        for name, entry in merged:
+        for name, entry in merged.items():
             host = entry["host"] or route_svc.host_for(
                 name, group, self.settings.route_domain
             )
