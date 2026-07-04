@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - run: pip install ruff==0.15.20
       - run: ruff check .
       - run: ruff format --check .
@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.11"
+          python-version: "3.13"
           cache: pip
       - run: pip install -e ".[dev]"
       # Coverage gate: the suite sits at ~92%; fail if it regresses below 90%.
@@ -55,7 +55,7 @@ jobs:
           gitleaks detect --source . --redact --exit-code 1 --verbose
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       # Audit the runtime deps that ship in the image for known CVEs.
       - run: pip install . pip-audit
       - run: pip-audit

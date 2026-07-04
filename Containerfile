@@ -1,19 +1,18 @@
 # Airgap-friendly image. Base + pip index are mirrored internally (docs §9);
 # build args let the pipeline point at the internal registry / PyPI mirror.
-ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-311:latest
+#
+# The official python:3.13-slim image is rebuilt on Debian security updates, so
+# it stays current without an in-build OS upgrade step; the CI scan gates on
+# CRITICAL and reports HIGH.
+ARG BASE_IMAGE=python:3.13-slim
 FROM ${BASE_IMAGE}
-
-# Apply the latest OS security errata (patches base-image CVEs flagged by the
-# image scan) and refresh pip's build tooling (setuptools/pip CVEs). Runs as
-# root; the runtime drops back to the non-root UBI user below.
-USER 0
-RUN dnf -y update && dnf -y clean all \
-    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 ARG PIP_INDEX_URL
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -21,13 +20,13 @@ WORKDIR /app
 # of truth for dependencies (no separate requirements.txt).
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir .
+RUN pip install . \
+    # OpenShift runs the container with an arbitrary UID in the root group;
+    # make the workdir group-writable so that UID can operate here.
+    && chgrp -R 0 /app && chmod -R g=u /app
 
 EXPOSE 8080
-# Non-root (UBI default user 1001).
+# Non-root by default; OpenShift overrides the UID (must stay in group 0).
 USER 1001
 
-# ENTRYPOINT fixes the server binary + app; CMD holds the default runtime flags
-# so they can be overridden (e.g. --port, --workers) without replacing the
-# entrypoint. Both exec-form so signals reach uvicorn (clean shutdown).
 ENTRYPOINT ["python", "-m", "app.main"]

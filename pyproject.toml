@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "serverless-api"
 version = "0.1.0"
 description = "FaaS/CaaS REST API wrapping Knative on OpenShift"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
@@ -31,7 +31,7 @@ dev = [
 # PEP 8 enforcement. Run `ruff check .` to lint and `ruff format .` to format.
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 # pycodestyle (E/W), pyflakes (F), isort (I), pydocstyle (D) — PEP 8, import
