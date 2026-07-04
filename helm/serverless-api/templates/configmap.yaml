@@ -1,0 +1,17 @@
+# OpenShift sites data only (per-site API endpoint, name, namespace). Non-secret,
+# so it lives in a ConfigMap and is loaded into the API as the SERVERLESS_SITES
+# env var. Editing the sites list does not require changing the Deployment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ .Values.name }}-sites"
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
+  {{- $sites := list }}
+  {{- range .Values.sites }}
+  {{- $sites = append $sites (dict "name" .name "cluster" .cluster) }}
+  {{- end }}
+  SERVERLESS_SITES: {{ toJson $sites | quote }}

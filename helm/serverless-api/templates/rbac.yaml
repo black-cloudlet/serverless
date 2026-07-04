@@ -1,0 +1,46 @@
+# Least-privilege RBAC for the client-cert user (CN = DNS name) in the workloads
+# namespace. docs §6.3 / §12.4
+#
+# Routes are NOT in this Role: on OpenShift Serverless the operator auto-creates
+# the OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "domainmappings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Revisions are read-only: GET reports actualReplicas (live scale) from them.
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["revisions"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  # Live per-site resource usage surfaced on GET.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+subjects:
+  - kind: User
+    name: {{ .Values.certificate.user }}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: {{ .Values.name }}
+  apiGroup: rbac.authorization.k8s.io

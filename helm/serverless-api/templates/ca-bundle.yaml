@@ -1,0 +1,19 @@
+# Trusted CA bundle, auto-populated by OpenShift via the inject-trusted-cabundle
+# label. Created in BOTH namespaces and mounted into the API and every workload
+# so they trust internal TLS (git, registry, Vault, SSO, the cluster API).
+#
+# OpenShift writes the bundle into .data, so configure the ArgoCD Application
+# (separate GitOps repo) to ignoreDifferences on this ConfigMap's data.
+{{- range $ns := (list .Values.namespaces.api .Values.namespaces.workloads) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Values.caBundle.name }}
+  namespace: {{ $ns }}
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"
+    {{- include "serverless-api.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+{{- end }}

@@ -9,7 +9,7 @@ exposed through a **Python / FastAPI** REST API.
 - **CaaS** — clients provide a container image plus registry credentials.
 - Both support **env vars**, **mounted secrets/config files**, and **scaling options**, and
   are exposed externally via **OpenShift Routes**.
-- Auth via **RHBK (Keycloak) OIDC** with **SSO group-based** authorization.
+- Auth via **SSO (Keycloak) OIDC** with **SSO group-based** authorization.
 - Deployed via **Helm + ArgoCD**; secrets sourced from **HashiCorp Vault** through the
   **External Secrets Operator**.
 - Designed for **two OpenShift clusters (active/active HA)** in an **airgapped** environment.
@@ -19,5 +19,42 @@ exposed through a **Python / FastAPI** REST API.
 - **[Architecture & Design](docs/ARCHITECTURE.md)** — the full design document: component and
   sequence diagrams, REST API specification, repository layout, and sample manifests.
 
-> **Status:** Design phase. No application code yet — see the architecture document for the
-> intended implementation.
+## Layout
+
+```
+app/        FastAPI application
+  auth/     self-contained OIDC auth component (SSO)
+  models/   Pydantic request/response schemas
+  services/ pure manifest builders + multi-site deployer + build/orchestration
+  clients/  per-site Kubernetes/OpenShift client (mTLS client cert)
+  routers/  FaaS / CaaS / resources / health endpoints
+helm/       Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
+tests/      unit + API tests
+.github/    CI/CD workflow (ruff, pytest, helm lint + template, image build/push)
+Containerfile
+```
+
+The ArgoCD `ApplicationSet` is **not** in this repo — it lives in the central GitOps repo
+and renders `helm/serverless-api` once per site (docs §8).
+
+## Develop
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -e ".[dev]"
+
+# Run the test suite
+pytest
+
+# Run locally (auth disabled for dev; no cluster calls until you deploy a workload)
+cp .env.example .env
+SERVERLESS_AUTH_ENABLED=false uvicorn app.main:app --reload
+# Interactive API docs at http://127.0.0.1:8000/docs
+```
+
+Configuration is environment-driven (`SERVERLESS_*`); see `.env.example`. In production the
+values are projected from Vault via the External Secrets Operator (docs §7).
+
+> **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
+> builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
+> (`func`/Tekton) is the remaining integration point — see `app/services/builder.py`.

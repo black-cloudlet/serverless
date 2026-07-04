@@ -1,0 +1,76 @@
+global:
+  clusterName: example
+  baseDomain: example.com
+  site: example
+  env: example
+
+name: serverless-api
+
+image:
+  repository: registry.internal/serverless/serverless-api
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+namespaces:
+  api: serverless-api
+  workloads: serverless-workloads
+
+routeDomain: serverless.example.com
+
+corsAllowOrigins: []
+#  - https://acme.service-now.com
+
+sso:
+  issuer: https://sso.internal/realms/serverless
+  audience: ""
+  swaggerClientId: serverless-api
+  groupsClaim: groups
+  adminGroups:
+    - platform-admins
+
+registry:
+  url: registry.internal
+
+sites:
+  - name: central                 
+    cluster: central-0        
+  - name: south
+    cluster: south-0
+
+certificate:
+  name: serverless-client-cert
+  user: serverless-api.client.example.com
+  mountPath: /etc/serverless/client
+  issuerRef:
+    name: client-cert-acme
+    kind: ClusterIssuer
+
+caBundle:
+  name: ca-bundle
+  key: ca-bundle.crt
+  mountPath: /etc/ssl/certs
+
+externalSecrets:
+  clusterSecretStore: cloudlet-cloudlet
+  refreshInterval: 1h
+  secrets:
+    - name: serverless-api-keys
+      data:
+        - secretKey: SERVERLESS_ADMIN_API_KEY
+          key: cloudlet/platforms/serverless
+          property: admin-api-key
+
+service:
+  portName: http
+  targetPort: 8080
+  port: 80
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

@@ -1,0 +1,16 @@
+# Namespaces owned by this chart:
+#   - {{ .Values.namespaces.api }}: where the API runs
+#   - {{ .Values.namespaces.workloads }}: where the API creates functions/containers
+# Guarded with ArgoCD sync-options so they are never pruned or deleted when the
+# Application is synced or removed.
+{{- range $ns := (list .Values.namespaces.api .Values.namespaces.workloads) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+{{- end }}
