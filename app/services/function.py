@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.auth.claims import Principal
 from app.core.errors import ServiceUnavailableError
-from app.models.common import WorkloadSummary
+from app.models.common import LogsResponse, WorkloadSummary
 from app.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from app.services import describe as describe_svc
 from app.services.builder import BuildRequest
@@ -216,6 +216,39 @@ class FunctionService:
             The full single-function response.
         """
         return await self._engine.get(OFFERING_FUNCTION, name, user, group)
+
+    async def logs(
+        self,
+        name: str,
+        group: str,
+        user: Principal,
+        *,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> LogsResponse:
+        """Snapshot the function's pod logs from the current site.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            container: The pod container to read.
+            since_seconds: Only logs newer than this, if set.
+            limit_bytes: Cap on bytes read per pod, if set.
+
+        Returns:
+            The function's per-pod logs from the local site.
+        """
+        return await self._engine.logs(
+            OFFERING_FUNCTION,
+            name,
+            user,
+            group,
+            container=container,
+            since_seconds=since_seconds,
+            limit_bytes=limit_bytes,
+        )
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
         """List the group's functions.

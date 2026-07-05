@@ -321,6 +321,37 @@ class WorkloadResponse(WorkloadBase):
     files: list[FileView] = []
 
 
+class PodLogs(BaseModel):
+    """The current log snapshot of one workload pod's container.
+
+    Attributes:
+        pod: The pod name.
+        container: The container the log was read from.
+        revision: The Knative revision the pod belongs to, if labelled.
+        logs: The log text as the node currently holds it (timestamped).
+    """
+
+    pod: str
+    container: str
+    revision: str | None = None
+    logs: str
+
+
+class LogsResponse(BaseModel):
+    """A workload's pod logs from the local site (a point-in-time snapshot).
+
+    Logs are node-local and ephemeral: only the running pods on the current site
+    are read, and their history is bounded by the node's log rotation. Empty
+    ``pods`` means the workload is deployed here but scaled to zero.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    site: str
+    pods: list[PodLogs] = []
+
+
 class WorkloadSpec(BaseModel):
     """The desired-state spec read back from a deployed workload, secrets redacted.
 

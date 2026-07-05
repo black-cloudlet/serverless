@@ -19,6 +19,7 @@ class ResourceKind(Enum):
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
     CONFIG_MAP = ("v1", "ConfigMap")
     SECRET = ("v1", "Secret")
+    POD = ("v1", "Pod")
     POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
 
     @property
@@ -176,6 +177,49 @@ class Cluster:
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
+            raise
+
+    def pod_logs(
+        self,
+        pod: str,
+        *,
+        container: str,
+        since_seconds: int | None = None,
+        limit_bytes: int | None = None,
+    ) -> str:
+        """Read a snapshot of one pod container's current log.
+
+        Uses CoreV1Api directly — the dynamic client can't read the ``log``
+        subresource. The returned text is whatever the node currently holds for
+        the container (Kubernetes keeps no ring buffer beyond the node's rotated
+        log file); it is not a live stream.
+
+        Args:
+            pod: The pod name.
+            container: The container to read (e.g. the Knative user-container).
+            since_seconds: Only return logs newer than this many seconds, if set.
+            limit_bytes: Cap the number of bytes returned, if set.
+
+        Returns:
+            The log text.
+
+        Raises:
+            NotFoundError: If the pod is gone (404). Other errors propagate.
+        """
+        core = client.CoreV1Api(self._api_client)
+        try:
+            return core.read_namespaced_pod_log(
+                name=pod,
+                namespace=self._namespace,
+                container=container,
+                timestamps=True,
+                since_seconds=since_seconds,
+                limit_bytes=limit_bytes,
+                **self._opts,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise NotFoundError(f"pod '{pod}' not found") from exc
             raise
 
     def close(self) -> None:

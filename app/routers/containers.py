@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Query
 
 from app.auth.deps import CurrentUser
 from app.dependencies import ContainerDep
-from app.models.common import Group, Name, WorkloadSummary
+from app.models.common import Group, LogsResponse, Name, WorkloadSummary
 from app.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 
 router = APIRouter(prefix="/api/v1/containers", tags=["containers"])
@@ -98,6 +98,38 @@ async def get_container(
         The full single-container response.
     """
     return await svc.get(name, group, user)
+
+
+@router.get("/{name}/logs", response_model=LogsResponse)
+async def get_container_logs(
+    name: Name,
+    group: Group,
+    user: CurrentUser,
+    svc: ContainerDep,
+    container: str = "user-container",
+    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
+    limitBytes: Annotated[int | None, Query(gt=0)] = None,
+) -> LogsResponse:
+    """Snapshot the container's pod logs from the current site.
+
+    Point-in-time (not streamed) and local-site only; a scaled-to-zero workload
+    returns no pods.
+
+    Args:
+        name: The workload name.
+        group: The owning group.
+        user: The authenticated caller (injected).
+        svc: The container service (injected).
+        container: The pod container to read (default the user-container).
+        sinceSeconds: Only return logs newer than this many seconds.
+        limitBytes: Cap the bytes read per pod.
+
+    Returns:
+        The container's per-pod logs from the local site.
+    """
+    return await svc.logs(
+        name, group, user, container=container, since_seconds=sinceSeconds, limit_bytes=limitBytes
+    )
 
 
 @router.delete("/{name}", status_code=204)

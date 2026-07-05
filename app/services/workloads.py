@@ -35,6 +35,8 @@ from app.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     LABEL_WORKLOAD,
+    LogsResponse,
+    PodLogs,
     SiteStatus,
     WorkloadResponse,
     WorkloadSummary,
@@ -954,6 +956,82 @@ class WorkloadService:
         statuses = await self.deployer.fanout(targets, remove)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
+
+    async def logs(
+        self,
+        kind: str,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> LogsResponse:
+        """Snapshot the workload's pod logs from the local site only.
+
+        Single-site and point-in-time: reads the running pods on the current
+        cluster (Kubernetes keeps no log buffer beyond the node). A workload
+        deployed here but scaled to zero returns an empty ``pods`` list.
+
+        Args:
+            kind: The offering ("function" or "container").
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            container: The pod container to read (e.g. the user-container).
+            since_seconds: Only logs newer than this many seconds, if set.
+            limit_bytes: Cap on the bytes read per pod, if set.
+
+        Returns:
+            The workload's per-pod logs from the local site.
+
+        Raises:
+            NotFoundError: If the workload isn't on the local site or the caller
+                can't access it (hidden as 404, matching GET).
+        """
+        self.assert_group(user, group)
+        offering = kind  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+
+        def read() -> list[PodLogs]:
+            # Authorize off the KSVC on the local site; a genuine 404 (not
+            # deployed here) and a cross-group/offering hit both surface as 404.
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+                labels.get(LABEL_OFFERING) != offering
+            ):
+                raise NotFoundError(f"{kind} '{name}' not found")
+            pods = cluster.get(
+                ResourceKind.POD, label_selector=f"serving.knative.dev/service={oname}"
+            )
+            out: list[PodLogs] = []
+            for pod in pods:
+                meta = pod.get("metadata", {}) or {}
+                pod_name = meta.get("name", "")
+                revision = (meta.get("labels", {}) or {}).get("serving.knative.dev/revision")
+                try:
+                    text = cluster.pod_logs(
+                        pod_name,
+                        container=container,
+                        since_seconds=since_seconds,
+                        limit_bytes=limit_bytes,
+                    )
+                except NotFoundError:
+                    continue  # pod vanished between list and read
+                out.append(PodLogs(pod=pod_name, container=container, revision=revision, logs=text))
+            return out
+
+        pods = await asyncio.to_thread(read)
+        return LogsResponse(
+            name=name,
+            group=group,
+            type=offering,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pods=pods,
+        )
 
     async def list(
         self, kind: str, user: Principal, group: str, sort: str = "name"

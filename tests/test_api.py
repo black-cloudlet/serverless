@@ -56,6 +56,17 @@ class FakeFunctions:
             "function", name, runtime="python", gitRepo="https://git/x.git", branch="main"
         )
 
+    async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
+        from app.models.common import LogsResponse, PodLogs
+
+        return LogsResponse(
+            name=name,
+            group=group,
+            type="function",
+            site="site-a",
+            pods=[PodLogs(pod=f"{name}-{group}-00001-x", container=container, logs="hello")],
+        )
+
     async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
 
@@ -84,6 +95,17 @@ class FakeContainers:
 
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
+
+    async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
+        from app.models.common import LogsResponse, PodLogs
+
+        return LogsResponse(
+            name=name,
+            group=group,
+            type="container",
+            site="site-a",
+            pods=[PodLogs(pod=f"{name}-{group}-00001-x", container=container, logs="hi")],
+        )
 
     async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
@@ -210,6 +232,32 @@ def test_get_container_shape(client):
     # function-only fields (gitRepo/runtime) absent.
     assert body["image"] == "reg/x:1" and body["registryUsername"] == "svc-team"
     assert "gitRepo" not in body and "runtime" not in body
+
+
+def test_get_function_logs(client):
+    r = client.get("/api/v1/functions/foo/logs?group=team")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "foo" and body["type"] == "function" and body["site"] == "site-a"
+    assert body["pods"][0]["container"] == "user-container"  # default
+    assert body["pods"][0]["logs"] == "hello"
+
+
+def test_get_container_logs_with_params(client):
+    r = client.get(
+        "/api/v1/containers/foo/logs?group=team&container=queue-proxy"
+        "&sinceSeconds=300&limitBytes=4096"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "container"
+    assert body["pods"][0]["container"] == "queue-proxy"  # override honored
+
+
+def test_logs_rejects_non_positive_window(client):
+    # sinceSeconds must be > 0; the RequestValidationError maps to 400
+    assert client.get("/api/v1/functions/foo/logs?group=team&sinceSeconds=0").status_code == 400
+    assert client.get("/api/v1/containers/foo/logs?group=team&limitBytes=0").status_code == 400
 
 
 def test_get_function_requires_group(client):
