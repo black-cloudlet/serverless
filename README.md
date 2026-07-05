@@ -28,7 +28,7 @@ app/        FastAPI application
   services/ pure manifest builders + multi-site deployer + build/orchestration
   clients/  per-site Kubernetes/OpenShift client (mTLS client cert)
   routers/  FaaS / CaaS / resources / health endpoints
-charts/     Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret)
+charts/     Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
 tests/      unit + API tests
 .github/    CI/CD workflow (ruff, pytest, helm lint + template, image build/push)
 Dockerfile

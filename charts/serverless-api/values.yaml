@@ -80,3 +80,29 @@ resources:
   limits:
     cpu: "1"
     memory: 512Mi
+
+# NetworkPolicies for the workloads namespace: default-deny, then allow only the
+# paths Knative + OpenShift need, plus egress to the platform API, DNS, and
+# off-cluster destinations (LBs / Routes). Workloads are thereby isolated from
+# each other and from other namespaces. Verify the namespace names + CIDRs match
+# your cluster (OpenShift Serverless defaults shown).
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to open connections TO workload pods.
+  ingressNamespaces:
+    - knative-serving # activator (scale-from-zero request proxy)
+    - knative-serving-ingress # Kourier gateway (OpenShift Serverless ingress)
+    - openshift-ingress # OpenShift router (Routes)
+    - openshift-monitoring # Prometheus scrape of queue-proxy metrics
+  # Namespaces workload pods may connect TO (the API namespace is always added).
+  egressNamespaces:
+    - knative-serving # autoscaler / webhook
+  dnsNamespace: openshift-dns
+  # Off-cluster egress (LBs, Routes, external services). The cluster-internal
+  # networks are excluded so pods can't reach other pods/Services directly -
+  # traffic to platform services goes via a Route/LB. Set to YOUR cluster's CIDRs.
+  externalEgress:
+    cidr: 0.0.0.0/0
+    exceptCIDRs:
+      - 10.128.0.0/14 # OVN-Kubernetes pod network (verify)
+      - 172.30.0.0/16 # service network (verify)
