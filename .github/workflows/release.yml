@@ -1,17 +1,16 @@
 name: Release
 
 # One-click release (manual). Enter a version (e.g. 1.2.0) and this workflow:
-#   1. bumps the version in pyproject.toml + Chart.yaml, commits it to the branch
-#      it was run from, and creates the vX.Y.Z tag;
+#   1. bumps the version in pyproject.toml + Chart.yaml and commits it onto the
+#      vX.Y.Z tag ONLY — the branch it runs from is left unchanged;
 #   2. runs the full check suite;
-#   3. builds/scans/signs and publishes the image (:X.Y.Z + :latest) and chart,
-#      then cuts a GitHub Release.
+#   3. builds/scans/signs and publishes the image (:X.Y.Z + :latest) and chart
+#      from the tag, then cuts a GitHub Release.
 #
 # Self-contained on purpose: a tag pushed by GITHUB_TOKEN does NOT re-trigger a
 # tag-listening workflow, so we do the whole release in this one run — no PAT.
-# Note: the version-bump commit is pushed to the run's branch; if that branch is
-# protected against direct pushes, run this from an unprotected release branch or
-# grant the Actions bot bypass.
+# The stamped version lives only on the tag (the release snapshot); the branch
+# stays at its development baseline.
 #
 # Actions are pinned to commit SHAs (Dependabot keeps them current).
 on:
@@ -55,7 +54,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "release: v$VERSION"
           git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "HEAD:${{ github.ref_name }}"
+          # Push ONLY the tag; the branch this ran from is left untouched. The
+          # bump commit exists solely on the tag (the release snapshot).
           git push origin "v$VERSION"
 
   # Same validation as CI; publishing is gated on it via `needs`.
