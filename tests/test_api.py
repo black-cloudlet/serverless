@@ -142,6 +142,28 @@ def test_healthz_no_auth():
     assert c.get("/healthz").json() == {"status": "ok"}
 
 
+def test_info_is_public_and_static():
+    # No auth override applied: /info must be reachable unauthenticated.
+    c = TestClient(create_app())
+    r = c.get("/api/v1/info")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"]
+    assert isinstance(body["sites"], list)
+    assert "python" in body["runtimes"]
+    assert body["sizes"] == ["small", "medium", "large"]
+    assert body["routeDomain"]
+    metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
+    assert metrics["concurrency"]["minScaleFloor"] == 0
+    assert metrics["concurrency"]["target"]["default"] == 100
+    assert metrics["concurrency"]["target"]["max"] is None
+    assert metrics["cpu"]["minScaleFloor"] == 1
+    assert metrics["cpu"]["target"]["default"] == 70
+    assert metrics["cpu"]["target"]["max"] == 100
+    assert body["scaling"]["defaultMetric"] == "concurrency"
+    assert body["scaling"]["scaleDownDelay"]["max"] == "1h"
+
+
 async def test_startup_warmup_is_best_effort(monkeypatch):
     """A failing OIDC discovery / cluster connect must not crash startup."""
     from app.core.config import Settings, SiteConfig, SSOConfig

@@ -28,6 +28,11 @@ _SIZES: dict[str, tuple[str, str]] = {
 }
 
 
+def workload_sizes() -> list[str]:
+    """The available t-shirt size names (the source of truth for /info)."""
+    return list(_SIZES)
+
+
 def _resources(size: str) -> dict:
     """Container resources for a t-shirt size (memory request==limit, cpu request-only)."""
     cpu_request, memory = _SIZES[size]

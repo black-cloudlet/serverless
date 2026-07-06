@@ -1969,3 +1969,60 @@ async def test_container_service_logs_delegates_to_engine():
     )
     assert resp.type == "container" and resp.pods[0].logs == "ctr-log"
     assert cluster.reads == [("app-team-00001-a", "user-container", None, 2048)]
+
+
+# --- runtime validation against the registry (config-driven) ---------------
+
+
+def _function_service_with_runtimes(names):
+    from app.services.function import FunctionService
+    from app.services.runtimes import RuntimeRegistry, RuntimeSpec
+
+    engine = _workload_service({"site-a": _FakeCluster("site-a")})
+    registry = RuntimeRegistry([RuntimeSpec(name=n) for n in names])
+    return FunctionService(engine, registry)
+
+
+async def test_function_accept_rejects_unknown_runtime():
+    from starlette.background import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.core.errors import ValidationError
+    from app.models.function import FunctionCreate
+
+    fsvc = _function_service_with_runtimes(["python", "go"])
+    user = Principal(subject="u", username="alice", groups=["team"])
+    spec = FunctionCreate(name="fn", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+
+    with pytest.raises(ValidationError):
+        await fsvc.accept(spec, user, BackgroundTasks())
+
+
+async def test_function_accept_allows_known_runtime():
+    from starlette.background import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.models.function import FunctionCreate
+
+    fsvc = _function_service_with_runtimes(["python", "go"])
+    user = Principal(subject="u", username="alice", groups=["team"])
+    spec = FunctionCreate(name="fn", group="team", gitRepo="g", gitToken="t", runtime="go")
+
+    resp = await fsvc.accept(spec, user, BackgroundTasks())
+    assert resp.overallStatus == "Pending" and resp.runtime == "go"
+
+
+async def test_function_update_rejects_unknown_runtime():
+    from starlette.background import BackgroundTasks
+
+    from app.auth.claims import Principal
+    from app.core.errors import ValidationError
+    from app.models.function import FunctionUpdate
+
+    fsvc = _function_service_with_runtimes(["python"])
+    user = Principal(subject="u", username="alice", groups=["team"])
+    # changing runtime requires a gitToken; supply one so we reach the registry check
+    spec = FunctionUpdate(group="team", runtime="ruby", gitToken="t")
+
+    with pytest.raises(ValidationError):
+        await fsvc.accept_update("fn", spec, user, BackgroundTasks())

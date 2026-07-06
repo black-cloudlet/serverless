@@ -56,9 +56,12 @@ def test_invalid_name_rejected():
         FunctionCreate(name="Bad_Name", group="team", gitRepo="g", gitToken="t", runtime="python")
 
 
-def test_unsupported_runtime_rejected():
-    with pytest.raises(ValidationError):
-        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+def test_runtime_is_a_free_string_on_the_model():
+    # The valid runtime set is data (a mounted ConfigMap), so the model accepts
+    # any string; the service validates it against the live registry (see
+    # test_auth_and_deployer.test_function_accept_rejects_unknown_runtime).
+    fn = FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+    assert fn.runtime == "ruby"
 
 
 def test_size_default_and_choices():

@@ -17,18 +17,22 @@ from app.models.common import (
     WorkloadSize,
 )
 
-Runtime = Literal["python", "go", "javascript"]
-
 
 class FunctionCreate(BaseModel):
-    """Request body to create a function from source (built into an image)."""
+    """Request body to create a function from source (built into an image).
+
+    ``runtime`` is a free string here; the set of valid runtimes is data (a
+    mounted ConfigMap, see services.runtimes) so it is validated against the live
+    registry in the service layer, not as a fixed enum. GET /api/v1/info lists the
+    accepted values.
+    """
 
     name: Name
     group: Group  # the SSO group to act as; caller must be a member
     gitRepo: str
     branch: str = "main"
     gitToken: str
-    runtime: Runtime
+    runtime: str
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
@@ -53,7 +57,7 @@ class FunctionUpdate(BaseModel):
     gitRepo: str | None = None
     branch: str | None = None
     gitToken: str | None = None
-    runtime: Runtime | None = None
+    runtime: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)

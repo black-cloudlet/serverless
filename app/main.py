@@ -15,7 +15,7 @@ from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.dependencies import get_workload_service
 from app.docs import mount_offline_docs, wire_sso_login
-from app.routers import containers, functions, health
+from app.routers import containers, functions, health, info
 from app.services.deployer import Deployer
 
 logger = get_logger(__name__)
@@ -98,6 +98,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(info.router)
     app.include_router(functions.router)
     app.include_router(containers.router)
 

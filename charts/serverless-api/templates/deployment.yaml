@@ -56,6 +56,8 @@ spec:
               value: {{ .Values.caBundle.key | quote }}
             - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
               value: {{ .Values.caBundle.mountPath | quote }}
+            - name: SERVERLESS_RUNTIMES_FILE
+              value: {{ printf "%s/runtimes.yaml" .Values.runtimesMountPath | quote }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
             - name: REQUESTS_CA_BUNDLE
@@ -76,6 +78,9 @@ spec:
             - name: {{ .Values.caBundle.name }}
               mountPath: {{ .Values.caBundle.mountPath }}
               readOnly: true
+            - name: runtimes
+              mountPath: {{ .Values.runtimesMountPath }}
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /readyz
@@ -93,3 +98,6 @@ spec:
         - name: {{ .Values.caBundle.name }}
           configMap:
             name: {{ .Values.caBundle.name }}
+        - name: runtimes
+          configMap:
+            name: "{{ .Values.name }}-runtimes"

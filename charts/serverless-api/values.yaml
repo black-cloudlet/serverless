@@ -34,6 +34,14 @@ sso:
 registry:
   url: registry.internal
 
+# Function runtimes offered to clients, mounted as a file (see services.runtimes).
+# Add versions / builder image here later for the airgapped build pipeline.
+runtimesMountPath: /etc/serverless/runtimes
+runtimes:
+  - name: python
+  - name: go
+  - name: javascript
+
 sites:
   - name: central                 
     cluster: central-0        
