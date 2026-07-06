@@ -76,6 +76,14 @@ service:
   targetPort: 8080
   port: 80
 
+# The OpenShift Route exposing the API. host defaults to
+# serverless-api.{global.baseDomain}; labels/annotations are merged onto the
+# Route (e.g. annotations for router timeouts or rate limits).
+route:
+  host: ""
+  labels: {}
+  annotations: {}
+
 resources:
   requests:
     cpu: 250m

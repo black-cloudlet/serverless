@@ -153,6 +153,7 @@ def test_info_is_public_and_static():
     assert "python" in body["runtimes"]
     assert body["sizes"] == ["small", "medium", "large"]
     assert body["routeDomain"]
+    assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
     assert metrics["concurrency"]["target"]["default"] == 100

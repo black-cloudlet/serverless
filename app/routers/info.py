@@ -10,6 +10,7 @@ from app import __version__
 from app.core.config import Settings, get_settings
 from app.models.common import Scaling
 from app.models.info import InfoResponse
+from app.services import route as route_svc
 from app.services.ksvc import workload_sizes
 from app.services.runtimes import RuntimeRegistry, get_runtimes
 
@@ -41,4 +42,5 @@ async def get_info(
         sizes=workload_sizes(),
         scaling=Scaling.capabilities(),
         routeDomain=settings.route_domain,
+        defaultHostTemplate=route_svc.HOST_TEMPLATE,
     )

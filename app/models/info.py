@@ -19,9 +19,10 @@ class InfoResponse(BaseModel):
         runtimes: The function runtimes available to build from.
         sizes: The resource t-shirt sizes.
         scaling: The per-metric autoscaling options and their bounds.
-        routeDomain: The base domain; the default host is
-            ``{name}-{group}.{routeDomain}`` and a custom host must be one label
-            under it.
+        routeDomain: The base domain; a custom host must be one label under it.
+        defaultHostTemplate: How the default host is composed from a workload's
+            name/group and ``routeDomain`` (e.g. ``{name}-{group}.{routeDomain}``),
+            so the UI can preview it without hardcoding the rule.
     """
 
     version: str
@@ -30,3 +31,4 @@ class InfoResponse(BaseModel):
     sizes: list[str]
     scaling: ScalingCapabilities
     routeDomain: str
+    defaultHostTemplate: str
