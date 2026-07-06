@@ -1,10 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
-# Network segmentation for the workloads namespace. The policies are additive:
-# `default-deny` drops everything, and each `allow-*` reopens exactly one path.
-# Net effect: workload pods can't talk to each other or to other namespaces,
-# reachable only from Knative + OpenShift essentials, and able to egress only to
-# DNS, the platform API, the Knative control plane, and off-cluster (LB/Route)
-# destinations.
+# Additive segmentation for the workloads namespace: default-deny, then each
+# allow-* reopens one path (Knative/OpenShift in; DNS/API/control-plane/off-cluster out).
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -17,8 +13,7 @@ spec:
   podSelector: {} # every pod in the namespace
   policyTypes: [Ingress, Egress]
 ---
-# Ingress: only Knative (activator + ingress gateway) and OpenShift essentials.
-# Same-namespace pods are NOT selected here, so pod-to-pod ingress stays denied.
+# Ingress: Knative + OpenShift only (same-namespace pods excluded -> no pod-to-pod).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -81,9 +76,8 @@ spec:
               kubernetes.io/metadata.name: {{ . }}
         {{- end }}
 ---
-# Egress: off-cluster destinations (LBs, Routes, external services). The
-# cluster-internal networks are excluded so this can't be used to reach other
-# pods/Services directly - those must be reached via a Route/LB.
+# Egress: off-cluster (LBs/Routes/external); internal CIDRs excluded so it can't
+# reach other pods/Services directly.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

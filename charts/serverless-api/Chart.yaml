@@ -2,9 +2,6 @@ apiVersion: v2
 name: serverless-api
 description: FaaS/CaaS REST API wrapping Knative on OpenShift
 type: application
-# Development baseline on the branch. The release workflow
-# (.github/workflows/release.yml) stamps these to the release version on the
-# vX.Y.Z tag only, so the branch stays 0.0.0 / "latest". The container image
-# tracks appVersion via the serverless-api.image helper.
+# Development baseline; the release workflow stamps the release version on the tag.
 version: 0.0.0
 appVersion: "latest"

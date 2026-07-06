@@ -45,8 +45,6 @@ HOSTNAME = re.compile(
 # "ggd-1234-platforms" is the group "platforms").
 _GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
 
-# Knative scale-down-delay: a single-unit Go duration ("30s"/"5m"/"1h"),
-# capped by Knative at 1h.
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
 
