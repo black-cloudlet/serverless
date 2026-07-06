@@ -5,10 +5,36 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 **Python / FastAPI** REST API.
 
 > **Status:** Implemented. This document is the source of truth for the architecture; the
-> FastAPI application (`app/`), the Helm chart (`charts/serverless-api`), and a CI/CD workflow
-> (`.github/workflows/ci.yml`) are in this repo. The GitOps manifests (ArgoCD
-> `ApplicationSet`) live in a separate central GitOps repo, targeting an **airgapped**
-> OpenShift environment.
+> FastAPI application (`app/`), the Helm chart (`charts/serverless-api`), and the CI/CD
+> workflows (`.github/workflows/{checks,ci,release}.yml`) are in this repo. The GitOps
+> manifests (ArgoCD `ApplicationSet`) live in a separate central GitOps repo, targeting an
+> **airgapped** OpenShift environment.
+>
+> **Revision:** `0.1.0` — 2026-07-06.
+
+### Changes in this revision (0.1.0, 2026-07-06)
+
+- **`GET /api/v1/info`** — a public (unauthenticated), static discovery document so a UI can
+  render its create form from the server: version, sites, runtimes, sizes, per-metric
+  scaling options, base `routeDomain`, and the `defaultHostTemplate`. Derived from config +
+  code, no cluster calls (§10).
+- **Config-driven runtimes.** The FaaS runtime list is now **data**: a ConfigMap mounted as a
+  YAML file (`runtimes.yaml`) and read into a registry. Ops add a runtime by editing the
+  ConfigMap — no image rebuild. `runtime` is validated in the service against the live
+  registry (§3.1, §9).
+- **`GET /api/v1/{type}/{name}/logs`** — implemented: a point-in-time **local-site** snapshot
+  of a workload's pod logs (no streaming; needs the `pods/log` RBAC subresource) (§10, §6.3).
+- **NetworkPolicies** for the workloads namespace: default-deny plus explicit allows,
+  isolating workload pods from each other and other namespaces (§5).
+- **Scaling gains `scaleDownDelay`** (a Knative-capped duration) and the per-metric rules are
+  now surfaced verbatim on `/info` (§3.3).
+- **Configurable API Route** — `route.host` (defaulted), `route.labels`, `route.annotations`.
+- **Platform/runtime**: Python **3.13** on a `python:3.13-slim` base image (multi-arch
+  amd64/arm64), dependencies consolidated into `pyproject.toml`, `__version__` derived from
+  package metadata, and the sites ConfigMap wired into the Deployment.
+- **CI/CD** split into `checks` / `ci` / `release` workflows with image scanning (Trivy),
+  keyless signing (cosign), SBOM + provenance, a one-click release workflow, pinned action
+  SHAs, gitleaks, kubeconform (incl. custom CRD schemas), and a ≥90% coverage gate (§8).
 
 ---
 
@@ -58,7 +84,8 @@ want two consumption models:
 
 - **FaaS** - "give us your source code, we build and run it." The client provides a Git
   repository URL, branch, an access token, and the source lives in that repo. Supported
-  runtimes: **Python, Go, JavaScript**.
+  runtimes are **configurable** (default **Python, Go, JavaScript**; see §3.1) and listed on
+  `GET /api/v1/info`.
 - **CaaS** - "give us your image, we run it." The client provides a container image
   reference plus registry credentials (username + token).
 
@@ -206,7 +233,7 @@ flowchart LR
 | `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). |
 | `branch` | yes | Branch / ref to build. |
 | `gitToken` | yes | Repo access token; used only to clone, **never persisted** (see §7). |
-| `runtime` | yes | One of `python`, `go`, `javascript`. |
+| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `javascript`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
 
@@ -278,7 +305,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` - users cannot reference arbitrary existing cluster Secrets/ConfigMaps. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** - one ConfigMap and one Secret per workload, a key per file - and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
-| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, and `target`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). |
+| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on `GET /api/v1/info`** (per-metric `minScaleFloor`, target default/min/max/unit) — derived from the same model that validates a create, so a client UI can render the form without drift. |
 | **Resource size** | `size: small\|medium\|large` (default `small`) - a t-shirt size, so clients pick capacity without Kubernetes units. Maps to container resources: **memory** is set `request==limit` (a hard, predictable OOM boundary - exceeding it restarts that replica), **CPU** is **request-only** (no limit, so workloads are never CPU-throttled). `small`=100m/256Mi, `medium`=250m/512Mi, `large`=500m/1Gi. The CPU/memory request is also what lets the `cpu`/`memory` autoscaling metrics compute utilization. |
 
 A canonical scaling sub-object in the API:
@@ -289,7 +316,8 @@ A canonical scaling sub-object in the API:
     "minScale": 0,
     "maxScale": 3,
     "metric": "concurrency",
-    "target": 100
+    "target": 100,
+    "scaleDownDelay": "0s"
   }
 }
 ```
@@ -423,6 +451,28 @@ flowchart LR
     KIN --> KSVC["KSVC revision pods"]
 ```
 
+#### Workload network isolation (NetworkPolicies)
+
+The chart ships **default-deny** `NetworkPolicies` for the workloads namespace, then reopens
+only the paths Knative + OpenShift need. Net effect: a workload pod **can't talk to another
+workload pod** (no cross-tenant lateral movement in the shared namespace) or reach other
+namespaces, and its egress is constrained:
+
+- **Ingress** — allowed only from the configured system namespaces (Knative activator +
+  Kourier ingress, the OpenShift router, monitoring). Same-namespace pods are *not* selected,
+  so pod-to-pod ingress stays denied.
+- **Egress** — DNS (`openshift-dns`), the platform API namespace ("our side") + the Knative
+  control plane, and **off-cluster** destinations (LBs/Routes/external services) with the
+  cluster-internal CIDRs excluded, so pods reach platform services via a Route/LB rather than
+  directly. All namespaces/CIDRs are values (`networkPolicy.*`), verified per cluster.
+
+#### API Route
+
+The Route that exposes the **API itself** is values-driven: `route.host` (defaults to
+`serverless-api.{base_domain}`), plus optional `route.labels` and `route.annotations` (e.g.
+HAProxy router timeouts or rate-limit annotations). This is distinct from the per-**workload**
+host convention above.
+
 ---
 
 ## 6. Authentication & Authorization
@@ -536,9 +586,10 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   **trust the same CA**, so the same identity is valid in either cluster.
 - Each site has one `Role`/`RoleBinding` (in the **workload namespace**,
   `serverless-workloads`) granting least-privilege CRUD on exactly what the API manages:
-  Knative `services`/`domainmappings`, `secrets`, `configmaps`, and read on `pods`/`events`.
-  The API does **not** need `routes` permission - on OpenShift Serverless the operator
-  creates the OpenShift Route automatically from the KSVC/DomainMapping.
+  Knative `services`/`domainmappings`, `secrets`, `configmaps`, read on `pods`/`events`, and
+  read on the **`pods/log`** subresource (for the `/logs` endpoint). The API does **not** need
+  `routes` permission - on OpenShift Serverless the operator creates the OpenShift Route
+  automatically from the KSVC/DomainMapping.
 - The cert is mounted **once** (global, not per-site) at `SERVERLESS_CLIENT_CERT_DIR`
   (`tls.crt`/`tls.key`); the API uses it to authenticate to **every** cluster via mTLS. There
   is no in-cluster/ServiceAccount fallback - always certificate-based.
@@ -645,11 +696,14 @@ flowchart LR
   them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-sites`
   **`ConfigMap`** holding just the OpenShift **sites data** (per-site API endpoint, name,
   namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
-  plain `env` on the Deployment), `Deployment`, `Service`, `Route` (for the API itself),
-  `Role`/`RoleBinding` (bound to the client-cert CN user, in the workloads namespace),
-  cert-manager `Certificate`, **one ESO `ExternalSecret` per kind of data** (each its own
-  target Secret, referencing the pre-existing `ClusterSecretStore`; enabled ones `envFrom`'d
-  into the API), and `values.yaml` describing the site profiles. It does **not** ship a
+  plain `env` on the Deployment), a `serverless-api-runtimes` **`ConfigMap`** holding the
+  available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
+  workloads namespace (§5), `Deployment`, `Service`, `Route` (for the API itself, with a
+  configurable host/labels/annotations), `Role`/`RoleBinding` (bound to the client-cert CN
+  user, in the workloads namespace), cert-manager `Certificate`, **one ESO `ExternalSecret`
+  per kind of data** (each its own target Secret, referencing the pre-existing
+  `ClusterSecretStore`; enabled ones `envFrom`'d into the API), and `values.yaml` describing
+  the site profiles. It does **not** ship a
   SecretStore, and the API pod runs as the namespace `default` ServiceAccount (cluster auth is
   the client certificate, not the SA token).
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
@@ -685,7 +739,7 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 | **Buildpack builder/run images** | Mirror the Cloud Native Buildpacks **builder** and **run** images used by Knative Functions for Python/Go/JS into the internal registry; configure `func` to use them. This is the key airgap dependency for FaaS. |
 | **Python dependencies (the API)** | Build the API container against an **internal PyPI mirror** (e.g. Nexus/Artifactory) or vendored wheels; pin all versions. |
 | **Function dependencies (per runtime)** | Buildpacks must resolve language deps from internal mirrors (internal PyPI, Go module proxy/`GOPROXY`, npm registry mirror). Documented as a prerequisite for each runtime. |
-| **Base images** | Use mirrored UBI base images. |
+| **Base images** | The API image builds on a mirrored **`python:3.13-slim`** base (Python 3.13); mirror the workload/builder bases likewise. |
 | **CA trust** | A ConfigMap labelled `config.openshift.io/inject-trusted-cabundle: "true"` is created in **both** namespaces; OpenShift auto-populates it with the cluster's trusted CAs. It is **mounted into the API and every FaaS/CaaS workload** (and exported via `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`) so all internal TLS (Git, registry, Vault, SSO, the cluster API) is trusted. Same bundle for every cluster. |
 | **cert-manager** | Issue client certs via **ACME against an internal ACME endpoint** (e.g. step-ca / internal CA exposing ACME) - not a public CA. Both clusters trust this CA, and the cert CN/SAN is the DNS name `serverless-api.clients.{base_domain}`. |
 | **Helm charts** | Hosted in an internal chart repo / Git; no public chart pulls. |
@@ -694,9 +748,10 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 
 ## 10. REST API Specification
 
-Base path: `/api/v1`. All endpoints require a valid SSO bearer token (§6). All responses
-are JSON. Times are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are
-rendered in **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving aware).
+Base path: `/api/v1`. All endpoints require a valid SSO bearer token (§6) **except the public
+discovery endpoint `GET /api/v1/info` and the health probes**. All responses are JSON. Times
+are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rendered in
+**Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving aware).
 
 ### Endpoints
 
@@ -712,7 +767,8 @@ rendered in **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving 
 | `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
 | `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
 | `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
-| `GET` | `/api/v1/{type}/{name}/logs` | (Optional) recent logs per site. |
+| `GET` | `/api/v1/{type}/{name}/logs?group=` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
+| `GET` | `/api/v1/info` | **Public** (no auth), static platform capabilities for dynamic UI rendering: `version`, `sites`, `runtimes`, `sizes`, `scaling` (per-metric options), `routeDomain`, `defaultHostTemplate`. Config/code-derived, no cluster calls. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
 > Workload secrets and config files are **not** separate endpoints - they are derived
@@ -973,20 +1029,23 @@ Serverless/
 │   │   ├── claims.py               # claims → group mapping, admin/tenant policy
 │   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
 │   ├── routers/
-│   │   ├── functions.py             # FaaS endpoints
-│   │   ├── containers.py            # CaaS endpoints
+│   │   ├── functions.py             # FaaS endpoints (incl. /logs)
+│   │   ├── containers.py            # CaaS endpoints (incl. /logs)
+│   │   ├── info.py                  # public /info discovery endpoint
 │   │   └── health.py
 │   ├── models/                      # Pydantic request/response schemas
-│   │   ├── common.py                # env, files, scaling, site status, labels
+│   │   ├── common.py                # env, files, scaling (+ capabilities), site status, labels
 │   │   ├── function.py
-│   │   └── container.py
+│   │   ├── container.py
+│   │   └── info.py                  # /info discovery-document schema
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine
 │   │   ├── function.py      # function-specific orchestration (build from Git)
 │   │   ├── container.py     # container-specific orchestration (image + pull secret)
 │   │   ├── deployer.py              # multi-site fan-out + status aggregation
 │   │   ├── builder.py               # function build via func/buildpacks
-│   │   ├── ksvc.py                  # KSVC manifest construction
+│   │   ├── ksvc.py                  # KSVC manifest construction (+ t-shirt sizes)
+│   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
 │   │   ├── env.py                   # env resolution (+ {workload}-env Secret)
 │   │   ├── files.py                 # file resolution (+ {workload}-files CM/Secret)
@@ -1005,17 +1064,21 @@ Serverless/
 │           ├── namespaces.yaml      # serverless-api + serverless-workloads (ArgoCD Delete=false,Prune=false)
 │           ├── ca-bundle.yaml       # inject-trusted-cabundle ConfigMap in both namespaces
 │           ├── configmap.yaml       # sites data (SERVERLESS_SITES) -> loaded as an env var
+│           ├── runtimes-configmap.yaml # available runtimes, mounted as a YAML file
+│           ├── networkpolicy.yaml   # default-deny + allow-* for the workloads namespace
 │           ├── deployment.yaml
 │           ├── service.yaml
-│           ├── route.yaml
-│           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site)
+│           ├── route.yaml           # API Route (host/labels/annotations configurable)
+│           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site; incl. pods/log)
 │           ├── certificate.yaml     # cert-manager Certificate (ACME, per site)
 │           └── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
 │   # NOTE: no secretstore.yaml - the ClusterSecretStore already exists in the clusters.
 │   # NOTE: the ArgoCD ApplicationSet lives in a SEPARATE central GitOps repo, not here.
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                   # CI/CD: ruff, pytest, helm lint+template, image build/push
+│       ├── checks.yml               # reusable suite: ruff, pytest+coverage, gitleaks, helm/kubeconform, image scan
+│       ├── ci.yml                   # PRs / main: runs the checks suite
+│       └── release.yml              # one-click release: bump+tag, build/scan/sign, SBOM, GitHub Release
 ├── tests/                           # flat pytest modules (test_api.py, test_*.py)
 ├── Dockerfile                    # build the API image (airgap-friendly base)
 ├── pyproject.toml                   # project metadata, deps (single source), ruff/pytest config
@@ -1153,6 +1216,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "events"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]              # for GET /api/v1/{type}/{name}/logs
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -1250,7 +1316,7 @@ spec:
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
 | **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Degraded, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
-| **Observability** | Centralized logging/metrics/tracing for tenant workloads (and the `/logs` endpoint backing store) to be designed. |
+| **Observability** | The `/logs` endpoint returns a **local-site, point-in-time** snapshot (node-local, ephemeral). Centralized/durable logging, metrics, and tracing for tenant workloads — and a cross-site log backing store (Loki/EFK) behind `/logs` — remain to be designed. |
 | **Audit logging** | Who deployed/changed/deleted what - likely required for enterprise/compliance. |
 | **Stronger isolation** | Optional move from shared-namespace to **namespace-per-group** for hard multi-tenancy. |
 | **Build pipeline hardening** | Where `func` builds run (Tekton task vs. in-API job), build caching, and signed images (cosign in airgap). |
