@@ -1,10 +1,10 @@
 import pytest
 
-from app.auth.claims import principal_from_claims
-from app.core.config import Settings, SiteConfig, SSOConfig
-from app.core.errors import SiteTotalFailure, ValidationError
-from app.models.common import SiteStatus
-from app.services.deployer import Deployer, aggregate, status_code_for
+from api.auth.claims import principal_from_claims
+from api.core.config import Settings, SiteConfig, SSOConfig
+from api.models.common import SiteStatus
+from api.services.deployer import Deployer, aggregate, status_code_for
+from common.errors import SiteTotalFailure, ValidationError
 
 
 def test_principal_from_claims_strips_and_detects_admin():
@@ -38,8 +38,8 @@ def _settings_with_admin_key(raw_key, admin_groups=("platform-admins",)):
 def test_require_auth_via_bearer_admin_key():
     from types import SimpleNamespace
 
-    from app.auth.deps import require_auth
-    from app.core.errors import UnauthenticatedError
+    from api.auth.deps import require_auth
+    from common.errors import UnauthenticatedError
 
     settings = _settings_with_admin_key("opaque-s3cret")
     # Opaque admin key in the standard Authorization: Bearer header.
@@ -60,8 +60,8 @@ def test_admin_key_header_carries_raw_token_not_a_hash():
     import hashlib
     from types import SimpleNamespace
 
-    from app.auth.deps import require_auth
-    from app.core.errors import UnauthenticatedError
+    from api.auth.deps import require_auth
+    from common.errors import UnauthenticatedError
 
     settings = _settings_with_admin_key("opaque-s3cret")
     hashed = hashlib.sha256(b"opaque-s3cret").hexdigest()
@@ -75,8 +75,8 @@ def test_empty_admin_key_disables_key_auth():
     (including the empty string) is accepted."""
     from types import SimpleNamespace
 
-    from app.auth.deps import require_auth
-    from app.core.errors import UnauthenticatedError
+    from api.auth.deps import require_auth
+    from common.errors import UnauthenticatedError
 
     settings = _settings_with_admin_key("")
     req = SimpleNamespace(headers={"Authorization": "Bearer anything"})
@@ -85,7 +85,7 @@ def test_empty_admin_key_disables_key_auth():
 
 
 def test_verify_admin_key_constant_time_match():
-    from app.auth.apikey import verify_admin_key
+    from api.auth.apikey import verify_admin_key
 
     assert verify_admin_key("opaque-s3cret", "opaque-s3cret") is True
     assert verify_admin_key("wrong", "opaque-s3cret") is False
@@ -94,7 +94,7 @@ def test_verify_admin_key_constant_time_match():
 
 
 def test_oidc_discovery_resolved_once_and_client_reused(monkeypatch):
-    from app.auth.oidc import TokenValidator
+    from api.auth.oidc import TokenValidator
 
     calls = {"n": 0}
 
@@ -109,7 +109,7 @@ def test_oidc_discovery_resolved_once_and_client_reused(monkeypatch):
         calls["n"] += 1
         return _Resp()
 
-    monkeypatch.setattr("app.auth.oidc.httpx.get", fake_get)
+    monkeypatch.setattr("api.auth.oidc.httpx.get", fake_get)
 
     v = TokenValidator(SSOConfig())
     c1 = v._client()
@@ -122,13 +122,13 @@ def test_oidc_discovery_resolved_once_and_client_reused(monkeypatch):
 def test_oidc_discovery_failure_is_service_unavailable(monkeypatch):
     import httpx
 
-    from app.auth.oidc import TokenValidator
-    from app.core.errors import ServiceUnavailableError
+    from api.auth.oidc import TokenValidator
+    from common.errors import ServiceUnavailableError
 
     def boom(url, timeout=None):
         raise httpx.ConnectError("sso down")
 
-    monkeypatch.setattr("app.auth.oidc.httpx.get", boom)
+    monkeypatch.setattr("api.auth.oidc.httpx.get", boom)
 
     v = TokenValidator(SSOConfig())
     with pytest.raises(ServiceUnavailableError):
@@ -163,7 +163,7 @@ def test_aggregate_total_failure():
 
 
 def test_overall_status_rollup():
-    from app.services.deployer import overall_status
+    from api.services.deployer import overall_status
 
     assert overall_status(["Ready", "Ready"]) == "Ready"
     assert overall_status(["Deploying", "Deploying"]) == "Deploying"
@@ -183,7 +183,7 @@ def test_status_code_for_deploying_is_non_terminal():
 
 
 def test_ksvc_status_distinguishes_failed_from_deploying():
-    from app.services.workloads import _ksvc_status
+    from api.services.workloads import _ksvc_status
 
     def _obj(ready_status):
         conditions = [{"type": "Ready", "status": ready_status}] if ready_status else []
@@ -278,7 +278,7 @@ class _FakeCluster:
         self._existing = existing or {}
 
     def get(self, kind, name, namespace=None):
-        from app.core.errors import NotFoundError as _NF
+        from common.errors import NotFoundError as _NF
 
         if name in self._existing:
             return self._existing[name]
@@ -286,8 +286,8 @@ class _FakeCluster:
 
 
 def _workload_service(clusters, builder=None, local_site=None):
-    from app.services.builder import FuncBuilder
-    from app.services.workloads import WorkloadService
+    from api.services.builder import FuncBuilder
+    from api.services.workloads import WorkloadService
 
     settings = _settings_with_sites()
     d = Deployer(settings)
@@ -297,7 +297,7 @@ def _workload_service(clusters, builder=None, local_site=None):
 
 
 def test_host_for_resolution_and_validation():
-    from app.core.errors import ValidationError
+    from common.errors import ValidationError
 
     svc = _workload_service({})  # host_for doesn't touch clusters
 
@@ -326,8 +326,8 @@ async def test_host_available_when_unused():
 
 
 async def test_host_taken_by_other_workload_conflicts():
-    from app.core.errors import ConflictError
-    from app.models.common import LABEL_WORKLOAD
+    from api.models.common import LABEL_WORKLOAD
+    from common.errors import ConflictError
 
     host = "shared.example.com"
     dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}
@@ -342,7 +342,7 @@ async def test_host_taken_by_other_workload_conflicts():
 
 
 async def test_host_owned_by_same_workload_ok():
-    from app.models.common import LABEL_WORKLOAD
+    from api.models.common import LABEL_WORKLOAD
 
     host = "app-team.serverless.example.com"
     dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}}
@@ -362,7 +362,7 @@ async def test_workload_absent_ok():
 
 
 async def test_workload_already_exists_conflicts():
-    from app.core.errors import ConflictError
+    from common.errors import ConflictError
 
     ksvc = {"metadata": {"name": "app-team"}}
     svc = _workload_service(
@@ -376,7 +376,7 @@ async def test_workload_already_exists_conflicts():
 
 
 def _ksvc(offering, image="reg/x:1", group="team"):
-    from app.models.common import LABEL_GROUP, LABEL_OFFERING
+    from api.models.common import LABEL_GROUP, LABEL_OFFERING
 
     return {
         "metadata": {"name": "app-team", "labels": {LABEL_GROUP: group, LABEL_OFFERING: offering}},
@@ -385,7 +385,7 @@ def _ksvc(offering, image="reg/x:1", group="team"):
 
 
 async def test_load_existing_returns_image():
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     svc = _workload_service(
         {
@@ -399,8 +399,8 @@ async def test_load_existing_returns_image():
 
 
 async def test_load_existing_offering_mismatch_404():
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
+    from api.auth.claims import Principal
+    from common.errors import NotFoundError
 
     svc = _workload_service(
         {
@@ -416,9 +416,9 @@ async def test_load_existing_offering_mismatch_404():
 async def test_accept_container_returns_pending_and_schedules():
     from fastapi import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.models.container import ContainerCreate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.models.container import ContainerCreate
+    from api.services.container import ContainerService
 
     engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     svc = ContainerService(engine)
@@ -434,9 +434,9 @@ async def test_accept_container_returns_pending_and_schedules():
 
 
 async def test_get_reports_size_and_live_usage_per_site():
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
 
     class _UsageCluster:
         def __init__(self, name):
@@ -487,7 +487,7 @@ async def test_get_reports_size_and_live_usage_per_site():
 
 
 def _list_ksvc(oname, size, host, ready=True):
-    from app.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
+    from api.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
 
     return {
         "metadata": {
@@ -509,18 +509,18 @@ class _ListCluster:
         self._items = items
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
-        from app.clients.cluster import ResourceKind
+        from api.clients.cluster import ResourceKind
 
         assert kind == ResourceKind.KNATIVE_SERVICE
         return list(self._items)
 
 
 async def test_get_returns_redacted_spec():
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.common import Scaling
-    from app.services.files import VolumeSpec
-    from app.services.ksvc import ContainerEnv, build_ksvc
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import Scaling
+    from api.services.files import VolumeSpec
+    from api.services.ksvc import ContainerEnv, build_ksvc
 
     ksvc = build_ksvc(
         name="app-team",
@@ -553,7 +553,7 @@ async def test_get_returns_redacted_spec():
         name = "site-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
-            from app.services.secrets import build_pull_secret
+            from api.services.secrets import build_pull_secret
 
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
@@ -583,8 +583,8 @@ async def test_get_returns_redacted_spec():
 
 
 def _bare_ksvc(name="app-team"):
-    from app.models.common import Scaling
-    from app.services.ksvc import build_ksvc
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
 
     return build_ksvc(
         name=name,
@@ -601,8 +601,8 @@ def _bare_ksvc(name="app-team"):
 
 
 async def test_get_overall_status_reflects_rollout_state():
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
 
     ksvc = _bare_ksvc()
 
@@ -632,7 +632,7 @@ async def test_get_overall_status_reflects_rollout_state():
 
 
 async def test_list_overall_status_per_workload():
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     deploying = _bare_ksvc("app-team")  # no conditions -> Deploying
     failed = _bare_ksvc("bad-team")
@@ -659,8 +659,8 @@ class _ApplyCluster:
         self.deleted = []  # [(ResourceKind, name)] from prune
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
-        from app.clients.cluster import ResourceKind
-        from app.core.errors import NotFoundError as _NF
+        from api.clients.cluster import ResourceKind
+        from common.errors import NotFoundError as _NF
 
         if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
             return self._existing[name]
@@ -688,12 +688,12 @@ async def test_update_prunes_backing_no_longer_referenced():
     """Dropping the last secret env var / secret file on update must remove the
     now-stale {workload}-env / {workload}-files objects, while a still-referenced
     files ConfigMap is kept."""
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.common import EnvVar, FileMount, Scaling
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
-    from app.services.ksvc import build_ksvc
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import EnvVar, FileMount, Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -737,25 +737,25 @@ async def test_update_prunes_backing_no_longer_referenced():
 
 async def test_create_does_not_prune():
     """On create there is nothing to prune; no deletes are issued."""
-    from app.auth.claims import Principal
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.services.container import ContainerService
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
     engine = _workload_service({"site-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    from app.models.container import ContainerCreate
+    from api.models.container import ContainerCreate
 
     await csvc.create(ContainerCreate(name="api", group="team", image="reg/x:1"), user)
     assert cluster.deleted == []
 
 
 async def test_container_update_rotates_pull_secret():
-    from app.auth.claims import Principal
-    from app.models.common import Scaling
-    from app.services.container import ContainerService
-    from app.services.ksvc import build_ksvc
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -774,7 +774,7 @@ async def test_container_update_rotates_pull_secret():
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    from app.models.container import ContainerUpdate
+    from api.models.container import ContainerUpdate
 
     await csvc.update(
         "api", ContainerUpdate(group="team", registryUsername="bob", registryToken="t"), user
@@ -797,13 +797,13 @@ async def test_container_update_rotates_pull_secret():
 
 
 async def test_function_update_rebuilds_when_token_given():
-    from app.auth.claims import Principal
-    from app.models.common import Scaling
-    from app.models.function import FunctionUpdate
-    from app.services.builder import BuildResult
-    from app.services.function import FunctionService
-    from app.services.ksvc import build_ksvc
-    from app.services.workloads import _extract_image
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.function import FunctionUpdate
+    from api.services.builder import BuildResult
+    from api.services.function import FunctionService
+    from api.services.ksvc import build_ksvc
+    from api.services.workloads import _extract_image
 
     class _StubBuilder:
         def __init__(self):
@@ -846,12 +846,12 @@ async def test_function_update_rebuilds_when_token_given():
 
 
 async def test_function_update_without_token_keeps_image():
-    from app.auth.claims import Principal
-    from app.models.common import Scaling
-    from app.models.function import FunctionUpdate
-    from app.services.function import FunctionService
-    from app.services.ksvc import build_ksvc
-    from app.services.workloads import _extract_image
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.function import FunctionUpdate
+    from api.services.function import FunctionService
+    from api.services.ksvc import build_ksvc
+    from api.services.workloads import _extract_image
 
     class _StubBuilder:
         def __init__(self):
@@ -891,7 +891,7 @@ async def test_function_update_without_token_keeps_image():
 
 
 async def test_list_fans_out_and_merges_sites():
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     # orders is deployed to both sites; web only to site-a.
     site_a = _ListCluster(
@@ -926,7 +926,7 @@ async def test_list_fans_out_and_merges_sites():
 
 
 async def test_list_skips_unreachable_site_best_effort():
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     class _Boom:
         def __init__(self, name):
@@ -952,7 +952,7 @@ async def test_list_skips_unreachable_site_best_effort():
 
 
 async def test_list_sort_by_created_at():
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     def _with_created(oname, created):
         k = _list_ksvc(oname, "small", f"{oname}.ex.com")
@@ -978,8 +978,8 @@ async def test_list_sort_by_created_at():
 
 
 async def test_list_errors_when_all_sites_fail():
-    from app.auth.claims import Principal
-    from app.core.errors import SiteTotalFailure
+    from api.auth.claims import Principal
+    from common.errors import SiteTotalFailure
 
     class _Boom:
         def __init__(self, name):
@@ -999,10 +999,10 @@ async def test_list_errors_when_all_sites_fail():
 async def test_accept_rejects_group_caller_is_not_member_of():
     from fastapi import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.core.errors import ForbiddenError
-    from app.models.container import ContainerCreate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.models.container import ContainerCreate
+    from api.services.container import ContainerService
+    from common.errors import ForbiddenError
 
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
     svc = ContainerService(engine)
@@ -1024,8 +1024,8 @@ class _DeleteCluster:
         self.deleted = []  # [(ResourceKind, name)]
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
-        from app.clients.cluster import ResourceKind
-        from app.core.errors import NotFoundError as _NF
+        from api.clients.cluster import ResourceKind
+        from common.errors import NotFoundError as _NF
 
         if kind == ResourceKind.KNATIVE_SERVICE and self._ksvc is not None:
             return self._ksvc
@@ -1039,8 +1039,8 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
     """Delete removes only the KSVC; the derived resources are garbage-collected
     by Kubernetes via their ownerReferences (set at apply time - see
     test_apply_sets_owner_references_on_derived)."""
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
 
     cluster = _DeleteCluster("site-a", _ksvc("container"))
     engine = _workload_service({"site-a": cluster})
@@ -1052,8 +1052,8 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
 
 
 async def test_delete_missing_workload_is_404():
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
+    from api.auth.claims import Principal
+    from common.errors import NotFoundError
 
     cluster = _DeleteCluster("site-a", None)  # no KSVC present
     engine = _workload_service({"site-a": cluster})
@@ -1067,11 +1067,11 @@ async def test_apply_sets_owner_references_on_derived():
     """Every resource derived from a workload (env/files Secret & ConfigMap, the
     imagePullSecret, and the DomainMapping) must carry an ownerReference to the
     KSVC so Kubernetes GC cleans them up on delete. The KSVC itself owns nothing."""
-    from app.auth.claims import Principal
-    from app.models.common import EnvVar, FileMount, Scaling
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
-    from app.services.ksvc import build_ksvc
+    from api.auth.claims import Principal
+    from api.models.common import EnvVar, FileMount, Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -1132,7 +1132,7 @@ class _DownCluster:
 
 async def test_host_check_fails_closed_when_site_unreachable():
     # An unreachable site can't prove the host is free -> 503, not a silent pass.
-    from app.core.errors import ServiceUnavailableError
+    from common.errors import ServiceUnavailableError
 
     svc = _workload_service({"site-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
@@ -1142,7 +1142,7 @@ async def test_host_check_fails_closed_when_site_unreachable():
 
 
 async def test_absent_check_fails_closed_when_site_unreachable():
-    from app.core.errors import ServiceUnavailableError
+    from common.errors import ServiceUnavailableError
 
     svc = _workload_service({"site-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
@@ -1161,11 +1161,11 @@ async def test_accept_rejects_invalid_spec_synchronously():
     # A malformed spec must 400 at accept time, before anything is scheduled.
     from fastapi import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.core.errors import ValidationError
-    from app.models.common import FileMount
-    from app.models.container import ContainerCreate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.models.common import FileMount
+    from api.models.container import ContainerCreate
+    from api.services.container import ContainerService
+    from common.errors import ValidationError
 
     engine = _workload_service({"site-a": _DownCluster()})  # would error if reached
     svc = ContainerService(engine)
@@ -1188,11 +1188,11 @@ async def test_accept_rejects_invalid_spec_synchronously():
 async def test_update_reuses_existing_without_refetch():
     # accept_update passes the loaded `existing` into update(); update must reuse
     # it and NOT trigger a second load_existing fanout.
-    from app.auth.claims import Principal
-    from app.models.common import Scaling
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
-    from app.services.ksvc import build_ksvc
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
 
     existing_ksvc = build_ksvc(
         name="api-team",
@@ -1226,8 +1226,8 @@ async def test_update_reuses_existing_without_refetch():
 async def test_load_existing_unreachable_site_is_503_not_404():
     # A workload that can't be confirmed absent because the site is down must
     # surface ServiceUnavailable, not a misleading NotFound.
-    from app.auth.claims import Principal
-    from app.core.errors import ServiceUnavailableError
+    from api.auth.claims import Principal
+    from common.errors import ServiceUnavailableError
 
     svc = _workload_service({"site-a": _DownCluster()})  # get() raises RuntimeError
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1236,8 +1236,8 @@ async def test_load_existing_unreachable_site_is_503_not_404():
 
 
 async def test_load_existing_truly_absent_is_404():
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
+    from api.auth.claims import Principal
+    from common.errors import NotFoundError
 
     svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get() -> NotFoundError
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1254,7 +1254,7 @@ def _ready_ksvc(name="app-team"):
 async def test_get_omits_404_site_and_stays_healthy():
     # A site that returns a clean 404 (workload not deployed there) is omitted from
     # the per-site report and does NOT drag the rollup to Degraded.
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     engine = _workload_service(
         {
@@ -1270,7 +1270,7 @@ async def test_get_omits_404_site_and_stays_healthy():
 
 async def test_get_down_site_still_degrades():
     # An UNREACHABLE site is different from a 404: it stays visible and degrades.
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     engine = _workload_service(
         {
@@ -1285,8 +1285,8 @@ async def test_get_down_site_still_degrades():
 
 
 async def test_get_absent_everywhere_is_404():
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
+    from api.auth.claims import Principal
+    from common.errors import NotFoundError
 
     engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1296,8 +1296,8 @@ async def test_get_absent_everywhere_is_404():
 
 async def test_get_all_sites_down_is_503():
     # Can't confirm absence when every site is unreachable -> 503, not a false 404.
-    from app.auth.claims import Principal
-    from app.core.errors import ServiceUnavailableError
+    from api.auth.claims import Principal
+    from common.errors import ServiceUnavailableError
 
     engine = _workload_service({"site-a": _DownCluster("site-a"), "site-b": _DownCluster("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1306,8 +1306,8 @@ async def test_get_all_sites_down_is_503():
 
 
 def test_principal_normalizes_slash_and_ggd_prefixes():
-    from app.auth.claims import principal_from_claims
-    from app.core.config import SSOConfig
+    from api.auth.claims import principal_from_claims
+    from api.core.config import SSOConfig
 
     cfg = SSOConfig(groups_claim="groups", admin_groups=["platform-admins"])
     p = principal_from_claims(
@@ -1321,7 +1321,7 @@ def test_principal_normalizes_slash_and_ggd_prefixes():
 def test_validate_group_strips_ggd_prefix_on_input():
     # A request-supplied group with the ggd- prefix normalizes to the bare name,
     # so "ggd-1234-platforms" and "platforms" are the same group.
-    from app.models.common import normalize_group, validate_group
+    from api.models.common import normalize_group, validate_group
 
     assert validate_group("ggd-1234-platforms") == "platforms"
     assert validate_group("platforms") == "platforms"
@@ -1330,7 +1330,7 @@ def test_validate_group_strips_ggd_prefix_on_input():
 
 
 def test_sso_endpoints_derived_from_issuer():
-    from app.core.config import SSOConfig
+    from api.core.config import SSOConfig
 
     cfg = SSOConfig(issuer="https://sso.x/realms/r")
     assert cfg.discovery_url == "https://sso.x/realms/r/.well-known/openid-configuration"
@@ -1340,9 +1340,9 @@ def test_sso_endpoints_derived_from_issuer():
 
 
 def test_validate_audience_verified_only_when_configured(monkeypatch):
-    import app.auth.oidc as oidc_mod
-    from app.auth.oidc import TokenValidator
-    from app.core.config import SSOConfig
+    import api.auth.oidc as oidc_mod
+    from api.auth.oidc import TokenValidator
+    from api.core.config import SSOConfig
 
     captured: dict = {}
 
@@ -1379,8 +1379,8 @@ def test_validate_audience_verified_only_when_configured(monkeypatch):
 
 
 def _existing_container_ksvc():
-    from app.models.common import Scaling
-    from app.services.ksvc import build_ksvc
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
 
     return build_ksvc(
         name="api-team",
@@ -1399,10 +1399,10 @@ def _existing_container_ksvc():
 async def test_prune_failure_aborts_update_fail_closed():
     """A non-404 prune error must abort the site's update: the new spec never goes
     live, so it can't sit alongside the stale, now-unreferenced secret."""
-    from app.auth.claims import Principal
-    from app.models.common import EnvVar
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.models.common import EnvVar
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
 
     class _PruneFails(_ApplyCluster):
         def delete(self, kind, name):  # a real API error, not a 404
@@ -1425,11 +1425,11 @@ async def test_prune_failure_aborts_update_fail_closed():
 async def test_prune_not_found_is_tolerated():
     """A 404 during prune just means the object never existed here; the update
     proceeds normally."""
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
-    from app.models.common import EnvVar
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.models.common import EnvVar
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from common.errors import NotFoundError
 
     class _PruneMissing(_ApplyCluster):
         def delete(self, kind, name):
@@ -1452,11 +1452,11 @@ async def test_prune_runs_before_apply_on_update():
     """Ordering: the fail-closed secret/configmap prunes happen before the new
     spec is applied, while the old host's DomainMapping is retired *after* (prune-
     last) so a host move never drops the old host before the new one is live."""
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.common import EnvVar
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import EnvVar
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
 
     class _OpLog(_ApplyCluster):
         def __init__(self, name, existing):
@@ -1504,12 +1504,12 @@ async def test_accept_update_rejects_taken_host_synchronously():
     swallowed in the background deploy where the client would never see it."""
     from fastapi import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.core.errors import ConflictError, NotFoundError
-    from app.models.common import LABEL_WORKLOAD
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import LABEL_WORKLOAD
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from common.errors import ConflictError, NotFoundError
 
     existing = _existing_container_ksvc()
 
@@ -1536,12 +1536,12 @@ async def test_accept_update_rejects_taken_host_synchronously():
 
 async def test_update_unchanged_host_retires_no_mapping():
     """When the host is unchanged, no DomainMapping is retired (no spurious delete)."""
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.common import Scaling
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
-    from app.services.ksvc import build_ksvc
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -1568,7 +1568,7 @@ async def test_update_unchanged_host_retires_no_mapping():
 async def test_list_total_failure_details_have_message_key():
     """The list total-failure details share deployer.aggregate's {site, message}
     shape so clients parse one envelope."""
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     class _Boom:
         def __init__(self, name):
@@ -1588,7 +1588,7 @@ async def test_list_total_failure_details_have_message_key():
 def test_looks_like_jwt_rejects_non_string_and_empty():
     """A None/empty/non-str token returns False (a clean 401 path) instead of
     raising a 500 from the JWT parser."""
-    from app.auth.oidc import looks_like_jwt
+    from api.auth.oidc import looks_like_jwt
 
     assert looks_like_jwt(None) is False
     assert looks_like_jwt("") is False
@@ -1614,10 +1614,11 @@ def test_deployer_close_releases_every_cluster():
 
 
 def test_cluster_close_closes_api_client_and_resets():
-    from app.clients.cluster import Cluster
+    from api.services.deployer import _connection
+    from common.cluster import Cluster
 
     settings = _settings_with_sites()
-    c = Cluster(settings.sites[0], settings)
+    c = Cluster(_connection(settings, settings.sites[0]))
     calls = {"n": 0}
 
     class _Api:
@@ -1639,7 +1640,7 @@ def test_cluster_close_closes_api_client_and_resets():
 async def test_get_reports_terminating_during_delete():
     """A KSVC carrying a deletionTimestamp (being garbage-collected) reports
     Terminating rather than a stale Ready."""
-    from app.auth.claims import Principal
+    from api.auth.claims import Principal
 
     terminating = _ready_ksvc()  # would otherwise read Ready
     terminating["metadata"]["deletionTimestamp"] = "2026-06-29T12:00:00Z"
@@ -1656,7 +1657,7 @@ async def test_get_reports_terminating_during_delete():
 
 
 def test_overall_status_terminating_precedence():
-    from app.services.deployer import overall_status
+    from api.services.deployer import overall_status
 
     assert overall_status(["Terminating", "Ready"]) == "Terminating"
     assert overall_status(["Terminating", "Deploying"]) == "Terminating"
@@ -1669,7 +1670,7 @@ def test_creation_time_is_israel_local_time_with_dst():
     DST-aware offset: +03:00 (IDT) in summer, +02:00 (IST) in winter."""
     from zoneinfo import ZoneInfo
 
-    from app.services.workloads import _creation_time
+    from api.services.workloads import _creation_time
 
     summer = _creation_time({"metadata": {"creationTimestamp": "2026-07-01T09:00:00Z"}})
     assert summer.tzinfo == ZoneInfo("Asia/Jerusalem")
@@ -1698,10 +1699,10 @@ class _BackingFails(_ApplyCluster):
 async def test_create_rolls_back_ksvc_on_backing_failure():
     """If a backing/mapping apply fails mid-create, the just-created KSVC is
     deleted (rolled back) so no half-built workload lingers on the name/host."""
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.container import ContainerCreate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.container import ContainerCreate
+    from api.services.container import ContainerService
 
     cluster = _BackingFails("site-a", {})
     csvc = ContainerService(_workload_service({"site-a": cluster}))
@@ -1715,11 +1716,11 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
 async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
     """A backing/mapping failure on update must NOT delete the live KSVC - Knative
     keeps serving the last-good revision; deleting would take it down + free the host."""
-    from app.auth.claims import Principal
-    from app.clients.cluster import ResourceKind
-    from app.models.common import EnvVar
-    from app.models.container import ContainerUpdate
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.clients.cluster import ResourceKind
+    from api.models.common import EnvVar
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
 
     cluster = _BackingFails("site-a", {"api-team": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"site-a": cluster}))
@@ -1750,8 +1751,8 @@ class _LogsCluster:
         self.reads = []  # (pod, container, since_seconds, limit_bytes)
 
     def get(self, kind, name=None, label_selector=None):
-        from app.clients.cluster import ResourceKind
-        from app.core.errors import NotFoundError as _NF
+        from api.clients.cluster import ResourceKind
+        from common.errors import NotFoundError as _NF
 
         if kind is ResourceKind.KNATIVE_SERVICE:
             if self._ksvc is None:
@@ -1763,7 +1764,7 @@ class _LogsCluster:
         raise AssertionError(f"unexpected get for {kind}")
 
     def pod_logs(self, pod, *, container, since_seconds=None, limit_bytes=None):
-        from app.core.errors import NotFoundError as _NF
+        from common.errors import NotFoundError as _NF
 
         self.reads.append((pod, container, since_seconds, limit_bytes))
         if pod in self._missing:
@@ -1772,7 +1773,7 @@ class _LogsCluster:
 
 
 def _logs_ksvc(offering="function", group="team"):
-    from app.models.common import LABEL_GROUP, LABEL_OFFERING
+    from api.models.common import LABEL_GROUP, LABEL_OFFERING
 
     return {
         "metadata": {"name": "app-team", "labels": {LABEL_GROUP: group, LABEL_OFFERING: offering}}
@@ -1786,8 +1787,8 @@ def _pod(name, revision="app-team-00001"):
 
 
 async def test_logs_reads_local_site_pods():
-    from app.auth.claims import Principal
-    from app.services.workloads import OFFERING_FUNCTION
+    from api.auth.claims import Principal
+    from api.services.workloads import OFFERING_FUNCTION
 
     cluster = _LogsCluster(
         "site-a",
@@ -1816,8 +1817,8 @@ async def test_logs_reads_local_site_pods():
 
 
 async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
-    from app.auth.claims import Principal
-    from app.services.workloads import OFFERING_CONTAINER
+    from api.auth.claims import Principal
+    from api.services.workloads import OFFERING_CONTAINER
 
     cluster = _LogsCluster(
         "site-a",
@@ -1847,8 +1848,8 @@ async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
 
 
 async def test_logs_scaled_to_zero_returns_empty():
-    from app.auth.claims import Principal
-    from app.services.workloads import OFFERING_FUNCTION
+    from api.auth.claims import Principal
+    from api.services.workloads import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(), pods=[])
     engine = _workload_service({"site-a": cluster})
@@ -1867,9 +1868,9 @@ async def test_logs_scaled_to_zero_returns_empty():
 
 
 async def test_logs_not_on_local_site_is_404():
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
-    from app.services.workloads import OFFERING_FUNCTION
+    from api.auth.claims import Principal
+    from api.services.workloads import OFFERING_FUNCTION
+    from common.errors import NotFoundError
 
     cluster = _LogsCluster("site-a", ksvc=None)  # KSVC absent locally
     engine = _workload_service({"site-a": cluster})
@@ -1888,9 +1889,9 @@ async def test_logs_not_on_local_site_is_404():
 
 
 async def test_logs_wrong_offering_hidden_as_404():
-    from app.auth.claims import Principal
-    from app.core.errors import NotFoundError
-    from app.services.workloads import OFFERING_FUNCTION
+    from api.auth.claims import Principal
+    from api.services.workloads import OFFERING_FUNCTION
+    from common.errors import NotFoundError
 
     # a container by this name exists locally; /functions must not read its logs
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(offering="container"))
@@ -1910,9 +1911,9 @@ async def test_logs_wrong_offering_hidden_as_404():
 
 
 async def test_logs_wrong_group_hidden_as_404():
-    from app.auth.claims import Principal
-    from app.core.errors import ForbiddenError
-    from app.services.workloads import OFFERING_FUNCTION
+    from api.auth.claims import Principal
+    from api.services.workloads import OFFERING_FUNCTION
+    from common.errors import ForbiddenError
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(group="other"))
     engine = _workload_service({"site-a": cluster})
@@ -1932,8 +1933,8 @@ async def test_logs_wrong_group_hidden_as_404():
 
 
 async def test_function_service_logs_delegates_to_engine():
-    from app.auth.claims import Principal
-    from app.services.function import FunctionService
+    from api.auth.claims import Principal
+    from api.services.function import FunctionService
 
     cluster = _LogsCluster(
         "site-a",
@@ -1952,8 +1953,8 @@ async def test_function_service_logs_delegates_to_engine():
 
 
 async def test_container_service_logs_delegates_to_engine():
-    from app.auth.claims import Principal
-    from app.services.container import ContainerService
+    from api.auth.claims import Principal
+    from api.services.container import ContainerService
 
     cluster = _LogsCluster(
         "site-a",
@@ -1975,8 +1976,8 @@ async def test_container_service_logs_delegates_to_engine():
 
 
 def _function_service_with_runtimes(names):
-    from app.services.function import FunctionService
-    from app.services.runtimes import RuntimeRegistry, RuntimeSpec
+    from api.services.function import FunctionService
+    from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
     registry = RuntimeRegistry([RuntimeSpec(name=n) for n in names])
@@ -1986,9 +1987,9 @@ def _function_service_with_runtimes(names):
 async def test_function_accept_rejects_unknown_runtime():
     from starlette.background import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.core.errors import ValidationError
-    from app.models.function import FunctionCreate
+    from api.auth.claims import Principal
+    from api.models.function import FunctionCreate
+    from common.errors import ValidationError
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -2001,8 +2002,8 @@ async def test_function_accept_rejects_unknown_runtime():
 async def test_function_accept_allows_known_runtime():
     from starlette.background import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.models.function import FunctionCreate
+    from api.auth.claims import Principal
+    from api.models.function import FunctionCreate
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -2015,9 +2016,9 @@ async def test_function_accept_allows_known_runtime():
 async def test_function_update_rejects_unknown_runtime():
     from starlette.background import BackgroundTasks
 
-    from app.auth.claims import Principal
-    from app.core.errors import ValidationError
-    from app.models.function import FunctionUpdate
+    from api.auth.claims import Principal
+    from api.models.function import FunctionUpdate
+    from common.errors import ValidationError
 
     fsvc = _function_service_with_runtimes(["python"])
     user = Principal(subject="u", username="alice", groups=["team"])

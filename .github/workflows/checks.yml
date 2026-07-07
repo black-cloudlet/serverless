@@ -34,7 +34,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - run: pip install -e ".[dev]"
-      - run: pytest -q --cov=app --cov-report=term-missing --cov-fail-under=90
+      - run: pytest -q --cov=api --cov=common --cov-report=term-missing --cov-fail-under=90
 
   security:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-from app.services.metrics import parse_cpu_millicores, parse_memory_bytes, sum_usage
+from api.services.metrics import parse_cpu_millicores, parse_memory_bytes, sum_usage
 
 
 def test_parse_quantities():

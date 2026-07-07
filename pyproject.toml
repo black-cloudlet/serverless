@@ -56,11 +56,11 @@ convention = "google"
 "tests/**" = ["E501", "D", "S", "B"]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["api*", "common*"]
 
 [tool.setuptools.package-data]
 # Vendored Swagger UI / ReDoc assets served offline (airgapped docs).
-app = ["static/*"]
+api = ["static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

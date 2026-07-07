@@ -1016,46 +1016,39 @@ Serverless/
 ├── README.md
 ├── docs/
 │   └── ARCHITECTURE.md              # this document
-├── app/                             # FastAPI application
+├── api/                             # the control-plane API service (python -m api.main)
 │   ├── main.py                      # app factory, router registration, middleware
 │   ├── dependencies.py              # FastAPI DI: cached service singletons
 │   ├── static/                      # vendored Swagger UI / ReDoc assets (airgap)
 │   ├── core/
-│   │   ├── config.py                # settings (site profiles, SSO, registry) via env/Secret
-│   │   └── logging.py
+│   │   └── config.py                # api settings (site profiles, SSO, registry) via env/Secret
 │   ├── auth/                        # self-contained auth component (all OIDC interaction)
 │   │   ├── oidc.py                  # SSO discovery + JWKS fetch/cache, token validation
 │   │   ├── apikey.py               # static admin API-key auth (opaque Authorization: Bearer)
 │   │   ├── claims.py               # claims → group mapping, admin/tenant policy
 │   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
-│   ├── routers/
-│   │   ├── functions.py             # FaaS endpoints (incl. /logs)
-│   │   ├── containers.py            # CaaS endpoints (incl. /logs)
-│   │   ├── info.py                  # public /info discovery endpoint
-│   │   └── health.py
-│   ├── models/                      # Pydantic request/response schemas
-│   │   ├── common.py                # env, files, scaling (+ capabilities), site status, labels
-│   │   ├── function.py
-│   │   ├── container.py
-│   │   └── info.py                  # /info discovery-document schema
+│   ├── routers/                     # functions, containers, info (public), health
+│   ├── models/                      # Pydantic schemas: common, function, container, info
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine
-│   │   ├── function.py      # function-specific orchestration (build from Git)
-│   │   ├── container.py     # container-specific orchestration (image + pull secret)
-│   │   ├── deployer.py              # multi-site fan-out + status aggregation
-│   │   ├── builder.py               # function build via func/buildpacks
+│   │   ├── function.py              # function orchestration (build from Git)
+│   │   ├── container.py             # container orchestration (image + pull secret)
+│   │   ├── deployer.py              # multi-site fan-out + builds per-site ClusterConnection
+│   │   ├── builder.py               # api-side Builder (FuncBuilder; future RemoteBuilder)
 │   │   ├── ksvc.py                  # KSVC manifest construction (+ t-shirt sizes)
 │   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
-│   │   ├── env.py                   # env resolution (+ {workload}-env Secret)
-│   │   ├── files.py                 # file resolution (+ {workload}-files CM/Secret)
-│   │   ├── resources.py             # Secret/ConfigMap manifest builders (owner refs)
-│   │   ├── secrets.py               # imagePullSecret builder
-│   │   ├── describe.py              # read desired-state spec back from a KSVC (redacted)
-│   │   ├── metrics.py               # parse/sum pod cpu/memory from PodMetrics
-│   │   └── labels.py                # ownership / workload labels
+│   │   ├── env.py / files.py        # env & file resolution (+ their Secret/ConfigMap)
+│   │   ├── resources.py / secrets.py# manifest + imagePullSecret builders
+│   │   ├── describe.py / metrics.py # read-back spec (redacted) + pod usage
 │   └── clients/
-│       └── cluster.py               # Cluster: wraps the k8s library for one site (mTLS cert)
+│       └── cluster.py               # ResourceKind: the api's GVKs for the shared client
+├── common/                          # shared by api + (future) builder service
+│   ├── contract.py                  # BuildRequest/BuildResult/Builder — the API↔builder contract
+│   ├── cluster.py                   # generic Cluster client + ClusterConnection (mTLS, lazy)
+│   ├── labels.py                    # ownership label keys + workload_labels
+│   ├── errors.py                    # error envelope, typed errors, exception handlers
+│   └── logging.py                   # logging configuration
 ├── charts/
 │   └── serverless-api/
 │       ├── Chart.yaml
@@ -1080,10 +1073,20 @@ Serverless/
 │       ├── ci.yml                   # PRs / main: runs the checks suite
 │       └── release.yml              # one-click release: bump+tag, build/scan/sign, SBOM, GitHub Release
 ├── tests/                           # flat pytest modules (test_api.py, test_*.py)
-├── Dockerfile                    # build the API image (airgap-friendly base)
-├── pyproject.toml                   # project metadata, deps (single source), ruff/pytest config
+├── Dockerfile                       # multi-stage: install (api+common) then copy the artifact
+├── pyproject.toml                   # one dist (packages: api*, common*); deps + ruff/pytest config
 └── .env.example                     # sample SERVERLESS_* configuration
 ```
+
+> **Monorepo, future-ready.** The repo is organized as services + a shared
+> library so a **builder** microservice can be added as a second package
+> (`builder/`) without restructuring: it would import the build contract and the
+> cluster client from `common/`, ship its own Dockerfile + image
+> (`…/serverless/builder`), and deploy from the same chart. The API talks to it
+> through `common.contract.Builder` — today via the in-process `FuncBuilder`,
+> later via a `RemoteBuilder` HTTP client — with no change to the orchestration.
+> (Identifier/validation helpers and the shared config sub-models are the next
+> candidates to lift into `common/`.)
 
 ---
 

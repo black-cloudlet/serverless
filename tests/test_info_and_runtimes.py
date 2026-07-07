@@ -1,6 +1,6 @@
-from app.models.common import Scaling
-from app.services.ksvc import workload_sizes
-from app.services.runtimes import RuntimeRegistry, RuntimeSpec, load_runtimes
+from api.models.common import Scaling
+from api.services.ksvc import workload_sizes
+from api.services.runtimes import RuntimeRegistry, RuntimeSpec, load_runtimes
 
 
 def test_load_runtimes_from_file(tmp_path):

@@ -1,7 +1,7 @@
 import base64
 import json
 
-from app.services.secrets import build_pull_secret, registry_of, registry_username
+from api.services.secrets import build_pull_secret, registry_of, registry_username
 
 
 def test_registry_of():
