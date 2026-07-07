@@ -1,5 +1,4 @@
-ARG BASE_IMAGE=python:3.13-slim
-FROM ${BASE_IMAGE}
+FROM python:3.13-slim
 
 ARG PIP_INDEX_URL
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
@@ -8,16 +7,14 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-WORKDIR /app
+# Install into site-packages from a build dir, then discard the sources: the
+# runtime image carries no source tree (and no nested app/app), and the app is
+# imported from the installed package.
+COPY pyproject.toml /src/
+COPY app /src/app
+RUN pip install /src && rm -rf /src
 
-COPY pyproject.toml ./
-# Must land in ./app so setuptools finds the `app` package; `COPY app .` would
-# flatten the contents into /app and `pip install .` would install nothing.
-COPY app ./app
-RUN pip install .
-RUN chown -R 1001:0 /app && \
-    chmod -R g=u /app
-
+WORKDIR /
 EXPOSE 8080
 USER 1001
 
