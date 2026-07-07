@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
@@ -22,7 +22,7 @@ ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
 
 # Name of the platform-injected CA-bundle volume/mount on every pod (matches the
-# default ConfigMap name). An internal pod-spec handle — owned by the KSVC
+# default ConfigMap name). An internal pod-spec handle - owned by the KSVC
 # builder; read-back filters it out as it isn't part of the user's spec.
 CA_BUNDLE_VOLUME = "ca-bundle"
 
@@ -30,6 +30,18 @@ CA_BUNDLE_VOLUME = "ca-bundle"
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
 ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]
 _KPA_METRICS = {"concurrency", "rps"}
+# Per-metric target defaults and bounds (the single source both the validator and
+# the /info capabilities projection read, so they can't drift).
+_TARGET_MIN = 1
+_KPA_TARGET_DEFAULT = 100  # concurrency/rps: absolute request count per replica
+_HPA_TARGET_DEFAULT = 70  # cpu/memory: utilization percentage
+_HPA_TARGET_MAX = 100  # a utilization percentage can't exceed 100
+_METRIC_UNITS = {
+    "concurrency": "concurrentRequests",
+    "rps": "requestsPerSecond",
+    "cpu": "percent",
+    "memory": "percent",
+}
 
 # Workload resource size (t-shirt sizing). Maps to container resources in the
 # KSVC (see services.ksvc): memory is request==limit (hard cap), CPU is
@@ -44,6 +56,11 @@ HOSTNAME = re.compile(
 # Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
 # "ggd-1234-platforms" is the group "platforms").
 _GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
+
+_DURATION = re.compile(r"^(\d+)(s|m|h)$")
+_DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
+_SCALE_DOWN_DELAY_MAX_SECONDS = 3600  # Knative maximum
+_SCALE_DOWN_DELAY_MAX = "1h"
 
 
 def normalize_group(group: str) -> str:
@@ -124,7 +141,7 @@ def validate_hostname(host: str) -> str:
 
 # Validated string types shared by request models and query params. The group
 # validator also NORMALIZES ("/ggd-1234-team" -> "team"), so every group entering
-# the app is already in bare, canonical form at the edge — nothing downstream
+# the app is already in bare, canonical form at the edge - nothing downstream
 # re-normalizes.
 Name = Annotated[str, AfterValidator(validate_name)]
 Group = Annotated[str, AfterValidator(validate_group)]
@@ -147,7 +164,7 @@ class FileMount(BaseModel):
     """An inline file to load into the workload at ``mountPath``.
 
     The API stores the content in the workload's shared ConfigMap (or Secret when
-    ``secret: true``) — one ConfigMap and one Secret per workload — and mounts
+    ``secret: true``) - one ConfigMap and one Secret per workload - and mounts
     each file at its ``mountPath`` via ``subPath``.
     """
 
@@ -161,9 +178,7 @@ class FileMount(BaseModel):
     def _check(self) -> "FileMount":
         """Require exactly one of ``content`` or ``contentBase64``."""
         if (self.content is None) == (self.contentBase64 is None):
-            raise ValueError(
-                "file requires exactly one of 'content' or 'contentBase64'"
-            )
+            raise ValueError("file requires exactly one of 'content' or 'contentBase64'")
         return self
 
 
@@ -175,24 +190,61 @@ class Scaling(BaseModel):
         maxScale: Maximum replicas.
         metric: The signal the autoscaler scales on (concurrency/rps/cpu/memory).
         target: Target value for the metric; None uses a metric-aware default.
+        scaleDownDelay: How long the autoscaler waits before scaling a revision
+            down (e.g. "30s", "5m", "1h"); None leaves the Knative default.
+            Smooths bursty traffic by avoiding rapid scale-down/up churn.
     """
 
     minScale: int = Field(0, ge=0)
     maxScale: int = Field(3, ge=1)
     metric: ScalingMetric = "concurrency"
-    target: int | None = Field(None, ge=1)
+    target: int | None = Field(None, ge=_TARGET_MIN)
+    scaleDownDelay: str | None = None
 
     @property
     def effective_target(self) -> int:
         """The target value to apply, defaulting by metric when unset.
 
         Returns:
-            ``target`` if set, else 100 for concurrency/rps or 70 (%) for
-            cpu/memory.
+            ``target`` if set, else the KPA/HPA default for the metric.
         """
         if self.target is not None:
             return self.target
-        return 100 if self.metric in _KPA_METRICS else 70
+        return _KPA_TARGET_DEFAULT if self.metric in _KPA_METRICS else _HPA_TARGET_DEFAULT
+
+    @classmethod
+    def capabilities(cls) -> "ScalingCapabilities":
+        """Project the per-metric scaling rules for the public /info endpoint.
+
+        Derived from the same constants the validator enforces (``_KPA_METRICS``,
+        the target defaults/bounds, the duration cap), so the advertised
+        capabilities can't drift from what a create request will accept.
+        """
+        metrics = []
+        for name in get_args(ScalingMetric):
+            is_kpa = name in _KPA_METRICS
+            metrics.append(
+                MetricCapability(
+                    name=name,
+                    minScaleFloor=0 if is_kpa else 1,
+                    target=MetricTarget(
+                        default=_KPA_TARGET_DEFAULT if is_kpa else _HPA_TARGET_DEFAULT,
+                        min=_TARGET_MIN,
+                        max=None if is_kpa else _HPA_TARGET_MAX,
+                        unit=_METRIC_UNITS[name],
+                    ),
+                )
+            )
+        return ScalingCapabilities(
+            defaultMetric=cls.model_fields["metric"].default,
+            metrics=metrics,
+            scaleDownDelay=ScaleDownDelayCapability(
+                format="duration",
+                min="0s",
+                max=_SCALE_DOWN_DELAY_MAX,
+                default=cls.model_fields["scaleDownDelay"].default,
+            ),
+        )
 
     @property
     def autoscaler_class(self) -> str | None:
@@ -210,12 +262,73 @@ class Scaling(BaseModel):
                 "scale to zero; set minScale >= 1"
             )
         # cpu/memory targets are a utilization percentage; >100 makes no sense.
-        if self.metric not in _KPA_METRICS and self.target is not None and self.target > 100:
+        if (
+            self.metric not in _KPA_METRICS
+            and self.target is not None
+            and self.target > _HPA_TARGET_MAX
+        ):
             raise ValueError(
                 f"metric '{self.metric}' target is a utilization percentage; "
-                "it must be between 1 and 100"
+                f"it must be between {_TARGET_MIN} and {_HPA_TARGET_MAX}"
             )
+        if self.scaleDownDelay is not None:
+            match = _DURATION.fullmatch(self.scaleDownDelay)
+            if not match:
+                raise ValueError("scaleDownDelay must be a duration like '30s', '5m', or '1h'")
+            seconds = int(match.group(1)) * _DURATION_SECONDS[match.group(2)]
+            if seconds > _SCALE_DOWN_DELAY_MAX_SECONDS:
+                raise ValueError(
+                    f"scaleDownDelay must be at most {_SCALE_DOWN_DELAY_MAX} (Knative maximum)"
+                )
         return self
+
+
+class MetricTarget(BaseModel):
+    """The target bounds for one autoscaling metric (public capability).
+
+    Attributes:
+        default: The target applied when the client omits one.
+        min: The smallest accepted target.
+        max: The largest accepted target, or None when unbounded (KPA metrics).
+        unit: What the target counts (e.g. "percent", "concurrentRequests").
+    """
+
+    default: int
+    min: int
+    max: int | None
+    unit: str
+
+
+class MetricCapability(BaseModel):
+    """One autoscaling metric's client-facing rules.
+
+    Attributes:
+        name: The metric name (concurrency/rps/cpu/memory).
+        minScaleFloor: The smallest allowed ``minScale`` (0 means scale-to-zero
+            is permitted; 1 means it isn't).
+        target: The metric's target bounds and unit.
+    """
+
+    name: str
+    minScaleFloor: int
+    target: MetricTarget
+
+
+class ScaleDownDelayCapability(BaseModel):
+    """The accepted shape and bounds of ``scaleDownDelay``."""
+
+    format: str
+    min: str
+    max: str
+    default: str | None = None
+
+
+class ScalingCapabilities(BaseModel):
+    """The scaling options a client may choose from, for dynamic UI rendering."""
+
+    defaultMetric: str
+    metrics: list[MetricCapability]
+    scaleDownDelay: ScaleDownDelayCapability
 
 
 class SiteStatus(BaseModel):
@@ -268,7 +381,7 @@ class WorkloadSummary(WorkloadBase):
 class EnvVarView(BaseModel):
     """An env var as read back from a deployed workload.
 
-    Secret-backed values are never returned — ``secret: true`` with
+    Secret-backed values are never returned - ``secret: true`` with
     ``value: null`` signals one is set.
     """
 
@@ -295,8 +408,8 @@ class WorkloadResponse(WorkloadBase):
 
     Identity (WorkloadBase) plus live per-site status plus the desired-state
     config common to both offerings (secrets redacted). Per-offering responses
-    subclass this — see FunctionResponse (in models.function) / ContainerResponse
-    (in models.container) — so the response mirrors the create body of that
+    subclass this - see FunctionResponse (in models.function) / ContainerResponse
+    (in models.container) - so the response mirrors the create body of that
     offering.
     """
 
@@ -306,6 +419,37 @@ class WorkloadResponse(WorkloadBase):
     scaling: Scaling | None = None
     env: list[EnvVarView] = []
     files: list[FileView] = []
+
+
+class PodLogs(BaseModel):
+    """The current log snapshot of one workload pod's container.
+
+    Attributes:
+        pod: The pod name.
+        container: The container the log was read from.
+        revision: The Knative revision the pod belongs to, if labelled.
+        logs: The log text as the node currently holds it (timestamped).
+    """
+
+    pod: str
+    container: str
+    revision: str | None = None
+    logs: str
+
+
+class LogsResponse(BaseModel):
+    """A workload's pod logs from the local site (a point-in-time snapshot).
+
+    Logs are node-local and ephemeral: only the running pods on the current site
+    are read, and their history is bounded by the node's log rotation. Empty
+    ``pods`` means the workload is deployed here but scaled to zero.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    site: str
+    pods: list[PodLogs] = []
 
 
 class WorkloadSpec(BaseModel):
@@ -324,4 +468,3 @@ class WorkloadSpec(BaseModel):
     # Function source: what the build was run from. The git token is never stored.
     gitRepo: str | None = None
     branch: str | None = None
-

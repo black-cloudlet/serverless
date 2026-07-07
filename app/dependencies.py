@@ -12,6 +12,7 @@ from app.services.builder import FuncBuilder
 from app.services.container import ContainerService
 from app.services.deployer import Deployer
 from app.services.function import FunctionService
+from app.services.runtimes import get_runtimes
 from app.services.workloads import WorkloadService
 
 
@@ -31,7 +32,7 @@ def get_workload_service() -> WorkloadService:
 @lru_cache
 def get_function_service() -> FunctionService:
     """The cached FunctionService (composes the shared workload engine)."""
-    return FunctionService(get_workload_service())
+    return FunctionService(get_workload_service(), get_runtimes())
 
 
 @lru_cache

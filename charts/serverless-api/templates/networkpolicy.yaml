@@ -1,0 +1,99 @@
+{{- if .Values.networkPolicy.enabled }}
+# Additive segmentation for the workloads namespace: default-deny, then each
+# allow-* reopens one path (Knative/OpenShift in; DNS/API/control-plane/off-cluster out).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector: {} # every pod in the namespace
+  policyTypes: [Ingress, Egress]
+---
+# Ingress: Knative + OpenShift only (same-namespace pods excluded -> no pod-to-pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-system
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.ingressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+---
+# Egress: DNS resolution (openshift-dns on 53).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Egress: the platform API ("our side") and the Knative control plane.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-internal
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespaces.api }}
+        {{- range .Values.networkPolicy.egressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+---
+# Egress: off-cluster (LBs/Routes/external); internal CIDRs excluded so it can't
+# reach other pods/Services directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-external
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.externalEgress.cidr }}
+            {{- with .Values.networkPolicy.externalEgress.exceptCIDRs }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+{{- end }}

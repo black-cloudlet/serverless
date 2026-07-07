@@ -3,7 +3,7 @@
 All non-secret files are aggregated into a single ``{workload}-files`` ConfigMap
 and all secret files into a single ``{workload}-files`` Secret, one key per file.
 Each file is mounted at its ``mountPath`` via ``subPath`` (so it appears as a
-single file, not a directory). Pure functions — no cluster access.
+single file, not a directory). Pure functions - no cluster access.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from app.services import resources as res
 from app.services.labels import workload_labels
 
 CONFIG_VOLUME = "files-config"
-SECRET_VOLUME = "files-secret"
+SECRET_VOLUME = "files-secret"  # noqa: S105 - a volume name, not a credential
 
 
 @dataclass
@@ -56,9 +56,7 @@ def _key(mount_path: str) -> str:
     return safe.strip("-_.") or "file"
 
 
-def resolve_files(
-    workload: str, group: str, owner: str, files: list[FileMount]
-) -> ResolvedFiles:
+def resolve_files(workload: str, group: str, owner: str, files: list[FileMount]) -> ResolvedFiles:
     """Resolve file mounts into volume specs and backing ConfigMap/Secret.
 
     Non-secret files aggregate into one ConfigMap and secret files into one
@@ -98,17 +96,13 @@ def resolve_files(
                 # binascii.Error and UnicodeDecodeError both subclass ValueError.
                 raw = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
             except ValueError as exc:
-                raise ValidationError(
-                    f"file '{f.mountPath}' has invalid base64 content"
-                ) from exc
+                raise ValidationError(f"file '{f.mountPath}' has invalid base64 content") from exc
         else:
             raw = f.content or ""
 
         if f.secret:
             secret_data[key] = raw
-            volumes.append(
-                VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key, f.readOnly)
-            )
+            volumes.append(VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key, f.readOnly))
         else:
             config_data[key] = raw
             volumes.append(

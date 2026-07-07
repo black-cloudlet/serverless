@@ -1,0 +1,173 @@
+name: Release
+
+# One-click release (manual). Enter a version (e.g. 1.2.0) and this workflow:
+#   1. bumps the version in pyproject.toml + Chart.yaml and commits it onto the
+#      vX.Y.Z tag ONLY — the branch it runs from is left unchanged;
+#   2. runs the full check suite;
+#   3. builds/scans/signs and publishes the image (:X.Y.Z + :latest) and chart
+#      from the tag, then cuts a GitHub Release.
+#
+# Self-contained on purpose: a tag pushed by GITHUB_TOKEN does NOT re-trigger a
+# tag-listening workflow, so we do the whole release in this one run — no PAT.
+# The stamped version lives only on the tag (the release snapshot); the branch
+# stays at its development baseline.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 1.2.0 (no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # commit the version bump + push the tag
+    outputs:
+      version: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Validate, bump, commit, tag
+        run: |
+          VERSION="${{ inputs.version }}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z with no leading v"; exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::tag v$VERSION already exists"; exit 1
+          fi
+          sed -i -E "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          sed -i -E "s/^version:.*/version: $VERSION/" charts/serverless-api/Chart.yaml
+          sed -i -E "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/serverless-api/Chart.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release: v$VERSION"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          # Push ONLY the tag; the branch this ran from is left untouched. The
+          # bump commit exists solely on the tag (the release snapshot).
+          git push origin "v$VERSION"
+
+  # Same validation as CI; publishing is gated on it via `needs`.
+  checks:
+    needs: prepare
+    uses: ./.github/workflows/checks.yml
+
+  image:
+    needs: [prepare, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: "v${{ needs.prepare.outputs.version }}" # build the tagged code
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository }}/api
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The checks suite (a `needs`) already built + Trivy-scanned this context;
+      # the gha cache makes this a fast rebuild. Attaches an SBOM + provenance.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      # Keyless signature (OIDC -> Fulcio/Rekor). GHCR names must be lowercase.
+      - name: Sign image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/api"
+          cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+  chart:
+    needs: [prepare, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: "v${{ needs.prepare.outputs.version }}" # Chart.yaml already stamped by prepare
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Package
+        run: helm package charts/serverless-api --destination dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Push + sign
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+          helm push dist/serverless-api-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts 2>&1 | tee push.log
+          DIGEST=$(grep -oE 'sha256:[0-9a-f]+' push.log | head -1)
+          cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/serverless-api@${DIGEST}"
+
+  github-release:
+    needs: [prepare, image, chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          REPO_LC="${GITHUB_REPOSITORY,,}"
+          cat > notes.md <<EOF
+          ## Artifacts
+
+          - **Image:** \`ghcr.io/${REPO_LC}/api:${VERSION}\`
+          - **Chart:** \`oci://ghcr.io/${{ github.repository_owner }}/charts/serverless-api:${VERSION}\`
+
+          Both are cosign-signed (keyless) and carry an SBOM.
+          EOF
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file notes.md \
+            --generate-notes

@@ -33,8 +33,9 @@ def test_container_registry_creds_optional_but_paired():
     c = ContainerCreate(name="api", group="team", image="reg/api:1")
     assert c.registryUsername is None and c.registryToken is None
     # both provided -> fine
-    ContainerCreate(name="api", group="team", image="reg/api:1",
-                    registryUsername="bob", registryToken="t")
+    ContainerCreate(
+        name="api", group="team", image="reg/api:1", registryUsername="bob", registryToken="t"
+    )
     # only one provided -> rejected
     with pytest.raises(ValidationError):
         ContainerCreate(name="api", group="team", image="reg/api:1", registryUsername="bob")
@@ -55,9 +56,12 @@ def test_invalid_name_rejected():
         FunctionCreate(name="Bad_Name", group="team", gitRepo="g", gitToken="t", runtime="python")
 
 
-def test_unsupported_runtime_rejected():
-    with pytest.raises(ValidationError):
-        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+def test_runtime_is_a_free_string_on_the_model():
+    # The valid runtime set is data (a mounted ConfigMap), so the model accepts
+    # any string; the service validates it against the live registry (see
+    # test_auth_and_deployer.test_function_accept_rejects_unknown_runtime).
+    fn = FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+    assert fn.runtime == "ruby"
 
 
 def test_size_default_and_choices():
@@ -70,9 +74,7 @@ def test_size_default_and_choices():
         == "large"
     )
     with pytest.raises(ValidationError):  # unknown size
-        FunctionCreate(
-            name="x", group="team", gitRepo="g", gitToken="t", runtime="go", size="xl"
-        )
+        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go", size="xl")
 
 
 def test_envvar_requires_value():
@@ -110,6 +112,16 @@ def test_scaling_metric_default_and_choices():
         Scaling(metric="bananas")
 
 
+def test_scaling_scale_down_delay():
+    # Accepts single-unit durations up to 1h.
+    for good in ("0s", "30s", "5m", "1h", "60m", "3600s"):
+        assert Scaling(scaleDownDelay=good).scaleDownDelay == good
+    # Bad format or over the 1h cap is rejected.
+    for bad in ("5", "5min", "1h30m", "-5s", "2h", "61m", "3601s"):
+        with pytest.raises(ValidationError):
+            Scaling(scaleDownDelay=bad)
+
+
 def test_scaling_effective_target_is_metric_aware():
     # KPA metrics default to 100; cpu/memory default to 70% so we scale early.
     assert Scaling().effective_target == 100
@@ -140,14 +152,18 @@ def test_scaling_hpa_metric_cannot_scale_to_zero():
 def test_optional_hostname_validated():
     fn = FunctionCreate(
         name="my-fn",
-        group="team", gitRepo="g",
+        group="team",
+        gitRepo="g",
         gitToken="t",
         runtime="python",
         hostname="app.example.com",
     )
     assert fn.hostname == "app.example.com"
     # default (no hostname) is allowed
-    assert FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go").hostname is None
+    assert (
+        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go").hostname
+        is None
+    )
     # invalid hostnames rejected
     for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
         with pytest.raises(ValidationError):

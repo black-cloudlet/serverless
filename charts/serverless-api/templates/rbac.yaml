@@ -24,6 +24,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "events"]
     verbs: ["get", "list", "watch"]
+  # Read pod logs for the /logs endpoint (a subresource, separate from pods).
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   # Live per-site resource usage surfaced on GET.
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]

@@ -55,7 +55,7 @@ class SSOConfig(BaseModel):
 
     issuer: str = "https://sso.internal/realms/serverless"
     # Expected token audience. When set, the `aud` claim is verified to contain it;
-    # when empty (the default), audience verification is skipped — so tokens work
+    # when empty (the default), audience verification is skipped - so tokens work
     # without a Keycloak audience mapper unless an audience is explicitly configured.
     audience: str = ""
     # Public Keycloak client Swagger UI uses for its "Authorize" login
@@ -116,6 +116,9 @@ class Settings(BaseSettings):
 
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
+    # Available function runtimes, mounted as a YAML file from a ConfigMap. Absent
+    # in local dev/tests -> the loader falls back to built-in defaults.
+    runtimes_file: str = "/etc/serverless/runtimes/runtimes.yaml"
 
     # Per-call timeouts to a cluster's API server (seconds). Without these a down
     # cluster would block a worker thread until the OS socket timeout.

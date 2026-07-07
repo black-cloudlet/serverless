@@ -84,9 +84,7 @@ class TokenValidator:
             ServiceUnavailableError: If discovery fails or lacks ``jwks_uri``.
         """
         try:
-            resp = httpx.get(
-                self._config.discovery_url, timeout=self._config.discovery_timeout
-            )
+            resp = httpx.get(self._config.discovery_url, timeout=self._config.discovery_timeout)
             resp.raise_for_status()
             jwks_uri = resp.json()["jwks_uri"]
         except (httpx.HTTPError, ValueError, KeyError) as exc:

@@ -1,0 +1,14 @@
+# Available function runtimes, mounted as a YAML file into the API. Non-secret,
+# so it lives in a ConfigMap; edit the list without touching the Deployment.
+# The whole list is serialized (toYaml), so future per-runtime fields (versions,
+# builder image for the airgapped build) pass through with no template change.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ .Values.name }}-runtimes"
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  runtimes.yaml: |
+    {{- dict "runtimes" .Values.runtimes | toYaml | nindent 4 }}

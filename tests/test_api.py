@@ -52,15 +52,33 @@ class FakeFunctions:
         return _accepted("function", name, spec.group)
 
     async def get(self, name, group, user):
-        return _ready("function", name, runtime="python", gitRepo="https://git/x.git", branch="main")
+        return _ready(
+            "function", name, runtime="python", gitRepo="https://git/x.git", branch="main"
+        )
+
+    async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
+        from app.models.common import LogsResponse, PodLogs
+
+        return LogsResponse(
+            name=name,
+            group=group,
+            type="function",
+            site="site-a",
+            pods=[PodLogs(pod=f"{name}-{group}-00001-x", container=container, logs="hello")],
+        )
 
     async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
 
         return [
             WorkloadSummary(
-                name="fn-a", group="team", type="function", hostname="fn-a.example.com",
-                overallStatus="Ready", size="small", sites=["central"],
+                name="fn-a",
+                group="team",
+                type="function",
+                hostname="fn-a.example.com",
+                overallStatus="Ready",
+                size="small",
+                sites=["central"],
             )
         ]
 
@@ -78,13 +96,29 @@ class FakeContainers:
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
 
+    async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
+        from app.models.common import LogsResponse, PodLogs
+
+        return LogsResponse(
+            name=name,
+            group=group,
+            type="container",
+            site="site-a",
+            pods=[PodLogs(pod=f"{name}-{group}-00001-x", container=container, logs="hi")],
+        )
+
     async def list(self, group, user, sort="name"):
         from app.models.common import WorkloadSummary
 
         return [
             WorkloadSummary(
-                name="ctr-a", group="team", type="container", hostname="ctr-a.example.com",
-                overallStatus="Ready", size="medium", sites=["central", "south"],
+                name="ctr-a",
+                group="team",
+                type="container",
+                hostname="ctr-a.example.com",
+                overallStatus="Ready",
+                size="medium",
+                sites=["central", "south"],
             )
         ]
 
@@ -106,6 +140,29 @@ def client():
 def test_healthz_no_auth():
     c = TestClient(create_app())
     assert c.get("/healthz").json() == {"status": "ok"}
+
+
+def test_info_is_public_and_static():
+    # No auth override applied: /info must be reachable unauthenticated.
+    c = TestClient(create_app())
+    r = c.get("/api/v1/info")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"]
+    assert isinstance(body["sites"], list)
+    assert "python" in body["runtimes"]
+    assert body["sizes"] == ["small", "medium", "large"]
+    assert body["routeDomain"]
+    assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
+    metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
+    assert metrics["concurrency"]["minScaleFloor"] == 0
+    assert metrics["concurrency"]["target"]["default"] == 100
+    assert metrics["concurrency"]["target"]["max"] is None
+    assert metrics["cpu"]["minScaleFloor"] == 1
+    assert metrics["cpu"]["target"]["default"] == 70
+    assert metrics["cpu"]["target"]["max"] == 100
+    assert body["scaling"]["defaultMetric"] == "concurrency"
+    assert body["scaling"]["scaleDownDelay"]["max"] == "1h"
 
 
 async def test_startup_warmup_is_best_effort(monkeypatch):
@@ -200,6 +257,32 @@ def test_get_container_shape(client):
     assert "gitRepo" not in body and "runtime" not in body
 
 
+def test_get_function_logs(client):
+    r = client.get("/api/v1/functions/foo/logs?group=team")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "foo" and body["type"] == "function" and body["site"] == "site-a"
+    assert body["pods"][0]["container"] == "user-container"  # default
+    assert body["pods"][0]["logs"] == "hello"
+
+
+def test_get_container_logs_with_params(client):
+    r = client.get(
+        "/api/v1/containers/foo/logs?group=team&container=queue-proxy"
+        "&sinceSeconds=300&limitBytes=4096"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "container"
+    assert body["pods"][0]["container"] == "queue-proxy"  # override honored
+
+
+def test_logs_rejects_non_positive_window(client):
+    # sinceSeconds must be > 0; the RequestValidationError maps to 400
+    assert client.get("/api/v1/functions/foo/logs?group=team&sinceSeconds=0").status_code == 400
+    assert client.get("/api/v1/containers/foo/logs?group=team&limitBytes=0").status_code == 400
+
+
 def test_get_function_requires_group(client):
     r = client.get("/api/v1/functions/foo")  # missing ?group=
     assert r.status_code == 400
@@ -207,7 +290,7 @@ def test_get_function_requires_group(client):
 
 def test_path_name_validated_at_the_edge(client):
     """A path {name} that isn't a DNS-1123 label is rejected at the boundary (400),
-    like the request-body name — not passed through to a cluster lookup."""
+    like the request-body name - not passed through to a cluster lookup."""
     assert client.get("/api/v1/functions/Bad_Name?group=team").status_code == 400
     assert client.delete("/api/v1/containers/UPPER?group=team").status_code == 400
 
@@ -242,7 +325,7 @@ def test_list_requires_group(client):
 
 def test_query_group_is_normalized_at_the_edge():
     """A ggd-/slash-prefixed group in the query string is normalized before it
-    reaches the service — the same one-place-at-the-edge normalization the request
+    reaches the service - the same one-place-at-the-edge normalization the request
     body already gets, so nothing downstream re-normalizes."""
     seen = {}
 
@@ -346,4 +429,4 @@ def test_swagger_sso_login_wired_in_openapi():
     init = app.swagger_ui_init_oauth
     assert init["clientId"] == "serverless-api-swagger"
     assert init["usePkceWithAuthorizationCodeGrant"] is True
-    assert "clientSecret" not in init  # public client — no secret
+    assert "clientSecret" not in init  # public client - no secret

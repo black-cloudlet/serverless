@@ -7,8 +7,15 @@ metadata:
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
+    {{- with .Values.route.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  host: serverless-api.{{ .Values.global.baseDomain }}
+  host: {{ .Values.route.host | default (printf "serverless-api.%s" .Values.global.baseDomain) | quote }}
   to:
     kind: Service
     name:  {{ .Values.name }}

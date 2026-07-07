@@ -30,7 +30,10 @@ def test_build_ksvc_basic():
     )
     assert m["apiVersion"] == "serving.knative.dev/v1"
     assert m["metadata"]["name"] == "app-team"
-    assert m["metadata"]["annotations"]["serverless.platform/host"] == "app-team.serverless.example.com"
+    assert (
+        m["metadata"]["annotations"]["serverless.platform/host"]
+        == "app-team.serverless.example.com"
+    )
     assert m["metadata"]["labels"][LABEL_GROUP] == "team"
     tmpl = m["spec"]["template"]
     ann = tmpl["metadata"]["annotations"]
@@ -80,6 +83,28 @@ def test_build_ksvc_cpu_metric_sets_hpa_class():
     assert ann["autoscaling.knative.dev/metric"] == "cpu"
     assert ann["autoscaling.knative.dev/target"] == "70"
     assert ann["autoscaling.knative.dev/class"] == "hpa.autoscaling.knative.dev"
+
+
+def test_build_ksvc_scale_down_delay_annotation():
+    common = dict(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[],
+        volumes=[],
+    )
+    # Set -> annotation present; unset -> annotation omitted.
+    m = ksvc_svc.build_ksvc(scaling=Scaling(minScale=1, maxScale=3, scaleDownDelay="5m"), **common)
+    ann = m["spec"]["template"]["metadata"]["annotations"]
+    assert ann["autoscaling.knative.dev/scale-down-delay"] == "5m"
+    m2 = ksvc_svc.build_ksvc(scaling=Scaling(minScale=1, maxScale=3), **common)
+    assert (
+        "autoscaling.knative.dev/scale-down-delay"
+        not in m2["spec"]["template"]["metadata"]["annotations"]
+    )
 
 
 def test_build_ksvc_mounts_ca_bundle():
@@ -183,7 +208,7 @@ def test_resolve_files_accepts_linewrapped_base64():
     from app.models.common import FileMount
 
     # PEM-style line-wrapped base64 (newlines) must still decode, not 400.
-    wrapped = base64.encodebytes(b"hello world, this is a longer body") .decode()
+    wrapped = base64.encodebytes(b"hello world, this is a longer body").decode()
     resolved = resolve_files(
         "app", "team", "alice", [FileMount(mountPath="/a/conf", contentBase64=wrapped)]
     )
@@ -222,9 +247,7 @@ def test_pull_secret_dockerconfig():
     from app.services.labels import workload_labels
 
     labels = workload_labels("team", "o", "app", "container")
-    s = secret_svc.build_pull_secret(
-        "p", labels, "registry.internal", "user", "tok"
-    )
+    s = secret_svc.build_pull_secret("p", labels, "registry.internal", "user", "tok")
     assert s["type"] == "kubernetes.io/dockerconfigjson"
     assert s["metadata"]["labels"][LABEL_GROUP] == "team"
     cfg = json.loads(base64.b64decode(s["data"][".dockerconfigjson"]))

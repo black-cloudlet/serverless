@@ -1,0 +1,115 @@
+global:
+  clusterName: example
+  baseDomain: example.com
+  site: example
+  env: example
+
+name: serverless-api
+
+image:
+  registry: registry.internal
+  repository: serverless/serverless-api
+  tag: "" # empty -> chart appVersion (via the serverless-api.image helper)
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+namespaces:
+  api: serverless-api
+  workloads: serverless-workloads
+
+routeDomain: serverless.example.com
+
+corsAllowOrigins: []
+#  - https://acme.service-now.com
+
+sso:
+  issuer: https://sso.internal/realms/serverless
+  audience: ""
+  swaggerClientId: serverless-api
+  groupsClaim: groups
+  adminGroups:
+    - platform-admins
+
+registry:
+  url: registry.internal
+
+# Function runtimes offered to clients, mounted as a file (see services.runtimes).
+# Add versions / builder image here later for the airgapped build pipeline.
+runtimesMountPath: /etc/serverless/runtimes
+runtimes:
+  - name: python
+  - name: go
+  - name: javascript
+
+sites:
+  - name: central                 
+    cluster: central-0        
+  - name: south
+    cluster: south-0
+
+certificate:
+  name: serverless-client-cert
+  user: serverless-api.client.example.com
+  mountPath: /etc/serverless/client
+  issuerRef:
+    name: client-cert-acme
+    kind: ClusterIssuer
+
+caBundle:
+  name: ca-bundle
+  key: ca-bundle.crt
+  mountPath: /etc/ssl/certs
+
+externalSecrets:
+  clusterSecretStore: cloudlet-cloudlet
+  refreshInterval: 1h
+  secrets:
+    - name: serverless-api-keys
+      data:
+        - secretKey: SERVERLESS_ADMIN_API_KEY
+          key: cloudlet/platforms/serverless
+          property: admin-api-key
+
+service:
+  portName: http
+  targetPort: 8080
+  port: 80
+
+# The OpenShift Route exposing the API. host defaults to
+# serverless-api.{global.baseDomain}; labels/annotations are merged onto the
+# Route (e.g. annotations for router timeouts or rate limits).
+route:
+  host: ""
+  labels: {}
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Default-deny NetworkPolicies isolating workload pods from each other and other
+# namespaces. Verify namespace names + CIDRs match your cluster.
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to connect TO workload pods.
+  ingressNamespaces:
+    - knative-serving # activator (scale-from-zero)
+    - knative-serving-ingress # Kourier ingress gateway
+    - openshift-ingress # OpenShift router (Routes)
+    - openshift-monitoring # Prometheus scrape
+  # Namespaces workload pods may connect TO (the API namespace is always added).
+  egressNamespaces:
+    - knative-serving # autoscaler / webhook
+  dnsNamespace: openshift-dns
+  # Off-cluster egress (LBs/Routes/external); internal CIDRs excluded so pods
+  # can't reach other pods/Services directly. Set to YOUR cluster's CIDRs.
+  externalEgress:
+    cidr: 0.0.0.0/0
+    exceptCIDRs:
+      - 10.128.0.0/14 # pod network
+      - 172.30.0.0/16 # service network

@@ -3,7 +3,7 @@
 Offering-agnostic. :class:`~app.services.function.FunctionService` and
 :class:`~app.services.container.ContainerService` compose this engine and
 add only the offering-specific prep (build-from-Git vs image + pull secret);
-everything else — apply, host/absence checks, access control, get/delete — lives
+everything else - apply, host/absence checks, access control, get/delete - lives
 here. See docs §3, §4, §6.2.
 """
 
@@ -35,6 +35,8 @@ from app.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     LABEL_WORKLOAD,
+    LogsResponse,
+    PodLogs,
     SiteStatus,
     WorkloadResponse,
     WorkloadSummary,
@@ -126,9 +128,7 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     status = _dig(obj, "status", default={}) or {}
     conditions = status.get("conditions", []) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)
-    revision = status.get("latestReadyRevisionName") or status.get(
-        "latestCreatedRevisionName"
-    )
+    revision = status.get("latestReadyRevisionName") or status.get("latestCreatedRevisionName")
     # A deletionTimestamp means the KSVC is being garbage-collected: report it as
     # Terminating so a GET during the delete window doesn't misreport it as Ready.
     if _dig(obj, "metadata", "deletionTimestamp"):
@@ -207,14 +207,10 @@ class WorkloadService:
         else:
             raise ValidationError(f"hostname must be a single label under '{domain}'")
         if not label or "." in label:
-            raise ValidationError(
-                f"hostname must be exactly one label under '{domain}'"
-            )
+            raise ValidationError(f"hostname must be exactly one label under '{domain}'")
         return f"{label}.{domain}"
 
-    def accepted(
-        self, kind: str, name: str, group: str, host: str, **extra
-    ) -> WorkloadResponse:
+    def accepted(self, kind: str, name: str, group: str, host: str, **extra) -> WorkloadResponse:
         """Build the Pending 202 body returned by accept/accept_update.
 
         Args:
@@ -292,8 +288,8 @@ class WorkloadService:
     ) -> WorkloadResponse:
         """Run an update's synchronous pre-flight, then schedule the deploy (202).
 
-        Loads (and authorizes) the existing workload, validates the spec, and —
-        since the host can change on update — verifies the (possibly new) host is
+        Loads (and authorizes) the existing workload, validates the spec, and -
+        since the host can change on update - verifies the (possibly new) host is
         free or already this workload's, all synchronously (immediate
         400/404/409/503). Then queues the offering-specific deploy, passing the
         loaded state through so the background work needn't re-fetch it.
@@ -483,7 +479,7 @@ class WorkloadService:
 
         1. **Prune first.** Delete the backing objects the new spec no longer
            references *before* anything goes live. A 404 means it never existed
-           here (fine); any other error is raised — aborting this site's update
+           here (fine); any other error is raised - aborting this site's update
            (reported as ``Failed`` by the fan-out) rather than letting the new
            spec go live alongside a stale, now-unreferenced Secret/ConfigMap that
            would leak old secret values. ``to_prune`` is empty on create.
@@ -504,8 +500,8 @@ class WorkloadService:
            on retry without taking the workload down or releasing its host.
         4. **Retire the old host last (update only).** If the host changed, the
            new DomainMapping is now live; only then delete the old host's mapping
-           (whose name *is* the old host). Pruning it *last* — not via
-           ``to_prune``, which prunes first — keeps the old host serving until the
+           (whose name *is* the old host). Pruning it *last* - not via
+           ``to_prune``, which prunes first - keeps the old host serving until the
            new one is in place (no custom-host gap) and leaves it intact if an
            apply above failed. Best-effort: a leftover old mapping only re-claims a
            host this same workload owns, and is GC'd on delete.
@@ -535,7 +531,7 @@ class WorkloadService:
             try:
                 cluster.delete(pkind, pname)
             except NotFoundError:
-                pass  # never existed in this site — nothing to prune
+                pass  # never existed in this site - nothing to prune
 
         applied = cluster.apply(ksvc)
         owner = res.owner_reference(applied[0]) if applied else None
@@ -551,7 +547,7 @@ class WorkloadService:
             # Backing/mapping apply failed after the KSVC went live. On a create,
             # roll the KSVC back (best-effort; cascades to any derived object via
             # ownerReferences) so no half-built workload lingers on the name/host;
-            # on an update, leave it — Knative keeps serving the last-good revision.
+            # on an update, leave it - Knative keeps serving the last-good revision.
             if created:
                 try:
                     cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
@@ -560,7 +556,7 @@ class WorkloadService:
             raise
 
         # The host changed on this update: the new DomainMapping is live now, so
-        # retire the old host's mapping (its name == the old host). Best-effort —
+        # retire the old host's mapping (its name == the old host). Best-effort -
         # a 404 means it was never here; any other error is logged but not fatal,
         # since the new host already works and a stale old mapping only re-claims a
         # host this same workload owns (and is GC'd on delete).
@@ -573,16 +569,16 @@ class WorkloadService:
             except Exception:  # noqa: BLE001 - old-host cleanup is best-effort
                 logger.exception(
                     "retiring old host %s for %s failed in %s",
-                    prev_host, oname, cluster.site,
+                    prev_host,
+                    oname,
+                    cluster.site,
                 )
 
         obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
         status, revision = _ksvc_status(obj)
         return SiteStatus(site=cluster.site, status=status, revision=revision)
 
-    async def load_existing(
-        self, name: str, offering: str, user: Principal, group: str
-    ) -> dict:
+    async def load_existing(self, name: str, offering: str, user: Principal, group: str) -> dict:
         """Fetch an existing workload's carried-forward state (offering-scoped).
 
         Reads from whichever site has the workload; a down site is never reported
@@ -671,7 +667,7 @@ class WorkloadService:
         """Assert ``host`` is free, failing closed if a site is unreachable.
 
         Only a real 404 means "free"; an unreachable site can't prove the host is
-        free, so we fail closed (503) rather than treat it as available — otherwise
+        free, so we fail closed (503) rather than treat it as available - otherwise
         a create against a down peer could hijack its existing DomainMapping.
 
         Args:
@@ -749,9 +745,7 @@ class WorkloadService:
                 f"cannot {action}: site(s) unreachable: {', '.join(sorted(unreachable))}"
             )
 
-    async def get(
-        self, kind: str, name: str, user: Principal, group: str
-    ) -> WorkloadResponse:
+    async def get(self, kind: str, name: str, user: Principal, group: str) -> WorkloadResponse:
         """Read one workload with live per-site status and its redacted spec.
 
         Fans out to all sites; a site that returns a clean 404 is omitted, while
@@ -777,7 +771,7 @@ class WorkloadService:
         meta_holder: dict[str, str] = {}
         # Each OK site donates its KSVC; the spec is uniform across sites, so we
         # read the desired-state spec back from the local site (most reliable hop)
-        # once, after the fan-out — see _pick_rep.
+        # once, after the fan-out - see _pick_rep.
         reps: dict[str, tuple] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
@@ -824,20 +818,22 @@ class WorkloadService:
         obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
         # An object_name collision could resolve to another group/offering; hide as
-        # 404 (privacy-preserving — don't leak that it exists). Log the real reason
+        # 404 (privacy-preserving - don't leak that it exists). Log the real reason
         # server-side so denied-vs-absent is still debuggable from the logs.
         if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
             labels.get(LABEL_OFFERING) != offering
         ):
             logger.debug(
                 "get %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
-                kind, name, user.username, labels.get(LABEL_GROUP), labels.get(LABEL_OFFERING),
+                kind,
+                name,
+                user.username,
+                labels.get(LABEL_GROUP),
+                labels.get(LABEL_OFFERING),
             )
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        host = meta_holder.get(
-            "host", route_svc.host_for(name, group, self.settings.route_domain)
-        )
+        host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
         # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
@@ -883,7 +879,7 @@ class WorkloadService:
             try:
                 cm = cluster.get(ResourceKind.CONFIG_MAP, cm_name)
                 configmaps[cm_name] = cm.get("data") or {}
-            except Exception:  # noqa: BLE001 - content is best-effort
+            except Exception:  # noqa: BLE001, S110 - content is best-effort, skip silently
                 pass
         registry_username = None
         ps_name = describe_svc.pull_secret_name(obj)
@@ -891,7 +887,7 @@ class WorkloadService:
             try:
                 secret = cluster.get(ResourceKind.SECRET, ps_name)
                 registry_username = secret_svc.registry_username(secret)
-            except Exception:  # noqa: BLE001 - username is best-effort
+            except Exception:  # noqa: BLE001, S110 - username is best-effort, skip silently
                 pass
         return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
 
@@ -929,9 +925,7 @@ class WorkloadService:
         except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
             return None
 
-    async def delete(
-        self, kind: str, name: str, user: Principal, group: str
-    ) -> None:
+    async def delete(self, kind: str, name: str, user: Principal, group: str) -> None:
         """Delete a workload from every site; GC cascades its derived resources.
 
         Args:
@@ -962,6 +956,82 @@ class WorkloadService:
         statuses = await self.deployer.fanout(targets, remove)
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
+
+    async def logs(
+        self,
+        kind: str,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> LogsResponse:
+        """Snapshot the workload's pod logs from the local site only.
+
+        Single-site and point-in-time: reads the running pods on the current
+        cluster (Kubernetes keeps no log buffer beyond the node). A workload
+        deployed here but scaled to zero returns an empty ``pods`` list.
+
+        Args:
+            kind: The offering ("function" or "container").
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            container: The pod container to read (e.g. the user-container).
+            since_seconds: Only logs newer than this many seconds, if set.
+            limit_bytes: Cap on the bytes read per pod, if set.
+
+        Returns:
+            The workload's per-pod logs from the local site.
+
+        Raises:
+            NotFoundError: If the workload isn't on the local site or the caller
+                can't access it (hidden as 404, matching GET).
+        """
+        self.assert_group(user, group)
+        offering = kind  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+
+        def read() -> list[PodLogs]:
+            # Authorize off the KSVC on the local site; a genuine 404 (not
+            # deployed here) and a cross-group/offering hit both surface as 404.
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+                labels.get(LABEL_OFFERING) != offering
+            ):
+                raise NotFoundError(f"{kind} '{name}' not found")
+            pods = cluster.get(
+                ResourceKind.POD, label_selector=f"serving.knative.dev/service={oname}"
+            )
+            out: list[PodLogs] = []
+            for pod in pods:
+                meta = pod.get("metadata", {}) or {}
+                pod_name = meta.get("name", "")
+                revision = (meta.get("labels", {}) or {}).get("serving.knative.dev/revision")
+                try:
+                    text = cluster.pod_logs(
+                        pod_name,
+                        container=container,
+                        since_seconds=since_seconds,
+                        limit_bytes=limit_bytes,
+                    )
+                except NotFoundError:
+                    continue  # pod vanished between list and read
+                out.append(PodLogs(pod=pod_name, container=container, revision=revision, logs=text))
+            return out
+
+        pods = await asyncio.to_thread(read)
+        return LogsResponse(
+            name=name,
+            group=group,
+            type=offering,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pods=pods,
+        )
 
     async def list(
         self, kind: str, user: Principal, group: str, sort: str = "name"
@@ -1029,9 +1099,7 @@ class WorkloadService:
 
         summaries = []
         for name, entry in merged.items():
-            host = entry["host"] or route_svc.host_for(
-                name, group, self.settings.route_domain
-            )
+            host = entry["host"] or route_svc.host_for(name, group, self.settings.route_domain)
             overall = overall_status(entry["statuses"])
             summaries.append(
                 WorkloadSummary(

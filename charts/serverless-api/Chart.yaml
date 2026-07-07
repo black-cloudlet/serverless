@@ -1,0 +1,7 @@
+apiVersion: v2
+name: serverless-api
+description: FaaS/CaaS REST API wrapping Knative on OpenShift
+type: application
+# Development baseline; the release workflow stamps the release version on the tag.
+version: 0.0.0
+appVersion: "latest"

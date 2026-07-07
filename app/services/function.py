@@ -3,24 +3,43 @@
 from __future__ import annotations
 
 from app.auth.claims import Principal
-from app.core.errors import ServiceUnavailableError
-from app.models.common import WorkloadSummary
+from app.core.errors import ServiceUnavailableError, ValidationError
+from app.models.common import LogsResponse, WorkloadSummary
 from app.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from app.services import describe as describe_svc
 from app.services.builder import BuildRequest
+from app.services.runtimes import RuntimeRegistry, get_runtimes
 from app.services.workloads import OFFERING_FUNCTION, WorkloadService
 
 
 class FunctionService:
     """Function-specific orchestration; delegates the shared work to WorkloadService."""
 
-    def __init__(self, engine: WorkloadService):
+    def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry | None = None):
         """Initialize the service.
 
         Args:
             engine: The shared workload engine doing the cross-site work.
+            runtimes: The available-runtimes registry; defaults to the process
+                registry loaded from the mounted config file.
         """
         self._engine = engine
+        self._runtimes = runtimes or get_runtimes()
+
+    def _assert_runtime(self, runtime: str) -> None:
+        """Reject a runtime not in the registry (synchronous 400, before accept).
+
+        Args:
+            runtime: The requested runtime.
+
+        Raises:
+            ValidationError: If ``runtime`` isn't an available runtime.
+        """
+        if not self._runtimes.has(runtime):
+            available = ", ".join(self._runtimes.names())
+            raise ValidationError(
+                f"unsupported runtime '{runtime}'; available runtimes: {available}"
+            )
 
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a
@@ -48,6 +67,7 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
+        self._assert_runtime(spec.runtime)
         return await self._engine.accept_create(
             offering=OFFERING_FUNCTION,
             spec=spec,
@@ -71,6 +91,8 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
+        if spec.runtime is not None:
+            self._assert_runtime(spec.runtime)
         return await self._engine.accept_update(
             offering=OFFERING_FUNCTION,
             name=name,
@@ -216,6 +238,39 @@ class FunctionService:
             The full single-function response.
         """
         return await self._engine.get(OFFERING_FUNCTION, name, user, group)
+
+    async def logs(
+        self,
+        name: str,
+        group: str,
+        user: Principal,
+        *,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> LogsResponse:
+        """Snapshot the function's pod logs from the current site.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            container: The pod container to read.
+            since_seconds: Only logs newer than this, if set.
+            limit_bytes: Cap on bytes read per pod, if set.
+
+        Returns:
+            The function's per-pod logs from the local site.
+        """
+        return await self._engine.logs(
+            OFFERING_FUNCTION,
+            name,
+            user,
+            group,
+            container=container,
+            since_seconds=since_seconds,
+            limit_bytes=limit_bytes,
+        )
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
         """List the group's functions.

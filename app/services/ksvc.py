@@ -28,6 +28,11 @@ _SIZES: dict[str, tuple[str, str]] = {
 }
 
 
+def workload_sizes() -> list[str]:
+    """The available t-shirt size names (the source of truth for /info)."""
+    return list(_SIZES)
+
+
 def _resources(size: str) -> dict:
     """Container resources for a t-shirt size (memory request==limit, cpu request-only)."""
     cpu_request, memory = _SIZES[size]
@@ -56,9 +61,7 @@ def _env(env: list[ContainerEnv]) -> list[dict]:
     for e in env:
         if e.secret_ref is not None:
             name, key = e.secret_ref
-            out.append(
-                {"name": e.name, "valueFrom": {"secretKeyRef": {"name": name, "key": key}}}
-            )
+            out.append({"name": e.name, "valueFrom": {"secretKeyRef": {"name": name, "key": key}}})
         else:
             out.append({"name": e.name, "value": e.value})
     return out
@@ -147,15 +150,16 @@ def build_ksvc(
     # default KPA, so the class annotation is omitted for them.
     if scaling.autoscaler_class:
         annotations["autoscaling.knative.dev/class"] = scaling.autoscaler_class
+    # Optional: delay scale-down to smooth bursty traffic (Knative default otherwise).
+    if scaling.scaleDownDelay:
+        annotations["autoscaling.knative.dev/scale-down-delay"] = scaling.scaleDownDelay
     labels = workload_labels(group, owner, name, offering)
     vols, mounts = _volumes(volumes)
 
     # Mount the trusted CA bundle so the workload trusts internal TLS.
     if ca_config_map and ca_mount_path:
         vols.append({"name": CA_BUNDLE_VOLUME, "configMap": {"name": ca_config_map}})
-        mounts.append(
-            {"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True}
-        )
+        mounts.append({"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True})
 
     container: dict = {"image": image, "resources": _resources(size)}
     if env:

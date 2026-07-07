@@ -12,9 +12,7 @@ from app.models.common import (
 )
 
 
-def ownership_labels(
-    group: str, owner: str, offering: str | None = None
-) -> dict[str, str]:
+def ownership_labels(group: str, owner: str, offering: str | None = None) -> dict[str, str]:
     """Build the ownership/management labels stamped on every resource.
 
     Args:

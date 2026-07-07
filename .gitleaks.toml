@@ -1,0 +1,11 @@
+# gitleaks config (used by the CI secret scan). Extends the default ruleset and
+# allowlists test fixtures, which intentionally carry fake tokens and encoded
+# blobs that would otherwise trip the generic high-entropy rules.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures use fake credentials / encoded blobs"
+paths = [
+  '''tests/.*''',
+]

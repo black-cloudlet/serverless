@@ -6,7 +6,7 @@ concerns live here, both airgap-driven:
 - serving Swagger UI and ReDoc from vendored ``app/static`` assets instead of a
   CDN (:func:`mount_offline_docs`), and
 - letting Swagger UI's "Authorize" obtain an SSO token via Auth Code + PKCE
-  (:func:`wire_sso_login`) — documentation/UI only; ``require_auth`` still
+  (:func:`wire_sso_login`) - documentation/UI only; ``require_auth`` still
   enforces at runtime.
 """
 
@@ -74,7 +74,7 @@ def wire_sso_login(app: FastAPI, sso: SSOConfig) -> None:
 
     Adds an OAuth2 security scheme to the OpenAPI (auth/token endpoints derived
     from the issuer) and configures Swagger's OAuth with the public client id.
-    This is documentation/UI only — it makes Swagger obtain a token and send it
+    This is documentation/UI only - it makes Swagger obtain a token and send it
     as ``Authorization: Bearer``; ``require_auth`` still enforces at runtime, so
     the ServiceNow flow and the header are unaffected. PKCE means no secret.
 
@@ -103,7 +103,7 @@ def wire_sso_login(app: FastAPI, sso: SSOConfig) -> None:
             },
         }
         # Documents that endpoints take the SSO bearer token (NOT enforced by
-        # FastAPI — require_auth does that).
+        # FastAPI - require_auth does that).
         schema["security"] = [{"SSO": []}]
         app.openapi_schema = schema
         return schema
