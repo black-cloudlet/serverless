@@ -29,7 +29,7 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 - **Scaling gains `scaleDownDelay`** (a Knative-capped duration) and the per-metric rules are
   now surfaced verbatim on `/info` (§3.3).
 - **Configurable API Route** — `route.host` (defaulted), `route.labels`, `route.annotations`.
-- **Platform/runtime**: Python **3.13** on a `python:3.13-slim` base image (multi-arch
+- **Platform/runtime**: Python **3.14** on a `python:3.14-slim` base image (multi-arch
   amd64/arm64), dependencies consolidated into `pyproject.toml`, `__version__` derived from
   package metadata, and the sites ConfigMap wired into the Deployment.
 - **CI/CD** split into `checks` / `ci` / `release` workflows with image scanning (Trivy),
@@ -739,7 +739,7 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 | **Buildpack builder/run images** | Mirror the Cloud Native Buildpacks **builder** and **run** images used by Knative Functions for Python/Go/JS into the internal registry; configure `func` to use them. This is the key airgap dependency for FaaS. |
 | **Python dependencies (the API)** | Build the API container against an **internal PyPI mirror** (e.g. Nexus/Artifactory) or vendored wheels; pin all versions. |
 | **Function dependencies (per runtime)** | Buildpacks must resolve language deps from internal mirrors (internal PyPI, Go module proxy/`GOPROXY`, npm registry mirror). Documented as a prerequisite for each runtime. |
-| **Base images** | The API image builds on a mirrored **`python:3.13-slim`** base (Python 3.13); mirror the workload/builder bases likewise. |
+| **Base images** | The API image builds on a mirrored **`python:3.14-slim`** base (Python 3.14; kept in sync with `pyproject` `requires-python` and the CI `PYTHON_VERSION`); mirror the workload/builder bases likewise. |
 | **CA trust** | A ConfigMap labelled `config.openshift.io/inject-trusted-cabundle: "true"` is created in **both** namespaces; OpenShift auto-populates it with the cluster's trusted CAs. It is **mounted into the API and every FaaS/CaaS workload** (and exported via `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`) so all internal TLS (Git, registry, Vault, SSO, the cluster API) is trusted. Same bundle for every cluster. |
 | **cert-manager** | Issue client certs via **ACME against an internal ACME endpoint** (e.g. step-ca / internal CA exposing ACME) - not a public CA. Both clusters trust this CA, and the cert CN/SAN is the DNS name `serverless-api.clients.{base_domain}`. |
 | **Helm charts** | Hosted in an internal chart repo / Git; no public chart pulls. |

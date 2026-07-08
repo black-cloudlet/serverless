@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 env:
-  PYTHON_VERSION: "3.13"
+  # Keep in sync with the Dockerfile base image and pyproject requires-python.
+  PYTHON_VERSION: "3.14"
 
 jobs:
   lint:
