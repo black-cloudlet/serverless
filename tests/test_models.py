@@ -1,9 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.common import EnvVar, FileMount, Scaling
-from app.models.container import ContainerCreate, ContainerUpdate
-from app.models.function import FunctionCreate, FunctionUpdate
+from api.models.common import EnvVar, FileMount, Scaling
+from api.models.container import ContainerCreate, ContainerUpdate
+from api.models.function import FunctionCreate, FunctionUpdate
 
 
 def test_container_update_creds_paired():

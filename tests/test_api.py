@@ -3,13 +3,13 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.auth.claims import Principal
-from app.auth.deps import require_auth
-from app.dependencies import get_container_service, get_function_service
-from app.main import create_app
-from app.models.common import SiteStatus
-from app.models.container import ContainerResponse
-from app.models.function import FunctionResponse
+from api.auth.claims import Principal
+from api.auth.deps import require_auth
+from api.dependencies import get_container_service, get_function_service
+from api.main import create_app
+from api.models.common import SiteStatus
+from api.models.container import ContainerResponse
+from api.models.function import FunctionResponse
 
 
 def _model(kind, **fields):
@@ -57,7 +57,7 @@ class FakeFunctions:
         )
 
     async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
-        from app.models.common import LogsResponse, PodLogs
+        from api.models.common import LogsResponse, PodLogs
 
         return LogsResponse(
             name=name,
@@ -68,7 +68,7 @@ class FakeFunctions:
         )
 
     async def list(self, group, user, sort="name"):
-        from app.models.common import WorkloadSummary
+        from api.models.common import WorkloadSummary
 
         return [
             WorkloadSummary(
@@ -97,7 +97,7 @@ class FakeContainers:
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
 
     async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
-        from app.models.common import LogsResponse, PodLogs
+        from api.models.common import LogsResponse, PodLogs
 
         return LogsResponse(
             name=name,
@@ -108,7 +108,7 @@ class FakeContainers:
         )
 
     async def list(self, group, user, sort="name"):
-        from app.models.common import WorkloadSummary
+        from api.models.common import WorkloadSummary
 
         return [
             WorkloadSummary(
@@ -167,15 +167,15 @@ def test_info_is_public_and_static():
 
 async def test_startup_warmup_is_best_effort(monkeypatch):
     """A failing OIDC discovery / cluster connect must not crash startup."""
-    from app.core.config import Settings, SiteConfig, SSOConfig
-    from app.main import _warmup
-    from app.services.deployer import Deployer
+    from api.core.config import Settings, SiteConfig, SSOConfig
+    from api.main import _warmup
+    from api.services.deployer import Deployer
 
     class _BoomValidator:
         def warmup(self):
             raise RuntimeError("sso down")
 
-    monkeypatch.setattr("app.main.get_validator", lambda: _BoomValidator())
+    monkeypatch.setattr("api.main.get_validator", lambda: _BoomValidator())
 
     settings = Settings(
         auth_enabled=True,
@@ -198,7 +198,7 @@ async def test_startup_warmup_is_best_effort(monkeypatch):
 
 
 def test_cors_allows_configured_origin(monkeypatch):
-    from app.core.config import get_settings
+    from api.core.config import get_settings
 
     get_settings.cache_clear()
     monkeypatch.setenv("SERVERLESS_CORS_ALLOW_ORIGINS", '["https://acme.service-now.com"]')
@@ -387,7 +387,7 @@ def test_update_function_build_change_requires_token(client):
 
 def test_docs_served_offline_from_vendored_assets():
     """Swagger UI / ReDoc must load local assets, not the jsdelivr CDN (airgap)."""
-    from app.main import create_app
+    from api.main import create_app
 
     client = TestClient(create_app())
 
@@ -416,7 +416,7 @@ def test_docs_served_offline_from_vendored_assets():
 def test_swagger_sso_login_wired_in_openapi():
     """Swagger UI's Authorize uses an OAuth2 PKCE flow with the public client id;
     no secret, and require_auth still enforces (this is docs-only)."""
-    from app.main import create_app
+    from api.main import create_app
 
     app = create_app()  # auth_enabled defaults True
     schema = app.openapi()

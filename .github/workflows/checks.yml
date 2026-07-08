@@ -8,35 +8,58 @@ on:
 permissions:
   contents: read
 
-env:
-  PYTHON_VERSION: "3.13"
-
 jobs:
+  # Single source of truth for the Python version: it lives only in the Dockerfile
+  # base image and pyproject `requires-python` (ruff derives its target from the
+  # latter). This job fails the build if those two drift - e.g. a Dependabot
+  # base-image bump that pyproject didn't follow - and exports the version so the
+  # setup-python jobs below never hardcode it.
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.derive.outputs.python }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - id: derive
+        run: |
+          docker_py=$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' Dockerfile)
+          req_py=$(grep -oP 'requires-python = ">=\K[0-9]+\.[0-9]+' pyproject.toml)
+          if [ -z "$docker_py" ] || [ "$docker_py" != "$req_py" ]; then
+            echo "::error::Python version drift: Dockerfile=$docker_py, requires-python=$req_py. Bump both together."
+            exit 1
+          fi
+          echo "python=$docker_py" >> "$GITHUB_OUTPUT"
+          echo "Python version (Dockerfile == requires-python): $docker_py"
+
   lint:
+    needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.version.outputs.python }}
       - run: pip install ruff==0.15.20
       - run: ruff check .
       - run: ruff format --check .
 
   test:
+    needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.version.outputs.python }}
           cache: pip
       - run: pip install -e ".[dev]"
-      - run: pytest -q --cov=app --cov-report=term-missing --cov-fail-under=90
+      - run: pytest -q --cov=api --cov=common --cov-report=term-missing --cov-fail-under=90
 
   security:
+    needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -53,7 +76,7 @@ jobs:
           gitleaks detect --source . --redact --exit-code 1 --verbose
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.version.outputs.python }}
       # Audit the runtime deps that ship in the image for known CVEs.
       - run: pip install . pip-audit
       - run: pip-audit

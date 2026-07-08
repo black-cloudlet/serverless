@@ -1,17 +1,17 @@
-from app.models.common import (
+from api.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     EnvVar,
     FileMount,
     Scaling,
 )
-from app.services import ksvc as ksvc_svc
-from app.services import resources as res
-from app.services import route as route_svc
-from app.services import secrets as secret_svc
-from app.services.env import env_secret_name, resolve_env
-from app.services.files import resolve_files
-from app.services.ksvc import ContainerEnv
+from api.services import ksvc as ksvc_svc
+from api.services import resources as res
+from api.services import route as route_svc
+from api.services import secrets as secret_svc
+from api.services.env import env_secret_name, resolve_env
+from api.services.files import resolve_files
+from api.services.ksvc import ContainerEnv
 
 
 def test_build_ksvc_basic():
@@ -145,8 +145,8 @@ def test_build_ksvc_env_secret_ref():
 
 
 def test_resolve_files_aggregates_one_cm_and_one_secret():
-    from app.models.common import LABEL_GROUP, LABEL_WORKLOAD
-    from app.services.files import files_name
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
+    from api.services.files import files_name
 
     files = [
         FileMount(mountPath="/etc/app/app.yaml", content="x: 1\n"),
@@ -180,7 +180,7 @@ def test_resolve_files_aggregates_one_cm_and_one_secret():
 def test_resolve_files_duplicate_key_rejected():
     import pytest
 
-    from app.core.errors import ValidationError
+    from common.errors import ValidationError
 
     files = [
         FileMount(mountPath="/a/conf", content="1"),
@@ -193,7 +193,7 @@ def test_resolve_files_duplicate_key_rejected():
 def test_resolve_files_invalid_base64_rejected():
     import pytest
 
-    from app.core.errors import ValidationError
+    from common.errors import ValidationError
 
     # "abc" has incorrect padding -> binascii.Error (a ValueError) even on a
     # lenient decode, so it surfaces as a 400.
@@ -205,7 +205,7 @@ def test_resolve_files_invalid_base64_rejected():
 def test_resolve_files_accepts_linewrapped_base64():
     import base64
 
-    from app.models.common import FileMount
+    from api.models.common import FileMount
 
     # PEM-style line-wrapped base64 (newlines) must still decode, not 400.
     wrapped = base64.encodebytes(b"hello world, this is a longer body").decode()
@@ -219,9 +219,9 @@ def test_resolve_files_accepts_linewrapped_base64():
 def test_resolve_env_duplicate_name_rejected():
     import pytest
 
-    from app.core.errors import ValidationError
-    from app.models.common import EnvVar
-    from app.services.env import resolve_env
+    from api.models.common import EnvVar
+    from api.services.env import resolve_env
+    from common.errors import ValidationError
 
     env = [EnvVar(name="DUP", value="1"), EnvVar(name="DUP", value="2")]
     with pytest.raises(ValidationError):  # surfaced synchronously as 400
@@ -244,7 +244,7 @@ def test_pull_secret_dockerconfig():
     import base64
     import json
 
-    from app.services.labels import workload_labels
+    from common.labels import workload_labels
 
     labels = workload_labels("team", "o", "app", "container")
     s = secret_svc.build_pull_secret("p", labels, "registry.internal", "user", "tok")
@@ -257,7 +257,7 @@ def test_pull_secret_dockerconfig():
 def test_build_secret_encodes_values():
     import base64
 
-    from app.services.labels import ownership_labels
+    from common.labels import ownership_labels
 
     s = res.build_secret("n", ownership_labels("team", "o"), {"k": "v"})
     assert base64.b64decode(s["data"]["k"]).decode() == "v"

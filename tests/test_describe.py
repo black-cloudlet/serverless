@@ -1,7 +1,7 @@
-from app.models.common import Scaling
-from app.services.describe import configmap_refs, parse_spec
-from app.services.files import VolumeSpec
-from app.services.ksvc import ContainerEnv, build_ksvc
+from api.models.common import Scaling
+from api.services.describe import configmap_refs, parse_spec
+from api.services.files import VolumeSpec
+from api.services.ksvc import ContainerEnv, build_ksvc
 
 
 def _ksvc():
@@ -63,7 +63,7 @@ def test_parse_spec_redacts_secrets_and_returns_plain_config():
 
 
 def test_parse_spec_reports_function_build_inputs():
-    from app.models.common import Scaling as _Scaling
+    from api.models.common import Scaling as _Scaling
 
     ksvc = build_ksvc(
         name="fn-team",
