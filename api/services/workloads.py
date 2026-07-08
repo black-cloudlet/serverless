@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from api.auth.claims import Principal
-from api.clients.cluster import ResourceKind
 from api.core.config import Settings
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
@@ -49,7 +48,7 @@ from api.services.deployer import (
 )
 from api.services.env import env_secret_name, resolve_env
 from api.services.files import files_name, resolve_files
-from common.cluster import Cluster
+from common.cluster import Cluster, ResourceKind
 from common.contract import Builder
 from common.errors import (
     ConflictError,

@@ -1,62 +1,60 @@
 """Per-site Kubernetes/OpenShift cluster client (server-side apply, get, delete).
 
-Shared infrastructure: the API and a future builder service both talk to a
-cluster the same way (client-cert mTLS, lazy connect). It is decoupled from any
-one service's settings via :class:`ClusterConnection`, and generic over resource
-kinds — each service supplies its own kind constants (any object exposing
-``api_version`` and ``kind``), so this module carries no domain kinds.
+Shared infrastructure: the API and a future builder service both reach a cluster
+the same way (client-cert mTLS, lazy connect), configured from the shared
+:class:`~common.config.CommonSettings`. ``ResourceKind`` is the registry of GVKs
+the platform operates on.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
+from enum import Enum
 
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
+from common.config import CommonSettings, SiteConfig
 from common.errors import NotFoundError
 
 
-class Kind(Protocol):
-    """A resource kind: its ``apiVersion`` and PascalCase ``kind``."""
+class ResourceKind(Enum):
+    """The resource kinds the platform manages, mapped to (apiVersion, kind)."""
+
+    KNATIVE_SERVICE = ("serving.knative.dev/v1", "Service")
+    KNATIVE_REVISION = ("serving.knative.dev/v1", "Revision")
+    DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
+    CONFIG_MAP = ("v1", "ConfigMap")
+    SECRET = ("v1", "Secret")
+    POD = ("v1", "Pod")
+    POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
 
     @property
     def api_version(self) -> str:
-        """The resource ``apiVersion`` (e.g. ``serving.knative.dev/v1``)."""
-        ...
+        """The resource's ``apiVersion`` (e.g. ``serving.knative.dev/v1``)."""
+        return self.value[0]
 
     @property
     def kind(self) -> str:
-        """The PascalCase ``kind`` (e.g. ``Service``)."""
-        ...
+        """The resource's PascalCase ``kind`` (e.g. ``Service``)."""
+        return self.value[1]
 
+    @classmethod
+    def from_kind(cls, kind: str) -> "ResourceKind":
+        """Map a manifest's ``kind`` string (e.g. "Secret") to its ResourceKind.
 
-@dataclass
-class ClusterConnection:
-    """Everything needed to reach one cluster, independent of any service config.
+        Args:
+            kind: The PascalCase kind string.
 
-    Attributes:
-        site: The site/region name (e.g. ``central``).
-        name: The cluster instance name (e.g. ``central-0``).
-        host: The API server URL (``https://…:6443``).
-        namespace: The namespace operations target.
-        ca_cert: Path to the CA bundle that verifies the API server.
-        client_cert: Path to the client TLS certificate.
-        client_key: Path to the client TLS key.
-        connect_timeout: Per-call connect timeout (seconds).
-        read_timeout: Per-call read timeout (seconds).
-    """
+        Returns:
+            The matching ResourceKind.
 
-    site: str
-    name: str
-    host: str
-    namespace: str
-    ca_cert: str
-    client_cert: str
-    client_key: str
-    connect_timeout: float
-    read_timeout: float
+        Raises:
+            ValueError: If no member has that kind.
+        """
+        for member in cls:
+            if member.kind == kind:
+                return member
+        raise ValueError(f"unknown resource kind: {kind!r}")
 
 
 class Cluster:
@@ -66,26 +64,33 @@ class Cluster:
     (on first use) so one unreachable site can't fail or block startup.
     """
 
-    def __init__(self, conn: ClusterConnection):
+    def __init__(self, site_config: SiteConfig, settings: CommonSettings):
         """Configure the client for one site (the connection stays lazy).
 
         Args:
-            conn: The site's connection profile (endpoint, namespace, TLS,
-                timeouts).
+            site_config: The site's name and cluster identifiers.
+            settings: Shared connection settings (namespace, TLS material, base
+                domain, timeouts).
         """
-        self.site: str = conn.site
-        self.name: str = conn.name
-        self._namespace: str = conn.namespace
+        self.site: str = site_config.name
+        self.name: str = site_config.cluster
+        self._namespace: str = settings.workloads_namespace
 
         self._configuration = client.Configuration()
-        self._configuration.host = conn.host
-        self._configuration.ssl_ca_cert = conn.ca_cert
-        self._configuration.cert_file = conn.client_cert
-        self._configuration.key_file = conn.client_key
+        self._configuration.host = f"https://api.{self.name}.{settings.base_domain}:6443"
+
+        self._configuration.ssl_ca_cert = settings.ca_bundle.file
+        self._configuration.cert_file = settings.client_cert_file
+        self._configuration.key_file = settings.client_key_file
 
         self._api_client_obj: client.ApiClient | None = None
         self._dynamic_client_obj: DynamicClient | None = None
-        self._opts: dict = {"_request_timeout": (conn.connect_timeout, conn.read_timeout)}
+        self._opts: dict = {
+            "_request_timeout": (
+                settings.cluster_connect_timeout,
+                settings.cluster_read_timeout,
+            )
+        }
 
     @property
     def _api_client(self) -> client.ApiClient:
@@ -101,8 +106,8 @@ class Cluster:
             self._dynamic_client_obj = DynamicClient(self._api_client)
         return self._dynamic_client_obj
 
-    def _dynamic_api(self, kind: Kind):
-        """Resolve the dynamic resource API for a kind (apiVersion + kind)."""
+    def _dynamic_api(self, kind: ResourceKind):
+        """Resolve the dynamic resource API for a ResourceKind (apiVersion + kind)."""
         return self._dynamic_client.resources.get(kind.api_version, kind.kind)
 
     def connect(self) -> None:
@@ -134,7 +139,7 @@ class Cluster:
         return [i.to_dict() for i in results]
 
     def get(
-        self, kind: Kind, name: str | None = None, label_selector: str | None = None
+        self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None
     ) -> dict | list[dict]:
         """Get a resource by name, or list a kind by label selector.
 
@@ -162,7 +167,7 @@ class Cluster:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
             raise
 
-    def delete(self, kind: Kind, name: str) -> None:
+    def delete(self, kind: ResourceKind, name: str) -> None:
         """Delete a resource by name.
 
         Args:

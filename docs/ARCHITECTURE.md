@@ -1021,7 +1021,7 @@ Serverless/
 │   ├── dependencies.py              # FastAPI DI: cached service singletons
 │   ├── static/                      # vendored Swagger UI / ReDoc assets (airgap)
 │   ├── core/
-│   │   └── config.py                # api settings (site profiles, SSO, registry) via env/Secret
+│   │   └── config.py                # api Settings(CommonSettings) + SSO/CORS/route-domain fields
 │   ├── auth/                        # self-contained auth component (all OIDC interaction)
 │   │   ├── oidc.py                  # SSO discovery + JWKS fetch/cache, token validation
 │   │   ├── apikey.py               # static admin API-key auth (opaque Authorization: Bearer)
@@ -1033,19 +1033,18 @@ Serverless/
 │   │   ├── workloads.py             # shared build-once / deploy-both engine
 │   │   ├── function.py              # function orchestration (build from Git)
 │   │   ├── container.py             # container orchestration (image + pull secret)
-│   │   ├── deployer.py              # multi-site fan-out + builds per-site ClusterConnection
+│   │   ├── deployer.py              # multi-site fan-out (builds each site's Cluster)
 │   │   ├── builder.py               # api-side Builder (FuncBuilder; future RemoteBuilder)
 │   │   ├── ksvc.py                  # KSVC manifest construction (+ t-shirt sizes)
 │   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
 │   │   ├── env.py / files.py        # env & file resolution (+ their Secret/ConfigMap)
 │   │   ├── resources.py / secrets.py# manifest + imagePullSecret builders
-│   │   ├── describe.py / metrics.py # read-back spec (redacted) + pod usage
-│   └── clients/
-│       └── cluster.py               # ResourceKind: the api's GVKs for the shared client
+│   │   └── describe.py / metrics.py # read-back spec (redacted) + pod usage
 ├── common/                          # shared by api + (future) builder service
+│   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
+│   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
 │   ├── contract.py                  # BuildRequest/BuildResult/Builder — the API↔builder contract
-│   ├── cluster.py                   # generic Cluster client + ClusterConnection (mTLS, lazy)
 │   ├── labels.py                    # ownership label keys + workload_labels
 │   ├── errors.py                    # error envelope, typed errors, exception handlers
 │   └── logging.py                   # logging configuration
@@ -1085,8 +1084,9 @@ Serverless/
 > (`…/serverless/builder`), and deploy from the same chart. The API talks to it
 > through `common.contract.Builder` — today via the in-process `FuncBuilder`,
 > later via a `RemoteBuilder` HTTP client — with no change to the orchestration.
-> (Identifier/validation helpers and the shared config sub-models are the next
-> candidates to lift into `common/`.)
+> The builder subclasses `common.config.CommonSettings` (sites, CA bundle,
+> registry, timeouts) and reuses `common.cluster.Cluster`. (Identifier/validation
+> helpers are the next candidate to lift into `common/`.)
 
 ---
 

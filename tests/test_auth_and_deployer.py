@@ -435,8 +435,8 @@ async def test_accept_container_returns_pending_and_schedules():
 
 async def test_get_reports_size_and_live_usage_per_site():
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
+    from common.cluster import ResourceKind
 
     class _UsageCluster:
         def __init__(self, name):
@@ -509,7 +509,7 @@ class _ListCluster:
         self._items = items
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
-        from api.clients.cluster import ResourceKind
+        from common.cluster import ResourceKind
 
         assert kind == ResourceKind.KNATIVE_SERVICE
         return list(self._items)
@@ -517,10 +517,10 @@ class _ListCluster:
 
 async def test_get_returns_redacted_spec():
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import Scaling
     from api.services.files import VolumeSpec
     from api.services.ksvc import ContainerEnv, build_ksvc
+    from common.cluster import ResourceKind
 
     ksvc = build_ksvc(
         name="app-team",
@@ -602,7 +602,7 @@ def _bare_ksvc(name="app-team"):
 
 async def test_get_overall_status_reflects_rollout_state():
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
+    from common.cluster import ResourceKind
 
     ksvc = _bare_ksvc()
 
@@ -659,7 +659,7 @@ class _ApplyCluster:
         self.deleted = []  # [(ResourceKind, name)] from prune
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
-        from api.clients.cluster import ResourceKind
+        from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
         if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
@@ -689,11 +689,11 @@ async def test_update_prunes_backing_no_longer_referenced():
     now-stale {workload}-env / {workload}-files objects, while a still-referenced
     files ConfigMap is kept."""
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import EnvVar, FileMount, Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
     from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
 
     existing = build_ksvc(
         name="api-team",
@@ -1024,7 +1024,7 @@ class _DeleteCluster:
         self.deleted = []  # [(ResourceKind, name)]
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
-        from api.clients.cluster import ResourceKind
+        from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
         if kind == ResourceKind.KNATIVE_SERVICE and self._ksvc is not None:
@@ -1040,7 +1040,7 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
     by Kubernetes via their ownerReferences (set at apply time - see
     test_apply_sets_owner_references_on_derived)."""
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
+    from common.cluster import ResourceKind
 
     cluster = _DeleteCluster("site-a", _ksvc("container"))
     engine = _workload_service({"site-a": cluster})
@@ -1453,10 +1453,10 @@ async def test_prune_runs_before_apply_on_update():
     spec is applied, while the old host's DomainMapping is retired *after* (prune-
     last) so a host move never drops the old host before the new one is live."""
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import EnvVar
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
+    from common.cluster import ResourceKind
 
     class _OpLog(_ApplyCluster):
         def __init__(self, name, existing):
@@ -1505,10 +1505,10 @@ async def test_accept_update_rejects_taken_host_synchronously():
     from fastapi import BackgroundTasks
 
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import LABEL_WORKLOAD
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
+    from common.cluster import ResourceKind
     from common.errors import ConflictError, NotFoundError
 
     existing = _existing_container_ksvc()
@@ -1537,11 +1537,11 @@ async def test_accept_update_rejects_taken_host_synchronously():
 async def test_update_unchanged_host_retires_no_mapping():
     """When the host is unchanged, no DomainMapping is retired (no spurious delete)."""
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
     from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
 
     existing = build_ksvc(
         name="api-team",
@@ -1614,11 +1614,10 @@ def test_deployer_close_releases_every_cluster():
 
 
 def test_cluster_close_closes_api_client_and_resets():
-    from api.services.deployer import _connection
     from common.cluster import Cluster
 
     settings = _settings_with_sites()
-    c = Cluster(_connection(settings, settings.sites[0]))
+    c = Cluster(settings.sites[0], settings)
     calls = {"n": 0}
 
     class _Api:
@@ -1700,9 +1699,9 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
     """If a backing/mapping apply fails mid-create, the just-created KSVC is
     deleted (rolled back) so no half-built workload lingers on the name/host."""
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
+    from common.cluster import ResourceKind
 
     cluster = _BackingFails("site-a", {})
     csvc = ContainerService(_workload_service({"site-a": cluster}))
@@ -1717,10 +1716,10 @@ async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
     """A backing/mapping failure on update must NOT delete the live KSVC - Knative
     keeps serving the last-good revision; deleting would take it down + free the host."""
     from api.auth.claims import Principal
-    from api.clients.cluster import ResourceKind
     from api.models.common import EnvVar
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
+    from common.cluster import ResourceKind
 
     cluster = _BackingFails("site-a", {"api-team": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"site-a": cluster}))
@@ -1751,7 +1750,7 @@ class _LogsCluster:
         self.reads = []  # (pod, container, since_seconds, limit_bytes)
 
     def get(self, kind, name=None, label_selector=None):
-        from api.clients.cluster import ResourceKind
+        from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
         if kind is ResourceKind.KNATIVE_SERVICE:

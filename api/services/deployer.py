@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 from typing import Awaitable, Callable
 
-from api.core.config import Settings, SiteConfig
+from api.core.config import Settings
 from api.models.common import SiteStatus
-from common.cluster import Cluster, ClusterConnection
+from common.cluster import Cluster
 from common.errors import SiteTotalFailure, ValidationError
 from common.logging import get_logger
 
@@ -20,25 +20,6 @@ logger = get_logger(__name__)
 
 # fn(cluster) -> SiteStatus  (may run blocking I/O; executed in a thread)
 SiteFn = Callable[[Cluster], SiteStatus]
-
-
-def _connection(settings: Settings, site: SiteConfig) -> ClusterConnection:
-    """Build a site's connection profile from global settings.
-
-    The API server URL, namespace, TLS material, and timeouts are all derived
-    here (the API-specific knowledge of how to reach a site).
-    """
-    return ClusterConnection(
-        site=site.name,
-        name=site.cluster,
-        host=f"https://api.{site.cluster}.{settings.base_domain}:6443",
-        namespace=settings.workloads_namespace,
-        ca_cert=settings.ca_bundle.file,
-        client_cert=settings.client_cert_file,
-        client_key=settings.client_key_file,
-        connect_timeout=settings.cluster_connect_timeout,
-        read_timeout=settings.cluster_read_timeout,
-    )
 
 
 class Deployer:
@@ -57,7 +38,7 @@ class Deployer:
         # The k8s connection stays lazy (on first use), so startup doesn't fail
         # if a site is down.
         self._clusters: dict[str, Cluster] = {
-            site.name: Cluster(_connection(settings, site)) for site in settings.sites
+            site.name: Cluster(site, settings) for site in settings.sites
         }
 
     def close(self) -> None:

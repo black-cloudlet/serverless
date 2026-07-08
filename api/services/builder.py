@@ -13,7 +13,7 @@ implementing the same contract replaces this one with no change to callers.
 
 from __future__ import annotations
 
-from api.core.config import RegistryConfig
+from common.config import RegistryConfig
 from common.contract import BuildRequest, BuildResult, image_reference
 from common.logging import get_logger
 
