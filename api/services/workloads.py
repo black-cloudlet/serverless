@@ -115,7 +115,7 @@ def _creation_time(obj: dict) -> datetime | None:
     try:
         # Kubernetes stamps RFC3339 UTC; present it in Israel local time.
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(ISRAEL_TZ)
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return None
 
 
