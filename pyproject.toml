@@ -31,7 +31,8 @@ dev = [
 # PEP 8 enforcement. Run `ruff check .` to lint and `ruff format .` to format.
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+# No target-version: ruff derives it from `requires-python` above, so the Python
+# version lives in one place (and a base-image bump can't leave ruff behind).
 
 [tool.ruff.lint]
 # pycodestyle (E/W), pyflakes (F), isort (I), pydocstyle (D) - PEP 8, import
