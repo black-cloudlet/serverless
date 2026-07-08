@@ -60,7 +60,7 @@ include = ["api*", "common*"]
 
 [tool.setuptools.package-data]
 # Vendored Swagger UI / ReDoc assets served offline (airgapped docs).
-api = ["static/*"]
+common = ["static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

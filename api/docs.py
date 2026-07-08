@@ -1,72 +1,16 @@
-"""Offline API docs: vendored Swagger UI / ReDoc and SSO login wiring.
+"""SSO login wiring for Swagger UI (API-specific; airgap docs live in common.web).
 
-Kept out of :mod:`api.main` so the app factory reads as just wiring. Two
-concerns live here, both airgap-driven:
-
-- serving Swagger UI and ReDoc from vendored ``api/static`` assets instead of a
-  CDN (:func:`mount_offline_docs`), and
-- letting Swagger UI's "Authorize" obtain an SSO token via Auth Code + PKCE
-  (:func:`wire_sso_login`) - documentation/UI only; ``require_auth`` still
-  enforces at runtime.
+Lets Swagger UI's "Authorize" obtain an SSO token via Auth Code + PKCE. This is
+documentation/UI only — ``require_auth`` still enforces at runtime. The offline
+Swagger/ReDoc serving is shared and lives in :func:`common.web.mount_offline_docs`.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI
-from fastapi.openapi.docs import (
-    get_redoc_html,
-    get_swagger_ui_html,
-    get_swagger_ui_oauth2_redirect_html,
-)
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 
 from api.core.config import SSOConfig
-
-_STATIC_DIR = Path(__file__).parent / "static"
-
-
-def mount_offline_docs(app: FastAPI) -> None:
-    """Serve Swagger UI and ReDoc from vendored assets (no CDN, for airgap).
-
-    FastAPI's default ``/docs`` and ``/redoc`` load JS/CSS from the jsdelivr CDN,
-    which is unreachable in an airgapped cluster. The app is built with
-    ``docs_url=None``/``redoc_url=None``; this mounts the vendored
-    ``api/static`` assets at ``/static`` and re-adds the docs routes pointing at
-    them. ReDoc's Google Fonts request is disabled for the same reason.
-
-    Args:
-        app: The FastAPI application to attach the offline docs to.
-    """
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
-
-    @app.get("/docs", include_in_schema=False)
-    async def swagger_ui_html() -> HTMLResponse:
-        return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - Swagger UI",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
-            swagger_js_url="/static/swagger-ui-bundle.js",
-            swagger_css_url="/static/swagger-ui.css",
-            swagger_favicon_url="/static/favicon-32x32.png",
-        )
-
-    @app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
-    async def swagger_ui_redirect() -> HTMLResponse:
-        return get_swagger_ui_oauth2_redirect_html()
-
-    @app.get("/redoc", include_in_schema=False)
-    async def redoc_html() -> HTMLResponse:
-        return get_redoc_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - ReDoc",
-            redoc_js_url="/static/redoc.standalone.js",
-            redoc_favicon_url="/static/favicon-32x32.png",
-            with_google_fonts=False,
-        )
 
 
 def wire_sso_login(app: FastAPI, sso: SSOConfig) -> None:

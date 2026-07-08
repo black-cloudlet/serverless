@@ -1019,7 +1019,7 @@ Serverless/
 ├── api/                             # the control-plane API service (python -m api.main)
 │   ├── main.py                      # app factory, router registration, middleware
 │   ├── dependencies.py              # FastAPI DI: cached service singletons
-│   ├── static/                      # vendored Swagger UI / ReDoc assets (airgap)
+│   ├── docs.py                      # Swagger "Authorize" SSO wiring (api-specific)
 │   ├── core/
 │   │   └── config.py                # api Settings(CommonSettings) + SSO/CORS/route-domain fields
 │   ├── auth/                        # self-contained auth component (all OIDC interaction)
@@ -1027,7 +1027,7 @@ Serverless/
 │   │   ├── apikey.py               # static admin API-key auth (opaque Authorization: Bearer)
 │   │   ├── claims.py               # claims → group mapping, admin/tenant policy
 │   │   └── deps.py                  # FastAPI dependencies: require_auth / require_groups
-│   ├── routers/                     # functions, containers, info (public), health
+│   ├── routers/                     # functions, containers, info (public)
 │   ├── models/                      # Pydantic schemas: common, function, container, info
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine
@@ -1045,9 +1045,11 @@ Serverless/
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
 │   ├── contract.py                  # BuildRequest/BuildResult/Builder — the API↔builder contract
+│   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
 │   ├── labels.py                    # ownership label keys + workload_labels
 │   ├── errors.py                    # error envelope, typed errors, exception handlers
-│   └── logging.py                   # logging configuration
+│   ├── logging.py                   # logging configuration
+│   └── static/                      # vendored Swagger UI / ReDoc assets (airgap)
 ├── charts/
 │   └── serverless-api/
 │       ├── Chart.yaml
