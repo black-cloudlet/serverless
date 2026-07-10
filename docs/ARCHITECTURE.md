@@ -5,7 +5,8 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 **Python / FastAPI** REST API.
 
 > **Status:** Implemented. This document is the source of truth for the architecture; the
-> FastAPI application (`app/`), the Helm chart (`charts/serverless-api`), and the CI/CD
+> FastAPI application (`api/`) and its shared library (`common/`), the Helm chart
+> (`charts/serverless-api`), and the CI/CD
 > workflows (`.github/workflows/{checks,ci,release}.yml`) are in this repo. The GitOps
 > manifests (ArgoCD `ApplicationSet`) live in a separate central GitOps repo, targeting an
 > **airgapped** OpenShift environment.
@@ -520,14 +521,14 @@ in the **same `Authorization: Bearer <key>` header**. The API distinguishes the 
 a structural JWT (`header.payload.signature`) is validated as an OIDC token; an opaque token is
 compared against the single configured admin key. The key is the **raw token** (not a hash),
 sourced from Vault via ESO into `SERVERLESS_ADMIN_API_KEY` and matched with a **constant-time**
-compare (`app/auth/apikey.py`). A match yields an **admin** Principal (the key is admin-only;
+compare (`api/auth/apikey.py`). A match yields an **admin** Principal (the key is admin-only;
 regular users go through OIDC). It defaults to empty, which **disables** key auth; set the env
 var to enable it.
 
 #### Auth as an internal component (not a separate microservice)
 
 All OIDC interaction is encapsulated in a **self-contained auth component inside the API**
-(the `app/auth/` package - see §11), **not** a separately-deployed microservice. Because
+(the `api/auth/` package - see §11), **not** a separately-deployed microservice. Because
 token validation is **stateless** (verify signature against cached JWKS + read claims),
 there is no shared state to centralize; a standalone auth service would only add a network
 hop, another deployment to secure in both clusters, and a failure point. The component owns:
