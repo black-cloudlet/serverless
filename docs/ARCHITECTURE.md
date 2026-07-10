@@ -11,31 +11,7 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 > manifests (ArgoCD `ApplicationSet`) live in a separate central GitOps repo, targeting an
 > **airgapped** OpenShift environment.
 >
-> **Revision:** `0.1.0` — 2026-07-06.
-
-### Changes in this revision (0.1.0, 2026-07-06)
-
-- **`GET /api/v1/info`** — a public (unauthenticated), static discovery document so a UI can
-  render its create form from the server: version, sites, runtimes, sizes, per-metric
-  scaling options, base `routeDomain`, and the `defaultHostTemplate`. Derived from config +
-  code, no cluster calls (§10).
-- **Config-driven runtimes.** The FaaS runtime list is now **data**: a ConfigMap mounted as a
-  YAML file (`runtimes.yaml`) and read into a registry. Ops add a runtime by editing the
-  ConfigMap — no image rebuild. `runtime` is validated in the service against the live
-  registry (§3.1, §9).
-- **`GET /api/v1/{type}/{name}/logs`** — implemented: a point-in-time **local-site** snapshot
-  of a workload's pod logs (no streaming; needs the `pods/log` RBAC subresource) (§10, §6.3).
-- **NetworkPolicies** for the workloads namespace: default-deny plus explicit allows,
-  isolating workload pods from each other and other namespaces (§5).
-- **Scaling gains `scaleDownDelay`** (a Knative-capped duration) and the per-metric rules are
-  now surfaced verbatim on `/info` (§3.3).
-- **Configurable API Route** — `route.host` (defaulted), `route.labels`, `route.annotations`.
-- **Platform/runtime**: Python **3.14** on a `python:3.14-slim` base image (multi-arch
-  amd64/arm64), dependencies consolidated into `pyproject.toml`, `__version__` derived from
-  package metadata, and the sites ConfigMap wired into the Deployment.
-- **CI/CD** split into `checks` / `ci` / `release` workflows with image scanning (Trivy),
-  keyless signing (cosign), SBOM + provenance, a one-click release workflow, pinned action
-  SHAs, gitleaks, kubeconform (incl. custom CRD schemas), and a ≥90% coverage gate (§8).
+> Release history and per-version changes live in [CHANGELOG.md](../CHANGELOG.md).
 
 ---
 

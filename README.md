@@ -19,6 +19,7 @@ exposed through a **Python / FastAPI** REST API.
 
 - **[Architecture & Design](docs/ARCHITECTURE.md)** - the full design document: component and
   sequence diagrams, REST API specification, repository layout, and sample manifests.
+- **[Changelog](CHANGELOG.md)** - notable changes per release.
 
 ## Layout
 
