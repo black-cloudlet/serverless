@@ -1,11 +1,16 @@
 name: Release
 
-# One-click release (manual). Enter a version (e.g. 1.2.0) and this workflow:
+# One-click release (manual). Enter a version - X.Y.Z or a pre-release
+# X.Y.Z-{alpha|beta|rc}.N (e.g. 1.2.0-beta.1) - and this workflow:
 #   1. bumps the version in pyproject.toml + Chart.yaml and commits it onto the
 #      vX.Y.Z tag ONLY — the branch it runs from is left unchanged;
 #   2. runs the full check suite;
-#   3. builds/scans/signs and publishes the image (:X.Y.Z + :latest) and chart
-#      from the tag, then cuts a GitHub Release.
+#   3. builds/scans/signs and publishes the image and chart from the tag, then
+#      cuts a GitHub Release. A pre-release does NOT move the :latest image tag
+#      and is marked as a GitHub pre-release.
+#
+# The tag/image/chart use the SemVer string (1.2.0-beta.1); the installed Python
+# version normalizes to PEP 440 (1.2.0b1), so __version__ reports 1.2.0b1.
 #
 # Self-contained on purpose: a tag pushed by GITHUB_TOKEN does NOT re-trigger a
 # tag-listening workflow, so we do the whole release in this one run — no PAT.
@@ -15,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, e.g. 1.2.0 (no leading v)"
+        description: "Release version, e.g. 1.2.0 or 1.2.0-beta.1 (no leading v)"
         required: true
         type: string
 
@@ -39,8 +44,8 @@ jobs:
       - name: Validate, bump, commit, tag
         run: |
           VERSION="${{ inputs.version }}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::version must be X.Y.Z with no leading v"; exit 1
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "::error::version must be X.Y.Z or X.Y.Z-{alpha|beta|rc}.N (e.g. 1.2.0-beta.1), no leading v"; exit 1
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
             echo "::error::tag v$VERSION already exists"; exit 1
@@ -83,7 +88,8 @@ jobs:
           images: ghcr.io/${{ github.repository }}/api
           tags: |
             type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest
+            # :latest only for stable releases; a pre-release (contains '-') must not move it.
+            type=raw,value=latest,enable=${{ !contains(needs.prepare.outputs.version, '-') }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -138,6 +144,15 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      # cosign authenticates via the Docker credential store, not helm's - without
+      # this it hits ghcr.io anonymously and fails to sign (private package -> 401).
+      - name: Log in to GHCR (for cosign)
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Push + sign
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -167,7 +182,9 @@ jobs:
 
           Both are cosign-signed (keyless) and carry an SBOM.
           EOF
+          prerelease=""
+          [[ "$VERSION" == *-* ]] && prerelease="--prerelease"
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file notes.md \
-            --generate-notes
+            --generate-notes $prerelease
