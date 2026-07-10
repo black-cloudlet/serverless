@@ -5,36 +5,13 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 **Python / FastAPI** REST API.
 
 > **Status:** Implemented. This document is the source of truth for the architecture; the
-> FastAPI application (`app/`), the Helm chart (`charts/serverless-api`), and the CI/CD
+> FastAPI application (`api/`) and its shared library (`common/`), the Helm chart
+> (`charts/serverless-api`), and the CI/CD
 > workflows (`.github/workflows/{checks,ci,release}.yml`) are in this repo. The GitOps
 > manifests (ArgoCD `ApplicationSet`) live in a separate central GitOps repo, targeting an
 > **airgapped** OpenShift environment.
 >
-> **Revision:** `0.1.0` — 2026-07-06.
-
-### Changes in this revision (0.1.0, 2026-07-06)
-
-- **`GET /api/v1/info`** — a public (unauthenticated), static discovery document so a UI can
-  render its create form from the server: version, sites, runtimes, sizes, per-metric
-  scaling options, base `routeDomain`, and the `defaultHostTemplate`. Derived from config +
-  code, no cluster calls (§10).
-- **Config-driven runtimes.** The FaaS runtime list is now **data**: a ConfigMap mounted as a
-  YAML file (`runtimes.yaml`) and read into a registry. Ops add a runtime by editing the
-  ConfigMap — no image rebuild. `runtime` is validated in the service against the live
-  registry (§3.1, §9).
-- **`GET /api/v1/{type}/{name}/logs`** — implemented: a point-in-time **local-site** snapshot
-  of a workload's pod logs (no streaming; needs the `pods/log` RBAC subresource) (§10, §6.3).
-- **NetworkPolicies** for the workloads namespace: default-deny plus explicit allows,
-  isolating workload pods from each other and other namespaces (§5).
-- **Scaling gains `scaleDownDelay`** (a Knative-capped duration) and the per-metric rules are
-  now surfaced verbatim on `/info` (§3.3).
-- **Configurable API Route** — `route.host` (defaulted), `route.labels`, `route.annotations`.
-- **Platform/runtime**: Python **3.14** on a `python:3.14-slim` base image (multi-arch
-  amd64/arm64), dependencies consolidated into `pyproject.toml`, `__version__` derived from
-  package metadata, and the sites ConfigMap wired into the Deployment.
-- **CI/CD** split into `checks` / `ci` / `release` workflows with image scanning (Trivy),
-  keyless signing (cosign), SBOM + provenance, a one-click release workflow, pinned action
-  SHAs, gitleaks, kubeconform (incl. custom CRD schemas), and a ≥90% coverage gate (§8).
+> Release history and per-version changes live in [CHANGELOG.md](../CHANGELOG.md).
 
 ---
 
@@ -520,14 +497,14 @@ in the **same `Authorization: Bearer <key>` header**. The API distinguishes the 
 a structural JWT (`header.payload.signature`) is validated as an OIDC token; an opaque token is
 compared against the single configured admin key. The key is the **raw token** (not a hash),
 sourced from Vault via ESO into `SERVERLESS_ADMIN_API_KEY` and matched with a **constant-time**
-compare (`app/auth/apikey.py`). A match yields an **admin** Principal (the key is admin-only;
+compare (`api/auth/apikey.py`). A match yields an **admin** Principal (the key is admin-only;
 regular users go through OIDC). It defaults to empty, which **disables** key auth; set the env
 var to enable it.
 
 #### Auth as an internal component (not a separate microservice)
 
 All OIDC interaction is encapsulated in a **self-contained auth component inside the API**
-(the `app/auth/` package - see §11), **not** a separately-deployed microservice. Because
+(the `api/auth/` package - see §11), **not** a separately-deployed microservice. Because
 token validation is **stateless** (verify signature against cached JWKS + read claims),
 there is no shared state to centralize; a standalone auth service would only add a network
 hop, another deployment to secure in both clusters, and a failure point. The component owns:
