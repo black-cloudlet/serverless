@@ -1,0 +1,15 @@
+# gitleaks config (used by the CI secret scan). Extends the default ruleset and
+# allowlists the .env.example placeholders, which intentionally carry obvious
+# non-secret defaults ("change-me") that would otherwise trip generic rules.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Example env uses obvious non-secret placeholders"
+paths = [
+  '''\.env\.example''',
+]
+regexTarget = "line"
+regexes = [
+  '''change-me.*''',
+]

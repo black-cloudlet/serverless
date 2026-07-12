@@ -1,0 +1,7 @@
+apiVersion: v2
+name: portal
+description: Cloud console portal - a Next.js web UI fronting the platform's service APIs
+type: application
+# Development baseline; the release workflow stamps the release version on the tag.
+version: 0.0.0
+appVersion: "latest"

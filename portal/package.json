@@ -1,0 +1,37 @@
+{
+  "name": "cloud-console-portal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cloud console portal - a self-service web UI for the on-prem, airgapped platform APIs (Serverless and more).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p ${PORTAL_PORT:-3000}",
+    "lint": "next lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "next": "15.5.20",
+    "next-auth": "5.0.0-beta.25",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "3.2.0",
+    "@types/node": "22.10.7",
+    "@types/react": "19.0.7",
+    "@types/react-dom": "19.0.3",
+    "eslint": "9.18.0",
+    "eslint-config-next": "15.5.20",
+    "prettier": "3.4.2",
+    "typescript": "5.7.3",
+    "vitest": "2.1.8"
+  }
+}

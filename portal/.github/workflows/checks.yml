@@ -1,0 +1,145 @@
+name: checks
+
+# Reusable validation suite (lint, typecheck, build, test, security, helm, image)
+# called by both ci.yml (PRs / feature branches) and release.yml (tags, gating
+# publish). Mirrors the Serverless API's CI shape, adapted for a Node/Next.js app.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Single source of truth for the Node major version: it lives in the Dockerfile
+  # base image and package.json `engines.node`. This job fails if those drift and
+  # exports the version so the setup-node jobs never hardcode it.
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      node: ${{ steps.derive.outputs.node }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - id: derive
+        run: |
+          docker_node=$(grep -oP 'FROM node:\K[0-9]+' Dockerfile | head -1)
+          req_node=$(grep -oP '"node":\s*">=\K[0-9]+' package.json)
+          if [ -z "$docker_node" ] || [ "$docker_node" != "$req_node" ]; then
+            echo "::error::Node version drift: Dockerfile=$docker_node, engines.node=$req_node. Bump both together."
+            exit 1
+          fi
+          echo "node=$docker_node" >> "$GITHUB_OUTPUT"
+          echo "Node version (Dockerfile == engines.node): $docker_node"
+
+  lint:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.version.outputs.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+
+  # Typecheck, unit tests, and a full production build in one job (the build also
+  # runs Next's own type/ESLint checks, so a broken page fails here).
+  build-test:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.version.outputs.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test
+      - run: npm run typecheck
+      - run: npm run build
+        env:
+          # Build needs a non-empty AUTH_SECRET; not a real credential.
+          AUTH_SECRET: ci-build-placeholder-secret
+
+  security:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.21.2
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # gitleaks scans git history
+      - name: Secret scan (gitleaks)
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks detect --source . --redact --exit-code 1 --verbose
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.version.outputs.node }}
+          cache: npm
+      - run: npm ci
+      # Fail on known high/critical CVEs in the production dependency tree.
+      - run: npm audit --omit=dev --audit-level=high
+
+  helm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KUBECONFORM_VERSION: v0.6.7
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - run: helm lint charts/portal
+      # Render with defaults and validate. Core Kubernetes kinds use built-in
+      # schemas; CRDs (ESO ExternalSecret) validate against the community
+      # catalog, with -ignore-missing-schemas for anything uncatalogued (e.g.
+      # OpenShift Route).
+      - name: kubeconform
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          helm template portal charts/portal \
+            | kubeconform -strict -summary -ignore-missing-schemas \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
+  # Verify the Dockerfile builds and scan the image on every run; this gates
+  # publishing (release.yml's image job `needs` this suite). No push here.
+  image-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build (load, no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: cloud-console-portal:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Vulnerability report (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cloud-console-portal:scan
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+      - name: Vulnerability gate (Trivy, CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cloud-console-portal:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

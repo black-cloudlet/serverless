@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "portal.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "portal.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "portal.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Values.name }}
+          image: {{ include "portal.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.targetPort }}
+          env:
+            - name: PORT
+              value: {{ .Values.service.targetPort | quote }}
+            - name: PORTAL_PORT
+              value: {{ .Values.service.targetPort | quote }}
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            # Public URL for Auth.js redirects (derived from the Route host).
+            - name: AUTH_URL
+              value: {{ include "portal.publicUrl" . | quote }}
+            - name: AUTH_TRUST_HOST
+              value: "true"
+            - name: PORTAL_OIDC_ISSUER
+              value: {{ .Values.sso.issuer | quote }}
+            - name: PORTAL_OIDC_CLIENT_ID
+              value: {{ .Values.sso.clientId | quote }}
+            - name: PORTAL_OIDC_GROUPS_CLAIM
+              value: {{ .Values.sso.groupsClaim | quote }}
+            - name: PORTAL_ADMIN_GROUPS
+              value: {{ toJson .Values.sso.adminGroups | quote }}
+            - name: PORTAL_PRODUCT_NAME
+              value: {{ .Values.branding.productName | quote }}
+            - name: PORTAL_ORG_NAME
+              value: {{ .Values.branding.organization | quote }}
+            - name: PORTAL_SERVERLESS_API_URL
+              value: {{ .Values.services.serverlessApiUrl | quote }}
+            {{- with .Values.services.servicesJson }}
+            - name: PORTAL_SERVICES
+              value: {{ . | quote }}
+            {{- end }}
+            # Trust the internal CA for outbound TLS to SSO and the platform APIs.
+            - name: NODE_EXTRA_CA_CERTS
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+          envFrom:
+            {{- range .Values.externalSecrets.secrets }}
+            - secretRef:
+                name: {{ .name }}
+            {{- end }}
+          volumeMounts:
+            - name: {{ .Values.caBundle.name }}
+              mountPath: {{ .Values.caBundle.mountPath }}
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.service.targetPort }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.service.targetPort }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: {{ .Values.caBundle.name }}
+          configMap:
+            name: {{ .Values.caBundle.name }}

@@ -1,0 +1,102 @@
+global:
+  clusterName: example
+  baseDomain: example.com
+  site: example
+  env: example
+
+name: portal
+
+image:
+  registry: registry.internal
+  repository: portal/cloud-console-portal
+  tag: "" # empty -> chart appVersion (via the portal.image helper)
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+namespace: portal
+
+# Public URL the browser reaches the portal at. Defaults to the Route host
+# (portal.{global.baseDomain}); OIDC redirect URIs are derived from it.
+# Override only if the portal is fronted by a different external hostname.
+publicUrl: ""
+
+branding:
+  productName: Cloud Console
+  organization: Platform
+
+# SSO / Keycloak (RHBK) OIDC. Same realm issuer the Serverless API trusts, so a
+# single login works across every offering. The confidential client's secret and
+# the Auth.js session secret are NOT here - they come from Vault via ESO below.
+sso:
+  issuer: https://sso.internal/realms/serverless
+  clientId: cloud-console-portal
+  groupsClaim: groups
+  adminGroups:
+    - platform-admins
+
+# The service offerings the console fronts and the address of each backing API.
+# `serverlessApiUrl` wires the Serverless offering; add more as their APIs land.
+# `servicesJson`, when set, overrides/extends the whole catalog (see lib/services).
+services:
+  serverlessApiUrl: https://serverless-api.example.com
+  servicesJson: ""
+
+# Trusted CA bundle (OpenShift-injected ConfigMap), exported to Node as
+# NODE_EXTRA_CA_CERTS so the portal trusts the internal SSO and platform APIs.
+caBundle:
+  name: ca-bundle
+  key: ca-bundle.crt
+  mountPath: /etc/ssl/certs
+
+# Secrets projected from Vault via the External Secrets Operator, then loaded
+# into the pod via envFrom. AUTH_SECRET encrypts the session cookie;
+# PORTAL_OIDC_CLIENT_SECRET is the confidential OIDC client secret.
+externalSecrets:
+  clusterSecretStore: cloudlet-cloudlet
+  refreshInterval: 1h
+  secrets:
+    - name: portal-secrets
+      data:
+        - secretKey: AUTH_SECRET
+          key: cloudlet/platforms/portal
+          property: auth-secret
+        - secretKey: PORTAL_OIDC_CLIENT_SECRET
+          key: cloudlet/platforms/portal
+          property: oidc-client-secret
+
+service:
+  portName: http
+  targetPort: 3000
+  port: 80
+
+# The OpenShift Route exposing the portal. host defaults to
+# portal.{global.baseDomain}; labels/annotations are merged onto the Route.
+route:
+  host: ""
+  labels: {}
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Default-deny NetworkPolicy for the portal namespace, reopening only what the
+# portal needs: ingress from the OpenShift router, egress to DNS and off-cluster
+# (SSO + the platform API Routes). Internal pod/service CIDRs are excluded from
+# the off-cluster egress so the portal can't reach other pods directly.
+networkPolicy:
+  enabled: true
+  ingressNamespaces:
+    - openshift-ingress # OpenShift router (Routes)
+    - openshift-monitoring # Prometheus scrape
+  dnsNamespace: openshift-dns
+  externalEgress:
+    cidr: 0.0.0.0/0
+    exceptCIDRs:
+      - 10.128.0.0/14 # pod network
+      - 172.30.0.0/16 # service network
