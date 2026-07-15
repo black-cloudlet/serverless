@@ -9,6 +9,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Every function/container now gets CA-trust env vars pointed at the mounted
+  trusted-CA bundle so tooling trusts internal TLS out of the box:
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`,
+  `GIT_SSL_CAINFO`. A var the caller sets themselves is left untouched (their
+  value wins); the injected defaults are transparent — recorded in a
+  `serverless.platform/injected-env` annotation and hidden from the workload's
+  GET response.
 - Configurable labels on the chart-created namespaces: `namespaces.labels`
   (applied to both) plus `namespaces.apiLabels` / `namespaces.workloadsLabels`
   (per-namespace, override the shared set) — e.g. to set

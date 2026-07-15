@@ -13,6 +13,7 @@ import base64
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_URL,
+    ANNOTATION_INJECTED_ENV,
     CA_BUNDLE_VOLUME,
     EnvVar,
     EnvVarView,
@@ -144,14 +145,29 @@ def _scaling(ksvc: dict) -> Scaling | None:
         return None
 
 
+def _injected_env_names(ksvc: dict) -> set[str]:
+    """Names of the platform-injected env vars (the transparent CA-trust defaults)."""
+    raw = _meta_annotations(ksvc).get(ANNOTATION_INJECTED_ENV, "")
+    return {n for n in raw.split(",") if n}
+
+
 def _env(ksvc: dict) -> list[EnvVarView]:
-    """Read back the container env as views (secretKeyRef values redacted)."""
+    """Read back the container env as views (secretKeyRef values redacted).
+
+    Platform-injected CA-trust defaults are omitted - they aren't part of the
+    user's spec. A var the user set themselves is never injected, so it is never
+    listed as injected and reads back normally.
+    """
+    injected = _injected_env_names(ksvc)
     out: list[EnvVarView] = []
     for e in _container(ksvc).get("env") or []:
+        name = e.get("name", "")
+        if name in injected:
+            continue
         if "valueFrom" in e:  # secretKeyRef -> value is redacted
-            out.append(EnvVarView(name=e.get("name", ""), secret=True, value=None))
+            out.append(EnvVarView(name=name, secret=True, value=None))
         else:
-            out.append(EnvVarView(name=e.get("name", ""), value=e.get("value"), secret=False))
+            out.append(EnvVarView(name=name, value=e.get("value"), secret=False))
     return out
 
 

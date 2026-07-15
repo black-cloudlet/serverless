@@ -8,6 +8,7 @@ from api.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
+    ANNOTATION_INJECTED_ENV,
     ANNOTATION_RUNTIME,
     ANNOTATION_SIZE,
     CA_BUNDLE_VOLUME,
@@ -17,6 +18,22 @@ from api.services.files import VolumeSpec
 from common.labels import workload_labels
 
 KSVC_API = "serving.knative.dev/v1"
+
+# CA-trust env vars pointed at the mounted CA bundle so tooling across ecosystems
+# trusts internal TLS out of the box. Injected only when the caller hasn't set the
+# name themselves (their value always wins), and hidden from GET (see describe).
+#   SSL_CERT_FILE       - OpenSSL, Python (ssl/httpx), Go, Ruby, PHP
+#   REQUESTS_CA_BUNDLE  - Python requests / botocore / awscli
+#   CURL_CA_BUNDLE      - curl / libcurl
+#   NODE_EXTRA_CA_CERTS - Node.js
+#   GIT_SSL_CAINFO      - git
+CA_ENV_VARS = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "GIT_SSL_CAINFO",
+)
 
 # T-shirt sizes -> (cpu request, memory). Memory is set as request==limit (a
 # hard, predictable OOM boundary); CPU is request-only (no limit, so the
@@ -113,6 +130,7 @@ def build_ksvc(
     branch: str | None = None,
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
+    ca_file: str | None = None,
 ) -> dict:
     """Build the Knative Service (KSVC) manifest for a workload.
 
@@ -136,6 +154,9 @@ def build_ksvc(
         branch: Function source branch annotation, if any.
         ca_config_map: Trusted-CA ConfigMap to mount, if configured.
         ca_mount_path: Mount path for the trusted CA, if configured.
+        ca_file: Absolute path to the CA file inside the pod; when the CA is
+            mounted, the CA-trust env vars (see ``CA_ENV_VARS``) default to it for
+            any name the caller didn't set.
 
     Returns:
         The KSVC manifest dict.
@@ -161,9 +182,21 @@ def build_ksvc(
         vols.append({"name": CA_BUNDLE_VOLUME, "configMap": {"name": ca_config_map}})
         mounts.append({"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True})
 
+    # Point the CA-trust env vars at the mounted bundle for any name the caller
+    # didn't set (their value always wins). Recorded in an annotation so read-back
+    # hides these transparent defaults from the user's spec (see services.describe).
+    env_out = list(env)
+    injected: list[str] = []
+    if ca_config_map and ca_mount_path and ca_file:
+        user_names = {e.name for e in env}
+        for var in CA_ENV_VARS:
+            if var not in user_names:
+                env_out.append(ContainerEnv(name=var, value=ca_file))
+                injected.append(var)
+
     container: dict = {"image": image, "resources": _resources(size)}
-    if env:
-        container["env"] = _env(env)
+    if env_out:
+        container["env"] = _env(env_out)
     if mounts:
         container["volumeMounts"] = mounts
 
@@ -183,6 +216,8 @@ def build_ksvc(
         meta_annotations[ANNOTATION_GIT_URL] = git_url
     if branch:
         meta_annotations[ANNOTATION_GIT_BRANCH] = branch
+    if injected:
+        meta_annotations[ANNOTATION_INJECTED_ENV] = ",".join(injected)
 
     return {
         "apiVersion": KSVC_API,

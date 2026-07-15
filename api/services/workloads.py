@@ -454,6 +454,7 @@ class WorkloadService:
             branch=branch,
             ca_config_map=self.settings.ca_bundle.config_map,
             ca_mount_path=self.settings.ca_bundle.mount_path,
+            ca_file=self.settings.ca_bundle.file,
         )
         mapping = route_svc.build_domain_mapping(
             name=oname, group=group, owner=user.username, offering=offering, host=host

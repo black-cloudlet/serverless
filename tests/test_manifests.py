@@ -128,6 +128,82 @@ def test_build_ksvc_mounts_ca_bundle():
     assert mount["readOnly"] is True
 
 
+def test_build_ksvc_injects_ca_env_pointed_at_the_bundle():
+    from api.models.common import ANNOTATION_INJECTED_ENV
+    from api.services.ksvc import CA_ENV_VARS
+
+    m = ksvc_svc.build_ksvc(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[ContainerEnv(name="LOG", value="info")],
+        volumes=[],
+        scaling=Scaling(),
+        ca_config_map="ca-bundle",
+        ca_mount_path="/etc/ssl/certs",
+        ca_file="/etc/ssl/certs/ca-bundle.crt",
+    )
+    env = {e["name"]: e for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    # the user's var is kept, and every CA-trust var points at the bundle file
+    assert env["LOG"] == {"name": "LOG", "value": "info"}
+    for var in CA_ENV_VARS:
+        assert env[var] == {"name": var, "value": "/etc/ssl/certs/ca-bundle.crt"}
+    # injected names are recorded so read-back can hide them
+    injected = m["metadata"]["annotations"][ANNOTATION_INJECTED_ENV].split(",")
+    assert set(injected) == set(CA_ENV_VARS)
+
+
+def test_build_ksvc_ca_env_user_override_wins_and_is_not_marked_injected():
+    from api.models.common import ANNOTATION_INJECTED_ENV
+    from api.services.ksvc import CA_ENV_VARS
+
+    m = ksvc_svc.build_ksvc(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[ContainerEnv(name="SSL_CERT_FILE", value="/custom/ca.pem")],
+        volumes=[],
+        scaling=Scaling(),
+        ca_config_map="ca-bundle",
+        ca_mount_path="/etc/ssl/certs",
+        ca_file="/etc/ssl/certs/ca-bundle.crt",
+    )
+    env = {e["name"]: e for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    # the user's value wins and appears once (not overwritten by the default)
+    assert env["SSL_CERT_FILE"] == {"name": "SSL_CERT_FILE", "value": "/custom/ca.pem"}
+    injected = m["metadata"]["annotations"][ANNOTATION_INJECTED_ENV].split(",")
+    assert "SSL_CERT_FILE" not in injected  # user-set -> never marked injected
+    assert set(injected) == set(CA_ENV_VARS) - {"SSL_CERT_FILE"}
+
+
+def test_build_ksvc_no_ca_env_without_ca_file():
+    from api.models.common import ANNOTATION_INJECTED_ENV
+
+    # No ca_file -> no injection, no injected-env annotation (mount still added).
+    m = ksvc_svc.build_ksvc(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[ContainerEnv(name="LOG", value="info")],
+        volumes=[],
+        scaling=Scaling(),
+        ca_config_map="ca-bundle",
+        ca_mount_path="/etc/ssl/certs",
+    )
+    env = m["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert env == [{"name": "LOG", "value": "info"}]
+    assert ANNOTATION_INJECTED_ENV not in m["metadata"]["annotations"]
+
+
 def test_build_ksvc_env_secret_ref():
     m = ksvc_svc.build_ksvc(
         name="app-t",
