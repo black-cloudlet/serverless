@@ -963,6 +963,7 @@ Standard envelope for all non-2xx responses:
 ```json
 {
   "error": {
+    "status": 207,
     "code": "SITE_PARTIAL_FAILURE",
     "message": "Deployment succeeded in central but failed in south.",
     "details": [
@@ -973,12 +974,19 @@ Standard envelope for all non-2xx responses:
 }
 ```
 
+`status` is the numeric HTTP status (also on the response line); `code` is the
+machine-readable string. Framework HTTP errors that aren't domain errors (an
+unknown route, a method not allowed) derive their `code` from the status name
+(e.g. `404` → `NOT_FOUND`, `405` → `METHOD_NOT_ALLOWED`) rather than a generic
+placeholder.
+
 | HTTP | Code | When |
 |------|------|------|
 | `400` | `VALIDATION_ERROR` | Bad/missing fields, unsupported runtime. |
 | `401` | `UNAUTHENTICATED` | Missing/invalid JWT. |
 | `403` | `FORBIDDEN` | Caller not in a required/owning group. |
 | `404` | `NOT_FOUND` | Workload not found in caller's group scope. |
+| `405` | `METHOD_NOT_ALLOWED` | Path exists but not for that HTTP method. |
 | `409` | `CONFLICT` | Name already exists for the group, or the requested `hostname` is already assigned. |
 | `207` | `SITE_PARTIAL_FAILURE` | One site failed (Degraded). |
 | `502` | `SITE_TOTAL_FAILURE` | Both sites failed. |

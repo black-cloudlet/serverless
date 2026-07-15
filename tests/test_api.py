@@ -231,7 +231,23 @@ def test_create_container_accepted(client):
 def test_create_container_validation_error(client):
     r = client.post("/api/v1/containers", json={"name": "BAD NAME"})
     assert r.status_code == 400
-    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+    err = r.json()["error"]
+    assert err["code"] == "VALIDATION_ERROR"
+    assert err["status"] == 400  # the numeric status is in the envelope too
+
+
+def test_framework_http_errors_get_a_meaningful_code_and_status(client):
+    # Unknown route / wrong method are framework HTTP errors (not domain errors);
+    # the code is derived from the status, not a flat "HTTP_ERROR".
+    r = client.get("/api/v1/does-not-exist")
+    assert r.status_code == 404
+    err = r.json()["error"]
+    assert err["status"] == 404 and err["code"] == "NOT_FOUND"
+
+    r = client.post("/api/v1/functions/foo")  # POST to a GET-only path -> 405
+    assert r.status_code == 405
+    err = r.json()["error"]
+    assert err["status"] == 405 and err["code"] == "METHOD_NOT_ALLOWED"
 
 
 def test_get_function(client):
