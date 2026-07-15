@@ -145,6 +145,21 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     return "Deploying", revision
 
 
+def _ksvc_failure_message(obj: dict) -> str | None:
+    """The Knative Ready condition's failure reason/message, when it failed.
+
+    Returns the human-readable ``message`` (falling back to the ``reason`` code)
+    of a KSVC's ``Ready`` condition when its status is ``False`` - the rollout
+    failure detail (RevisionFailed, image-pull error, ...) to surface as the
+    per-site ``error``. None when Ready isn't False or carries no detail.
+    """
+    conditions = _dig(obj, "status", "conditions", default=[]) or []
+    ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+    if not ready or ready.get("status") != "False":
+        return None
+    return ready.get("message") or ready.get("reason") or None
+
+
 class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
@@ -798,6 +813,10 @@ class WorkloadService:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
             status, revision = _ksvc_status(obj)
+            # A reachable site whose KSVC failed to roll out (Ready=False) carries
+            # the reason in its condition; surface it as the per-site error so a GET
+            # explains the failure instead of a bare status="Failed", error=null.
+            error = _ksvc_failure_message(obj) if status == "Failed" else None
             # Replica count and live usage are two independent cluster reads;
             # fetch them concurrently to cut this site's read latency.
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -808,6 +827,7 @@ class WorkloadService:
                 site=cluster.site,
                 status=status,
                 revision=revision,
+                error=error,
                 replicas=replicas,
                 usage=usage,
             )

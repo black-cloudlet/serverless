@@ -16,6 +16,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
+  reports `Ready=False`, the per-site `error` carries the Knative condition's
+  message (falling back to its reason code) instead of `status: "Failed"` with
+  `error: null`.
 - `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
   positional arguments, which raised `TypeError: get() takes 1 positional
   argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
