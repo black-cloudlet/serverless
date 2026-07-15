@@ -32,10 +32,13 @@ class ContainerService:
             registryUsername=spec.registryUsername,
         )
 
-    async def accept(self, spec: ContainerCreate, user: Principal, background) -> ContainerResponse:
+    async def accept(
+        self, group: str, spec: ContainerCreate, user: Principal, background
+    ) -> ContainerResponse:
         """Validate and accept a create request, scheduling the deploy (202).
 
         Args:
+            group: The owning group (from the request path).
             spec: The container create request.
             user: The authenticated caller.
             background: FastAPI background tasks to schedule the deploy on.
@@ -45,6 +48,7 @@ class ContainerService:
         """
         return await self._engine.accept_create(
             offering=OFFERING_CONTAINER,
+            group=group,
             spec=spec,
             user=user,
             background=background,
@@ -54,11 +58,12 @@ class ContainerService:
         )
 
     async def accept_update(
-        self, name: str, spec: ContainerUpdate, user: Principal, background
+        self, group: str, name: str, spec: ContainerUpdate, user: Principal, background
     ) -> ContainerResponse:
         """Validate and accept an update request, scheduling the deploy (202).
 
         Args:
+            group: The owning group (from the request path).
             name: The workload name.
             spec: The container update request.
             user: The authenticated caller.
@@ -69,6 +74,7 @@ class ContainerService:
         """
         return await self._engine.accept_update(
             offering=OFFERING_CONTAINER,
+            group=group,
             name=name,
             spec=spec,
             user=user,
@@ -78,20 +84,22 @@ class ContainerService:
             **self._echo(spec),
         )
 
-    async def create(self, spec: ContainerCreate, user: Principal) -> tuple[ContainerResponse, int]:
+    async def create(
+        self, group: str, spec: ContainerCreate, user: Principal
+    ) -> tuple[ContainerResponse, int]:
         """Deploy a new container (runs in the background after accept).
 
         Builds the pull secret (if registry creds were given) and applies the
         workload to all target sites.
 
         Args:
+            group: The owning group (from the request path).
             spec: The container create request.
             user: The authenticated caller.
 
         Returns:
             The response body and HTTP status code.
         """
-        group = spec.group
         oname = object_name(spec.name, group)
         # Registry creds are optional (public image -> no pull secret).
         pull_name: str | None = None
@@ -129,11 +137,17 @@ class ContainerService:
         return body, code
 
     async def update(
-        self, name: str, spec: ContainerUpdate, user: Principal, existing: dict | None = None
+        self,
+        group: str,
+        name: str,
+        spec: ContainerUpdate,
+        user: Principal,
+        existing: dict | None = None,
     ) -> tuple[ContainerResponse, int]:
         """Apply an update to a container (runs in the background after accept).
 
         Args:
+            group: The owning group (from the request path).
             name: The workload name.
             spec: The container update request.
             user: The authenticated caller.
@@ -143,7 +157,6 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        group = spec.group
         oname = object_name(name, group)
         # accept_update already fetched (and authorized) this; reuse it to avoid a
         # second multi-site fanout. Falls back to a fresh fetch for direct callers.

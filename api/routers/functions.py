@@ -11,11 +11,12 @@ from api.dependencies import FunctionDep
 from api.models.common import Group, LogsResponse, Name, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 
-router = APIRouter(prefix="/api/v1/functions", tags=["functions"])
+router = APIRouter(prefix="/api/v1/groups/{group}/functions", tags=["functions"])
 
 
 @router.post("", response_model=FunctionResponse, status_code=202)
 async def create_function(
+    group: Group,
     spec: FunctionCreate,
     user: CurrentUser,
     svc: FunctionDep,
@@ -24,6 +25,7 @@ async def create_function(
     """Create a function (202): validate synchronously, build and deploy async.
 
     Args:
+        group: The owning group (from the request path).
         spec: The function create request.
         user: The authenticated caller (injected).
         svc: The function service (injected).
@@ -32,11 +34,12 @@ async def create_function(
     Returns:
         A Pending response with a ``statusUrl`` to poll for the deploy outcome.
     """
-    return await svc.accept(spec, user, background)
+    return await svc.accept(group, spec, user, background)
 
 
 @router.put("/{name}", response_model=FunctionResponse, status_code=202)
 async def update_function(
+    group: Group,
     name: Name,
     spec: FunctionUpdate,
     user: CurrentUser,
@@ -46,6 +49,7 @@ async def update_function(
     """Update a function (202): full replace of the mutable spec, applied async.
 
     Args:
+        group: The owning group (from the request path).
         name: The workload name.
         spec: The function update request.
         user: The authenticated caller (injected).
@@ -55,7 +59,7 @@ async def update_function(
     Returns:
         A Pending response with a ``statusUrl`` to poll.
     """
-    return await svc.accept_update(name, spec, user, background)
+    return await svc.accept_update(group, name, spec, user, background)
 
 
 @router.get("", response_model=list[WorkloadSummary])
@@ -68,7 +72,7 @@ async def list_functions(
     """List general info for every function the group owns (merged across sites).
 
     Args:
-        group: The owning group.
+        group: The owning group (from the request path).
         user: The authenticated caller (injected).
         svc: The function service (injected).
         sort: Sort key, "name" or "createdAt".
@@ -81,7 +85,7 @@ async def list_functions(
 
 @router.get("/{name}", response_model=FunctionResponse)
 async def get_function(
-    name: Name, group: Group, user: CurrentUser, svc: FunctionDep
+    group: Group, name: Name, user: CurrentUser, svc: FunctionDep
 ) -> FunctionResponse:
     """Get one function, including overallStatus and per-site status.
 
@@ -89,8 +93,8 @@ async def get_function(
     response.
 
     Args:
+        group: The owning group (from the request path).
         name: The workload name.
-        group: The owning group.
         user: The authenticated caller (injected).
         svc: The function service (injected).
 
@@ -102,8 +106,8 @@ async def get_function(
 
 @router.get("/{name}/logs", response_model=LogsResponse)
 async def get_function_logs(
-    name: Name,
     group: Group,
+    name: Name,
     user: CurrentUser,
     svc: FunctionDep,
     container: str = "user-container",
@@ -116,8 +120,8 @@ async def get_function_logs(
     returns no pods.
 
     Args:
+        group: The owning group (from the request path).
         name: The workload name.
-        group: The owning group.
         user: The authenticated caller (injected).
         svc: The function service (injected).
         container: The pod container to read (default the user-container).
@@ -133,12 +137,12 @@ async def get_function_logs(
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_function(name: Name, group: Group, user: CurrentUser, svc: FunctionDep) -> None:
+async def delete_function(group: Group, name: Name, user: CurrentUser, svc: FunctionDep) -> None:
     """Delete a function and its derived resources (204).
 
     Args:
+        group: The owning group (from the request path).
         name: The workload name.
-        group: The owning group.
         user: The authenticated caller (injected).
         svc: The function service (injected).
     """

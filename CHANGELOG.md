@@ -9,6 +9,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **Breaking:** moved the acting `group` from a query/body parameter to a **path
+  segment**: every workload endpoint is now `/api/v1/groups/{group}/functions…`
+  (and `…/containers…`). Reads/deletes no longer take `?group=`, and create/update
+  request bodies no longer carry a `group` field (responses still echo it). The
+  202 `statusUrl` is now `/api/v1/groups/{group}/{type}/{name}`.
+- The framework HTTP error envelope now carries the numeric `status` and a
+  status-derived `code` (e.g. `NOT_FOUND`, `METHOD_NOT_ALLOWED`) instead of a flat
+  `HTTP_ERROR`.
 - Restructured into a monorepo: renamed the `app/` package to **`api/`** and added
   a shared **`common/`** library (build contract, cluster client + `ResourceKind`,
   `CommonSettings`, `/healthz`+`/readyz` and offline docs, labels, errors, logging)

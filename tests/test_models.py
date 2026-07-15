@@ -7,74 +7,68 @@ from api.models.function import FunctionCreate, FunctionUpdate
 
 
 def test_container_update_creds_paired():
-    ContainerUpdate(group="team")  # no creds -> keep existing, fine
-    ContainerUpdate(group="team", registryUsername="bob", registryToken="t")
+    ContainerUpdate()  # no creds -> keep existing, fine
+    ContainerUpdate(registryUsername="bob", registryToken="t")
     with pytest.raises(ValidationError):
-        ContainerUpdate(group="team", registryUsername="bob")
+        ContainerUpdate(registryUsername="bob")
 
 
 def test_function_update_rebuild_requires_token():
     # config-only update: no rebuild
-    u = FunctionUpdate(group="team", scaling=Scaling(minScale=1, maxScale=1))
+    u = FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))
     assert u.rebuild_requested is False
     # token alone -> rebuild from same source
-    assert FunctionUpdate(group="team", gitToken="t").rebuild_requested is True
+    assert FunctionUpdate(gitToken="t").rebuild_requested is True
     # build inputs without a token are rejected
     with pytest.raises(ValidationError):
-        FunctionUpdate(group="team", branch="release")
+        FunctionUpdate(branch="release")
     with pytest.raises(ValidationError):
-        FunctionUpdate(group="team", runtime="go")
+        FunctionUpdate(runtime="go")
     # build inputs WITH a token are fine
-    FunctionUpdate(group="team", gitRepo="https://git/x.git", runtime="go", gitToken="t")
+    FunctionUpdate(gitRepo="https://git/x.git", runtime="go", gitToken="t")
 
 
 def test_container_registry_creds_optional_but_paired():
     # both omitted -> public image, fine
-    c = ContainerCreate(name="api", group="team", image="reg/api:1")
+    c = ContainerCreate(name="api", image="reg/api:1")
     assert c.registryUsername is None and c.registryToken is None
     # both provided -> fine
-    ContainerCreate(
-        name="api", group="team", image="reg/api:1", registryUsername="bob", registryToken="t"
-    )
+    ContainerCreate(name="api", image="reg/api:1", registryUsername="bob", registryToken="t")
     # only one provided -> rejected
     with pytest.raises(ValidationError):
-        ContainerCreate(name="api", group="team", image="reg/api:1", registryUsername="bob")
+        ContainerCreate(name="api", image="reg/api:1", registryUsername="bob")
     with pytest.raises(ValidationError):
-        ContainerCreate(name="api", group="team", image="reg/api:1", registryToken="t")
+        ContainerCreate(name="api", image="reg/api:1", registryToken="t")
 
 
 def test_valid_function():
-    fn = FunctionCreate(
-        name="my-fn", group="team", gitRepo="https://git/x.git", gitToken="t", runtime="python"
-    )
+    fn = FunctionCreate(name="my-fn", gitRepo="https://git/x.git", gitToken="t", runtime="python")
     assert fn.branch == "main"
     assert fn.scaling.minScale == 0
 
 
 def test_invalid_name_rejected():
     with pytest.raises(ValidationError):
-        FunctionCreate(name="Bad_Name", group="team", gitRepo="g", gitToken="t", runtime="python")
+        FunctionCreate(name="Bad_Name", gitRepo="g", gitToken="t", runtime="python")
 
 
 def test_runtime_is_a_free_string_on_the_model():
     # The valid runtime set is data (a mounted ConfigMap), so the model accepts
     # any string; the service validates it against the live registry (see
     # test_auth_and_deployer.test_function_accept_rejects_unknown_runtime).
-    fn = FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+    fn = FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="ruby")
     assert fn.runtime == "ruby"
 
 
 def test_size_default_and_choices():
-    fn = FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go")
+    fn = FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go")
     assert fn.size == "small"  # default
     assert (
-        FunctionCreate(
-            name="x", group="team", gitRepo="g", gitToken="t", runtime="go", size="large"
-        ).size
+        FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="large").size
         == "large"
     )
     with pytest.raises(ValidationError):  # unknown size
-        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go", size="xl")
+        FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="xl")
 
 
 def test_envvar_requires_value():
@@ -152,7 +146,6 @@ def test_scaling_hpa_metric_cannot_scale_to_zero():
 def test_optional_hostname_validated():
     fn = FunctionCreate(
         name="my-fn",
-        group="team",
         gitRepo="g",
         gitToken="t",
         runtime="python",
@@ -160,13 +153,8 @@ def test_optional_hostname_validated():
     )
     assert fn.hostname == "app.example.com"
     # default (no hostname) is allowed
-    assert (
-        FunctionCreate(name="x", group="team", gitRepo="g", gitToken="t", runtime="go").hostname
-        is None
-    )
+    assert FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go").hostname is None
     # invalid hostnames rejected
     for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
         with pytest.raises(ValidationError):
-            FunctionCreate(
-                name="x", group="team", gitRepo="g", gitToken="t", runtime="go", hostname=bad
-            )
+            FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", hostname=bad)

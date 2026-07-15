@@ -56,10 +56,13 @@ class FunctionService:
             branch=spec.branch,
         )
 
-    async def accept(self, spec: FunctionCreate, user: Principal, background) -> FunctionResponse:
+    async def accept(
+        self, group: str, spec: FunctionCreate, user: Principal, background
+    ) -> FunctionResponse:
         """Validate and accept a create request, scheduling the build+deploy (202).
 
         Args:
+            group: The owning group (from the request path).
             spec: The function create request.
             user: The authenticated caller.
             background: FastAPI background tasks to schedule the build+deploy on.
@@ -70,6 +73,7 @@ class FunctionService:
         self._assert_runtime(spec.runtime)
         return await self._engine.accept_create(
             offering=OFFERING_FUNCTION,
+            group=group,
             spec=spec,
             user=user,
             background=background,
@@ -78,11 +82,12 @@ class FunctionService:
         )
 
     async def accept_update(
-        self, name: str, spec: FunctionUpdate, user: Principal, background
+        self, group: str, name: str, spec: FunctionUpdate, user: Principal, background
     ) -> FunctionResponse:
         """Validate and accept an update request, scheduling the deploy (202).
 
         Args:
+            group: The owning group (from the request path).
             name: The workload name.
             spec: The function update request.
             user: The authenticated caller.
@@ -95,6 +100,7 @@ class FunctionService:
             self._assert_runtime(spec.runtime)
         return await self._engine.accept_update(
             offering=OFFERING_FUNCTION,
+            group=group,
             name=name,
             spec=spec,
             user=user,
@@ -103,10 +109,13 @@ class FunctionService:
             **self._echo(spec),
         )
 
-    async def create(self, spec: FunctionCreate, user: Principal) -> tuple[FunctionResponse, int]:
+    async def create(
+        self, group: str, spec: FunctionCreate, user: Principal
+    ) -> tuple[FunctionResponse, int]:
         """Build from Git and deploy a new function (runs in the background).
 
         Args:
+            group: The owning group (from the request path).
             spec: The function create request.
             user: The authenticated caller.
 
@@ -116,7 +125,6 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        group = spec.group
         try:
             build = self._engine.builder.build(
                 BuildRequest(
@@ -156,11 +164,17 @@ class FunctionService:
         return body, code
 
     async def update(
-        self, name: str, spec: FunctionUpdate, user: Principal, existing: dict | None = None
+        self,
+        group: str,
+        name: str,
+        spec: FunctionUpdate,
+        user: Principal,
+        existing: dict | None = None,
     ) -> tuple[FunctionResponse, int]:
         """Apply an update to a function, rebuilding only when a gitToken is given.
 
         Args:
+            group: The owning group (from the request path).
             name: The workload name.
             spec: The function update request.
             user: The authenticated caller.
@@ -174,7 +188,6 @@ class FunctionService:
             ServiceUnavailableError: If a rebuild is requested but the build
                 pipeline is unavailable.
         """
-        group = spec.group
         # Reuse the load_existing result from accept_update (already authorized) to
         # avoid a second multi-site fanout; fall back to a fresh fetch otherwise.
         if existing is None:

@@ -26,7 +26,7 @@ def _accepted(kind, name, group, **extra):
         hostname=f"{name}.serverless.example.com",
         overallStatus="Pending",
         sites=[],
-        statusUrl=f"/api/v1/{kind}s/{name}?group={group}",
+        statusUrl=f"/api/v1/groups/{group}/{kind}s/{name}",
         **extra,
     )
 
@@ -45,11 +45,11 @@ def _ready(kind, name, group="team", **extra):
 
 
 class FakeFunctions:
-    async def accept(self, spec, user, background):
-        return _accepted("function", spec.name, spec.group, runtime=spec.runtime)
+    async def accept(self, group, spec, user, background):
+        return _accepted("function", spec.name, group, runtime=spec.runtime)
 
-    async def accept_update(self, name, spec, user, background):
-        return _accepted("function", name, spec.group)
+    async def accept_update(self, group, name, spec, user, background):
+        return _accepted("function", name, group)
 
     async def get(self, name, group, user):
         return _ready(
@@ -87,11 +87,11 @@ class FakeFunctions:
 
 
 class FakeContainers:
-    async def accept(self, spec, user, background):
-        return _accepted("container", spec.name, spec.group, image=spec.image)
+    async def accept(self, group, spec, user, background):
+        return _accepted("container", spec.name, group, image=spec.image)
 
-    async def accept_update(self, name, spec, user, background):
-        return _accepted("container", name, spec.group, image=spec.image or "kept:1")
+    async def accept_update(self, group, name, spec, user, background):
+        return _accepted("container", name, group, image=spec.image or "kept:1")
 
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
@@ -212,10 +212,9 @@ def test_cors_allows_configured_origin(monkeypatch):
 
 def test_create_container_accepted(client):
     r = client.post(
-        "/api/v1/containers",
+        "/api/v1/groups/team/containers",
         json={
             "name": "orders-api",
-            "group": "team",
             "image": "registry.internal/team/orders:1",
             "registryUsername": "u",
             "registryToken": "t",
@@ -225,11 +224,11 @@ def test_create_container_accepted(client):
     body = r.json()
     assert body["type"] == "container"
     assert body["overallStatus"] == "Pending"
-    assert body["statusUrl"] == "/api/v1/containers/orders-api?group=team"
+    assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
 
 
 def test_create_container_validation_error(client):
-    r = client.post("/api/v1/containers", json={"name": "BAD NAME"})
+    r = client.post("/api/v1/groups/team/containers", json={"name": "BAD NAME"})
     assert r.status_code == 400
     err = r.json()["error"]
     assert err["code"] == "VALIDATION_ERROR"
@@ -244,14 +243,15 @@ def test_framework_http_errors_get_a_meaningful_code_and_status(client):
     err = r.json()["error"]
     assert err["status"] == 404 and err["code"] == "NOT_FOUND"
 
-    r = client.post("/api/v1/functions/foo")  # POST to a GET-only path -> 405
+    # POST to a path that only serves GET/PUT/DELETE -> 405
+    r = client.post("/api/v1/groups/team/functions/foo")
     assert r.status_code == 405
     err = r.json()["error"]
     assert err["status"] == 405 and err["code"] == "METHOD_NOT_ALLOWED"
 
 
 def test_get_function(client):
-    r = client.get("/api/v1/functions/foo?group=team")
+    r = client.get("/api/v1/groups/team/functions/foo")
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "foo" and body["group"] == "team"
@@ -264,7 +264,7 @@ def test_get_function(client):
 
 
 def test_get_container_shape(client):
-    r = client.get("/api/v1/containers/foo?group=team")
+    r = client.get("/api/v1/groups/team/containers/foo")
     assert r.status_code == 200
     body = r.json()
     # ContainerResponse mirrors the create body: image + registryUsername present,
@@ -274,7 +274,7 @@ def test_get_container_shape(client):
 
 
 def test_get_function_logs(client):
-    r = client.get("/api/v1/functions/foo/logs?group=team")
+    r = client.get("/api/v1/groups/team/functions/foo/logs")
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "foo" and body["type"] == "function" and body["site"] == "site-a"
@@ -284,7 +284,7 @@ def test_get_function_logs(client):
 
 def test_get_container_logs_with_params(client):
     r = client.get(
-        "/api/v1/containers/foo/logs?group=team&container=queue-proxy"
+        "/api/v1/groups/team/containers/foo/logs?container=queue-proxy"
         "&sinceSeconds=300&limitBytes=4096"
     )
     assert r.status_code == 200
@@ -295,24 +295,19 @@ def test_get_container_logs_with_params(client):
 
 def test_logs_rejects_non_positive_window(client):
     # sinceSeconds must be > 0; the RequestValidationError maps to 400
-    assert client.get("/api/v1/functions/foo/logs?group=team&sinceSeconds=0").status_code == 400
-    assert client.get("/api/v1/containers/foo/logs?group=team&limitBytes=0").status_code == 400
-
-
-def test_get_function_requires_group(client):
-    r = client.get("/api/v1/functions/foo")  # missing ?group=
-    assert r.status_code == 400
+    assert client.get("/api/v1/groups/team/functions/foo/logs?sinceSeconds=0").status_code == 400
+    assert client.get("/api/v1/groups/team/containers/foo/logs?limitBytes=0").status_code == 400
 
 
 def test_path_name_validated_at_the_edge(client):
     """A path {name} that isn't a DNS-1123 label is rejected at the boundary (400),
     like the request-body name - not passed through to a cluster lookup."""
-    assert client.get("/api/v1/functions/Bad_Name?group=team").status_code == 400
-    assert client.delete("/api/v1/containers/UPPER?group=team").status_code == 400
+    assert client.get("/api/v1/groups/team/functions/Bad_Name").status_code == 400
+    assert client.delete("/api/v1/groups/team/containers/UPPER").status_code == 400
 
 
 def test_list_functions(client):
-    r = client.get("/api/v1/functions?group=team")
+    r = client.get("/api/v1/groups/team/functions")
     assert r.status_code == 200
     body = r.json()
     assert [w["name"] for w in body] == ["fn-a"]
@@ -321,7 +316,7 @@ def test_list_functions(client):
 
 
 def test_list_containers(client):
-    r = client.get("/api/v1/containers?group=team")
+    r = client.get("/api/v1/groups/team/containers")
     assert r.status_code == 200
     body = r.json()
     assert body[0]["name"] == "ctr-a"
@@ -329,20 +324,15 @@ def test_list_containers(client):
 
 
 def test_list_accepts_sort_and_rejects_unknown(client):
-    assert client.get("/api/v1/functions?group=team&sort=createdAt").status_code == 200
-    assert client.get("/api/v1/functions?group=team&sort=name").status_code == 200
-    assert client.get("/api/v1/functions?group=team&sort=bogus").status_code == 400
+    assert client.get("/api/v1/groups/team/functions?sort=createdAt").status_code == 200
+    assert client.get("/api/v1/groups/team/functions?sort=name").status_code == 200
+    assert client.get("/api/v1/groups/team/functions?sort=bogus").status_code == 400
 
 
-def test_list_requires_group(client):
-    r = client.get("/api/v1/containers")  # missing ?group=
-    assert r.status_code == 400
-
-
-def test_query_group_is_normalized_at_the_edge():
-    """A ggd-/slash-prefixed group in the query string is normalized before it
-    reaches the service - the same one-place-at-the-edge normalization the request
-    body already gets, so nothing downstream re-normalizes."""
+def test_path_group_is_normalized_at_the_edge():
+    """A ggd-/slash-prefixed group in the path is normalized before it reaches the
+    service - the same one-place-at-the-edge normalization the request body used to
+    get, so nothing downstream re-normalizes."""
     seen = {}
 
     class _Capture(FakeFunctions):
@@ -357,16 +347,15 @@ def test_query_group_is_normalized_at_the_edge():
     app.dependency_overrides[get_function_service] = lambda: _Capture()
     c = TestClient(app)
 
-    r = c.get("/api/v1/functions/foo?group=ggd-1234-platforms")
+    r = c.get("/api/v1/groups/ggd-1234-platforms/functions/foo")
     assert r.status_code == 200
     assert seen["group"] == "platforms"  # normalized at the router boundary
 
 
 def test_update_container_accepted(client):
     r = client.put(
-        "/api/v1/containers/orders-api",
+        "/api/v1/groups/team/containers/orders-api",
         json={
-            "group": "team",
             "image": "registry.internal/team/orders:2",
             "scaling": {"minScale": 1},
         },
@@ -378,8 +367,8 @@ def test_update_container_accepted(client):
 
 def test_update_function_accepted(client):
     r = client.put(
-        "/api/v1/functions/foo",
-        json={"group": "team", "env": [{"name": "X", "value": "1"}]},
+        "/api/v1/groups/team/functions/foo",
+        json={"env": [{"name": "X", "value": "1"}]},
     )
     assert r.status_code == 202
     assert r.json()["type"] == "function"
@@ -387,16 +376,16 @@ def test_update_function_accepted(client):
 
 def test_update_container_partial_creds_rejected(client):
     r = client.put(
-        "/api/v1/containers/orders-api",
-        json={"group": "team", "registryUsername": "bob"},  # token missing
+        "/api/v1/groups/team/containers/orders-api",
+        json={"registryUsername": "bob"},  # token missing
     )
     assert r.status_code == 400
 
 
 def test_update_function_build_change_requires_token(client):
     r = client.put(
-        "/api/v1/functions/foo",
-        json={"group": "team", "branch": "release"},  # gitToken missing
+        "/api/v1/groups/team/functions/foo",
+        json={"branch": "release"},  # gitToken missing
     )
     assert r.status_code == 400
 

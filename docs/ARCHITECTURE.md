@@ -239,7 +239,7 @@ sequenceDiagram
     participant ZA as Site A (Knative)
     participant ZB as Site B (Knative)
 
-    U->>API: POST /api/v1/functions (git, runtime, ...)
+    U->>API: POST /api/v1/groups/{group}/functions (git, runtime, ...)
     API->>API: AuthN (JWT) + AuthZ (group)
     API->>Build: build(gitRepo@branch, runtime)
     Build->>Reg: push image @digest
@@ -537,8 +537,9 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   ConfigMap/Secret, and the imagePullSecret) carries **both** the SSO group label
   and the workload-name label, so it is unambiguously attributable and selectable.
 
-- The caller **explicitly chooses the group** to act as on every request - in the body for
-  writes (`group` field) and as a `?group=` query parameter for reads/deletes. The API
+- The caller **explicitly chooses the group** to act as on every request - it is a **path
+  segment** (`/api/v1/groups/{group}/...`) on every endpoint, so the same group scopes reads,
+  writes, and deletes uniformly and never appears in a request body. The API
   **asserts the caller is a member** of that group (from the **`groups` claim**); otherwise
   `403`. This makes the acting group unambiguous for users in multiple groups. Authorization
   rules:
@@ -734,17 +735,17 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/v1/functions` | Create a FaaS workload (build from Git). **202 Accepted** - deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/functions` | List the group's functions - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
-| `GET` | `/api/v1/functions/{name}?group=` | Get one function (spec + per-site status). Requires `?group=`. |
-| `PUT` | `/api/v1/functions/{name}` | Replace the function's mutable spec (`group` in body; env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
-| `DELETE` | `/api/v1/functions/{name}?group=` | Delete the function in both sites. Requires `?group=`. |
-| `POST` | `/api/v1/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/containers` | List the group's containers - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Requires `?group=`; optional `?sort=name\|createdAt` (default `name`). |
-| `GET` | `/api/v1/containers/{name}?group=` | Get one container (spec + per-site status). Requires `?group=`. |
-| `PUT` | `/api/v1/containers/{name}` | Replace the container's mutable spec (`group` in body; image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
-| `DELETE` | `/api/v1/containers/{name}?group=` | Delete the container in both sites. Requires `?group=`. |
-| `GET` | `/api/v1/{type}/{name}/logs?group=` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
+| `POST` | `/api/v1/groups/{group}/functions` | Create a FaaS workload (build from Git). **202 Accepted** - deploys in the background; poll `statusUrl`. |
+| `GET` | `/api/v1/groups/{group}/functions` | List the group's functions - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/v1/groups/{group}/functions/{name}` | Get one function (spec + per-site status). |
+| `PUT` | `/api/v1/groups/{group}/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
+| `DELETE` | `/api/v1/groups/{group}/functions/{name}` | Delete the function in both sites. |
+| `POST` | `/api/v1/groups/{group}/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
+| `GET` | `/api/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/v1/groups/{group}/containers/{name}` | Get one container (spec + per-site status). |
+| `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
+| `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
 | `GET` | `/api/v1/info` | **Public** (no auth), static platform capabilities for dynamic UI rendering: `version`, `sites`, `runtimes`, `sizes`, `scaling` (per-metric options), `routeDomain`, `defaultHostTemplate`. Config/code-derived, no cluster calls. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
@@ -755,7 +756,7 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 > **Async (submit + poll).** `POST`/`PUT` validate synchronously (so the caller gets
 > immediate `400`/`404`/`409`), then **return `202 Accepted`** with `overallStatus: "Pending"`
 > and a `statusUrl`; the build/deploy runs in the background. Clients poll
-> `GET {statusUrl}` (the resource itself, `/api/v1/{type}/{name}?group=`) until
+> `GET {statusUrl}` (the resource itself, `/api/v1/groups/{group}/{type}/{name}`) until
 > `overallStatus` is `Ready` (or `Degraded`). This suits slow FaaS builds and ServiceNow
 > workflow patterns (§10.x).
 >
@@ -775,10 +776,10 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 
 ```jsonc
 // Workload shared fields (used by both functions and containers)
+// The acting group is NOT a body field - it is the {group} path segment on every
+// endpoint (/api/v1/groups/{group}/...). The caller must be a member (else 403).
 {
   "name": "orders-api",                 // DNS-1123, required. OpenShift object name is {name}-{group}.
-  "group": "team-a",                    // required; the SSO group to act as. Caller must be a
-                                        // member (else 403). Reads/deletes pass it as ?group=.
   "hostname": "orders",                 // optional custom host; default {name}-{group}.{route_domain}.
                                         // a single label, or one level under {route_domain}
                                         // ({label}.{route_domain}); must not be assigned (else 409).
@@ -801,7 +802,7 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 }
 ```
 
-### FaaS - `POST /api/v1/functions`
+### FaaS - `POST /api/v1/groups/{group}/functions`
 
 Request:
 
@@ -827,11 +828,11 @@ Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
   "hostname": "image-resizer-team.serverless.example.com",
   "overallStatus": "Pending",
   "sites": [],
-  "statusUrl": "/api/v1/functions/image-resizer?group=team"
+  "statusUrl": "/api/v1/groups/team/functions/image-resizer"
 }
 ```
 
-Then `GET /api/v1/functions/image-resizer?group=team` once Ready:
+Then `GET /api/v1/groups/team/functions/image-resizer` once Ready:
 
 The response is a **`FunctionResponse`** - flat, mirroring the `FunctionCreate`
 body (secrets redacted) with the live status alongside:
@@ -894,7 +895,7 @@ source, not images.)
 > site's running pods (user container only, not the queue-proxy sidecar),
 > best-effort and `null` when scaled to zero or the metrics API is unavailable.
 
-And `GET /api/v1/functions?group=team` to list the group's functions - general
+And `GET /api/v1/groups/team/functions` to list the group's functions - general
 info only (no live usage/replicas; use the single-workload GET for those):
 
 ```json
@@ -919,7 +920,7 @@ info only (no live usage/replicas; use the single-workload GET for those):
 > **every** site is down does the call fail (502). It returns general info only (no
 > live replicas/usage) - use the single-workload GET for per-site live health.
 
-### CaaS - `POST /api/v1/containers`
+### CaaS - `POST /api/v1/groups/{group}/containers`
 
 Request:
 
@@ -1207,7 +1208,7 @@ rules:
     resources: ["pods", "events"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["pods/log"]              # for GET /api/v1/{type}/{name}/logs
+    resources: ["pods/log"]              # for GET /api/v1/groups/{group}/{type}/{name}/logs
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
