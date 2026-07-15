@@ -629,6 +629,127 @@ async def test_get_overall_status_reflects_rollout_state():
     assert await _overall() == "Degraded"
 
 
+async def test_get_failed_site_surfaces_ready_condition_message():
+    """A reachable site whose KSVC failed to roll out carries the Ready-condition
+    reason in the per-site `error` (not a bare status=Failed, error=null)."""
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+
+    ksvc = _bare_ksvc()
+    ksvc["status"] = {
+        "conditions": [
+            {
+                "type": "Ready",
+                "status": "False",
+                "reason": "RevisionFailed",
+                "message": 'Revision "app-team-00001" failed: image pull backoff',
+            }
+        ]
+    }
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("replicas/usage/spec extras are best-effort here")
+
+    engine = _workload_service({"site-a": _C()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+
+    site = body.sites[0]
+    assert site.status == "Failed"
+    assert site.error == 'Revision "app-team-00001" failed: image pull backoff'
+
+    # Falls back to the reason code when the condition carries no message.
+    ksvc["status"]["conditions"][0].pop("message")
+    body = await engine.get("container", "app", user, "team")
+    assert body.sites[0].error == "RevisionFailed"
+
+
+async def test_get_failed_site_prefers_revision_specific_reason():
+    """The per-site error is the Revision's specific failing sub-condition (the
+    real cause), not the KSVC's generic aggregate message."""
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+
+    ksvc = _bare_ksvc()
+    ksvc["status"] = {
+        "latestCreatedRevisionName": "app-team-00001",
+        "conditions": [
+            # Generic aggregate at the Service level.
+            {
+                "type": "Ready",
+                "status": "False",
+                "reason": "RevisionFailed",
+                "message": "Revision app-team-00001 is not ready.",
+            },
+        ],
+    }
+    revision = {
+        "metadata": {"name": "app-team-00001"},
+        "status": {
+            "actualReplicas": 0,
+            "conditions": [
+                {"type": "Ready", "status": "False", "message": "Revision not ready."},
+                # The specific cause we want surfaced.
+                {
+                    "type": "ContainerHealthy",
+                    "status": "False",
+                    "reason": "ImagePullBackOff",
+                    "message": 'Unable to fetch image "reg/app:1": not found',
+                },
+            ],
+        },
+    }
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            if kind == ResourceKind.KNATIVE_REVISION and name == "app-team-00001":
+                return revision
+            raise RuntimeError("usage/spec extras are best-effort here")
+
+    engine = _workload_service({"site-a": _C()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+
+    site = body.sites[0]
+    assert site.status == "Failed"
+    assert site.error == 'Unable to fetch image "reg/app:1": not found'
+    assert site.replicas == 0  # same Revision read still feeds the replica count
+
+
+async def test_get_ready_site_has_no_error():
+    """A healthy (Ready) site leaves `error` null - it's only set on failure."""
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+
+    ksvc = _bare_ksvc()
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("best-effort extras")
+
+    engine = _workload_service({"site-a": _C()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("container", "app", user, "team")
+    assert body.sites[0].status == "Ready" and body.sites[0].error is None
+
+
 async def test_list_overall_status_per_workload():
     from api.auth.claims import Principal
 

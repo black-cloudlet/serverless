@@ -16,6 +16,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
+  reports `Ready=False`, the per-site `error` carries the specific cause from the
+  Revision's failing sub-condition (e.g. `ContainerHealthy` — image-pull error,
+  crash, quota), falling back to the KSVC's aggregate message and then a reason
+  code, instead of `status: "Failed"` with `error: null`. Reuses the Revision
+  read already done for the replica count, so no extra cluster call.
 - `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
   positional arguments, which raised `TypeError: get() takes 1 positional
   argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
