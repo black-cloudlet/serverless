@@ -17,6 +17,7 @@ from api.routers import containers, functions, info
 from api.services.deployer import Deployer
 from common.errors import register_exception_handlers
 from common.logging import configure_logging, get_logger
+from common.requestid import RequestIDMiddleware
 from common.web import health_router, mount_offline_docs
 
 logger = get_logger(__name__)
@@ -96,6 +97,10 @@ def create_app() -> FastAPI:
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
         )
+
+    # Added last so it is the outermost middleware: every request (and every
+    # response, including errors) carries a correlation id.
+    app.add_middleware(RequestIDMiddleware)
 
     register_exception_handlers(app)
     app.include_router(health_router)

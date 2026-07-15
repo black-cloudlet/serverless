@@ -981,6 +981,13 @@ unknown route, a method not allowed) derive their `code` from the status name
 (e.g. `404` → `NOT_FOUND`, `405` → `METHOD_NOT_ALLOWED`) rather than a generic
 placeholder.
 
+`requestId` is a per-request correlation id for support/debugging: the API
+**adopts the inbound `X-Request-ID`** (OpenShift's router stamps one, so the id
+lines up with the router/ingress logs end to end) and **mints a UUID** when it's
+absent or malformed. It is echoed back in the `X-Request-ID` response header on
+every response (success and error) and bound into the server logs, so a
+`requestId` from an error body greps straight to the request's log lines.
+
 | HTTP | Code | When |
 |------|------|------|
 | `400` | `VALIDATION_ERROR` | Bad/missing fields, unsupported runtime. |
@@ -1034,7 +1041,8 @@ Serverless/
 │   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
 │   ├── labels.py                    # ownership label keys + workload_labels
 │   ├── errors.py                    # error envelope, typed errors, exception handlers
-│   ├── logging.py                   # logging configuration
+│   ├── requestid.py                 # X-Request-ID correlation middleware (adopt/mint)
+│   ├── logging.py                   # logging configuration (binds requestId)
 │   └── static/                      # vendored Swagger UI / ReDoc assets (airgap)
 ├── charts/
 │   └── serverless-api/

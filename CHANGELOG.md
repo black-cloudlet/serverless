@@ -9,6 +9,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Request correlation: the error envelope's `requestId` is now populated (was
+  always `null`). A middleware adopts an inbound `X-Request-ID` (e.g. from the
+  OpenShift router) or mints a UUID, echoes it in the `X-Request-ID` response
+  header on every response, and binds it into the server logs — so a `requestId`
+  from an error body greps straight to that request's log lines.
 - Configurable labels on the chart-created namespaces: `namespaces.labels`
   (applied to both) plus `namespaces.apiLabels` / `namespaces.workloadsLabels`
   (per-namespace, override the shared set) — e.g. to set
