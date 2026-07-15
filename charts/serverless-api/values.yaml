@@ -17,6 +17,12 @@ replicaCount: 2
 namespaces:
   api: serverless-api
   workloads: serverless-workloads
+  # Extra labels merged onto the namespaces this chart creates (e.g.
+  # pod-security.kubernetes.io/enforce, or a namespaceSelector target). `labels`
+  # applies to both; `apiLabels` / `workloadsLabels` add per-namespace labels.
+  labels: {}
+  apiLabels: {}
+  workloadsLabels: {}
 
 routeDomain: serverless.example.com
 

@@ -108,7 +108,7 @@ class Cluster:
 
     def _dynamic_api(self, kind: ResourceKind):
         """Resolve the dynamic resource API for a ResourceKind (apiVersion + kind)."""
-        return self._dynamic_client.resources.get(kind.api_version, kind.kind)
+        return self._dynamic_client.resources.get(api_version=kind.api_version, kind=kind.kind)
 
     def connect(self) -> None:
         """Eagerly establish the connection (API discovery).

@@ -7,6 +7,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- Configurable labels on the chart-created namespaces: `namespaces.labels`
+  (applied to both) plus `namespaces.apiLabels` / `namespaces.workloadsLabels`
+  (per-namespace, override the shared set) — e.g. to set
+  `pod-security.kubernetes.io/enforce` or a `namespaceSelector` target.
+
+### Fixed
+
+- `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
+  positional arguments, which raised `TypeError: get() takes 1 positional
+  argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
+
 ### Changed
 
 - **Breaking:** moved the acting `group` from a query/body parameter to a **path
