@@ -9,6 +9,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Request correlation: the error envelope's `requestId` is now populated (was
+  always `null`). A middleware adopts an inbound `X-Request-ID` (e.g. from the
+  OpenShift router) or mints a UUID, echoes it in the `X-Request-ID` response
+  header on every response, and binds it into the server logs — so a `requestId`
+  from an error body greps straight to that request's log lines.
 - Every function/container now gets CA-trust env vars pointed at the mounted
   trusted-CA bundle so tooling trusts internal TLS out of the box:
   `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`,

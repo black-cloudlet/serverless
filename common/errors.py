@@ -10,6 +10,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from common.requestid import get_request_id
+
 
 class APIError(Exception):
     """Base class for errors that map to the standard error envelope."""
@@ -145,7 +147,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _api_error(request: Request, exc: APIError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=_envelope(exc.status_code, exc.code, exc.message, exc.details),
+            content=_envelope(
+                exc.status_code, exc.code, exc.message, exc.details, request_id=get_request_id()
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -157,6 +161,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "VALIDATION_ERROR",
                 "Request validation failed.",
                 details=[{"loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()],
+                request_id=get_request_id(),
             ),
         )
 
@@ -166,5 +171,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         # meaningful code from the status instead of a flat "HTTP_ERROR".
         return JSONResponse(
             status_code=exc.status_code,
-            content=_envelope(exc.status_code, _code_for_status(exc.status_code), str(exc.detail)),
+            content=_envelope(
+                exc.status_code,
+                _code_for_status(exc.status_code),
+                str(exc.detail),
+                request_id=get_request_id(),
+            ),
         )
