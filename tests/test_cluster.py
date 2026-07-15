@@ -39,9 +39,7 @@ def test_dynamic_api_resolves_by_keyword_gvk():
 
     result = cluster._dynamic_api(ResourceKind.KNATIVE_SERVICE)
 
-    assert dynamic.resources.calls == [
-        {"api_version": "serving.knative.dev/v1", "kind": "Service"}
-    ]
+    assert dynamic.resources.calls == [{"api_version": "serving.knative.dev/v1", "kind": "Service"}]
     assert result == "api::serving.knative.dev/v1::Service"
 
 
