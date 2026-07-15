@@ -3,7 +3,6 @@
 #   - {{ .Values.namespaces.workloads }}: where the API creates functions/containers
 # Guarded with ArgoCD sync-options so they are never pruned or deleted when the
 # Application is synced or removed.
-{{- $shared := .Values.namespaces.labels | default dict }}
 {{- $perNs := dict
       .Values.namespaces.api (.Values.namespaces.apiLabels | default dict)
       .Values.namespaces.workloads (.Values.namespaces.workloadsLabels | default dict) }}
@@ -14,10 +13,7 @@ kind: Namespace
 metadata:
   name: {{ $ns }}
   labels:
-    {{- include "serverless-api.labels" $ | nindent 4 }}
-    {{- range $k, $v := mergeOverwrite (deepCopy $shared) $extra }}
-    {{ $k }}: {{ $v | quote }}
-    {{- end }}
+    {{- include "serverless-api.namespaceLabels" (dict "root" $ "extra" $extra) | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-options: Delete=false,Prune=false
 {{- end }}
