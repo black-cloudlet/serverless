@@ -24,6 +24,11 @@ ANNOTATION_SIZE = "serverless.platform/size"
 ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
+# Comma-separated names of the platform-injected env vars (the CA-trust defaults).
+# Stamped on the KSVC so read-back can hide them from the user's spec - they are
+# transparent defaults, not part of what the user submitted. A var the user set
+# themselves is never injected, so it is never listed here and reads back normally.
+ANNOTATION_INJECTED_ENV = "serverless.platform/injected-env"
 
 # Name of the platform-injected CA-bundle volume/mount on every pod (matches the
 # default ConfigMap name). An internal pod-spec handle - owned by the KSVC
