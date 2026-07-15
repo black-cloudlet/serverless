@@ -424,12 +424,10 @@ async def test_accept_container_returns_pending_and_schedules():
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
-    spec = ContainerCreate(
-        name="app", group="team", image="reg/x:1", registryUsername="u", registryToken="t"
-    )
-    body = await svc.accept(spec, user, bg)
+    spec = ContainerCreate(name="app", image="reg/x:1", registryUsername="u", registryToken="t")
+    body = await svc.accept("team", spec, user, bg)
     assert body.overallStatus == "Pending"
-    assert body.statusUrl == "/api/v1/containers/app?group=team"
+    assert body.statusUrl == "/api/v1/groups/team/containers/app"
     assert len(bg.tasks) == 1  # deploy scheduled in the background
 
 
@@ -715,9 +713,9 @@ async def test_update_prunes_backing_no_longer_referenced():
     # New spec keeps only a PLAIN env var and a NON-secret file -> no env Secret,
     # a files ConfigMap, but no files Secret.
     await csvc.update(
+        "team",
         "api",
         ContainerUpdate(
-            group="team",
             env=[EnvVar(name="LOG", value="debug")],  # plain -> no env Secret
             files=[FileMount(mountPath="/etc/app.conf", content="x")],  # -> files ConfigMap
         ),
@@ -747,7 +745,7 @@ async def test_create_does_not_prune():
 
     from api.models.container import ContainerCreate
 
-    await csvc.create(ContainerCreate(name="api", group="team", image="reg/x:1"), user)
+    await csvc.create("team", ContainerCreate(name="api", image="reg/x:1"), user)
     assert cluster.deleted == []
 
 
@@ -777,7 +775,7 @@ async def test_container_update_rotates_pull_secret():
     from api.models.container import ContainerUpdate
 
     await csvc.update(
-        "api", ContainerUpdate(group="team", registryUsername="bob", registryToken="t"), user
+        "team", "api", ContainerUpdate(registryUsername="bob", registryToken="t"), user
     )
 
     secrets = [
@@ -836,7 +834,7 @@ async def test_function_update_rebuilds_when_token_given():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # rebuild from a new branch; gitRepo/runtime carried from existing
-    await fsvc.update("fn", FunctionUpdate(group="team", branch="release", gitToken="tok"), user)
+    await fsvc.update("team", "fn", FunctionUpdate(branch="release", gitToken="tok"), user)
     assert builder.calls == 1
     assert builder.req.branch == "release"
     assert builder.req.git_url == "https://git/old.git"
@@ -882,9 +880,7 @@ async def test_function_update_without_token_keeps_image():
     fsvc = FunctionService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    await fsvc.update(
-        "fn", FunctionUpdate(group="team", scaling=Scaling(minScale=2, maxScale=2)), user
-    )
+    await fsvc.update("team", "fn", FunctionUpdate(scaling=Scaling(minScale=2, maxScale=2)), user)
     assert builder.calls == 0
     ksvc = _applied_kind(cluster, "Service")[0]
     assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
@@ -1007,11 +1003,9 @@ async def test_accept_rejects_group_caller_is_not_member_of():
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])  # not 'other'
-    spec = ContainerCreate(
-        name="app", group="other", image="reg/x:1", registryUsername="u", registryToken="t"
-    )
+    spec = ContainerCreate(name="app", image="reg/x:1", registryUsername="u", registryToken="t")
     with pytest.raises(ForbiddenError):  # 403 before anything is scheduled
-        await svc.accept(spec, user, BackgroundTasks())
+        await svc.accept("other", spec, user, BackgroundTasks())
 
 
 class _DeleteCluster:
@@ -1091,9 +1085,9 @@ async def test_apply_sets_owner_references_on_derived():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await csvc.update(
+        "team",
         "api",
         ContainerUpdate(
-            group="team",
             registryUsername="bob",
             registryToken="t",  # -> pull Secret
             env=[EnvVar(name="PW", value="x", secret=True)],  # -> env Secret
@@ -1173,7 +1167,6 @@ async def test_accept_rejects_invalid_spec_synchronously():
     bg = BackgroundTasks()
     spec = ContainerCreate(
         name="app",
-        group="team",
         image="reg/x:1",
         files=[
             FileMount(mountPath="/a/conf", content="1"),
@@ -1181,7 +1174,7 @@ async def test_accept_rejects_invalid_spec_synchronously():
         ],  # duplicate key
     )
     with pytest.raises(ValidationError):
-        await svc.accept(spec, user, bg)
+        await svc.accept("team", spec, user, bg)
     assert bg.tasks == []  # validation ran before the background deploy was queued
 
 
@@ -1219,7 +1212,7 @@ async def test_update_reuses_existing_without_refetch():
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     preloaded = {"image": "reg/app:1", "pull_secret": None}
-    await csvc.update("api", ContainerUpdate(group="team"), user, existing=preloaded)
+    await csvc.update("team", "api", ContainerUpdate(), user, existing=preloaded)
     assert calls["n"] == 0  # reused the passed-in existing, no second fanout
 
 
@@ -1414,8 +1407,9 @@ async def test_prune_failure_aborts_update_fail_closed():
 
     with pytest.raises(SiteTotalFailure):  # single site failed -> total failure
         await csvc.update(
+            "team",
             "api",
-            ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+            ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
             user,
         )
     # fail-closed: the KSVC was never (re)applied after the prune failed
@@ -1441,8 +1435,9 @@ async def test_prune_not_found_is_tolerated():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await csvc.update(  # must not raise
+        "team",
         "api",
-        ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+        ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
         user,
     )
     assert _applied_kind(cluster, "Service")  # KSVC applied -> update proceeded
@@ -1478,8 +1473,9 @@ async def test_prune_runs_before_apply_on_update():
     # The fixture KSVC sits on a custom host; an update with no hostname resolves
     # to the default host -> the host changes, exercising the old-host retirement.
     await csvc.update(
+        "team",
         "api",
-        ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+        ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
         user,
     )
     first_apply = next(i for i, (op, _) in enumerate(cluster.ops) if op == "apply")
@@ -1530,7 +1526,7 @@ async def test_accept_update_rejects_taken_host_synchronously():
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     with pytest.raises(ConflictError):
-        await csvc.accept_update("api", ContainerUpdate(group="team", hostname="shop"), user, bg)
+        await csvc.accept_update("team", "api", ContainerUpdate(hostname="shop"), user, bg)
     assert bg.tasks == []  # rejected before the background deploy was queued
 
 
@@ -1559,7 +1555,7 @@ async def test_update_unchanged_host_retires_no_mapping():
     csvc = ContainerService(_workload_service({"site-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    await csvc.update("api", ContainerUpdate(group="team"), user)  # no hostname -> default
+    await csvc.update("team", "api", ContainerUpdate(), user)  # no hostname -> default
 
     dm_deletes = [n for k, n in cluster.deleted if k == ResourceKind.DOMAIN_MAPPING]
     assert dm_deletes == []  # host unchanged -> nothing retired
@@ -1708,7 +1704,7 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(SiteTotalFailure):  # single site failed
-        await csvc.create(ContainerCreate(name="api", group="team", image="reg/x:1"), user)
+        await csvc.create("team", ContainerCreate(name="api", image="reg/x:1"), user)
     assert (ResourceKind.KNATIVE_SERVICE, "api-team") in cluster.deleted
 
 
@@ -1727,8 +1723,9 @@ async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
 
     with pytest.raises(SiteTotalFailure):
         await csvc.update(
+            "team",
             "api",
-            ContainerUpdate(group="team", env=[EnvVar(name="LOG", value="debug")]),
+            ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
             user,
         )
     assert (ResourceKind.KNATIVE_SERVICE, "api-team") not in cluster.deleted
@@ -1992,10 +1989,10 @@ async def test_function_accept_rejects_unknown_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", group="team", gitRepo="g", gitToken="t", runtime="ruby")
+    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="ruby")
 
     with pytest.raises(ValidationError):
-        await fsvc.accept(spec, user, BackgroundTasks())
+        await fsvc.accept("team", spec, user, BackgroundTasks())
 
 
 async def test_function_accept_allows_known_runtime():
@@ -2006,9 +2003,9 @@ async def test_function_accept_allows_known_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", group="team", gitRepo="g", gitToken="t", runtime="go")
+    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="go")
 
-    resp = await fsvc.accept(spec, user, BackgroundTasks())
+    resp = await fsvc.accept("team", spec, user, BackgroundTasks())
     assert resp.overallStatus == "Pending" and resp.runtime == "go"
 
 
@@ -2022,7 +2019,7 @@ async def test_function_update_rejects_unknown_runtime():
     fsvc = _function_service_with_runtimes(["python"])
     user = Principal(subject="u", username="alice", groups=["team"])
     # changing runtime requires a gitToken; supply one so we reach the registry check
-    spec = FunctionUpdate(group="team", runtime="ruby", gitToken="t")
+    spec = FunctionUpdate(runtime="ruby", gitToken="t")
 
     with pytest.raises(ValidationError):
-        await fsvc.accept_update("fn", spec, user, BackgroundTasks())
+        await fsvc.accept_update("team", "fn", spec, user, BackgroundTasks())

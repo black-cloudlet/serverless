@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, model_validator
 from api.models.common import (
     EnvVar,
     FileMount,
-    Group,
     Hostname,
     Name,
     Scaling,
@@ -21,14 +20,14 @@ from api.models.common import (
 class FunctionCreate(BaseModel):
     """Request body to create a function from source (built into an image).
 
-    ``runtime`` is a free string here; the set of valid runtimes is data (a
-    mounted ConfigMap, see services.runtimes) so it is validated against the live
-    registry in the service layer, not as a fixed enum. GET /api/v1/info lists the
-    accepted values.
+    The owning group comes from the request path (``/api/v1/groups/{group}/...``),
+    not the body. ``runtime`` is a free string here; the set of valid runtimes is
+    data (a mounted ConfigMap, see services.runtimes) so it is validated against
+    the live registry in the service layer, not as a fixed enum. GET /api/v1/info
+    lists the accepted values.
     """
 
     name: Name
-    group: Group  # the SSO group to act as; caller must be a member
     gitRepo: str
     branch: str = "main"
     gitToken: str
@@ -50,7 +49,6 @@ class FunctionUpdate(BaseModel):
     config is updated.
     """
 
-    group: Group  # the SSO group that owns the workload; caller must be a member
     # Rebuild inputs (all optional). gitRepo/branch/runtime default to the existing
     # values when omitted; gitToken is never stored, so it must be supplied to
     # rebuild (it can't be carried forward).

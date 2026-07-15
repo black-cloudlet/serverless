@@ -9,7 +9,7 @@ name: serverless-api
 image:
   registry: registry.internal
   repository: serverless/serverless-api
-  tag: "" # empty -> chart appVersion (via the serverless-api.image helper)
+  tag: "" 
   pullPolicy: IfNotPresent
 
 replicaCount: 2
@@ -17,6 +17,9 @@ replicaCount: 2
 namespaces:
   api: serverless-api
   workloads: serverless-workloads
+  labels: {}
+  apiLabels: {}
+  workloadsLabels: {}
 
 routeDomain: serverless.example.com
 

@@ -7,8 +7,29 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- Configurable labels on the chart-created namespaces: `namespaces.labels`
+  (applied to both) plus `namespaces.apiLabels` / `namespaces.workloadsLabels`
+  (per-namespace, override the shared set) — e.g. to set
+  `pod-security.kubernetes.io/enforce` or a `namespaceSelector` target.
+
+### Fixed
+
+- `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
+  positional arguments, which raised `TypeError: get() takes 1 positional
+  argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
+
 ### Changed
 
+- **Breaking:** moved the acting `group` from a query/body parameter to a **path
+  segment**: every workload endpoint is now `/api/v1/groups/{group}/functions…`
+  (and `…/containers…`). Reads/deletes no longer take `?group=`, and create/update
+  request bodies no longer carry a `group` field (responses still echo it). The
+  202 `statusUrl` is now `/api/v1/groups/{group}/{type}/{name}`.
+- The framework HTTP error envelope now carries the numeric `status` and a
+  status-derived `code` (e.g. `NOT_FOUND`, `METHOD_NOT_ALLOWED`) instead of a flat
+  `HTTP_ERROR`.
 - Restructured into a monorepo: renamed the `app/` package to **`api/`** and added
   a shared **`common/`** library (build contract, cluster client + `ResourceKind`,
   `CommonSettings`, `/healthz`+`/readyz` and offline docs, labels, errors, logging)

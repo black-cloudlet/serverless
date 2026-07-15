@@ -10,8 +10,11 @@ spec:
   commonName: {{ .Values.certificate.user }}
   dnsNames:
     - {{  .Values.certificate.user }}
-  usages:
-    - client auth
   issuerRef:
     name: {{ .Values.certificate.issuerRef.name }}
     kind: {{ .Values.certificate.issuerRef.kind }}
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    rotationPolicy: Always
+    size: 4096

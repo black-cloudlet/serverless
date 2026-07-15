@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -85,6 +86,7 @@ class ServiceUnavailableError(APIError):
 
 
 def _envelope(
+    status: int,
     code: str,
     message: str,
     details: list[dict[str, Any]] | None = None,
@@ -93,6 +95,7 @@ def _envelope(
     """Build the standard error response body.
 
     Args:
+        status: The numeric HTTP status code (also the response status).
         code: The machine-readable error code.
         message: The human-readable message.
         details: Optional structured details.
@@ -103,12 +106,32 @@ def _envelope(
     """
     return {
         "error": {
+            "status": status,
             "code": code,
             "message": message,
             "details": details or [],
             "requestId": request_id,
         }
     }
+
+
+def _code_for_status(status: int) -> str:
+    """A machine-readable code for a bare HTTP status (e.g. 404 -> ``NOT_FOUND``).
+
+    Framework HTTP errors (unknown route, wrong method, ...) have no domain code,
+    so derive one from the status name; fall back to ``HTTP_ERROR`` for a
+    non-standard status.
+
+    Args:
+        status: The HTTP status code.
+
+    Returns:
+        The derived error code.
+    """
+    try:
+        return HTTPStatus(status).name
+    except ValueError:
+        return "HTTP_ERROR"
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -122,7 +145,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _api_error(request: Request, exc: APIError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=_envelope(exc.code, exc.message, exc.details),
+            content=_envelope(exc.status_code, exc.code, exc.message, exc.details),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -130,6 +153,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=400,
             content=_envelope(
+                400,
                 "VALIDATION_ERROR",
                 "Request validation failed.",
                 details=[{"loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()],
@@ -138,7 +162,9 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # Framework HTTP errors (unknown route, method not allowed, ...): derive a
+        # meaningful code from the status instead of a flat "HTTP_ERROR".
         return JSONResponse(
             status_code=exc.status_code,
-            content=_envelope("HTTP_ERROR", str(exc.detail)),
+            content=_envelope(exc.status_code, _code_for_status(exc.status_code), str(exc.detail)),
         )
