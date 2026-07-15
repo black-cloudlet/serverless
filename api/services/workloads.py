@@ -145,6 +145,48 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     return "Deploying", revision
 
 
+def _ksvc_failure_message(obj: dict) -> str | None:
+    """The Knative Ready condition's failure reason/message, when it failed.
+
+    Returns the human-readable ``message`` (falling back to the ``reason`` code)
+    of a KSVC's ``Ready`` condition when its status is ``False`` - the rollout
+    failure detail (RevisionFailed, image-pull error, ...) to surface as the
+    per-site ``error``. None when Ready isn't False or carries no detail.
+    """
+    conditions = _dig(obj, "status", "conditions", default=[]) or []
+    ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+    if not ready or ready.get("status") != "False":
+        return None
+    return ready.get("message") or ready.get("reason") or None
+
+
+def _revision_replicas(rev: dict | None) -> int | None:
+    """The autoscaler's live scale (``Revision.status.actualReplicas``), or None."""
+    return _dig(rev, "status", "actualReplicas") if rev else None
+
+
+def _revision_failure_message(rev: dict | None) -> str | None:
+    """The most specific failure detail from a Revision's conditions, if failing.
+
+    A Knative Revision reports the aggregate ``Ready`` condition plus the specific
+    sub-conditions that feed it (``ContainerHealthy``, ``ResourcesAvailable``,
+    ``Active``). We prefer a failing *sub*-condition's message - the real cause
+    (image-pull error, container crash, quota) - over the generic aggregate, so
+    the surfaced error names why the rollout failed. Falls back to any failing
+    condition's message, then its reason code. None when nothing is failing (or
+    the Revision couldn't be read).
+    """
+    conditions = _dig(rev, "status", "conditions", default=[]) or []
+    failing = [c for c in conditions if c.get("status") == "False"]
+    if not failing:
+        return None
+    specific = next((c for c in failing if c.get("type") != "Ready" and c.get("message")), None)
+    chosen = specific or next((c for c in failing if c.get("message")), None)
+    if chosen is not None:
+        return chosen.get("message")
+    return next((c.get("reason") for c in failing if c.get("reason")), None)
+
+
 class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
@@ -412,6 +454,7 @@ class WorkloadService:
             branch=branch,
             ca_config_map=self.settings.ca_bundle.config_map,
             ca_mount_path=self.settings.ca_bundle.mount_path,
+            ca_file=self.settings.ca_bundle.file,
         )
         mapping = route_svc.build_domain_mapping(
             name=oname, group=group, owner=user.username, offering=offering, host=host
@@ -798,16 +841,26 @@ class WorkloadService:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
             status, revision = _ksvc_status(obj)
-            # Replica count and live usage are two independent cluster reads;
-            # fetch them concurrently to cut this site's read latency.
+            # The Revision (for live scale) and pod usage are independent cluster
+            # reads; fetch them concurrently to cut this site's read latency.
             with ThreadPoolExecutor(max_workers=2) as pool:
-                replicas_f = pool.submit(self._site_replicas, cluster, revision)
+                rev_f = pool.submit(self._revision, cluster, revision)
                 usage_f = pool.submit(self._site_usage, cluster, oname)
-                replicas, usage = replicas_f.result(), usage_f.result()
+                rev, usage = rev_f.result(), usage_f.result()
+            replicas = _revision_replicas(rev)
+            # A reachable site whose KSVC failed to roll out (Ready=False) carries
+            # the reason in the Revision's conditions (the specific cause - image
+            # pull error, crash, quota) or, failing that, the KSVC's own Ready
+            # condition. Surface it so a GET explains *why* it failed rather than a
+            # bare status="Failed", error=null.
+            error = None
+            if status == "Failed":
+                error = _revision_failure_message(rev) or _ksvc_failure_message(obj)
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
+                error=error,
                 replicas=replicas,
                 usage=usage,
             )
@@ -900,21 +953,20 @@ class WorkloadService:
                 pass
         return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
 
-    def _site_replicas(self, cluster: Cluster, revision: str | None) -> int | None:
-        """Best-effort running pod count from the revision the KSVC points at.
+    def _revision(self, cluster: Cluster, revision: str | None) -> dict | None:
+        """Best-effort fetch of the Knative Revision the KSVC points at.
 
-        Uses the autoscaler's authoritative scale
-        (``Revision.status.actualReplicas``), which doesn't depend on the metrics
-        API.
+        The Revision carries both the autoscaler's live scale and the specific
+        rollout-failure conditions, so a single read feeds both the replica count
+        and the per-site error detail.
 
         Returns:
-            The replica count, or None if it can't be read.
+            The Revision object, or None if it has no revision yet or can't be read.
         """
         if not revision:
             return None
         try:
-            rev = cluster.get(ResourceKind.KNATIVE_REVISION, revision)
-            return (rev.get("status", {}) or {}).get("actualReplicas")
+            return cluster.get(ResourceKind.KNATIVE_REVISION, revision)
         except Exception:  # noqa: BLE001 - best-effort, never fatal
             return None
 

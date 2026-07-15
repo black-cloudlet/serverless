@@ -14,6 +14,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   OpenShift router) or mints a UUID, echoes it in the `X-Request-ID` response
   header on every response, and binds it into the server logs — so a `requestId`
   from an error body greps straight to that request's log lines.
+- Every function/container now gets CA-trust env vars pointed at the mounted
+  trusted-CA bundle so tooling trusts internal TLS out of the box:
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`,
+  `GIT_SSL_CAINFO`. A var the caller sets themselves is left untouched (their
+  value wins); the injected defaults are transparent — recorded in a
+  `serverless.platform/injected-env` annotation and hidden from the workload's
+  GET response.
 - Configurable labels on the chart-created namespaces: `namespaces.labels`
   (applied to both) plus `namespaces.apiLabels` / `namespaces.workloadsLabels`
   (per-namespace, override the shared set) — e.g. to set
@@ -21,6 +28,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
+  reports `Ready=False`, the per-site `error` carries the specific cause from the
+  Revision's failing sub-condition (e.g. `ContainerHealthy` — image-pull error,
+  crash, quota), falling back to the KSVC's aggregate message and then a reason
+  code, instead of `status: "Failed"` with `error: null`. Reuses the Revision
+  read already done for the replica count, so no extra cluster call.
 - `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
   positional arguments, which raised `TypeError: get() takes 1 positional
   argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.

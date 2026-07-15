@@ -36,6 +36,35 @@ def test_configmap_refs_excludes_platform_ca():
     assert configmap_refs(_ksvc()) == {"app-team-files"}
 
 
+def test_parse_spec_hides_injected_ca_env_but_keeps_user_override():
+    from api.services.ksvc import CA_ENV_VARS
+
+    # The user sets SSL_CERT_FILE themselves; the rest are platform-injected.
+    ksvc = build_ksvc(
+        name="app-team",
+        group="team",
+        owner="alice",
+        image="reg/app:1",
+        offering="container",
+        host="app-team.ex.com",
+        env=[
+            ContainerEnv(name="LOG", value="debug"),
+            ContainerEnv(name="SSL_CERT_FILE", value="/custom/ca.pem"),
+        ],
+        volumes=[],
+        scaling=Scaling(),
+        ca_config_map="ca-bundle",
+        ca_mount_path="/etc/ssl/certs",
+        ca_file="/etc/ssl/certs/ca-bundle.crt",
+    )
+    names = {e.name for e in parse_spec(ksvc).env}
+    # transparent defaults are hidden; the user's own vars (incl. the override) show
+    assert names == {"LOG", "SSL_CERT_FILE"}
+    assert (set(CA_ENV_VARS) - {"SSL_CERT_FILE"}).isdisjoint(names)
+    envs = {e.name: e for e in parse_spec(ksvc).env}
+    assert envs["SSL_CERT_FILE"].value == "/custom/ca.pem"  # user value preserved
+
+
 def test_parse_spec_redacts_secrets_and_returns_plain_config():
     spec = parse_spec(
         _ksvc(),
