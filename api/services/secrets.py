@@ -1,13 +1,22 @@
-"""Pure builder for an imagePullSecret from customer registry credentials.
+"""Pure builders/decoders for the credential Secrets a workload owns.
 
-The token is used transiently to materialize the pull secret; it is never
-persisted by the API itself (docs §7.2). The caller supplies the labels.
+Covers the imagePullSecret built from customer registry credentials and the
+Opaque ``{workload}-git`` Secret that stores a function's git token so it
+survives edits and can be reused to rebuild without the client re-sending it.
+Secret *values* are never returned on read - only the workload's update path
+reads them back, to preserve a "keep" (redacted) field. The caller supplies the
+labels.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+
+from api.services import resources as res
+
+# Data key of the git token inside the ``{workload}-git`` Secret.
+GIT_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name, not a credential
 
 
 def registry_of(image: str) -> str:
@@ -85,3 +94,43 @@ def registry_username(secret: dict) -> str | None:
     except Exception:  # noqa: BLE001 - malformed secret -> treat as unknown
         return None
     return None
+
+
+def git_secret_name(workload: str) -> str:
+    """The name of a workload's git-token Secret: ``{workload}-git``."""
+    return f"{workload}-git"
+
+
+def build_git_secret(name: str, labels: dict[str, str], token: str) -> dict:
+    """Build an Opaque Secret holding a function's git token.
+
+    Stored so the token survives edits and can be reused to rebuild without the
+    client re-supplying it. The value is never returned on read.
+
+    Args:
+        name: The Secret name (``{workload}-git``).
+        labels: Labels to stamp on it.
+        token: The git token to store.
+
+    Returns:
+        The Secret manifest dict.
+    """
+    return res.build_secret(name, labels, {GIT_TOKEN_KEY: token})
+
+
+def git_token(secret: dict) -> str | None:
+    """Decode the git token from a ``{workload}-git`` Secret (update path only).
+
+    Args:
+        secret: The Opaque git Secret object.
+
+    Returns:
+        The token, or None if it can't be read.
+    """
+    raw = (secret.get("data") or {}).get(GIT_TOKEN_KEY)
+    if not raw:
+        return None
+    try:
+        return base64.b64decode(raw).decode("utf-8", "surrogateescape")
+    except Exception:  # noqa: BLE001 - malformed secret -> treat as unknown
+        return None

@@ -10,6 +10,7 @@ here. See docs §3, §4, §6.2.
 from __future__ import annotations
 
 import asyncio
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -319,6 +320,8 @@ class WorkloadService:
         targets = self.deployer.resolve_targets(spec.sites)
         host = self.host_for(spec.name, spec.hostname, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
+        # No existing state on create, so a "keep" secret has nothing to fall back
+        # on (kept empty) - a secret sent without a value fails here as a 400.
         self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
         await self.assert_host_available(host, spec.name, group, targets)
         await self.assert_workload_absent(spec.name, group, targets)
@@ -361,7 +364,17 @@ class WorkloadService:
         """
         existing = await self.load_existing(name, offering, user, group)
         # Surface deploy-time spec validation synchronously (400), before the 202.
-        self.validate_spec(name, group, user.username, spec.env, spec.files)
+        # Pass the existing secret values so a "keep" (redacted) secret resolves
+        # against what's stored instead of failing.
+        self.validate_spec(
+            name,
+            group,
+            user.username,
+            spec.env,
+            spec.files,
+            kept_env=existing.get("env_values"),
+            kept_files=existing.get("files_values"),
+        )
         host = self.host_for(name, spec.hostname, group)
         # The host can change on update; verify it's free (or already ours) now so a
         # collision is a synchronous 409 instead of a silently-swallowed background
@@ -392,6 +405,9 @@ class WorkloadService:
         git_url: str | None = None,
         branch: str | None = None,
         prev_host: str | None = None,
+        kept_env: dict[str, str] | None = None,
+        kept_files: dict[str, str] | None = None,
+        extra_secrets: list[dict] = (),
     ) -> tuple[WorkloadResponse, int]:
         """Build the manifests once and apply the workload to every target site.
 
@@ -421,6 +437,13 @@ class WorkloadService:
             prev_host: The host the workload currently uses (update only); when it
                 differs from the resolved host, the old DomainMapping is retired so
                 the old host doesn't stay claimed.
+            kept_env: Decoded existing env-Secret values, so a secret env var sent
+                without a value keeps its stored value (update only).
+            kept_files: Decoded existing files-Secret values, so a secret file sent
+                without content keeps its stored content (update only).
+            extra_secrets: Additional owned Secret manifests to apply (e.g. the
+                function git-token Secret). Owner-stamped and GC'd with the KSVC;
+                not in the managed prune set, so omitting one keeps the stored copy.
 
         Returns:
             The response body and HTTP status code.
@@ -434,9 +457,9 @@ class WorkloadService:
         # another workload's mapping. Reject a host already owned by someone else.
         await self.assert_host_available(host, name, group, targets)
 
-        resolved = resolve_files(oname, group, user.username, files)
-        resolved_env = resolve_env(oname, group, user.username, env)
-        backing = resolved.backing + resolved_env.backing
+        resolved = resolve_files(oname, group, user.username, files, kept_files)
+        resolved_env = resolve_env(oname, group, user.username, env, kept_env)
+        backing = resolved.backing + resolved_env.backing + list(extra_secrets)
         ksvc = ksvc_svc.build_ksvc(
             name=oname,
             group=group,
@@ -662,7 +685,9 @@ class WorkloadService:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
-            found.setdefault("obj", obj)
+            if "obj" not in found:
+                found["obj"] = obj
+                found["cluster"] = cluster  # same site used to read the backing Secrets
             return SiteStatus(site=cluster.site, status="Present")
 
         statuses = await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
@@ -677,27 +702,48 @@ class WorkloadService:
             ):
                 raise NotFoundError(f"{offering} workload '{name}' not found")
             ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            return {
+            cluster = found["cluster"]
+            state = {
                 "image": _extract_image(obj),
                 "runtime": ann.get(ANNOTATION_RUNTIME),
                 "gitUrl": ann.get(ANNOTATION_GIT_URL),
                 "branch": ann.get(ANNOTATION_GIT_BRANCH),
                 "host": ann.get(ANNOTATION_HOST),
                 "pull_secret": describe_svc.pull_secret_name(obj),
+                # Existing secret values, so an update can keep a redacted secret
+                # the client sent back without a value (see resolve_env/_files).
+                "env_values": self._secret_data(cluster, env_secret_name(oname)),
+                "files_values": self._secret_data(cluster, files_name(oname)),
             }
+            # Functions carry a stored git token; read it so a build-input change
+            # can rebuild without the client re-supplying it.
+            if offering == OFFERING_FUNCTION:
+                git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
+                state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
+            return state
 
         # Absent on every site we could reach. If one was unreachable we can't be
         # sure it's truly gone -> fail closed (503), not a misleading 404.
         self._assert_all_sites_checked(statuses, f"load workload '{name}'")
         raise NotFoundError(f"{offering} workload '{name}' not found")
 
-    def validate_spec(self, name: str, group: str, owner: str, env, files) -> None:
+    def validate_spec(
+        self,
+        name: str,
+        group: str,
+        owner: str,
+        env,
+        files,
+        kept_env: dict[str, str] | None = None,
+        kept_files: dict[str, str] | None = None,
+    ) -> None:
         """Validate a spec synchronously, before the request is accepted.
 
         Runs the pure, in-memory resolution that :meth:`apply_workload` will later
-        perform, so malformed input (duplicate file mount paths, invalid base64)
-        fails as a 400 at accept time instead of being accepted (202) and then
-        dying silently in the background deploy.
+        perform, so malformed input (duplicate file mount paths, invalid base64, a
+        secret sent without a value and none stored to keep) fails as a 400 at
+        accept time instead of being accepted (202) and then dying silently in the
+        background deploy.
 
         Args:
             name: Workload name.
@@ -705,13 +751,17 @@ class WorkloadService:
             owner: Username stamped on derived resources.
             env: The submitted env vars.
             files: The submitted file mounts.
+            kept_env: Existing env-Secret values a "keep" secret falls back on
+                (update only; empty/None on create).
+            kept_files: Existing files-Secret values a "keep" secret file falls back
+                on (update only; empty/None on create).
 
         Raises:
             ValidationError: If the env or files cannot be resolved.
         """
         oname = object_name(name, group)
-        resolve_files(oname, group, owner, files)
-        resolve_env(oname, group, owner, env)
+        resolve_files(oname, group, owner, files, kept_files)
+        resolve_env(oname, group, owner, env, kept_env)
 
     async def assert_host_available(
         self, host: str, name: str, group: str, targets: list[Cluster]
@@ -928,6 +978,25 @@ class WorkloadService:
             image=_extract_image(obj) if obj else None,
             registryUsername=spec.registryUsername if spec else None,
         )
+
+    def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
+        """Best-effort decoded ``data`` of a Secret (base64 -> str), or ``{}``.
+
+        Used by the update path to read a workload's existing secret values so a
+        "keep" (redacted) field the client echoed back can be preserved. A missing
+        or unreadable Secret yields an empty dict.
+        """
+        try:
+            secret = cluster.get(ResourceKind.SECRET, name)
+        except Exception:  # noqa: BLE001 - best-effort read
+            return {}
+        out: dict[str, str] = {}
+        for key, val in (secret.get("data") or {}).items():
+            try:
+                out[key] = base64.b64decode(val).decode("utf-8", "surrogateescape")
+            except Exception:  # noqa: BLE001, S112 - skip an undecodable key
+                continue
+        return out
 
     def _describe_spec(self, cluster: Cluster, obj: dict):
         """Read the desired-state spec (secrets redacted) from a KSVC.

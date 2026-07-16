@@ -6,10 +6,12 @@ from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
+from api.services import secrets as secret_svc
 from api.services.runtimes import RuntimeRegistry, get_runtimes
-from api.services.workloads import OFFERING_FUNCTION, WorkloadService
+from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
 from common.contract import BuildRequest
 from common.errors import ServiceUnavailableError, ValidationError
+from common.labels import workload_labels
 
 
 class FunctionService:
@@ -41,11 +43,20 @@ class FunctionService:
                 f"unsupported runtime '{runtime}'; available runtimes: {available}"
             )
 
+    def _git_secret(self, name: str, group: str, user: Principal, token: str) -> dict:
+        """Build the ``{workload}-git`` Secret holding the git token."""
+        oname = object_name(name, group)
+        return secret_svc.build_git_secret(
+            secret_svc.git_secret_name(oname),
+            workload_labels(group, user.username, oname, OFFERING_FUNCTION),
+            token,
+        )
+
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a
     # status URL to poll. Deploys (esp. function builds) can be slow.
     def _echo(self, spec) -> dict:
-        """Submitted config echoed back on the spec (gitToken never echoed)."""
+        """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
             size=spec.size,
             scaling=spec.scaling,
@@ -160,6 +171,8 @@ class FunctionService:
             runtime=spec.runtime,
             git_url=spec.gitRepo,
             branch=spec.branch,
+            # Persist the git token so a later edit can rebuild without re-sending it.
+            extra_secrets=[self._git_secret(spec.name, group, user, spec.gitToken)],
         )
         return body, code
 
@@ -171,7 +184,7 @@ class FunctionService:
         user: Principal,
         existing: dict | None = None,
     ) -> tuple[FunctionResponse, int]:
-        """Apply an update to a function, rebuilding only when a gitToken is given.
+        """Apply an update to a function, rebuilding on a build-input or token change.
 
         Args:
             group: The owning group (from the request path).
@@ -185,6 +198,8 @@ class FunctionService:
             The response body and HTTP status code.
 
         Raises:
+            ValidationError: If a rebuild is needed but no token was supplied and
+                none is stored.
             ServiceUnavailableError: If a rebuild is requested but the build
                 pipeline is unavailable.
         """
@@ -193,12 +208,28 @@ class FunctionService:
         if existing is None:
             existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
 
-        # Build inputs default to the existing ones; supplying a gitToken triggers
-        # a rebuild from source, otherwise the current image is kept.
+        # Build inputs default to the existing ones. The git token is stored, so the
+        # effective token is the stored one unless the client sent a new one.
         runtime = spec.runtime or existing.get("runtime")
         git_url = spec.gitRepo or existing.get("gitUrl")
         branch = spec.branch or existing.get("branch") or "main"
-        if spec.rebuild_requested:
+        stored_token = existing.get("git_token")
+        token = spec.gitToken or stored_token
+
+        # Rebuild when a build input actually changes, or when the token is rotated
+        # (a client echoing an unchanged spec back on a config-only edit does not
+        # rebuild). Otherwise keep the current image.
+        build_inputs_changed = (
+            (spec.gitRepo is not None and spec.gitRepo != existing.get("gitUrl"))
+            or (spec.branch is not None and spec.branch != existing.get("branch"))
+            or (spec.runtime is not None and spec.runtime != existing.get("runtime"))
+        )
+        token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
+        if build_inputs_changed or token_rotated:
+            if token is None:
+                raise ValidationError(
+                    "a git token is required to rebuild; none was supplied and none is stored"
+                )
             try:
                 build = self._engine.builder.build(
                     BuildRequest(
@@ -206,7 +237,7 @@ class FunctionService:
                         group=group,
                         git_url=git_url,
                         branch=branch,
-                        git_token=spec.gitToken,
+                        git_token=token,
                         runtime=runtime,
                     )
                 )
@@ -216,6 +247,13 @@ class FunctionService:
         else:
             image = existing["image"]
 
+        # Re-store the token only when the client supplied one (rotation); omitting
+        # it leaves the stored copy in place (extra_secrets empty -> not pruned).
+        extra_secrets = (
+            [self._git_secret(name, group, user, spec.gitToken)]
+            if spec.gitToken is not None
+            else []
+        )
         body, code = await self._engine.apply_workload(
             name=name,
             user=user,
@@ -236,6 +274,9 @@ class FunctionService:
             git_url=git_url,
             branch=branch,
             prev_host=existing.get("host"),
+            kept_env=existing.get("env_values"),
+            kept_files=existing.get("files_values"),
+            extra_secrets=extra_secrets,
         )
         return body, code
 

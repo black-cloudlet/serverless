@@ -374,20 +374,33 @@ def test_update_function_accepted(client):
     assert r.json()["type"] == "function"
 
 
-def test_update_container_partial_creds_rejected(client):
+def test_update_container_username_only_kept(client):
+    # Echoing the redacted read (username shown, no token) keeps the existing
+    # credential - accepted, not a 400.
     r = client.put(
         "/api/v1/groups/team/containers/orders-api",
-        json={"registryUsername": "bob"},  # token missing
+        json={"registryUsername": "bob"},  # token omitted -> keep
+    )
+    assert r.status_code == 202
+
+
+def test_update_container_token_without_username_rejected(client):
+    r = client.put(
+        "/api/v1/groups/team/containers/orders-api",
+        json={"registryToken": "t"},  # username missing -> meaningless
     )
     assert r.status_code == 400
 
 
-def test_update_function_build_change_requires_token(client):
+def test_update_function_build_change_accepted_without_token(client):
+    # The git token is stored, so changing a build input no longer needs the
+    # client to re-send it - the request is accepted and the service rebuilds
+    # using the stored token.
     r = client.put(
         "/api/v1/groups/team/functions/foo",
-        json={"branch": "release"},  # gitToken missing
+        json={"branch": "release"},  # gitToken omitted -> reuse stored token
     )
-    assert r.status_code == 400
+    assert r.status_code == 202
 
 
 def test_docs_served_offline_from_vendored_assets():

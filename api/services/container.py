@@ -194,6 +194,8 @@ class ContainerService:
             pull_secret_manifest=pull,
             created=False,
             prev_host=existing.get("host"),
+            kept_env=existing.get("env_values"),
+            kept_files=existing.get("files_values"),
         )
         body.registryUsername = spec.registryUsername
         return body, code

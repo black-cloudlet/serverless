@@ -209,7 +209,7 @@ flowchart LR
 |-------|----------|-------|
 | `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). |
 | `branch` | yes | Branch / ref to build. |
-| `gitToken` | yes | Repo access token; used only to clone, **never persisted** (see §7). |
+| `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see §7). |
 | `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `javascript`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
@@ -585,7 +585,7 @@ categories:
 | Category | Owner / mechanism | ESO? |
 |----------|-------------------|------|
 | 7.1 **API's own platform secrets** (SSO client secret, client-cert material) | Vault → ESO `ExternalSecret` → K8s Secret | **Yes** |
-| 7.2 **Customer credentials** (git/registry tokens) | Supplied per-request, used transiently | No |
+| 7.2 **Customer credentials** (git/registry tokens) | Supplied per-request, stored as scoped, labeled workload Secrets; never returned on read | No |
 | 7.3 **Customer config & secret mounts** (what the user wants inside their workload) | **Created and managed by the API directly**; readable back via the API | **No** |
 
 ### 7.1 The API's own platform secrets - Vault → ESO → Kubernetes Secret
@@ -617,13 +617,20 @@ flowchart LR
 ### 7.2 Customer-provided credentials (git/registry tokens)
 
 - `gitToken` (FaaS) and `registryToken` (CaaS) arrive in the request body **over TLS**.
-- They are used **transiently**:
-  - `gitToken` is injected into the build job only for the clone and discarded.
-  - `registryToken` becomes a labeled `imagePullSecret` attached to the workload's service
-    account in each site.
-- The API does **not** write these to its own datastore, logs, or Git. Where a credential
-  must persist for the workload to run (the pull secret), it lives as a **scoped, labeled
-  Kubernetes Secret** owned by the tenant group and is deleted when the workload is deleted.
+- Each is stored as a **scoped, labeled Kubernetes Secret** owned by the tenant group, in
+  the workload namespace of both sites, and **garbage-collected with the workload** (via the
+  KSVC `ownerReference`):
+  - `gitToken` → an Opaque **`{workload}-git`** Secret. Used for the build clone and kept so
+    a later edit can rebuild (on a `gitRepo`/`branch`/`runtime` change) **without the client
+    re-supplying it**; sending `gitToken` again rotates it.
+  - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the
+    KSVC.
+- **These tokens are never returned on read.** A GET redacts them (the pull secret's
+  `registryUsername` is shown, its token is not; the git token is omitted). To let a client
+  edit a workload without re-entering a secret it can't see, `PUT` treats a **redacted/absent
+  secret field as "keep the stored value"** (see §3.3 and the read-back note below), so the
+  redacted GET body can be sent straight back. The API still does **not** write these to its
+  own datastore, logs, or Git.
 
 ### 7.3 Customer config & secret mounts (API-managed, **not ESO**)
 
@@ -738,12 +745,12 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `POST` | `/api/v1/groups/{group}/functions` | Create a FaaS workload (build from Git). **202 Accepted** - deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/groups/{group}/functions` | List the group's functions - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/groups/{group}/functions/{name}` | Get one function (spec + per-site status). |
-| `PUT` | `/api/v1/groups/{group}/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). Supplying `gitToken` (optionally with new `gitRepo`/`branch`/`runtime`) **rebuilds from source**; otherwise config-only and the current image is kept. **202 Accepted**. |
+| `PUT` | `/api/v1/groups/{group}/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). Changing `gitRepo`/`branch`/`runtime` **rebuilds from source** reusing the stored `gitToken` (no need to re-send it); sending `gitToken` rotates it (and rebuilds); otherwise config-only and the current image is kept. Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
 | `DELETE` | `/api/v1/groups/{group}/functions/{name}` | Delete the function in both sites. |
 | `POST` | `/api/v1/groups/{group}/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/groups/{group}/containers/{name}` | Get one container (spec + per-site status). |
-| `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omit both to keep the existing one. **202 Accepted**. |
+| `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Supplying `registryUsername`+`registryToken` rotates the pull secret; omitting the token (even echoing back the shown `registryUsername`) keeps the existing one. Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
 | `GET` | `/api/v1/info` | **Public** (no auth), static platform capabilities for dynamic UI rendering: `version`, `sites`, `runtimes`, `sizes`, `scaling` (per-metric options), `routeDomain`, `defaultHostTemplate`. Config/code-derived, no cluster calls. |
@@ -883,12 +890,18 @@ source, not images.)
 > the source fields) are read from the **local site** (uniform across sites); the
 > per-site `sites[]` status/`replicas`/`usage` come from fanning out to every site.
 >
-> **Redaction.** Secret material is never returned: secret-backed env values and
-> secret file contents come back `null` with `secret: true`; the **git token** and
-> **registry token** are never persisted/returned (`registryUsername` is shown, the
-> token is not). Non-secret env values and non-secret file contents (from the
-> workload's ConfigMap) are returned in full. `scaling.target` reflects the
-> *effective* target deployed (an omitted cpu/memory target shows `70`).
+> **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
+> values and secret file contents come back `null` with `secret: true`; the **git token**
+> is omitted and the **registry token** is not shown (`registryUsername` is). Non-secret env
+> values and non-secret file contents (from the workload's ConfigMap) are returned in full.
+> Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
+> stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
+> stored; omitting `registryToken` (even while echoing `registryUsername`) keeps the pull
+> secret; omitting `gitToken` keeps the stored git token. So the redacted GET body can be sent
+> straight back on `PUT` without wiping a secret. To change a secret, send its new value; to
+> remove an env var or file, drop it from the list (full-replace still applies to the set of
+> entries). `scaling.target` reflects the *effective* target deployed (an omitted cpu/memory
+> target shows `70`).
 >
 > **Live status.** `replicas` is the autoscaler's live scale
 > (`Revision.status.actualReplicas`); `usage` is live cpu/memory summed over a
@@ -1032,7 +1045,7 @@ Serverless/
 │   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
 │   │   ├── env.py / files.py        # env & file resolution (+ their Secret/ConfigMap)
-│   │   ├── resources.py / secrets.py# manifest + imagePullSecret builders
+│   │   ├── resources.py / secrets.py# manifest + imagePullSecret/git-token builders
 │   │   └── describe.py / metrics.py # read-back spec (redacted) + pod usage
 ├── common/                          # shared by api + (future) builder service
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs

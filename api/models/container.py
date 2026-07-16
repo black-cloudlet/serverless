@@ -53,8 +53,10 @@ class ContainerUpdate(BaseModel):
     """Full replace of the mutable spec; image defaults to the current one."""
 
     image: str | None = None
-    # Rotate/add registry creds; omit both to keep the existing pull secret. If
-    # either is given, both are required together.
+    # Registry creds. Send both to rotate the pull secret. Omitting the token
+    # keeps the existing credential - so the redacted read (registryUsername shown,
+    # no token) can be echoed straight back without wiping it. A token with no
+    # username is meaningless and rejected.
     registryUsername: str | None = None
     registryToken: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
@@ -65,9 +67,9 @@ class ContainerUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerUpdate":
-        """Require registry username and token to be provided together (or neither)."""
-        if (self.registryUsername is None) != (self.registryToken is None):
-            raise ValueError("registryUsername and registryToken must be provided together")
+        """A registry token needs a username; a username alone keeps the existing token."""
+        if self.registryToken is not None and self.registryUsername is None:
+            raise ValueError("registryToken requires registryUsername")
         return self
 
 

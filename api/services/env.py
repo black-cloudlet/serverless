@@ -34,24 +34,36 @@ def env_secret_name(workload: str) -> str:
     return f"{workload}-env"
 
 
-def resolve_env(workload: str, group: str, owner: str, env: list[EnvVar]) -> ResolvedEnv:
+def resolve_env(
+    workload: str,
+    group: str,
+    owner: str,
+    env: list[EnvVar],
+    kept: dict[str, str] | None = None,
+) -> ResolvedEnv:
     """Resolve env vars into container entries and a backing Secret.
 
     Plain entries stay inline; ``secret: true`` values move into the
-    ``{workload}-env`` Secret and are read via a secretKeyRef.
+    ``{workload}-env`` Secret and are read via a secretKeyRef. A secret entry with
+    ``value: None`` keeps its stored value: it is filled from ``kept`` (the decoded
+    existing env Secret), so a redacted read can be sent straight back on update.
 
     Args:
         workload: The object name (``{name}-{group}``).
         group: Owning group (for labels).
         owner: Username (for labels).
         env: The submitted env vars.
+        kept: Decoded existing env-Secret values (name -> value) to fall back on
+            for a secret var sent without a value. Empty on create.
 
     Returns:
         The resolved container env and the backing Secret (if any).
 
     Raises:
-        ValidationError: If two env vars share a name.
+        ValidationError: If two env vars share a name, or a secret var is sent with
+            no value and none is stored to keep.
     """
+    kept = kept or {}
     secret_name = env_secret_name(workload)
     secret_data: dict[str, str] = {}
     resolved: list[ContainerEnv] = []
@@ -62,7 +74,12 @@ def resolve_env(workload: str, group: str, owner: str, env: list[EnvVar]) -> Res
             raise ValidationError(f"duplicate env variable name '{e.name}'")
         seen.add(e.name)
         if e.secret:
-            secret_data[e.name] = e.value
+            value = e.value if e.value is not None else kept.get(e.name)
+            if value is None:
+                raise ValidationError(
+                    f"secret env var '{e.name}' has no value and none is stored to keep"
+                )
+            secret_data[e.name] = value
             resolved.append(ContainerEnv(name=e.name, secret_ref=(secret_name, e.name)))
         else:
             resolved.append(ContainerEnv(name=e.name, value=e.value))

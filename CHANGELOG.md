@@ -40,6 +40,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **Keep-on-write for secrets on `PUT`.** Reads stay redacted, but a workload
+  update now treats a redacted/absent secret field as "keep the stored value", so
+  the redacted GET body can be sent straight back without wiping anything: a
+  `secret: true` env var or file sent without a value/content keeps what's stored;
+  omitting `registryToken` (even while echoing `registryUsername`) keeps the pull
+  secret; and the git token is now **stored** in a `{workload}-git` Secret so a
+  build-input change (`gitRepo`/`branch`/`runtime`) rebuilds using it — the client
+  no longer re-sends `gitToken` (sending it rotates the token). To change a secret,
+  send its new value; to remove an env var or file, drop it from the list.
+  `ContainerUpdate` now accepts `registryUsername` without a token (a token still
+  requires a username), and `FunctionUpdate` no longer rejects a build-input change
+  made without a token.
 - **Breaking:** moved the acting `group` from a query/body parameter to a **path
   segment**: every workload endpoint is now `/api/v1/groups/{group}/functions…`
   (and `…/containers…`). Reads/deletes no longer take `?group=`, and create/update
