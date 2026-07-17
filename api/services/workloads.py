@@ -338,6 +338,7 @@ class WorkloadService:
         user: Principal,
         background,
         work,
+        pre_check=None,
         **extra,
     ) -> WorkloadResponse:
         """Run an update's synchronous pre-flight, then schedule the deploy (202).
@@ -357,12 +358,17 @@ class WorkloadService:
             background: FastAPI background tasks to schedule the deploy on.
             work: The offering's background update coroutine, run as
                 ``work(group, name, spec, user, existing)``.
+            pre_check: Optional offering-specific ``(spec, existing) -> None``
+                validation run against the loaded state, so a check that needs the
+                stored state (e.g. a registry-username change) is a synchronous 400.
             **extra: Offering-specific fields echoed onto the accepted body.
 
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
         existing = await self.load_existing(name, offering, user, group)
+        if pre_check is not None:
+            pre_check(spec, existing)  # offering-specific sync validation (may 4xx)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         # Pass the existing secret values so a "keep" (redacted) secret resolves
         # against what's stored instead of failing.
@@ -682,6 +688,7 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         oname = object_name(name, group)
+        targets = self.deployer.resolve_targets(None)
         found: dict = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
@@ -692,12 +699,12 @@ class WorkloadService:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
-            if "obj" not in found:
-                found["obj"] = obj
-                found["cluster"] = cluster  # same site used to read the backing Secrets
+            # The KSVC is uniform across sites, so any responder's copy will do;
+            # setdefault is atomic under the concurrent fan-out.
+            found.setdefault("obj", obj)
             return SiteStatus(site=cluster.site, status="Present")
 
-        statuses = await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
+        statuses = await self.deployer.fanout(targets, fetch)
 
         obj = found.get("obj")
         if obj is not None:
@@ -708,41 +715,58 @@ class WorkloadService:
                 labels.get(LABEL_OFFERING) != offering
             ):
                 raise NotFoundError(f"{offering} workload '{name}' not found")
-            ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            cluster = found["cluster"]
-            ps_name = describe_svc.pull_secret_name(obj)
-            state = {
-                "image": _extract_image(obj),
-                "runtime": ann.get(ANNOTATION_RUNTIME),
-                "gitUrl": ann.get(ANNOTATION_GIT_URL),
-                "branch": ann.get(ANNOTATION_GIT_BRANCH),
-                "host": ann.get(ANNOTATION_HOST),
-                "pull_secret": ps_name,
-                # Existing secret values, so an update can keep a redacted secret
-                # the client sent back without a value (see resolve_env/_files).
-                "env_values": self._secret_data(cluster, env_secret_name(oname)),
-                "files_values": self._secret_data(cluster, files_name(oname)),
-            }
-            # Existing registry creds (decoded from the pull secret), so a keep
-            # (token omitted) can re-key them to the current image's registry.
-            if ps_name:
-                try:
-                    ps = cluster.get(ResourceKind.SECRET, ps_name)
-                    state["registry_username"] = secret_svc.registry_username(ps)
-                    state["registry_token"] = secret_svc.registry_token(ps)
-                except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades gracefully
-                    pass
-            # Functions carry a stored git token; read it so a build-input change
-            # can rebuild without the client re-supplying it.
-            if offering == OFFERING_FUNCTION:
-                git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
-                state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
-            return state
+            # Read the backing Secrets from the local site when it has the workload,
+            # else any site that does - they're uniform, so prefer the cheapest hop.
+            present = {s.site for s in statuses if s.status == "Present"}
+            by_site = {c.site: c for c in targets}
+            local = self.deployer.local_site()
+            cluster = by_site[local if local in present else next(iter(present))]
+            # Reading the backing Secrets is blocking cluster I/O; run it in a thread
+            # so it doesn't stall the event loop (as get()/_describe_spec do).
+            return await asyncio.to_thread(self._existing_state, obj, cluster, offering, oname)
 
         # Absent on every site we could reach. If one was unreachable we can't be
         # sure it's truly gone -> fail closed (503), not a misleading 404.
         self._assert_all_sites_checked(statuses, f"load workload '{name}'")
         raise NotFoundError(f"{offering} workload '{name}' not found")
+
+    def _existing_state(self, obj: dict, cluster: Cluster, offering: str, oname: str) -> dict:
+        """Read an existing workload's carried-forward state + backing secret values.
+
+        Runs off the event loop (blocking cluster reads). ``env_values``/
+        ``files_values`` back the keep-on-write path (fail loud on a transient read;
+        see :meth:`_secret_data`). The pull-secret and git reads are best-effort: a
+        failure just degrades a registry keep to carrying the existing secret forward.
+        """
+        ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+        ps_name = describe_svc.pull_secret_name(obj)
+        state = {
+            "image": _extract_image(obj),
+            "runtime": ann.get(ANNOTATION_RUNTIME),
+            "gitUrl": ann.get(ANNOTATION_GIT_URL),
+            "branch": ann.get(ANNOTATION_GIT_BRANCH),
+            "host": ann.get(ANNOTATION_HOST),
+            "pull_secret": ps_name,
+            # Existing secret values, so an update can keep a redacted secret the
+            # client sent back without a value (see resolve_env/_files).
+            "env_values": self._secret_data(cluster, env_secret_name(oname)),
+            "files_values": self._secret_data(cluster, files_name(oname)),
+        }
+        # Existing registry creds (decoded from the pull secret), so a keep (token
+        # omitted) can re-key them to the current image's registry.
+        if ps_name:
+            try:
+                ps = cluster.get(ResourceKind.SECRET, ps_name)
+                state["registry_username"] = secret_svc.registry_username(ps)
+                state["registry_token"] = secret_svc.registry_token(ps)
+            except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades to carry-forward
+                pass
+        # Functions carry a stored git token; read it so a build-input change can
+        # rebuild without the client re-supplying it.
+        if offering == OFFERING_FUNCTION:
+            git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
+            state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
+        return state
 
     def validate_spec(
         self,
@@ -889,8 +913,8 @@ class WorkloadService:
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
         # Each OK site donates its KSVC; the spec is uniform across sites, so we
-        # read the desired-state spec back from the local site (most reliable hop)
-        # once, after the fan-out - see _pick_rep.
+        # read the desired-state spec back from one representative site (the local
+        # site if it has the workload, else any) once, after the fan-out.
         reps: dict[str, tuple] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
@@ -997,16 +1021,26 @@ class WorkloadService:
         )
 
     def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
-        """Best-effort decoded ``data`` of a Secret (base64 -> str), or ``{}``.
+        """Decoded ``data`` of a Secret (base64 -> str); ``{}`` if it doesn't exist.
 
         Used by the update path to read a workload's existing secret values so a
-        "keep" (redacted) field the client echoed back can be preserved. A missing
-        or unreadable Secret yields an empty dict.
+        "keep" (redacted) field the client echoed back can be preserved. A genuine
+        404 means "no such Secret" -> no stored values (``{}``). Any other read
+        error must NOT be swallowed: returning ``{}`` there would make a valid keep
+        look like an unset secret and fail it as a 400. Surface it as a 503 so the
+        update is retried rather than wrongly rejected (or a secret silently lost).
+
+        Raises:
+            ServiceUnavailableError: If the Secret exists but couldn't be read.
         """
         try:
             secret = cluster.get(ResourceKind.SECRET, name)
-        except Exception:  # noqa: BLE001 - best-effort read
-            return {}
+        except NotFoundError:
+            return {}  # no such Secret -> nothing stored
+        except Exception as exc:  # noqa: BLE001 - transient/unknown read failure
+            raise ServiceUnavailableError(
+                f"could not read secret '{name}' to preserve kept values; retry"
+            ) from exc
         out: dict[str, str] = {}
         for key, val in (secret.get("data") or {}).items():
             try:

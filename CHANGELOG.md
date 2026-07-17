@@ -48,9 +48,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   change (`gitRepo`/`branch`/`runtime`) rebuilds using it — the client no longer
   re-sends `gitToken` (sending it rotates the token). Registry creds mirror a
   secret env var (username = identifier, token = value): **username + token** sets/
-  rotates; **username only** keeps (re-keyed to the current image's registry if the
-  image moved); **neither** removes the pull secret and makes the image public; a
-  token without a username is rejected. To change a secret, send its new value; to
+  rotates; the **stored username only** keeps (re-keyed to the current image's
+  registry if the image moved); **neither** removes the pull secret and makes the
+  image public; a token without a username, or a *different* username without a
+  token, is rejected. To change a secret, send its new value; to
   remove an env var or file, drop it from the list. `FunctionUpdate` no longer
   rejects a build-input change made without a token.
 - **Breaking:** moved the acting `group` from a query/body parameter to a **path

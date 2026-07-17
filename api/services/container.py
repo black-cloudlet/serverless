@@ -8,6 +8,7 @@ from api.models.container import ContainerCreate, ContainerResponse, ContainerUp
 from api.services import describe as describe_svc
 from api.services import secrets as secret_svc
 from api.services.workloads import OFFERING_CONTAINER, WorkloadService, object_name
+from common.errors import ValidationError
 from common.labels import workload_labels
 
 
@@ -80,9 +81,31 @@ class ContainerService:
             user=user,
             background=background,
             work=self.update,
+            pre_check=self._check_registry_change,
             image=spec.image,
             **self._echo(spec),
         )
+
+    @staticmethod
+    def _check_registry_change(spec: ContainerUpdate, existing: dict) -> None:
+        """Reject a registry-username change made without a token (synchronous 400).
+
+        A username with no token is a keep - it must match the stored username. A
+        different one can't rotate the credential (there's no token to write), so
+        it's rejected rather than silently ignored. Only enforced when the stored
+        username is known; if it couldn't be read we fall through to carry-forward.
+        """
+        stored = existing.get("registry_username")
+        if (
+            spec.registryToken is None
+            and spec.registryUsername is not None
+            and stored is not None
+            and spec.registryUsername != stored
+        ):
+            raise ValidationError(
+                "changing registryUsername requires registryToken "
+                "(send both to rotate the credential)"
+            )
 
     async def create(
         self, group: str, spec: ContainerCreate, user: Principal

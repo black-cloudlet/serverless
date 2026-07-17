@@ -625,11 +625,12 @@ flowchart LR
     re-supplying it**; sending `gitToken` again rotates it.
   - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the
     KSVC. Registry creds mirror a secret env var — the username is the identifier, the token
-    the value: **username + token** sets/rotates; **username only** (token null) keeps;
-    **neither** removes the pull secret and treats the image as public. Because a pull secret
-    is keyed to a specific registry host, a keep re-materializes it against the **current
-    image's registry** (reading the stored token internally) so kept creds follow an image
-    moved to a different registry.
+    the value: **username + token** sets/rotates; **username only** (token null) keeps, but it
+    must be the *stored* username — a **different** username without a token is a `400` (there's
+    no token to rotate the credential with); **neither** removes the pull secret and treats the
+    image as public. Because a pull secret is keyed to a specific registry host, a keep
+    re-materializes it against the **current image's registry** (reading the stored token
+    internally) so kept creds follow an image moved to a different registry.
 - **These tokens are never returned on read.** A GET redacts them (the pull secret's
   `registryUsername` is shown, its token is not; the git token is omitted). To let a client
   edit a workload without re-entering a secret it can't see, `PUT` treats a **redacted/absent
@@ -755,7 +756,7 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `POST` | `/api/v1/groups/{group}/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
 | `GET` | `/api/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, overallStatus, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/v1/groups/{group}/containers/{name}` | Get one container (spec + per-site status). |
-| `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
+| `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; the **stored** `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); a **different** username with no token is a `400`; **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
 | `GET` | `/api/v1/info` | **Public** (no auth), static platform capabilities for dynamic UI rendering: `version`, `sites`, `runtimes`, `sizes`, `scaling` (per-metric options), `routeDomain`, `defaultHostTemplate`. Config/code-derived, no cluster calls. |
@@ -901,9 +902,10 @@ source, not images.)
 > values and non-secret file contents (from the workload's ConfigMap) are returned in full.
 > Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
 > stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
-> stored; echoing `registryUsername` back without a token keeps the credential — re-keyed to
-> the current image's registry if the image moved; omitting `gitToken` keeps the stored git
-> token. So the redacted GET body can be sent straight back on `PUT` without wiping a secret.
+> stored; echoing the stored `registryUsername` back without a token keeps the credential —
+> re-keyed to the current image's registry if the image moved (sending a *different* username
+> without a token is a `400`, since there's no token to rotate with); omitting `gitToken` keeps
+> the stored git token. So the redacted GET body can be sent straight back on `PUT` without wiping a secret.
 > To change a secret, send its new value; to remove an env var or file, drop it from the list;
 > to make a private image public, send **neither** registry cred (dropping the username, like
 > dropping an env var, removes the pull secret). `scaling.target` reflects the *effective*

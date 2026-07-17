@@ -1176,6 +1176,48 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
     assert cfg["auths"]["reg-b.example.com"]["password"] == "s3cret"
 
 
+async def test_update_container_username_change_without_token_rejected():
+    import pytest
+    from fastapi import BackgroundTasks
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
+    from api.services.secrets import build_pull_secret
+    from common.errors import ValidationError
+
+    existing = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg-a.example.com/team/app:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        pull_secret="api-team-pull",
+    )
+    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # A different username with no token can't rotate the credential -> synchronous 400.
+    with pytest.raises(ValidationError):
+        await csvc.accept_update(
+            "team", "api", ContainerUpdate(registryUsername="alice"), user, BackgroundTasks()
+        )
+    # Echoing the SAME username back (a keep) is accepted (202/Pending).
+    resp = await csvc.accept_update(
+        "team", "api", ContainerUpdate(registryUsername="bob"), user, BackgroundTasks()
+    )
+    assert resp.overallStatus == "Pending"
+
+
 async def test_container_update_both_creds_null_removes_pull_secret():
     from api.auth.claims import Principal
     from api.models.common import Scaling
@@ -1217,6 +1259,84 @@ async def test_container_update_both_creds_null_removes_pull_secret():
     assert not [
         s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-pull"
     ]
+
+
+async def test_load_existing_surfaces_transient_secret_read_as_503():
+    import pytest
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.errors import NotFoundError, ServiceUnavailableError
+
+    ksvc = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg/x:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+
+    class _FlakySecretCluster:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE and name == "api-team":
+                return ksvc
+            if kind == ResourceKind.SECRET:
+                raise RuntimeError("etcd read timeout")  # transient, not a 404
+            raise NotFoundError("nf")
+
+    engine = _workload_service({"site-a": _FlakySecretCluster()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    # A transient failure reading the backing Secret must NOT look like "no stored
+    # value" (which would 400 a valid keep) - it surfaces as a retryable 503.
+    with pytest.raises(ServiceUnavailableError):
+        await engine.load_existing("api", "container", user, "team")
+
+
+async def test_load_existing_reads_secrets_from_local_site():
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services import resources as res
+    from api.services.ksvc import build_ksvc
+
+    ksvc = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg/x:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+    # Both sites have the workload but with different stored secret values; the read
+    # must come from the local site (the cheapest, most reliable hop).
+    local = _ApplyCluster(
+        "site-a",
+        {"api-team": ksvc},
+        secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "local-val"})},
+    )
+    remote = _ApplyCluster(
+        "site-b",
+        {"api-team": ksvc},
+        secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "remote-val"})},
+    )
+    engine = _workload_service({"site-a": local, "site-b": remote}, local_site="site-a")
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    state = await engine.load_existing("api", "container", user, "team")
+    assert state["env_values"] == {"K": "local-val"}
 
 
 async def test_list_fans_out_and_merges_sites():
