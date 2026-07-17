@@ -1219,6 +1219,47 @@ async def test_container_update_both_creds_null_removes_pull_secret():
     ]
 
 
+async def test_load_existing_surfaces_transient_secret_read_as_503():
+    import pytest
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.errors import NotFoundError, ServiceUnavailableError
+
+    ksvc = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg/x:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+
+    class _FlakySecretCluster:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE and name == "api-team":
+                return ksvc
+            if kind == ResourceKind.SECRET:
+                raise RuntimeError("etcd read timeout")  # transient, not a 404
+            raise NotFoundError("nf")
+
+    engine = _workload_service({"site-a": _FlakySecretCluster()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    # A transient failure reading the backing Secret must NOT look like "no stored
+    # value" (which would 400 a valid keep) - it surfaces as a retryable 503.
+    with pytest.raises(ServiceUnavailableError):
+        await engine.load_existing("api", "container", user, "team")
+
+
 async def test_list_fans_out_and_merges_sites():
     from api.auth.claims import Principal
 

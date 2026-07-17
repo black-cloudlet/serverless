@@ -692,15 +692,17 @@ class WorkloadService:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
-            if "obj" not in found:
-                found["obj"] = obj
-                found["cluster"] = cluster  # same site used to read the backing Secrets
+            # fetch runs concurrently per site; setdefault is atomic, so the KSVC and
+            # the cluster used to read its Secrets are captured together from the same
+            # site (first responder wins) rather than via a racy check-then-set.
+            found.setdefault("rep", (obj, cluster))
             return SiteStatus(site=cluster.site, status="Present")
 
         statuses = await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
 
-        obj = found.get("obj")
-        if obj is not None:
+        rep = found.get("rep")
+        if rep is not None:
+            obj, cluster = rep
             labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
             # An object_name collision could resolve to another group's workload or
             # the other offering; both mean "not this workload" -> hide as 404.
@@ -709,7 +711,6 @@ class WorkloadService:
             ):
                 raise NotFoundError(f"{offering} workload '{name}' not found")
             ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            cluster = found["cluster"]
             ps_name = describe_svc.pull_secret_name(obj)
             state = {
                 "image": _extract_image(obj),
@@ -997,16 +998,26 @@ class WorkloadService:
         )
 
     def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
-        """Best-effort decoded ``data`` of a Secret (base64 -> str), or ``{}``.
+        """Decoded ``data`` of a Secret (base64 -> str); ``{}`` if it doesn't exist.
 
         Used by the update path to read a workload's existing secret values so a
-        "keep" (redacted) field the client echoed back can be preserved. A missing
-        or unreadable Secret yields an empty dict.
+        "keep" (redacted) field the client echoed back can be preserved. A genuine
+        404 means "no such Secret" -> no stored values (``{}``). Any other read
+        error must NOT be swallowed: returning ``{}`` there would make a valid keep
+        look like an unset secret and fail it as a 400. Surface it as a 503 so the
+        update is retried rather than wrongly rejected (or a secret silently lost).
+
+        Raises:
+            ServiceUnavailableError: If the Secret exists but couldn't be read.
         """
         try:
             secret = cluster.get(ResourceKind.SECRET, name)
-        except Exception:  # noqa: BLE001 - best-effort read
-            return {}
+        except NotFoundError:
+            return {}  # no such Secret -> nothing stored
+        except Exception as exc:  # noqa: BLE001 - transient/unknown read failure
+            raise ServiceUnavailableError(
+                f"could not read secret '{name}' to preserve kept values; retry"
+            ) from exc
         out: dict[str, str] = {}
         for key, val in (secret.get("data") or {}).items():
             try:
