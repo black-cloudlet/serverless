@@ -710,40 +710,52 @@ class WorkloadService:
                 labels.get(LABEL_OFFERING) != offering
             ):
                 raise NotFoundError(f"{offering} workload '{name}' not found")
-            ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            ps_name = describe_svc.pull_secret_name(obj)
-            state = {
-                "image": _extract_image(obj),
-                "runtime": ann.get(ANNOTATION_RUNTIME),
-                "gitUrl": ann.get(ANNOTATION_GIT_URL),
-                "branch": ann.get(ANNOTATION_GIT_BRANCH),
-                "host": ann.get(ANNOTATION_HOST),
-                "pull_secret": ps_name,
-                # Existing secret values, so an update can keep a redacted secret
-                # the client sent back without a value (see resolve_env/_files).
-                "env_values": self._secret_data(cluster, env_secret_name(oname)),
-                "files_values": self._secret_data(cluster, files_name(oname)),
-            }
-            # Existing registry creds (decoded from the pull secret), so a keep
-            # (token omitted) can re-key them to the current image's registry.
-            if ps_name:
-                try:
-                    ps = cluster.get(ResourceKind.SECRET, ps_name)
-                    state["registry_username"] = secret_svc.registry_username(ps)
-                    state["registry_token"] = secret_svc.registry_token(ps)
-                except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades gracefully
-                    pass
-            # Functions carry a stored git token; read it so a build-input change
-            # can rebuild without the client re-supplying it.
-            if offering == OFFERING_FUNCTION:
-                git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
-                state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
-            return state
+            # Reading the backing Secrets is blocking cluster I/O; run it in a thread
+            # so it doesn't stall the event loop (as get()/_describe_spec do).
+            return await asyncio.to_thread(self._existing_state, obj, cluster, offering, oname)
 
         # Absent on every site we could reach. If one was unreachable we can't be
         # sure it's truly gone -> fail closed (503), not a misleading 404.
         self._assert_all_sites_checked(statuses, f"load workload '{name}'")
         raise NotFoundError(f"{offering} workload '{name}' not found")
+
+    def _existing_state(self, obj: dict, cluster: Cluster, offering: str, oname: str) -> dict:
+        """Read an existing workload's carried-forward state + backing secret values.
+
+        Runs off the event loop (blocking cluster reads). ``env_values``/
+        ``files_values`` back the keep-on-write path (fail loud on a transient read;
+        see :meth:`_secret_data`). The pull-secret and git reads are best-effort: a
+        failure just degrades a registry keep to carrying the existing secret forward.
+        """
+        ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+        ps_name = describe_svc.pull_secret_name(obj)
+        state = {
+            "image": _extract_image(obj),
+            "runtime": ann.get(ANNOTATION_RUNTIME),
+            "gitUrl": ann.get(ANNOTATION_GIT_URL),
+            "branch": ann.get(ANNOTATION_GIT_BRANCH),
+            "host": ann.get(ANNOTATION_HOST),
+            "pull_secret": ps_name,
+            # Existing secret values, so an update can keep a redacted secret the
+            # client sent back without a value (see resolve_env/_files).
+            "env_values": self._secret_data(cluster, env_secret_name(oname)),
+            "files_values": self._secret_data(cluster, files_name(oname)),
+        }
+        # Existing registry creds (decoded from the pull secret), so a keep (token
+        # omitted) can re-key them to the current image's registry.
+        if ps_name:
+            try:
+                ps = cluster.get(ResourceKind.SECRET, ps_name)
+                state["registry_username"] = secret_svc.registry_username(ps)
+                state["registry_token"] = secret_svc.registry_token(ps)
+            except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades to carry-forward
+                pass
+        # Functions carry a stored git token; read it so a build-input change can
+        # rebuild without the client re-supplying it.
+        if offering == OFFERING_FUNCTION:
+            git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
+            state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
+        return state
 
     def validate_spec(
         self,
@@ -890,8 +902,8 @@ class WorkloadService:
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
         # Each OK site donates its KSVC; the spec is uniform across sites, so we
-        # read the desired-state spec back from the local site (most reliable hop)
-        # once, after the fan-out - see _pick_rep.
+        # read the desired-state spec back from one representative site (the local
+        # site if it has the workload, else any) once, after the fan-out.
         reps: dict[str, tuple] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
