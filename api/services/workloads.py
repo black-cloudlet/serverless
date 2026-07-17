@@ -497,6 +497,14 @@ class WorkloadService:
             (ResourceKind.CONFIG_MAP, files_name(oname)),
             (ResourceKind.SECRET, files_name(oname)),
         }
+        # The image-pull Secret is applied out-of-band (pull_secret_manifest) and may
+        # be carried forward without re-applying, so key its keep/prune on whether
+        # the KSVC still references it (pull_secret_name), not on the manifest.
+        # Dropping the reference (image made public) prunes it. Containers only.
+        if offering == OFFERING_CONTAINER:
+            managed_derived.add((ResourceKind.SECRET, secret_svc.pull_secret_name(oname)))
+            if pull_secret_name:
+                applied_derived.add((ResourceKind.SECRET, pull_secret_name))
         to_prune = () if created else managed_derived - applied_derived
 
         def apply(cluster: Cluster) -> SiteStatus:

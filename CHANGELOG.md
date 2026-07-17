@@ -44,15 +44,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   update now treats a redacted/absent secret field as "keep the stored value", so
   the redacted GET body can be sent straight back without wiping anything: a
   `secret: true` env var or file sent without a value/content keeps what's stored;
-  omitting `registryToken` (even while echoing `registryUsername`) keeps the
-  credential (re-keyed to the current image's registry if the image moved to a
-  different one); and the git token is now **stored** in a `{workload}-git` Secret so a
-  build-input change (`gitRepo`/`branch`/`runtime`) rebuilds using it — the client
-  no longer re-sends `gitToken` (sending it rotates the token). To change a secret,
-  send its new value; to remove an env var or file, drop it from the list.
-  `ContainerUpdate` now accepts `registryUsername` without a token (a token still
-  requires a username), and `FunctionUpdate` no longer rejects a build-input change
-  made without a token.
+  the git token is now **stored** in a `{workload}-git` Secret so a build-input
+  change (`gitRepo`/`branch`/`runtime`) rebuilds using it — the client no longer
+  re-sends `gitToken` (sending it rotates the token). Registry creds mirror a
+  secret env var (username = identifier, token = value): **username + token** sets/
+  rotates; **username only** keeps (re-keyed to the current image's registry if the
+  image moved); **neither** removes the pull secret and makes the image public; a
+  token without a username is rejected. To change a secret, send its new value; to
+  remove an env var or file, drop it from the list. `FunctionUpdate` no longer
+  rejects a build-input change made without a token.
 - **Breaking:** moved the acting `group` from a query/body parameter to a **path
   segment**: every workload endpoint is now `/api/v1/groups/{group}/functions…`
   (and `…/containers…`). Reads/deletes no longer take `?group=`, and create/update

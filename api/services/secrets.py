@@ -41,6 +41,11 @@ def registry_of(image: str) -> str:
     return "docker.io"
 
 
+def pull_secret_name(workload: str) -> str:
+    """The name of a workload's image-pull Secret: ``{workload}-pull``."""
+    return f"{workload}-pull"
+
+
 def build_pull_secret(
     name: str,
     labels: dict[str, str],
