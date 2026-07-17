@@ -922,6 +922,81 @@ source, not images.)
 > site's running pods (user container only, not the queue-proxy sidecar),
 > best-effort and `null` when scaled to zero or the metrics API is unavailable.
 
+#### Editing a workload: `PUT` request recipes
+
+All `PUT`s are a **full replace** of the mutable spec: whatever you send is the new
+desired state, with the keep-on-write rules above for secrets. The list of `env`/`files`
+entries you send is the complete set (drop one to remove it). Each example is a body for
+`PUT /api/v1/groups/{group}/{containers|functions}/{name}`.
+
+**Config-only edit — keep every secret (echo the redacted GET straight back).** The
+secret env value and the registry token were `null` in the GET; sending them back unchanged
+keeps them:
+
+```json
+{
+  "image": "reg.example.com/team/orders:1",
+  "registryUsername": "svc-team",
+  "scaling": { "minScale": 1, "maxScale": 5 },
+  "env": [
+    { "name": "LOG_LEVEL", "value": "debug", "secret": false },
+    { "name": "API_KEY", "secret": true }
+  ]
+}
+```
+
+**Rotate one secret, keep another, remove a third.** `API_KEY` gets a new value; `DB_URL`
+is kept (no value); the previously-present `OLD_FLAG` is simply absent, so it's removed:
+
+```json
+{
+  "image": "reg.example.com/team/orders:1",
+  "registryUsername": "svc-team",
+  "env": [
+    { "name": "API_KEY", "value": "sk-new-value", "secret": true },
+    { "name": "DB_URL", "secret": true }
+  ]
+}
+```
+
+**Add a new secret — must carry a value** (a new `secret: true` with no value is a `400`):
+
+```json
+{ "image": "reg.example.com/team/orders:1", "registryUsername": "svc-team",
+  "env": [ { "name": "NEW_TOKEN", "value": "s3cret", "secret": true } ] }
+```
+
+**Rotate registry credentials** (username + token together):
+
+```json
+{ "registryUsername": "svc-team", "registryToken": "new-registry-pat" }
+```
+
+**Move to a different registry, keep the same creds** (username only → kept creds are
+re-keyed to the new image's registry):
+
+```json
+{ "image": "reg-b.example.com/team/orders:2", "registryUsername": "svc-team" }
+```
+
+**Make a private image public** (drop both registry creds → the pull secret is removed):
+
+```json
+{ "image": "docker.io/library/nginx:1.27" }
+```
+
+**Rebuild a function from a new branch — no token needed** (the stored git token is reused):
+
+```json
+{ "branch": "release", "runtime": "python", "scaling": { "minScale": 0, "maxScale": 3 } }
+```
+
+**Rotate the git token** (sending it also triggers a rebuild):
+
+```json
+{ "gitToken": "ghp_new-token" }
+```
+
 And `GET /api/v1/groups/team/functions` to list the group's functions - general
 info only (no live usage/replicas; use the single-workload GET for those):
 
