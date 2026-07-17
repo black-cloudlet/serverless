@@ -624,7 +624,10 @@ flowchart LR
     a later edit can rebuild (on a `gitRepo`/`branch`/`runtime` change) **without the client
     re-supplying it**; sending `gitToken` again rotates it.
   - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the
-    KSVC.
+    KSVC. Sent with `registryUsername` (they come together) to set/rotate; omitting the token
+    keeps the stored credential. Because a pull secret is keyed to a specific registry host,
+    a keep re-materializes it against the **current image's registry** (reading the stored
+    token internally) so kept creds follow an image moved to a different registry.
 - **These tokens are never returned on read.** A GET redacts them (the pull secret's
   `registryUsername` is shown, its token is not; the git token is omitted). To let a client
   edit a workload without re-entering a secret it can't see, `PUT` treats a **redacted/absent
@@ -896,8 +899,9 @@ source, not images.)
 > values and non-secret file contents (from the workload's ConfigMap) are returned in full.
 > Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
 > stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
-> stored; omitting `registryToken` (even while echoing `registryUsername`) keeps the pull
-> secret; omitting `gitToken` keeps the stored git token. So the redacted GET body can be sent
+> stored; omitting `registryToken` (even while echoing `registryUsername`) keeps the
+> credential — re-keyed to the current image's registry if the image moved; omitting
+> `gitToken` keeps the stored git token. So the redacted GET body can be sent
 > straight back on `PUT` without wiping a secret. To change a secret, send its new value; to
 > remove an env var or file, drop it from the list (full-replace still applies to the set of
 > entries). `scaling.target` reflects the *effective* target deployed (an omitted cpu/memory

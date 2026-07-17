@@ -703,18 +703,28 @@ class WorkloadService:
                 raise NotFoundError(f"{offering} workload '{name}' not found")
             ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
             cluster = found["cluster"]
+            ps_name = describe_svc.pull_secret_name(obj)
             state = {
                 "image": _extract_image(obj),
                 "runtime": ann.get(ANNOTATION_RUNTIME),
                 "gitUrl": ann.get(ANNOTATION_GIT_URL),
                 "branch": ann.get(ANNOTATION_GIT_BRANCH),
                 "host": ann.get(ANNOTATION_HOST),
-                "pull_secret": describe_svc.pull_secret_name(obj),
+                "pull_secret": ps_name,
                 # Existing secret values, so an update can keep a redacted secret
                 # the client sent back without a value (see resolve_env/_files).
                 "env_values": self._secret_data(cluster, env_secret_name(oname)),
                 "files_values": self._secret_data(cluster, files_name(oname)),
             }
+            # Existing registry creds (decoded from the pull secret), so a keep
+            # (token omitted) can re-key them to the current image's registry.
+            if ps_name:
+                try:
+                    ps = cluster.get(ResourceKind.SECRET, ps_name)
+                    state["registry_username"] = secret_svc.registry_username(ps)
+                    state["registry_token"] = secret_svc.registry_token(ps)
+                except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades gracefully
+                    pass
             # Functions carry a stored git token; read it so a build-input change
             # can rebuild without the client re-supplying it.
             if offering == OFFERING_FUNCTION:

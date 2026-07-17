@@ -164,18 +164,30 @@ class ContainerService:
             existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         image = spec.image or existing["image"]
 
-        # New creds -> (re)build the pull secret; otherwise carry the existing one
-        # forward (None if the image is public).
+        # Resolve the pull secret. A new token rotates it; omitting the token keeps
+        # the stored credential - but the pull secret is keyed to a specific
+        # registry host, so re-materialize it against the *effective* image's
+        # registry (which may have changed) using the stored username+token.
+        labels = workload_labels(group, user.username, oname, OFFERING_CONTAINER)
         pull_name = existing.get("pull_secret")
         pull: dict | None = None
-        if spec.registryUsername and spec.registryToken:
+        if spec.registryToken:
             pull_name = f"{oname}-pull"
             pull = secret_svc.build_pull_secret(
                 pull_name,
-                workload_labels(group, user.username, oname, OFFERING_CONTAINER),
-                secret_svc.registry_of(image),  # key to the (effective) image's registry
+                labels,
+                secret_svc.registry_of(image),
                 spec.registryUsername,
                 spec.registryToken,
+            )
+        elif pull_name and existing.get("registry_token"):
+            # keep: re-key the stored creds to the current image's registry
+            pull = secret_svc.build_pull_secret(
+                pull_name,
+                labels,
+                secret_svc.registry_of(image),
+                existing.get("registry_username"),
+                existing["registry_token"],
             )
 
         body, code = await self._engine.apply_workload(

@@ -44,8 +44,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   update now treats a redacted/absent secret field as "keep the stored value", so
   the redacted GET body can be sent straight back without wiping anything: a
   `secret: true` env var or file sent without a value/content keeps what's stored;
-  omitting `registryToken` (even while echoing `registryUsername`) keeps the pull
-  secret; and the git token is now **stored** in a `{workload}-git` Secret so a
+  omitting `registryToken` (even while echoing `registryUsername`) keeps the
+  credential (re-keyed to the current image's registry if the image moved to a
+  different one); and the git token is now **stored** in a `{workload}-git` Secret so a
   build-input change (`gitRepo`/`branch`/`runtime`) rebuilds using it — the client
   no longer re-sends `gitToken` (sending it rotates the token). To change a secret,
   send its new value; to remove an env var or file, drop it from the list.

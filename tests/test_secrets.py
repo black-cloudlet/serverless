@@ -8,6 +8,7 @@ from api.services.secrets import (
     git_secret_name,
     git_token,
     registry_of,
+    registry_token,
     registry_username,
 )
 
@@ -21,14 +22,22 @@ def test_registry_of():
     assert registry_of("team/app:tag") == "docker.io"
 
 
-def test_build_pull_secret_keys_on_registry_and_redacts_token():
+def test_build_pull_secret_keys_on_registry_and_decodes_creds():
     s = build_pull_secret("p", {}, "reg.example.com", "bob", "s3cret")
     cfg = json.loads(base64.b64decode(s["data"][".dockerconfigjson"]))
     # keyed to the given registry host
     assert set(cfg["auths"]) == {"reg.example.com"}
     assert cfg["auths"]["reg.example.com"]["username"] == "bob"
-    # the username is decodable back; the token never leaves the secret on read
+    # both fields decode back (username shown on read; token used internally only,
+    # to re-key the pull secret when the credential is kept)
     assert registry_username(s) == "bob"
+    assert registry_token(s) == "s3cret"
+
+
+def test_registry_field_decode_handles_missing_secret():
+    assert registry_username({}) is None
+    assert registry_token({}) is None
+    assert registry_token({"data": {".dockerconfigjson": "not-base64!!"}}) is None
 
 
 def test_git_secret_roundtrips_token():

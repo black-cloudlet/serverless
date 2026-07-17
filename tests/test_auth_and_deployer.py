@@ -1126,6 +1126,50 @@ async def test_container_update_keeps_secret_env_value_when_omitted():
     assert base64.b64decode(applied_env[0]["data"]["API_KEY"]).decode() == "stored-secret"
 
 
+async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
+    import base64
+    import json
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
+    from api.services.secrets import build_pull_secret
+
+    # Existing container pulls from reg-a with stored creds bob/s3cret.
+    existing = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg-a.example.com/team/app:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        pull_secret="api-team-pull",
+    )
+    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # Move the image to a DIFFERENT registry, keeping the creds (no token sent).
+    await csvc.update("team", "api", ContainerUpdate(image="reg-b.example.com/team/app:2"), user)
+    applied_pull = [
+        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-pull"
+    ]
+    assert applied_pull, "expected the pull secret to be re-materialized on keep"
+    cfg = json.loads(base64.b64decode(applied_pull[0]["data"][".dockerconfigjson"]))
+    # re-keyed to the new image's registry, carrying the stored creds forward
+    assert set(cfg["auths"]) == {"reg-b.example.com"}
+    assert cfg["auths"]["reg-b.example.com"]["username"] == "bob"
+    assert cfg["auths"]["reg-b.example.com"]["password"] == "s3cret"
+
+
 async def test_list_fans_out_and_merges_sites():
     from api.auth.claims import Principal
 

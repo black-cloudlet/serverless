@@ -75,7 +75,7 @@ def build_pull_secret(
 def registry_username(secret: dict) -> str | None:
     """Decode the registry username from a dockerconfigjson Secret.
 
-    The password (token) is deliberately never returned.
+    Shown on read (like a secret's name); the token is never returned to clients.
 
     Args:
         secret: The dockerconfigjson Secret object.
@@ -83,14 +83,35 @@ def registry_username(secret: dict) -> str | None:
     Returns:
         The username, or None if it can't be read.
     """
+    return _registry_field(secret, "username")
+
+
+def registry_token(secret: dict) -> str | None:
+    """Decode the registry password/token from a dockerconfigjson Secret.
+
+    Internal use only (never returned to clients): the update path reads it back to
+    re-materialize the pull secret against the current image's registry when the
+    caller keeps the credential (token omitted).
+
+    Args:
+        secret: The dockerconfigjson Secret object.
+
+    Returns:
+        The password/token, or None if it can't be read.
+    """
+    return _registry_field(secret, "password")
+
+
+def _registry_field(secret: dict, field: str) -> str | None:
+    """Decode one field ("username"/"password") from a dockerconfigjson Secret."""
     raw = (secret.get("data") or {}).get(".dockerconfigjson")
     if not raw:
         return None
     try:
         auths = json.loads(base64.b64decode(raw)).get("auths") or {}
         for entry in auths.values():
-            if entry.get("username"):
-                return entry["username"]
+            if entry.get(field):
+                return entry[field]
     except Exception:  # noqa: BLE001 - malformed secret -> treat as unknown
         return None
     return None
