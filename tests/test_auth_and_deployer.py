@@ -1260,6 +1260,43 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
         await engine.load_existing("api", "container", user, "team")
 
 
+async def test_load_existing_reads_secrets_from_local_site():
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services import resources as res
+    from api.services.ksvc import build_ksvc
+
+    ksvc = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg/x:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+    # Both sites have the workload but with different stored secret values; the read
+    # must come from the local site (the cheapest, most reliable hop).
+    local = _ApplyCluster(
+        "site-a",
+        {"api-team": ksvc},
+        secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "local-val"})},
+    )
+    remote = _ApplyCluster(
+        "site-b",
+        {"api-team": ksvc},
+        secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "remote-val"})},
+    )
+    engine = _workload_service({"site-a": local, "site-b": remote}, local_site="site-a")
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    state = await engine.load_existing("api", "container", user, "team")
+    assert state["env_values"] == {"K": "local-val"}
+
+
 async def test_list_fans_out_and_merges_sites():
     from api.auth.claims import Principal
 

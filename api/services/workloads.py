@@ -682,6 +682,7 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         oname = object_name(name, group)
+        targets = self.deployer.resolve_targets(None)
         found: dict = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
@@ -692,17 +693,15 @@ class WorkloadService:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
-            # fetch runs concurrently per site; setdefault is atomic, so the KSVC and
-            # the cluster used to read its Secrets are captured together from the same
-            # site (first responder wins) rather than via a racy check-then-set.
-            found.setdefault("rep", (obj, cluster))
+            # The KSVC is uniform across sites, so any responder's copy will do;
+            # setdefault is atomic under the concurrent fan-out.
+            found.setdefault("obj", obj)
             return SiteStatus(site=cluster.site, status="Present")
 
-        statuses = await self.deployer.fanout(self.deployer.resolve_targets(None), fetch)
+        statuses = await self.deployer.fanout(targets, fetch)
 
-        rep = found.get("rep")
-        if rep is not None:
-            obj, cluster = rep
+        obj = found.get("obj")
+        if obj is not None:
             labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
             # An object_name collision could resolve to another group's workload or
             # the other offering; both mean "not this workload" -> hide as 404.
@@ -710,6 +709,12 @@ class WorkloadService:
                 labels.get(LABEL_OFFERING) != offering
             ):
                 raise NotFoundError(f"{offering} workload '{name}' not found")
+            # Read the backing Secrets from the local site when it has the workload,
+            # else any site that does - they're uniform, so prefer the cheapest hop.
+            present = {s.site for s in statuses if s.status == "Present"}
+            by_site = {c.site: c for c in targets}
+            local = self.deployer.local_site()
+            cluster = by_site[local if local in present else next(iter(present))]
             # Reading the backing Secrets is blocking cluster I/O; run it in a thread
             # so it doesn't stall the event loop (as get()/_describe_spec do).
             return await asyncio.to_thread(self._existing_state, obj, cluster, offering, oname)
