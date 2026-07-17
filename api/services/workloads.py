@@ -338,6 +338,7 @@ class WorkloadService:
         user: Principal,
         background,
         work,
+        pre_check=None,
         **extra,
     ) -> WorkloadResponse:
         """Run an update's synchronous pre-flight, then schedule the deploy (202).
@@ -357,12 +358,17 @@ class WorkloadService:
             background: FastAPI background tasks to schedule the deploy on.
             work: The offering's background update coroutine, run as
                 ``work(group, name, spec, user, existing)``.
+            pre_check: Optional offering-specific ``(spec, existing) -> None``
+                validation run against the loaded state, so a check that needs the
+                stored state (e.g. a registry-username change) is a synchronous 400.
             **extra: Offering-specific fields echoed onto the accepted body.
 
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
         existing = await self.load_existing(name, offering, user, group)
+        if pre_check is not None:
+            pre_check(spec, existing)  # offering-specific sync validation (may 4xx)
         # Surface deploy-time spec validation synchronously (400), before the 202.
         # Pass the existing secret values so a "keep" (redacted) secret resolves
         # against what's stored instead of failing.

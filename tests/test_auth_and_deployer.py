@@ -1176,6 +1176,48 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
     assert cfg["auths"]["reg-b.example.com"]["password"] == "s3cret"
 
 
+async def test_update_container_username_change_without_token_rejected():
+    import pytest
+    from fastapi import BackgroundTasks
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
+    from api.services.secrets import build_pull_secret
+    from common.errors import ValidationError
+
+    existing = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg-a.example.com/team/app:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        pull_secret="api-team-pull",
+    )
+    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # A different username with no token can't rotate the credential -> synchronous 400.
+    with pytest.raises(ValidationError):
+        await csvc.accept_update(
+            "team", "api", ContainerUpdate(registryUsername="alice"), user, BackgroundTasks()
+        )
+    # Echoing the SAME username back (a keep) is accepted (202/Pending).
+    resp = await csvc.accept_update(
+        "team", "api", ContainerUpdate(registryUsername="bob"), user, BackgroundTasks()
+    )
+    assert resp.overallStatus == "Pending"
+
+
 async def test_container_update_both_creds_null_removes_pull_secret():
     from api.auth.claims import Principal
     from api.models.common import Scaling
