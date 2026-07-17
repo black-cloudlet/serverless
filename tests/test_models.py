@@ -6,25 +6,23 @@ from api.models.container import ContainerCreate, ContainerUpdate
 from api.models.function import FunctionCreate, FunctionUpdate
 
 
-def test_container_update_creds_paired():
+def test_container_update_creds_keep_or_rotate():
     ContainerUpdate()  # no creds -> keep existing, fine
-    ContainerUpdate(registryUsername="bob", registryToken="t")
+    ContainerUpdate(registryUsername="bob", registryToken="t")  # rotate
+    # username alone (echoing the redacted read) -> keep existing token, fine
+    ContainerUpdate(registryUsername="bob")
+    # a token with no username is meaningless -> rejected
     with pytest.raises(ValidationError):
-        ContainerUpdate(registryUsername="bob")
+        ContainerUpdate(registryToken="t")
 
 
-def test_function_update_rebuild_requires_token():
-    # config-only update: no rebuild
-    u = FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))
-    assert u.rebuild_requested is False
-    # token alone -> rebuild from same source
-    assert FunctionUpdate(gitToken="t").rebuild_requested is True
-    # build inputs without a token are rejected
-    with pytest.raises(ValidationError):
-        FunctionUpdate(branch="release")
-    with pytest.raises(ValidationError):
-        FunctionUpdate(runtime="go")
-    # build inputs WITH a token are fine
+def test_function_update_build_inputs_do_not_require_token():
+    # The token is stored, so changing a build input no longer requires the client
+    # to re-send it - the service reuses the stored token. The rebuild decision
+    # lives in the service, not the model.
+    FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))  # config-only, fine
+    FunctionUpdate(branch="release")  # build input without a token: accepted
+    FunctionUpdate(runtime="go")
     FunctionUpdate(gitRepo="https://git/x.git", runtime="go", gitToken="t")
 
 
@@ -71,22 +69,30 @@ def test_size_default_and_choices():
         FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="xl")
 
 
-def test_envvar_requires_value():
+def test_envvar_value_required_unless_secret_keep():
+    # a non-secret var always needs a value
     with pytest.raises(ValidationError):
         EnvVar(name="X")
-    e = EnvVar(name="X", value="1")
-    assert e.secret is False
-    assert EnvVar(name="X", value="1", secret=True).secret is True
+    assert EnvVar(name="X", value="1").secret is False
+    # a secret var MAY omit the value -> "keep the stored value" on update
+    keep = EnvVar(name="X", secret=True)
+    assert keep.secret is True and keep.value is None
+    assert EnvVar(name="X", value="1", secret=True).value == "1"
 
 
-def test_filemount_requires_inline_content():
+def test_filemount_content_required_unless_secret_keep():
     f = FileMount(mountPath="/etc/a", content="hi")
-    assert f.readOnly is True
+    assert f.readOnly is True and f.keep is False
     assert FileMount(mountPath="/etc/a", content="hi", readOnly=False).readOnly is False
+    # a secret file MAY omit content -> "keep the stored content" on update
+    keep = FileMount(mountPath="/etc/a", secret=True)
+    assert keep.keep is True
+    # a non-secret file still needs exactly one content field
     with pytest.raises(ValidationError):
-        FileMount(mountPath="/etc/a")  # no content
+        FileMount(mountPath="/etc/a")  # no content, not secret
+    # supplying both is always rejected, even for a secret
     with pytest.raises(ValidationError):
-        FileMount(mountPath="/etc/a", content="x", contentBase64="eA==")
+        FileMount(mountPath="/etc/a", content="x", contentBase64="eA==", secret=True)
 
 
 def test_scaling_bounds():

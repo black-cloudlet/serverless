@@ -346,6 +346,50 @@ def test_resolve_env_plain_only_no_secret():
     assert resolved.env[0].secret_ref is None
 
 
+def test_resolve_env_secret_keeps_stored_value_when_omitted():
+    import base64
+
+    from common.errors import ValidationError
+
+    # A secret var sent without a value keeps the stored value from `kept`.
+    env = [EnvVar(name="DB_PASSWORD", secret=True)]  # value omitted -> keep
+    resolved = resolve_env("app", "team", "alice", env, kept={"DB_PASSWORD": "stored-pw"})
+    sec = resolved.backing[0]
+    assert base64.b64decode(sec["data"]["DB_PASSWORD"]).decode() == "stored-pw"
+
+    # A new value overrides the stored one.
+    resolved2 = resolve_env(
+        "app", "team", "alice", [EnvVar(name="DB_PASSWORD", value="new", secret=True)], kept={}
+    )
+    assert base64.b64decode(resolved2.backing[0]["data"]["DB_PASSWORD"]).decode() == "new"
+
+    # Keeping a secret that has no stored value is a 400 (e.g. on create).
+    import pytest
+
+    with pytest.raises(ValidationError):
+        resolve_env("app", "team", "alice", [EnvVar(name="DB_PASSWORD", secret=True)], kept={})
+
+
+def test_resolve_files_secret_keeps_stored_content_when_omitted():
+    import base64
+
+    import pytest
+
+    from api.services.files import _key
+    from common.errors import ValidationError
+
+    key = _key("/etc/tls/tls.key")
+    # secret file sent without content -> keep stored content from `kept`
+    files = [FileMount(mountPath="/etc/tls/tls.key", secret=True)]
+    resolved = resolve_files("app", "team", "alice", files, kept={key: "STORED-KEY"})
+    sec = next(b for b in resolved.backing if b["kind"] == "Secret")
+    assert base64.b64decode(sec["data"][key]).decode() == "STORED-KEY"
+
+    # keeping content that isn't stored is a 400
+    with pytest.raises(ValidationError):
+        resolve_files("app", "team", "alice", files, kept={})
+
+
 def test_resolve_env_secret_creates_secret_and_rewrites_ref():
     import base64
 

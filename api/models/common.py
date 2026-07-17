@@ -162,11 +162,23 @@ class EnvVar(BaseModel):
 
     With ``secret: true`` the API stores the value in a Kubernetes Secret and the
     container reads it via a secretKeyRef (the value is never inline on the KSVC).
+
+    ``value`` is optional only for a secret var: a secret entry with ``value:
+    null`` means "keep the stored value" on update (the redacted read - ``secret:
+    true, value: null`` - can be sent straight back). A non-secret var always
+    needs a value, and a brand-new secret needs one too (there is nothing to keep).
     """
 
     name: str
-    value: str
+    value: str | None = None
     secret: bool = False
+
+    @model_validator(mode="after")
+    def _non_secret_needs_value(self) -> "EnvVar":
+        """A non-secret env var must carry a value (only secrets may keep)."""
+        if not self.secret and self.value is None:
+            raise ValueError(f"env var '{self.name}' requires a value")
+        return self
 
 
 class FileMount(BaseModel):
@@ -175,6 +187,11 @@ class FileMount(BaseModel):
     The API stores the content in the workload's shared ConfigMap (or Secret when
     ``secret: true``) - one ConfigMap and one Secret per workload - and mounts
     each file at its ``mountPath`` via ``subPath``.
+
+    A secret file may omit both content fields, meaning "keep the stored content"
+    on update (the redacted read - ``secret: true, content: null`` - can be sent
+    straight back). A non-secret file always needs exactly one content field, and
+    supplying both is always rejected.
     """
 
     mountPath: str
@@ -183,10 +200,17 @@ class FileMount(BaseModel):
     secret: bool = False
     readOnly: bool = True
 
+    @property
+    def keep(self) -> bool:
+        """Whether this (secret) file keeps its stored content (no content given)."""
+        return self.content is None and self.contentBase64 is None
+
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
-        """Require exactly one of ``content`` or ``contentBase64``."""
-        if (self.content is None) == (self.contentBase64 is None):
+        """Validate the content fields (exactly one, or none only for a secret keep)."""
+        if self.content is not None and self.contentBase64 is not None:
+            raise ValueError("file accepts at most one of 'content' or 'contentBase64'")
+        if self.keep and not self.secret:
             raise ValueError("file requires exactly one of 'content' or 'contentBase64'")
         return self
 

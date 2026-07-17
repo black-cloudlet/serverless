@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from api.models.common import (
     EnvVar,
@@ -44,14 +44,16 @@ class FunctionCreate(BaseModel):
 class FunctionUpdate(BaseModel):
     """Full replace of the mutable spec.
 
-    Supplying any build input (gitRepo, branch, runtime) - or just a gitToken -
-    triggers a rebuild from source; otherwise the existing image is kept and only
-    config is updated.
+    Changing any build input (gitRepo, branch, runtime) rebuilds from source; the
+    git token is stored (``{workload}-git`` Secret), so the rebuild reuses it and
+    the client need not re-send ``gitToken``. Sending ``gitToken`` rotates it (and
+    rebuilds). Otherwise the existing image is kept and only config is updated. The
+    rebuild decision lives in the service, which knows the current build inputs and
+    the stored token.
     """
 
     # Rebuild inputs (all optional). gitRepo/branch/runtime default to the existing
-    # values when omitted; gitToken is never stored, so it must be supplied to
-    # rebuild (it can't be carried forward).
+    # values when omitted; the stored gitToken is reused unless a new one is sent.
     gitRepo: str | None = None
     branch: str | None = None
     gitToken: str | None = None
@@ -61,20 +63,6 @@ class FunctionUpdate(BaseModel):
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
-
-    @model_validator(mode="after")
-    def _rebuild_needs_token(self) -> "FunctionUpdate":
-        """Require a gitToken when any build input (gitRepo/branch/runtime) changes."""
-        if any(v is not None for v in (self.gitRepo, self.branch, self.runtime)) and (
-            self.gitToken is None
-        ):
-            raise ValueError("changing gitRepo/branch/runtime requires gitToken to rebuild")
-        return self
-
-    @property
-    def rebuild_requested(self) -> bool:
-        """Whether this update should rebuild from source (a gitToken was given)."""
-        return self.gitToken is not None
 
 
 class FunctionResponse(WorkloadResponse):

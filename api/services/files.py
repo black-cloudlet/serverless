@@ -56,24 +56,37 @@ def _key(mount_path: str) -> str:
     return safe.strip("-_.") or "file"
 
 
-def resolve_files(workload: str, group: str, owner: str, files: list[FileMount]) -> ResolvedFiles:
+def resolve_files(
+    workload: str,
+    group: str,
+    owner: str,
+    files: list[FileMount],
+    kept: dict[str, str] | None = None,
+) -> ResolvedFiles:
     """Resolve file mounts into volume specs and backing ConfigMap/Secret.
 
     Non-secret files aggregate into one ConfigMap and secret files into one
-    Secret, both named ``{workload}-files``; each file is mounted via subPath.
+    Secret, both named ``{workload}-files``; each file is mounted via subPath. A
+    secret file sent without content keeps its stored content: it is filled from
+    ``kept`` (the decoded existing files Secret), so a redacted read can be sent
+    straight back on update.
 
     Args:
         workload: The object name (``{name}-{group}``).
         group: Owning group (for labels).
         owner: Username (for labels).
         files: The submitted file mounts.
+        kept: Decoded existing files-Secret values (key -> content) to fall back on
+            for a secret file sent without content. Empty on create.
 
     Returns:
         The resolved volumes and backing manifests.
 
     Raises:
-        ValidationError: On a duplicate mount-path key or invalid base64 content.
+        ValidationError: On a duplicate mount-path key, invalid base64 content, or a
+            secret file sent without content when none is stored to keep.
     """
+    kept = kept or {}
     name = files_name(workload)
     labels = workload_labels(group, owner, workload)
     config_data: dict[str, str] = {}
@@ -89,7 +102,14 @@ def resolve_files(workload: str, group: str, owner: str, files: list[FileMount])
             )
         seen.add(key)
 
-        if f.contentBase64 is not None:
+        if f.secret and f.keep:
+            # No content given: keep the stored secret content for this mount.
+            if key not in kept:
+                raise ValidationError(
+                    f"secret file '{f.mountPath}' has no content and none is stored to keep"
+                )
+            raw = kept[key]
+        elif f.contentBase64 is not None:
             try:
                 # Lenient decode (no validate=) tolerates whitespace/newlines, e.g.
                 # line-wrapped PEM bodies; still raises on bad padding/length.

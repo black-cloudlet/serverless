@@ -768,12 +768,13 @@ async def test_list_overall_status_per_workload():
 
 
 class _ApplyCluster:
-    """Records applied manifests; serves a preset existing KSVC."""
+    """Records applied manifests; serves a preset existing KSVC (and Secrets)."""
 
-    def __init__(self, name, existing):
+    def __init__(self, name, existing, secrets=None):
         self.site = name
         self.name = name
         self._existing = existing  # oname -> ksvc dict
+        self._secrets = secrets or {}  # secret name -> secret dict (preset)
         self.applied = []
         self.deleted = []  # [(ResourceKind, name)] from prune
 
@@ -783,7 +784,9 @@ class _ApplyCluster:
 
         if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
             return self._existing[name]
-        raise _NF("not found")  # domain mapping -> Available; missing ksvc
+        if kind == ResourceKind.SECRET and name in self._secrets:
+            return self._secrets[name]
+        raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret
 
     def apply(self, manifest):
         self.applied.append(manifest)
@@ -1005,6 +1008,215 @@ async def test_function_update_without_token_keeps_image():
     assert builder.calls == 0
     ksvc = _applied_kind(cluster, "Service")[0]
     assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
+
+
+async def test_function_create_persists_git_secret():
+    import base64
+
+    from api.auth.claims import Principal
+    from api.models.function import FunctionCreate
+    from api.services.builder import BuildResult
+    from api.services.function import FunctionService
+    from api.services.secrets import GIT_TOKEN_KEY
+
+    class _StubBuilder:
+        def build(self, req):
+            return BuildResult(image="reg/built:1", digest="sha256:abc")
+
+    cluster = _ApplyCluster("site-a", {})  # nothing exists yet
+    engine = _workload_service({"site-a": cluster}, builder=_StubBuilder())
+    fsvc = FunctionService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await fsvc.create(
+        "team",
+        FunctionCreate(
+            name="fn", gitRepo="https://git/x.git", gitToken="ghp_tok", runtime="python"
+        ),
+        user,
+    )
+    git = [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "fn-team-git"]
+    assert git, "expected a persisted git secret"
+    assert base64.b64decode(git[0]["data"][GIT_TOKEN_KEY]).decode() == "ghp_tok"
+
+
+async def test_function_update_reuses_stored_git_token():
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.function import FunctionUpdate
+    from api.services.builder import BuildResult
+    from api.services.function import FunctionService
+    from api.services.ksvc import build_ksvc
+    from api.services.secrets import build_git_secret, git_secret_name
+
+    class _StubBuilder:
+        def __init__(self):
+            self.calls = 0
+
+        def build(self, req):
+            self.calls += 1
+            self.req = req
+            return BuildResult(image="reg/built:rel", digest="sha256:def")
+
+    existing = build_ksvc(
+        name="fn-team",
+        group="team",
+        owner="alice",
+        image="reg/fn:old",
+        offering="function",
+        host="fn-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+        git_url="https://git/old.git",
+        branch="main",
+    )
+    stored = build_git_secret(git_secret_name("fn-team"), {}, "ghp_stored")
+    cluster = _ApplyCluster("site-a", {"fn-team": existing}, secrets={"fn-team-git": stored})
+    builder = _StubBuilder()
+    engine = _workload_service({"site-a": cluster}, builder=builder)
+    fsvc = FunctionService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # change the branch WITHOUT re-supplying a token -> rebuild uses the stored one
+    await fsvc.update("team", "fn", FunctionUpdate(branch="release"), user)
+    assert builder.calls == 1
+    assert builder.req.branch == "release"
+    assert builder.req.git_token == "ghp_stored"  # reused, not re-supplied
+
+
+async def test_container_update_keeps_secret_env_value_when_omitted():
+    import base64
+
+    from api.auth.claims import Principal
+    from api.models.common import EnvVar, Scaling
+    from api.models.container import ContainerUpdate
+    from api.services import resources as res
+    from api.services.container import ContainerService
+    from api.services.ksvc import ContainerEnv, build_ksvc
+
+    existing = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg/app:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[ContainerEnv(name="API_KEY", secret_ref=("api-team-env", "API_KEY"))],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+    env_secret = res.build_secret("api-team-env", {}, {"API_KEY": "stored-secret"})
+    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-env": env_secret})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # echo the redacted read back: secret env var with no value -> keep stored value
+    await csvc.update(
+        "team", "api", ContainerUpdate(env=[EnvVar(name="API_KEY", secret=True)]), user
+    )
+    applied_env = [
+        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-env"
+    ]
+    assert applied_env, "expected the env secret to be re-applied"
+    assert base64.b64decode(applied_env[0]["data"]["API_KEY"]).decode() == "stored-secret"
+
+
+async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
+    import base64
+    import json
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.ksvc import build_ksvc
+    from api.services.secrets import build_pull_secret
+
+    # Existing container pulls from reg-a with stored creds bob/s3cret.
+    existing = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg-a.example.com/team/app:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        pull_secret="api-team-pull",
+    )
+    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # Move the image to a DIFFERENT registry, keeping the creds: echo the shown
+    # username back (no token) -> keep, which re-keys to the new registry.
+    await csvc.update(
+        "team",
+        "api",
+        ContainerUpdate(image="reg-b.example.com/team/app:2", registryUsername="bob"),
+        user,
+    )
+    applied_pull = [
+        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-pull"
+    ]
+    assert applied_pull, "expected the pull secret to be re-materialized on keep"
+    cfg = json.loads(base64.b64decode(applied_pull[0]["data"][".dockerconfigjson"]))
+    # re-keyed to the new image's registry, carrying the stored creds forward
+    assert set(cfg["auths"]) == {"reg-b.example.com"}
+    assert cfg["auths"]["reg-b.example.com"]["username"] == "bob"
+    assert cfg["auths"]["reg-b.example.com"]["password"] == "s3cret"
+
+
+async def test_container_update_both_creds_null_removes_pull_secret():
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.models.container import ContainerUpdate
+    from api.services.container import ContainerService
+    from api.services.describe import pull_secret_name
+    from api.services.ksvc import build_ksvc
+    from api.services.secrets import build_pull_secret
+    from common.cluster import ResourceKind
+
+    existing = build_ksvc(
+        name="api-team",
+        group="team",
+        owner="alice",
+        image="reg-a.example.com/team/app:1",
+        offering="container",
+        host="api-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        pull_secret="api-team-pull",
+    )
+    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    engine = _workload_service({"site-a": cluster})
+    csvc = ContainerService(engine)
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    # Neither cred sent -> drop the pull secret and treat the image as public.
+    await csvc.update("team", "api", ContainerUpdate(), user)
+
+    # the stale pull secret is pruned...
+    assert (ResourceKind.SECRET, "api-team-pull") in cluster.deleted
+    # ...and the re-applied KSVC references no pull secret
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert pull_secret_name(ksvc) is None
+    # nothing re-applied it
+    assert not [
+        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-pull"
+    ]
 
 
 async def test_list_fans_out_and_merges_sites():

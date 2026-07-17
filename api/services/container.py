@@ -105,7 +105,7 @@ class ContainerService:
         pull_name: str | None = None
         pull: dict | None = None
         if spec.registryUsername and spec.registryToken:
-            pull_name = f"{oname}-pull"
+            pull_name = secret_svc.pull_secret_name(oname)
             pull = secret_svc.build_pull_secret(
                 pull_name,
                 workload_labels(group, user.username, oname, OFFERING_CONTAINER),
@@ -164,19 +164,32 @@ class ContainerService:
             existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
         image = spec.image or existing["image"]
 
-        # New creds -> (re)build the pull secret; otherwise carry the existing one
-        # forward (None if the image is public).
-        pull_name = existing.get("pull_secret")
+        # Resolve the pull secret from the registry creds (docs §7.2): token ->
+        # rotate; username only -> keep (re-key stored creds to the image's
+        # registry); neither -> remove (public).
+        labels = workload_labels(group, user.username, oname, OFFERING_CONTAINER)
+        pull_name = secret_svc.pull_secret_name(oname)
         pull: dict | None = None
-        if spec.registryUsername and spec.registryToken:
-            pull_name = f"{oname}-pull"
+        if spec.registryToken:  # rotate
             pull = secret_svc.build_pull_secret(
                 pull_name,
-                workload_labels(group, user.username, oname, OFFERING_CONTAINER),
-                secret_svc.registry_of(image),  # key to the (effective) image's registry
+                labels,
+                secret_svc.registry_of(image),
                 spec.registryUsername,
                 spec.registryToken,
             )
+        elif spec.registryUsername and existing.get("registry_token"):  # keep: re-key
+            pull = secret_svc.build_pull_secret(
+                pull_name,
+                labels,
+                secret_svc.registry_of(image),
+                existing.get("registry_username"),
+                existing["registry_token"],
+            )
+        elif spec.registryUsername and existing.get("pull_secret"):
+            pull_name = existing["pull_secret"]  # keep, but token unreadable: carry forward
+        else:
+            pull_name = None  # remove -> public
 
         body, code = await self._engine.apply_workload(
             name=name,
@@ -194,6 +207,8 @@ class ContainerService:
             pull_secret_manifest=pull,
             created=False,
             prev_host=existing.get("host"),
+            kept_env=existing.get("env_values"),
+            kept_files=existing.get("files_values"),
         )
         body.registryUsername = spec.registryUsername
         return body, code
