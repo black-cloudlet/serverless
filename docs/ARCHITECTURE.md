@@ -909,6 +909,14 @@ source, not images.)
 > dropping an env var, removes the pull secret). `scaling.target` reflects the *effective*
 > target deployed (an omitted cpu/memory target shows `70`).
 >
+> **Keep is `null`, not `""`.** Only an omitted/`null` value is a keep; an empty string is a
+> real value that **sets** the secret to empty. So a secret var/file must be sent with its
+> `value`/`content` omitted (`null`) to keep it — never `""`. A **new** secret (one not
+> already stored) sent with a `null` value is a synchronous `400` (`"…has no value and none is
+> stored to keep"`): keep only applies to something already stored, so a new secret must carry
+> its value. A non-secret var/file always requires a value. These checks run in the update
+> pre-flight, so they surface as an immediate `400`, not a background deploy failure.
+>
 > **Live status.** `replicas` is the autoscaler's live scale
 > (`Revision.status.actualReplicas`); `usage` is live cpu/memory summed over a
 > site's running pods (user container only, not the queue-proxy sidecar),

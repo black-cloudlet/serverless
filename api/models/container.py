@@ -53,10 +53,12 @@ class ContainerUpdate(BaseModel):
     """Full replace of the mutable spec; image defaults to the current one."""
 
     image: str | None = None
-    # Registry creds. Send both to rotate the pull secret. Omitting the token
-    # keeps the existing credential - so the redacted read (registryUsername shown,
-    # no token) can be echoed straight back without wiping it. A token with no
-    # username is meaningless and rejected.
+    # Registry creds mirror a secret env var (username = identifier, token = value):
+    #   - username + token -> rotate the pull secret;
+    #   - username only (token null) -> keep the stored credential, so the redacted
+    #     read (registryUsername shown, no token) can be echoed straight back;
+    #   - neither -> remove the pull secret (the image becomes public);
+    #   - token with no username -> rejected (meaningless).
     registryUsername: str | None = None
     registryToken: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
