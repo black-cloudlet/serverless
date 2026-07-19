@@ -63,11 +63,6 @@ def mount_offline_docs(app: FastAPI) -> None:
             openapi_url=app.openapi_url,
             title=f"{app.title} - Swagger UI",
             oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
-            # Forward the OAuth config (public client id + PKCE) so Swagger's
-            # "Authorize" pre-fills the client id and logs in via Auth Code +
-            # PKCE - no client secret. FastAPI's default /docs does this; the
-            # vendored offline route must too, or the modal falls back to asking
-            # for a client id and secret.
             init_oauth=app.swagger_ui_init_oauth,
             swagger_js_url="/static/swagger-ui-bundle.js",
             swagger_css_url="/static/swagger-ui.css",
