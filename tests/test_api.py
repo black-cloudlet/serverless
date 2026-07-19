@@ -448,3 +448,20 @@ def test_swagger_sso_login_wired_in_openapi():
     assert init["clientId"] == "serverless-api-swagger"
     assert init["usePkceWithAuthorizationCodeGrant"] is True
     assert "clientSecret" not in init  # public client - no secret
+
+
+def test_swagger_docs_html_delivers_oauth_init():
+    """The vendored /docs HTML must call initOAuth with the client id + PKCE.
+
+    Configuring app.swagger_ui_init_oauth is not enough - the offline docs route
+    has to forward it to get_swagger_ui_html, or Swagger's Authorize modal falls
+    back to asking for a client id and secret. Assert the delivery path, not just
+    the config object.
+    """
+    from api.main import create_app
+
+    docs = TestClient(create_app()).get("/docs")
+    assert docs.status_code == 200
+    assert "initOAuth" in docs.text
+    assert "serverless-api-swagger" in docs.text  # client id pre-filled
+    assert "usePkceWithAuthorizationCodeGrant" in docs.text  # PKCE, no secret
