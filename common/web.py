@@ -63,6 +63,7 @@ def mount_offline_docs(app: FastAPI) -> None:
             openapi_url=app.openapi_url,
             title=f"{app.title} - Swagger UI",
             oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            init_oauth=app.swagger_ui_init_oauth,
             swagger_js_url="/static/swagger-ui-bundle.js",
             swagger_css_url="/static/swagger-ui.css",
             swagger_favicon_url="/static/favicon-32x32.png",

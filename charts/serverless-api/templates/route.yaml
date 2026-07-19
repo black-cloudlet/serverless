@@ -15,7 +15,7 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  host: {{ .Values.route.host | default (printf "serverless.%s" .Values.global.baseDomain) | quote }}
+  host: {{ tpl (.Values.route.host | default (printf "serverless.%s" .Values.global.baseDomain)) . | quote }}
   to:
     kind: Service
     name:  {{ .Values.name }}

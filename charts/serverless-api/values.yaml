@@ -21,6 +21,7 @@ namespaces:
   apiLabels: {}
   workloadsLabels: {}
 
+# Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
 corsAllowOrigins: []
@@ -79,9 +80,7 @@ service:
   targetPort: 8080
   port: 80
 
-# The OpenShift Route exposing the API. host defaults to
-# serverless-api.{global.baseDomain}; labels/annotations are merged onto the
-# Route (e.g. annotations for router timeouts or rate limits).
+# The OpenShift Route exposing the API.
 route:
   host: ""
   labels: {}
