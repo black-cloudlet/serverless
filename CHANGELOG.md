@@ -9,12 +9,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
-- `GET /api/v1/info` is now split per offering: options common to both
-  (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`)
-  stay at the top level, and the bits that differ move under `offerings` —
-  `offerings.function.runtimes` (was top-level `runtimes`) and
-  `offerings.container.port` (required + bounds). The port rules are derived from
-  the same constants the request validator uses, so they can't drift.
+- Platform-info discovery is now split into two public per-offering endpoints,
+  `GET /api/v1/containers/info` and `GET /api/v1/functions/info` (replacing the
+  single `GET /api/v1/info`). Both return the shared options (`version`, `sites`,
+  `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`); the container
+  document adds `port` (required + bounds) and the function document adds
+  `runtimes`. The port rules are derived from the same constants the request
+  validator uses, so they can't drift.
 - Containers now take an explicit `port` (1–65535) the image listens on, stamped
   as the container's `containerPort` so the queue-proxy routes to it (and read
   back on GET). Functions are unchanged: their port stays the build's

@@ -1,4 +1,4 @@
-"""Public platform-capabilities schema (the /info discovery document)."""
+"""Public platform-capabilities schemas (the per-offering /info documents)."""
 
 from __future__ import annotations
 
@@ -21,31 +21,11 @@ class PortCapability(BaseModel):
     max: int
 
 
-class ContainerCapabilities(BaseModel):
-    """Create options specific to the container offering (bring-your-own image)."""
+class BaseInfo(BaseModel):
+    """Platform capabilities common to every offering.
 
-    port: PortCapability
-
-
-class FunctionCapabilities(BaseModel):
-    """Create options specific to the function offering (build-from-source)."""
-
-    runtimes: list[str]
-
-
-class OfferingCapabilities(BaseModel):
-    """The per-offering capabilities: what differs between containers and functions."""
-
-    container: ContainerCapabilities
-    function: FunctionCapabilities
-
-
-class InfoResponse(BaseModel):
-    """Static platform capabilities so a UI can render itself from the server.
-
-    All fields are configuration/code-derived (no cluster calls), so the endpoint
-    is safe to serve unauthenticated. Options common to both offerings live at the
-    top level; the bits that differ per offering live under ``offerings``.
+    All fields are configuration/code-derived (no cluster calls), so the info
+    endpoints are safe to serve unauthenticated.
 
     Attributes:
         version: The running API version.
@@ -56,8 +36,6 @@ class InfoResponse(BaseModel):
         defaultHostTemplate: How the default host is composed from a workload's
             name/group and ``routeDomain`` (e.g. ``{name}-{group}.{routeDomain}``),
             so the UI can preview it without hardcoding the rule.
-        offerings: Per-offering create options - the container ``port`` rules and
-            the function ``runtimes`` - that don't apply to both.
     """
 
     version: str
@@ -66,4 +44,23 @@ class InfoResponse(BaseModel):
     scaling: ScalingCapabilities
     routeDomain: str
     defaultHostTemplate: str
-    offerings: OfferingCapabilities
+
+
+class ContainerInfoResponse(BaseInfo):
+    """Capabilities for creating a container (bring-your-own image).
+
+    Attributes:
+        port: The container port rules (required + bounds).
+    """
+
+    port: PortCapability
+
+
+class FunctionInfoResponse(BaseInfo):
+    """Capabilities for creating a function (build-from-source).
+
+    Attributes:
+        runtimes: The runtimes a function may be built with.
+    """
+
+    runtimes: list[str]

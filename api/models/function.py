@@ -23,8 +23,8 @@ class FunctionCreate(BaseModel):
     The owning group comes from the request path (``/api/v1/groups/{group}/...``),
     not the body. ``runtime`` is a free string here; the set of valid runtimes is
     data (a mounted ConfigMap, see services.runtimes) so it is validated against
-    the live registry in the service layer, not as a fixed enum. GET /api/v1/info
-    lists the accepted values.
+    the live registry in the service layer, not as a fixed enum. GET
+    /api/v1/functions/info lists the accepted values.
     """
 
     name: Name

@@ -143,20 +143,27 @@ def test_healthz_no_auth():
 
 
 def test_info_is_public_and_static():
-    # No auth override applied: /info must be reachable unauthenticated.
+    # No auth override applied: both info paths must be reachable unauthenticated.
     c = TestClient(create_app())
-    r = c.get("/api/v1/info")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["version"]
-    assert isinstance(body["sites"], list)
-    assert body["sizes"] == ["small", "medium", "large"]
-    assert body["routeDomain"]
-    assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
-    # offering-specific capabilities: function runtimes and container port rules
-    assert "python" in body["offerings"]["function"]["runtimes"]
-    port = body["offerings"]["container"]["port"]
-    assert port == {"required": True, "min": 1, "max": 65535}
+
+    # Shared platform fields appear on both offerings' documents.
+    for path in ("/api/v1/containers/info", "/api/v1/functions/info"):
+        body = c.get(path).json()
+        assert body["version"]
+        assert isinstance(body["sites"], list)
+        assert body["sizes"] == ["small", "medium", "large"]
+        assert body["routeDomain"]
+        assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
+
+    # container-only: the port rules
+    cont = c.get("/api/v1/containers/info").json()
+    assert cont["port"] == {"required": True, "min": 1, "max": 65535}
+    assert "runtimes" not in cont
+
+    # function-only: the available runtimes
+    fn = c.get("/api/v1/functions/info").json()
+    assert "python" in fn["runtimes"]
+    assert "port" not in fn
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
     assert metrics["concurrency"]["target"]["default"] == 100

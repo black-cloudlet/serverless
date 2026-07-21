@@ -62,7 +62,7 @@ want two consumption models:
 - **FaaS** - "give us your source code, we build and run it." The client provides a Git
   repository URL, branch, an access token, and the source lives in that repo. Supported
   runtimes are **configurable** (default **Python, Go, JavaScript**; see §3.1) and listed on
-  `GET /api/v1/info`.
+  `GET /api/v1/functions/info`.
 - **CaaS** - "give us your image, we run it." The client provides a container image
   reference plus registry credentials (username + token).
 
@@ -210,7 +210,7 @@ flowchart LR
 | `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). |
 | `branch` | yes | Branch / ref to build. |
 | `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see §7). |
-| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `javascript`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/info`. Adding a runtime is a ConfigMap edit, not a code change. |
+| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `javascript`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
 
@@ -282,7 +282,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` - users cannot reference arbitrary existing cluster Secrets/ConfigMaps. **CA-trust defaults** (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`) are injected automatically, pointed at the mounted trusted-CA bundle, so cross-language tooling trusts internal TLS with no user action. They are **transparent**: a var the user sets themselves is left as-is (their value wins), and the injected defaults are recorded in a `serverless.platform/injected-env` annotation so they're hidden from the workload's GET. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** - one ConfigMap and one Secret per workload, a key per file - and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
-| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on `GET /api/v1/info`** (per-metric `minScaleFloor`, target default/min/max/unit) — derived from the same model that validates a create, so a client UI can render the form without drift. |
+| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on the per-offering `GET /api/v1/{containers,functions}/info`** (per-metric `minScaleFloor`, target default/min/max/unit) — derived from the same model that validates a create, so a client UI can render the form without drift. |
 | **Resource size** | `size: small\|medium\|large` (default `small`) - a t-shirt size, so clients pick capacity without Kubernetes units. Maps to container resources: **memory** is set `request==limit` (a hard, predictable OOM boundary - exceeding it restarts that replica), **CPU** is **request-only** (no limit, so workloads are never CPU-throttled). `small`=100m/256Mi, `medium`=250m/512Mi, `large`=500m/1Gi. The CPU/memory request is also what lets the `cpu`/`memory` autoscaling metrics compute utilization. |
 
 A canonical scaling sub-object in the API:
@@ -740,7 +740,7 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 ## 10. REST API Specification
 
 Base path: `/api/v1`. All endpoints require a valid SSO bearer token (§6) **except the public
-discovery endpoint `GET /api/v1/info` and the health probes**. All responses are JSON. Times
+discovery endpoints `GET /api/v1/{containers,functions}/info` and the health probes**. All responses are JSON. Times
 are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rendered in
 **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving aware).
 
@@ -759,7 +759,8 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; the **stored** `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); a **different** username with no token is a `400`; **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
-| `GET` | `/api/v1/info` | **Public** (no auth), static platform capabilities for dynamic UI rendering. Shared: `version`, `sites`, `sizes`, `scaling` (per-metric options), `routeDomain`, `defaultHostTemplate`. Per-offering under `offerings`: `container.port` (required + bounds) and `function.runtimes`. Config/code-derived, no cluster calls. |
+| `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
+| `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes`. Config/code-derived, no cluster calls. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
 > Workload secrets and config files are **not** separate endpoints - they are derived
