@@ -495,6 +495,8 @@ class WorkloadSpec(BaseModel):
     scaling: "Scaling | None" = None
     env: list[EnvVarView] = []
     files: list[FileView] = []
+    # Explicit container port, or None when the workload uses Knative's default.
+    port: int | None = None
     # Container source: registry username is shown (like a secret's name); the
     # token is never returned. None when the image is public (no pull secret).
     registryUsername: str | None = None

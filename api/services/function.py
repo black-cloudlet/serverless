@@ -167,6 +167,7 @@ class FunctionService:
             sites=spec.sites,
             pull_secret_name=None,
             pull_secret_manifest=None,
+            port=None,
             created=True,
             runtime=spec.runtime,
             git_url=spec.gitRepo,
@@ -268,6 +269,7 @@ class FunctionService:
             sites=None,
             pull_secret_name=None,
             pull_secret_manifest=None,
+            port=None,
             created=False,
             # stamp the (possibly updated) build metadata; never the token
             runtime=runtime,

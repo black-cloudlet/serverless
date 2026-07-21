@@ -216,6 +216,7 @@ def test_create_container_accepted(client):
         json={
             "name": "orders-api",
             "image": "registry.internal/team/orders:1",
+            "port": 8080,
             "registryUsername": "u",
             "registryToken": "t",
         },
@@ -357,6 +358,7 @@ def test_update_container_accepted(client):
         "/api/v1/groups/team/containers/orders-api",
         json={
             "image": "registry.internal/team/orders:2",
+            "port": 8080,
             "scaling": {"minScale": 1},
         },
     )
@@ -379,7 +381,11 @@ def test_update_container_username_only_kept(client):
     # credential - accepted, not a 400.
     r = client.put(
         "/api/v1/groups/team/containers/orders-api",
-        json={"registryUsername": "bob"},  # token omitted -> keep
+        json={
+            "image": "registry.internal/team/orders:2",
+            "port": 8080,
+            "registryUsername": "bob",  # token omitted -> keep
+        },
     )
     assert r.status_code == 202
 
@@ -387,7 +393,11 @@ def test_update_container_username_only_kept(client):
 def test_update_container_token_without_username_rejected(client):
     r = client.put(
         "/api/v1/groups/team/containers/orders-api",
-        json={"registryToken": "t"},  # username missing -> meaningless
+        json={
+            "image": "registry.internal/team/orders:2",
+            "port": 8080,
+            "registryToken": "t",  # username missing -> meaningless
+        },
     )
     assert r.status_code == 400
 

@@ -124,6 +124,7 @@ def build_ksvc(
     volumes: list[VolumeSpec],
     scaling: Scaling,
     size: str = "small",
+    port: int | None = None,
     pull_secret: str | None = None,
     runtime: str | None = None,
     git_url: str | None = None,
@@ -148,6 +149,7 @@ def build_ksvc(
         volumes: Resolved file volume specs.
         scaling: Autoscaling settings.
         size: Resource t-shirt size.
+        port: Container port to stamp; None uses Knative's default (8080).
         pull_secret: Image pull secret name, if any.
         runtime: Function runtime annotation, if any.
         git_url: Function source repo annotation, if any.
@@ -195,6 +197,9 @@ def build_ksvc(
                 injected.append(var)
 
     container: dict = {"image": image, "resources": _resources(size)}
+    # No port -> Knative's default (PORT=8080). Knative allows a single port.
+    if port is not None:
+        container["ports"] = [{"containerPort": port}]
     if env_out:
         container["env"] = _env(env_out)
     if mounts:

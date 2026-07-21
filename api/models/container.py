@@ -37,6 +37,8 @@ class ContainerCreate(BaseModel):
     sites: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
+    # Port the image listens on.
+    port: int = Field(ge=1, le=65535)
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerCreate":
@@ -50,9 +52,16 @@ class ContainerCreate(BaseModel):
 
 
 class ContainerUpdate(BaseModel):
-    """Full replace of the mutable spec; image defaults to the current one."""
+    """Replace the mutable spec: the body is the full desired state.
 
-    image: str | None = None
+    Non-secret fields are replaced (an omitted one reverts to its default), so
+    ``image`` and ``port`` are required just like on create. The only keep-on-omit
+    is redacted secret material - the registry token, secret env values, and
+    secret file contents - which can't be read back, so omitting it keeps what's
+    stored (see the registry-creds semantics below and docs §7.2).
+    """
+
+    image: str
     # Registry creds: username+token rotates, username-only keeps, neither removes
     # (public); a token needs a username. See docs §7.2 for the full semantics.
     registryUsername: str | None = None
@@ -62,6 +71,7 @@ class ContainerUpdate(BaseModel):
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
+    port: int = Field(ge=1, le=65535)
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerUpdate":
@@ -77,3 +87,4 @@ class ContainerResponse(WorkloadResponse):
     type: Literal["function", "container"] = "container"
     image: str | None = None  # the client-supplied image reference
     registryUsername: str | None = None  # shown; the token is never returned
+    port: int | None = None  # explicit container port, or None for Knative's default

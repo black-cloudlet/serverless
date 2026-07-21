@@ -116,7 +116,7 @@ def _creation_time(obj: dict) -> datetime | None:
     try:
         # Kubernetes stamps RFC3339 UTC; present it in Israel local time.
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(ISRAEL_TZ)
-    except ValueError, AttributeError:
+    except (ValueError, AttributeError):
         return None
 
 
@@ -406,6 +406,7 @@ class WorkloadService:
         sites,
         pull_secret_name: str | None,
         pull_secret_manifest: dict | None,
+        port: int | None,
         created: bool,
         runtime: str | None = None,
         git_url: str | None = None,
@@ -436,6 +437,8 @@ class WorkloadService:
             sites: Target site names, or None for all.
             pull_secret_name: Name of the image pull secret, if any.
             pull_secret_manifest: The pull secret manifest to apply, if any.
+            port: Explicit container port, or None for Knative's default
+                (functions pass None). See :func:`api.services.ksvc.build_ksvc`.
             created: True for a create (affects the success status code).
             runtime: Function runtime, stamped as an annotation.
             git_url: Function source repo, stamped as an annotation.
@@ -477,6 +480,7 @@ class WorkloadService:
             volumes=resolved.volumes,
             scaling=scaling,
             size=size,
+            port=port,
             pull_secret=pull_secret_name,
             runtime=runtime,
             git_url=git_url,
@@ -545,7 +549,7 @@ class WorkloadService:
                 **common, runtime=runtime, gitRepo=git_url, branch=branch
             )
         else:
-            body = ContainerResponse(**common, image=image)
+            body = ContainerResponse(**common, image=image, port=port)
         return body, status_code_for(overall, created=created)
 
     def _apply_to_site(
@@ -1018,6 +1022,7 @@ class WorkloadService:
             **common,
             image=_extract_image(obj) if obj else None,
             registryUsername=spec.registryUsername if spec else None,
+            port=spec.port if spec else None,
         )
 
     def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:

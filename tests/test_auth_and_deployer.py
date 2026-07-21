@@ -424,7 +424,7 @@ async def test_accept_container_returns_pending_and_schedules():
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
-    spec = ContainerCreate(name="app", image="reg/x:1", registryUsername="u", registryToken="t")
+    spec = ContainerCreate(name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t")
     body = await svc.accept("team", spec, user, bg)
     assert body.overallStatus == "Pending"
     assert body.statusUrl == "/api/v1/groups/team/containers/app"
@@ -840,6 +840,8 @@ async def test_update_prunes_backing_no_longer_referenced():
         "team",
         "api",
         ContainerUpdate(
+            image="reg/x:1",
+            port=8080,
             env=[EnvVar(name="LOG", value="debug")],  # plain -> no env Secret
             files=[FileMount(mountPath="/etc/app.conf", content="x")],  # -> files ConfigMap
         ),
@@ -869,7 +871,7 @@ async def test_create_does_not_prune():
 
     from api.models.container import ContainerCreate
 
-    await csvc.create("team", ContainerCreate(name="api", image="reg/x:1"), user)
+    await csvc.create("team", ContainerCreate(name="api", image="reg/x:1", port=8080), user)
     assert cluster.deleted == []
 
 
@@ -899,7 +901,12 @@ async def test_container_update_rotates_pull_secret():
     from api.models.container import ContainerUpdate
 
     await csvc.update(
-        "team", "api", ContainerUpdate(registryUsername="bob", registryToken="t"), user
+        "team",
+        "api",
+        ContainerUpdate(
+            image="reg.acme.com/team/app:2", port=8080, registryUsername="bob", registryToken="t"
+        ),
+        user,
     )
 
     secrets = [
@@ -1117,7 +1124,10 @@ async def test_container_update_keeps_secret_env_value_when_omitted():
 
     # echo the redacted read back: secret env var with no value -> keep stored value
     await csvc.update(
-        "team", "api", ContainerUpdate(env=[EnvVar(name="API_KEY", secret=True)]), user
+        "team",
+        "api",
+        ContainerUpdate(image="reg/x:1", port=8080, env=[EnvVar(name="API_KEY", secret=True)]),
+        user,
     )
     applied_env = [
         s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-env"
@@ -1162,7 +1172,7 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
     await csvc.update(
         "team",
         "api",
-        ContainerUpdate(image="reg-b.example.com/team/app:2", registryUsername="bob"),
+        ContainerUpdate(image="reg-b.example.com/team/app:2", port=8080, registryUsername="bob"),
         user,
     )
     applied_pull = [
@@ -1209,11 +1219,19 @@ async def test_update_container_username_change_without_token_rejected():
     # A different username with no token can't rotate the credential -> synchronous 400.
     with pytest.raises(ValidationError):
         await csvc.accept_update(
-            "team", "api", ContainerUpdate(registryUsername="alice"), user, BackgroundTasks()
+            "team",
+            "api",
+            ContainerUpdate(image="reg/x:1", port=8080, registryUsername="alice"),
+            user,
+            BackgroundTasks(),
         )
     # Echoing the SAME username back (a keep) is accepted (202/Pending).
     resp = await csvc.accept_update(
-        "team", "api", ContainerUpdate(registryUsername="bob"), user, BackgroundTasks()
+        "team",
+        "api",
+        ContainerUpdate(image="reg/x:1", port=8080, registryUsername="bob"),
+        user,
+        BackgroundTasks(),
     )
     assert resp.overallStatus == "Pending"
 
@@ -1248,7 +1266,7 @@ async def test_container_update_both_creds_null_removes_pull_secret():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # Neither cred sent -> drop the pull secret and treat the image as public.
-    await csvc.update("team", "api", ContainerUpdate(), user)
+    await csvc.update("team", "api", ContainerUpdate(image="reg/x:1", port=8080), user)
 
     # the stale pull secret is pruned...
     assert (ResourceKind.SECRET, "api-team-pull") in cluster.deleted
@@ -1456,7 +1474,7 @@ async def test_accept_rejects_group_caller_is_not_member_of():
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])  # not 'other'
-    spec = ContainerCreate(name="app", image="reg/x:1", registryUsername="u", registryToken="t")
+    spec = ContainerCreate(name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t")
     with pytest.raises(ForbiddenError):  # 403 before anything is scheduled
         await svc.accept("other", spec, user, BackgroundTasks())
 
@@ -1541,6 +1559,8 @@ async def test_apply_sets_owner_references_on_derived():
         "team",
         "api",
         ContainerUpdate(
+            image="reg/x:1",
+            port=8080,
             registryUsername="bob",
             registryToken="t",  # -> pull Secret
             env=[EnvVar(name="PW", value="x", secret=True)],  # -> env Secret
@@ -1621,6 +1641,7 @@ async def test_accept_rejects_invalid_spec_synchronously():
     spec = ContainerCreate(
         name="app",
         image="reg/x:1",
+        port=8080,
         files=[
             FileMount(mountPath="/a/conf", content="1"),
             FileMount(mountPath="/a/conf", content="2"),
@@ -1665,7 +1686,9 @@ async def test_update_reuses_existing_without_refetch():
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     preloaded = {"image": "reg/app:1", "pull_secret": None}
-    await csvc.update("team", "api", ContainerUpdate(), user, existing=preloaded)
+    await csvc.update(
+        "team", "api", ContainerUpdate(image="reg/x:1", port=8080), user, existing=preloaded
+    )
     assert calls["n"] == 0  # reused the passed-in existing, no second fanout
 
 
@@ -1862,7 +1885,7 @@ async def test_prune_failure_aborts_update_fail_closed():
         await csvc.update(
             "team",
             "api",
-            ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
+            ContainerUpdate(image="reg/x:1", port=8080, env=[EnvVar(name="LOG", value="debug")]),
             user,
         )
     # fail-closed: the KSVC was never (re)applied after the prune failed
@@ -1890,7 +1913,7 @@ async def test_prune_not_found_is_tolerated():
     await csvc.update(  # must not raise
         "team",
         "api",
-        ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
+        ContainerUpdate(image="reg/x:1", port=8080, env=[EnvVar(name="LOG", value="debug")]),
         user,
     )
     assert _applied_kind(cluster, "Service")  # KSVC applied -> update proceeded
@@ -1928,7 +1951,7 @@ async def test_prune_runs_before_apply_on_update():
     await csvc.update(
         "team",
         "api",
-        ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
+        ContainerUpdate(image="reg/x:1", port=8080, env=[EnvVar(name="LOG", value="debug")]),
         user,
     )
     first_apply = next(i for i, (op, _) in enumerate(cluster.ops) if op == "apply")
@@ -1979,7 +2002,9 @@ async def test_accept_update_rejects_taken_host_synchronously():
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     with pytest.raises(ConflictError):
-        await csvc.accept_update("team", "api", ContainerUpdate(hostname="shop"), user, bg)
+        await csvc.accept_update(
+            "team", "api", ContainerUpdate(image="reg/x:1", port=8080, hostname="shop"), user, bg
+        )
     assert bg.tasks == []  # rejected before the background deploy was queued
 
 
@@ -2008,7 +2033,8 @@ async def test_update_unchanged_host_retires_no_mapping():
     csvc = ContainerService(_workload_service({"site-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    await csvc.update("team", "api", ContainerUpdate(), user)  # no hostname -> default
+    # no hostname -> default host
+    await csvc.update("team", "api", ContainerUpdate(image="reg/x:1", port=8080), user)
 
     dm_deletes = [n for k, n in cluster.deleted if k == ResourceKind.DOMAIN_MAPPING]
     assert dm_deletes == []  # host unchanged -> nothing retired
@@ -2157,7 +2183,7 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(SiteTotalFailure):  # single site failed
-        await csvc.create("team", ContainerCreate(name="api", image="reg/x:1"), user)
+        await csvc.create("team", ContainerCreate(name="api", image="reg/x:1", port=8080), user)
     assert (ResourceKind.KNATIVE_SERVICE, "api-team") in cluster.deleted
 
 
@@ -2178,7 +2204,7 @@ async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
         await csvc.update(
             "team",
             "api",
-            ContainerUpdate(env=[EnvVar(name="LOG", value="debug")]),
+            ContainerUpdate(image="reg/x:1", port=8080, env=[EnvVar(name="LOG", value="debug")]),
             user,
         )
     assert (ResourceKind.KNATIVE_SERVICE, "api-team") not in cluster.deleted

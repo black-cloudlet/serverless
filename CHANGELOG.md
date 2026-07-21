@@ -9,6 +9,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Containers now take an explicit `port` (1–65535) the image listens on, stamped
+  as the container's `containerPort` so the queue-proxy routes to it (and read
+  back on GET). Functions are unchanged: their port stays the build's
+  responsibility, not a request field.
+- **Breaking:** container update (`PUT`) is now a true full replace — the body is
+  the complete desired state. `image` and `port` are required on update just like
+  on create; they no longer carry forward from the deployed workload when omitted.
+  Only redacted secret material (the registry token, secret env values, secret
+  file contents) still keeps-on-omit, since it can't be read back to re-send.
 - Request correlation: the error envelope's `requestId` is now populated (was
   always `null`). A middleware adopts an inbound `X-Request-ID` (e.g. from the
   OpenShift router) or mints a UUID, echoes it in the `X-Request-ID` response
@@ -28,6 +37,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `_creation_time` used the Python-2 `except ValueError, AttributeError:` form,
+  a `SyntaxError` on any supported Python that broke importing the entire
+  `workloads` module (and with it the whole API); parenthesized to
+  `except (ValueError, AttributeError):`.
 - A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
   reports `Ready=False`, the per-site `error` carries the specific cause from the
   Revision's failing sub-condition (e.g. `ContainerHealthy` — image-pull error,
