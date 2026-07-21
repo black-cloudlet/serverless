@@ -964,8 +964,15 @@ async def test_function_update_rebuilds_when_token_given():
     fsvc = FunctionService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    # rebuild from a new branch; gitRepo/runtime carried from existing
-    await fsvc.update("team", "fn", FunctionUpdate(branch="release", gitToken="tok"), user)
+    # rebuild from a new branch; gitRepo/runtime re-sent unchanged (full replace)
+    await fsvc.update(
+        "team",
+        "fn",
+        FunctionUpdate(
+            gitRepo="https://git/old.git", runtime="python", branch="release", gitToken="tok"
+        ),
+        user,
+    )
     assert builder.calls == 1
     assert builder.req.branch == "release"
     assert builder.req.git_url == "https://git/old.git"
@@ -1011,7 +1018,17 @@ async def test_function_update_without_token_keeps_image():
     fsvc = FunctionService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    await fsvc.update("team", "fn", FunctionUpdate(scaling=Scaling(minScale=2, maxScale=2)), user)
+    # config-only edit re-sends the same build inputs -> no rebuild
+    await fsvc.update(
+        "team",
+        "fn",
+        FunctionUpdate(
+            gitRepo="https://git/old.git",
+            runtime="python",
+            scaling=Scaling(minScale=2, maxScale=2),
+        ),
+        user,
+    )
     assert builder.calls == 0
     ksvc = _applied_kind(cluster, "Service")[0]
     assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
@@ -1088,7 +1105,12 @@ async def test_function_update_reuses_stored_git_token():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # change the branch WITHOUT re-supplying a token -> rebuild uses the stored one
-    await fsvc.update("team", "fn", FunctionUpdate(branch="release"), user)
+    await fsvc.update(
+        "team",
+        "fn",
+        FunctionUpdate(gitRepo="https://git/old.git", runtime="python", branch="release"),
+        user,
+    )
     assert builder.calls == 1
     assert builder.req.branch == "release"
     assert builder.req.git_token == "ghp_stored"  # reused, not re-supplied
@@ -2497,8 +2519,8 @@ async def test_function_update_rejects_unknown_runtime():
 
     fsvc = _function_service_with_runtimes(["python"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    # changing runtime requires a gitToken; supply one so we reach the registry check
-    spec = FunctionUpdate(runtime="ruby", gitToken="t")
+    # an unknown runtime is rejected up front, before any build/token logic
+    spec = FunctionUpdate(gitRepo="https://git/x.git", runtime="ruby", gitToken="t")
 
     with pytest.raises(ValidationError):
         await fsvc.accept_update("team", "fn", spec, user, BackgroundTasks())

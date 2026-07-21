@@ -13,11 +13,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   as the container's `containerPort` so the queue-proxy routes to it (and read
   back on GET). Functions are unchanged: their port stays the build's
   responsibility, not a request field.
-- **Breaking:** container update (`PUT`) is now a true full replace — the body is
-  the complete desired state. `image` and `port` are required on update just like
-  on create; they no longer carry forward from the deployed workload when omitted.
-  Only redacted secret material (the registry token, secret env values, secret
-  file contents) still keeps-on-omit, since it can't be read back to re-send.
+- **Breaking:** workload update (`PUT`) is now a true full replace for both
+  offerings — the body is the complete desired state. For containers, `image` and
+  `port` are required on update just like on create. For functions, the build
+  inputs `gitRepo` and `runtime` are required and `branch` resets to `main` when
+  omitted; they no longer carry forward from the deployed workload. In both cases
+  the only keep-on-omit is redacted secret material that can't be read back to
+  re-send — the registry/git token and secret env/file values. Functions still
+  rebuild only when a build input actually changes or the token is rotated, so a
+  config-only edit (that re-sends the same build inputs) keeps the current image.
 - Request correlation: the error envelope's `requestId` is now populated (was
   always `null`). A middleware adopts an inbound `X-Request-ID` (e.g. from the
   OpenShift router) or mints a UUID, echoes it in the `X-Request-ID` response

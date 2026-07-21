@@ -107,8 +107,7 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        if spec.runtime is not None:
-            self._assert_runtime(spec.runtime)
+        self._assert_runtime(spec.runtime)
         return await self._engine.accept_update(
             offering=OFFERING_FUNCTION,
             group=group,
@@ -209,21 +208,22 @@ class FunctionService:
         if existing is None:
             existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
 
-        # Build inputs default to the existing ones. The git token is stored, so the
-        # effective token is the stored one unless the client sent a new one.
-        runtime = spec.runtime or existing.get("runtime")
-        git_url = spec.gitRepo or existing.get("gitUrl")
-        branch = spec.branch or existing.get("branch") or "main"
+        # Full replace: the build inputs are the request's (gitRepo/runtime required,
+        # branch defaults to "main"). The git token is the redacted keep - the stored
+        # one is reused unless the client sent a new one.
+        runtime = spec.runtime
+        git_url = spec.gitRepo
+        branch = spec.branch
         stored_token = existing.get("git_token")
         token = spec.gitToken or stored_token
 
-        # Rebuild when a build input actually changes, or when the token is rotated
-        # (a client echoing an unchanged spec back on a config-only edit does not
+        # Rebuild only when a build input actually changes, or when the token is
+        # rotated (a config-only edit re-sends the same build inputs and does not
         # rebuild). Otherwise keep the current image.
         build_inputs_changed = (
-            (spec.gitRepo is not None and spec.gitRepo != existing.get("gitUrl"))
-            or (spec.branch is not None and spec.branch != existing.get("branch"))
-            or (spec.runtime is not None and spec.runtime != existing.get("runtime"))
+            git_url != existing.get("gitUrl")
+            or branch != existing.get("branch")
+            or runtime != existing.get("runtime")
         )
         token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
         if build_inputs_changed or token_rotated:

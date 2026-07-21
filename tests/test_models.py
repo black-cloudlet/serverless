@@ -17,14 +17,18 @@ def test_container_update_creds_keep_or_rotate():
         ContainerUpdate(**base, registryToken="t")
 
 
-def test_function_update_build_inputs_do_not_require_token():
-    # The token is stored, so changing a build input no longer requires the client
-    # to re-send it - the service reuses the stored token. The rebuild decision
-    # lives in the service, not the model.
-    FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))  # config-only, fine
-    FunctionUpdate(branch="release")  # build input without a token: accepted
-    FunctionUpdate(runtime="go")
-    FunctionUpdate(gitRepo="https://git/x.git", runtime="go", gitToken="t")
+def test_function_update_is_full_replace():
+    base = dict(gitRepo="https://git/x.git", runtime="go")
+    # full replace: gitRepo and runtime are required (like image on a container)
+    with pytest.raises(ValidationError):
+        FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))  # missing build inputs
+    with pytest.raises(ValidationError):
+        FunctionUpdate(gitRepo="https://git/x.git")  # missing runtime
+    # branch resets to its default when omitted
+    assert FunctionUpdate(**base).branch == "main"
+    # the token is the one keep-on-omit: build inputs can change without re-sending it
+    FunctionUpdate(**base)  # no token -> reuse the stored one, fine
+    FunctionUpdate(**base, gitToken="t")  # rotate
 
 
 def test_container_registry_creds_optional_but_paired():

@@ -370,7 +370,11 @@ def test_update_container_accepted(client):
 def test_update_function_accepted(client):
     r = client.put(
         "/api/v1/groups/team/functions/foo",
-        json={"env": [{"name": "X", "value": "1"}]},
+        json={
+            "gitRepo": "https://git/x.git",
+            "runtime": "python",
+            "env": [{"name": "X", "value": "1"}],
+        },
     )
     assert r.status_code == 202
     assert r.json()["type"] == "function"
@@ -408,7 +412,11 @@ def test_update_function_build_change_accepted_without_token(client):
     # using the stored token.
     r = client.put(
         "/api/v1/groups/team/functions/foo",
-        json={"branch": "release"},  # gitToken omitted -> reuse stored token
+        json={
+            "gitRepo": "https://git/x.git",
+            "runtime": "python",
+            "branch": "release",  # gitToken omitted -> reuse stored token
+        },
     )
     assert r.status_code == 202
 
