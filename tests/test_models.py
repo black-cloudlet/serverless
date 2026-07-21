@@ -36,7 +36,9 @@ def test_container_registry_creds_optional_but_paired():
     c = ContainerCreate(name="api", image="reg/api:1", port=8080)
     assert c.registryUsername is None and c.registryToken is None
     # both provided -> fine
-    ContainerCreate(name="api", image="reg/api:1", port=8080, registryUsername="bob", registryToken="t")
+    ContainerCreate(
+        name="api", image="reg/api:1", port=8080, registryUsername="bob", registryToken="t"
+    )
     # only one provided -> rejected
     with pytest.raises(ValidationError):
         ContainerCreate(name="api", image="reg/api:1", port=8080, registryUsername="bob")

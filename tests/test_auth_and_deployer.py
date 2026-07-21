@@ -424,7 +424,9 @@ async def test_accept_container_returns_pending_and_schedules():
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
-    spec = ContainerCreate(name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t")
+    spec = ContainerCreate(
+        name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t"
+    )
     body = await svc.accept("team", spec, user, bg)
     assert body.overallStatus == "Pending"
     assert body.statusUrl == "/api/v1/groups/team/containers/app"
@@ -1496,7 +1498,9 @@ async def test_accept_rejects_group_caller_is_not_member_of():
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])  # not 'other'
-    spec = ContainerCreate(name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t")
+    spec = ContainerCreate(
+        name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t"
+    )
     with pytest.raises(ForbiddenError):  # 403 before anything is scheduled
         await svc.accept("other", spec, user, BackgroundTasks())
 

@@ -111,12 +111,14 @@ def _extract_image(obj: dict) -> str | None:
 def _creation_time(obj: dict) -> datetime | None:
     """The workload's creation time (`metadata.creationTimestamp`) in Israel time."""
     ts = _dig(obj, "metadata", "creationTimestamp")
-    if not ts:
+    # A non-string (or missing) timestamp has no valid parse; str keeps the
+    # try to just the fromisoformat ValueError (avoids a multi-except tuple).
+    if not isinstance(ts, str):
         return None
     try:
         # Kubernetes stamps RFC3339 UTC; present it in Israel local time.
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(ISRAEL_TZ)
-    except (ValueError, AttributeError):
+    except ValueError:
         return None
 
 
