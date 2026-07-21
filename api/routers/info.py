@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends
 from api import __version__
 from api.core.config import Settings, get_settings
 from api.models.common import Scaling
-from api.models.info import InfoResponse
+from api.models.container import PORT_MAX, PORT_MIN
+from api.models.info import (
+    ContainerCapabilities,
+    FunctionCapabilities,
+    InfoResponse,
+    OfferingCapabilities,
+    PortCapability,
+)
 from api.services import route as route_svc
 from api.services.ksvc import workload_sizes
 from api.services.runtimes import RuntimeRegistry, get_runtimes
@@ -38,9 +45,16 @@ async def get_info(
     return InfoResponse(
         version=__version__,
         sites=settings.site_names,
-        runtimes=runtimes.names(),
         sizes=workload_sizes(),
         scaling=Scaling.capabilities(),
         routeDomain=settings.route_domain,
         defaultHostTemplate=route_svc.HOST_TEMPLATE,
+        offerings=OfferingCapabilities(
+            # Containers bring their own image and must declare the port it listens
+            # on; functions are built from source in one of the platform runtimes.
+            container=ContainerCapabilities(
+                port=PortCapability(required=True, min=PORT_MIN, max=PORT_MAX)
+            ),
+            function=FunctionCapabilities(runtimes=runtimes.names()),
+        ),
     )

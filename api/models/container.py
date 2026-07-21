@@ -16,6 +16,11 @@ from api.models.common import (
     WorkloadSize,
 )
 
+# Container port bounds (a TCP port). The single source both the field validator
+# and the /info capabilities projection read, so they can't drift.
+PORT_MIN = 1
+PORT_MAX = 65535
+
 
 class ContainerCreate(BaseModel):
     """Request body to deploy a pre-built container image.
@@ -38,7 +43,7 @@ class ContainerCreate(BaseModel):
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
     # Port the image listens on.
-    port: int = Field(ge=1, le=65535)
+    port: int = Field(ge=PORT_MIN, le=PORT_MAX)
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerCreate":
@@ -71,7 +76,7 @@ class ContainerUpdate(BaseModel):
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
-    port: int = Field(ge=1, le=65535)
+    port: int = Field(ge=PORT_MIN, le=PORT_MAX)
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerUpdate":

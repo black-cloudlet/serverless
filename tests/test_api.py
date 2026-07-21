@@ -150,10 +150,13 @@ def test_info_is_public_and_static():
     body = r.json()
     assert body["version"]
     assert isinstance(body["sites"], list)
-    assert "python" in body["runtimes"]
     assert body["sizes"] == ["small", "medium", "large"]
     assert body["routeDomain"]
     assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
+    # offering-specific capabilities: function runtimes and container port rules
+    assert "python" in body["offerings"]["function"]["runtimes"]
+    port = body["offerings"]["container"]["port"]
+    assert port == {"required": True, "min": 1, "max": 65535}
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
     assert metrics["concurrency"]["target"]["default"] == 100
