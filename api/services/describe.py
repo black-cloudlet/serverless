@@ -100,6 +100,26 @@ def pull_secret_name(ksvc: dict) -> str | None:
     return secrets[0].get("name") if secrets else None
 
 
+def container_port(ksvc: dict) -> int | None:
+    """The explicit ``containerPort`` the user container declares, or None.
+
+    None means no port was stamped, so the workload runs on Knative's default
+    (the injected ``PORT``, 8080). Only the first declared port is read - Knative
+    permits a single container port.
+
+    Args:
+        ksvc: The Knative Service object.
+
+    Returns:
+        The declared container port, or None.
+    """
+    ports = _container(ksvc).get("ports") or []
+    if not ports:
+        return None
+    port = ports[0].get("containerPort")
+    return port if isinstance(port, int) else None
+
+
 def configmap_refs(ksvc: dict) -> set[str]:
     """ConfigMap names backing the user's (non-secret) file mounts.
 
@@ -219,6 +239,7 @@ def parse_spec(
         scaling=_scaling(ksvc),
         env=_env(ksvc),
         files=_files(ksvc, configmaps),
+        port=container_port(ksvc),
         registryUsername=registry_username,
         gitRepo=meta.get(ANNOTATION_GIT_URL),
         branch=meta.get(ANNOTATION_GIT_BRANCH),

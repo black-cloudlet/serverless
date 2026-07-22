@@ -7,36 +7,62 @@ from api.models.function import FunctionCreate, FunctionUpdate
 
 
 def test_container_update_creds_keep_or_rotate():
-    ContainerUpdate()  # no creds -> keep existing, fine
-    ContainerUpdate(registryUsername="bob", registryToken="t")  # rotate
+    base = dict(image="reg/api:1", port=8080)
+    ContainerUpdate(**base)  # no creds -> keep existing, fine
+    ContainerUpdate(**base, registryUsername="bob", registryToken="t")  # rotate
     # username alone (echoing the redacted read) -> keep existing token, fine
-    ContainerUpdate(registryUsername="bob")
+    ContainerUpdate(**base, registryUsername="bob")
     # a token with no username is meaningless -> rejected
     with pytest.raises(ValidationError):
-        ContainerUpdate(registryToken="t")
+        ContainerUpdate(**base, registryToken="t")
 
 
-def test_function_update_build_inputs_do_not_require_token():
-    # The token is stored, so changing a build input no longer requires the client
-    # to re-send it - the service reuses the stored token. The rebuild decision
-    # lives in the service, not the model.
-    FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))  # config-only, fine
-    FunctionUpdate(branch="release")  # build input without a token: accepted
-    FunctionUpdate(runtime="go")
-    FunctionUpdate(gitRepo="https://git/x.git", runtime="go", gitToken="t")
+def test_function_update_is_full_replace():
+    base = dict(gitRepo="https://git/x.git", runtime="go")
+    # full replace: gitRepo and runtime are required (like image on a container)
+    with pytest.raises(ValidationError):
+        FunctionUpdate(scaling=Scaling(minScale=1, maxScale=1))  # missing build inputs
+    with pytest.raises(ValidationError):
+        FunctionUpdate(gitRepo="https://git/x.git")  # missing runtime
+    # branch resets to its default when omitted
+    assert FunctionUpdate(**base).branch == "main"
+    # the token is the one keep-on-omit: build inputs can change without re-sending it
+    FunctionUpdate(**base)  # no token -> reuse the stored one, fine
+    FunctionUpdate(**base, gitToken="t")  # rotate
 
 
 def test_container_registry_creds_optional_but_paired():
     # both omitted -> public image, fine
-    c = ContainerCreate(name="api", image="reg/api:1")
+    c = ContainerCreate(name="api", image="reg/api:1", port=8080)
     assert c.registryUsername is None and c.registryToken is None
     # both provided -> fine
-    ContainerCreate(name="api", image="reg/api:1", registryUsername="bob", registryToken="t")
+    ContainerCreate(
+        name="api", image="reg/api:1", port=8080, registryUsername="bob", registryToken="t"
+    )
     # only one provided -> rejected
     with pytest.raises(ValidationError):
-        ContainerCreate(name="api", image="reg/api:1", registryUsername="bob")
+        ContainerCreate(name="api", image="reg/api:1", port=8080, registryUsername="bob")
     with pytest.raises(ValidationError):
-        ContainerCreate(name="api", image="reg/api:1", registryToken="t")
+        ContainerCreate(name="api", image="reg/api:1", port=8080, registryToken="t")
+
+
+def test_container_port_required_and_range_checked():
+    # required on create: omitting it is a validation error
+    with pytest.raises(ValidationError):
+        ContainerCreate(name="api", image="reg/api:1")
+    # a valid port is accepted
+    assert ContainerCreate(name="api", image="reg/api:1", port=9000).port == 9000
+    # out-of-range ports are rejected (1..65535)
+    with pytest.raises(ValidationError):
+        ContainerCreate(name="api", image="reg/api:1", port=0)
+    with pytest.raises(ValidationError):
+        ContainerCreate(name="api", image="reg/api:1", port=70000)
+    # update is a full replace too: port (and image) are required, same bounds
+    with pytest.raises(ValidationError):
+        ContainerUpdate(image="reg/api:1")  # missing port
+    assert ContainerUpdate(image="reg/api:1", port=8081).port == 8081
+    with pytest.raises(ValidationError):
+        ContainerUpdate(image="reg/api:1", port=0)
 
 
 def test_valid_function():

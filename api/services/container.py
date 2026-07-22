@@ -31,6 +31,7 @@ class ContainerService:
             env=describe_svc.redact_env(spec.env),
             files=describe_svc.redact_files(spec.files),
             registryUsername=spec.registryUsername,
+            port=spec.port,
         )
 
     async def accept(
@@ -150,6 +151,7 @@ class ContainerService:
             files=spec.files,
             scaling=spec.scaling,
             size=spec.size,
+            port=spec.port,
             hostname=spec.hostname,
             sites=spec.sites,
             pull_secret_name=pull_name,
@@ -185,7 +187,8 @@ class ContainerService:
         # second multi-site fanout. Falls back to a fresh fetch for direct callers.
         if existing is None:
             existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
-        image = spec.image or existing["image"]
+        image = spec.image
+        port = spec.port
 
         # Resolve the pull secret from the registry creds (docs §7.2): token ->
         # rotate; username only -> keep (re-key stored creds to the image's
@@ -224,6 +227,7 @@ class ContainerService:
             files=spec.files,
             scaling=spec.scaling,
             size=spec.size,
+            port=port,
             hostname=spec.hostname,
             sites=None,
             pull_secret_name=pull_name,

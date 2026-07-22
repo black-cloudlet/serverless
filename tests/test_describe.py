@@ -119,3 +119,26 @@ def test_parse_spec_without_configmap_leaves_content_null():
     spec = parse_spec(_ksvc())  # no configmaps provided
     plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
     assert plain.content is None  # best-effort: not fetched -> null, not an error
+
+
+def test_parse_spec_reads_back_container_port():
+    from api.services.describe import container_port
+
+    # no explicit port -> None (Knative default)
+    assert container_port(_ksvc()) is None
+    assert parse_spec(_ksvc()).port is None
+    # an explicit port round-trips through the KSVC
+    ksvc = build_ksvc(
+        name="app-team",
+        group="team",
+        owner="alice",
+        image="reg/app:1",
+        offering="container",
+        host="app-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        port=9000,
+    )
+    assert container_port(ksvc) == 9000
+    assert parse_spec(ksvc).port == 9000

@@ -23,8 +23,8 @@ class FunctionCreate(BaseModel):
     The owning group comes from the request path (``/api/v1/groups/{group}/...``),
     not the body. ``runtime`` is a free string here; the set of valid runtimes is
     data (a mounted ConfigMap, see services.runtimes) so it is validated against
-    the live registry in the service layer, not as a fixed enum. GET /api/v1/info
-    lists the accepted values.
+    the live registry in the service layer, not as a fixed enum. GET
+    /api/v1/functions/info lists the accepted values.
     """
 
     name: Name
@@ -42,22 +42,22 @@ class FunctionCreate(BaseModel):
 
 
 class FunctionUpdate(BaseModel):
-    """Full replace of the mutable spec.
+    """Replace the mutable spec: the body is the full desired state.
 
-    Changing any build input (gitRepo, branch, runtime) rebuilds from source; the
-    git token is stored (``{workload}-git`` Secret), so the rebuild reuses it and
-    the client need not re-send ``gitToken``. Sending ``gitToken`` rotates it (and
-    rebuilds). Otherwise the existing image is kept and only config is updated. The
-    rebuild decision lives in the service, which knows the current build inputs and
-    the stored token.
+    Mirrors ``ContainerUpdate``: non-secret fields are replaced (an omitted one
+    reverts to its default), so the build inputs ``gitRepo`` and ``runtime`` are
+    required just like on create (``branch`` resets to ``main``). The only
+    keep-on-omit is the git token, which - like a redacted secret - can't be read
+    back: it's stored (``{workload}-git`` Secret) and reused unless the client
+    sends a new one (which rotates it). The service rebuilds from source only when
+    a build input actually changes or the token is rotated - a config-only edit
+    that re-sends the same build inputs keeps the current image.
     """
 
-    # Rebuild inputs (all optional). gitRepo/branch/runtime default to the existing
-    # values when omitted; the stored gitToken is reused unless a new one is sent.
-    gitRepo: str | None = None
-    branch: str | None = None
-    gitToken: str | None = None
-    runtime: str | None = None
+    gitRepo: str
+    branch: str = "main"
+    gitToken: str | None = None  # keep-on-omit: reuses the stored token
+    runtime: str
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)

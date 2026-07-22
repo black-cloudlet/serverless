@@ -47,6 +47,25 @@ def test_build_ksvc_basic():
     assert spec["containers"][0]["env"] == [{"name": "LOG", "value": "info"}]
 
 
+def test_build_ksvc_port_sets_container_port():
+    common = dict(
+        name="app-team",
+        group="team",
+        owner="o",
+        image="i",
+        offering="container",
+        host="app-team.serverless.example.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+    )
+    # no port -> no ports block (Knative's default, PORT=8080)
+    assert "ports" not in ksvc_svc.build_ksvc(**common)["spec"]["template"]["spec"]["containers"][0]
+    # explicit port -> a single containerPort the queue-proxy routes to
+    m = ksvc_svc.build_ksvc(port=9000, **common)
+    assert m["spec"]["template"]["spec"]["containers"][0]["ports"] == [{"containerPort": 9000}]
+
+
 def test_build_ksvc_size_sets_resources():
     m = ksvc_svc.build_ksvc(
         name="app-team",
