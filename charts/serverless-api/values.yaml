@@ -39,14 +39,121 @@ registry:
   url: registry.internal
 
 # Function runtimes offered to clients, mounted as a file (see services.runtimes).
-# Add versions / builder image here later for the airgapped build pipeline.
+#
+# Each entry resolves a runtime to the kpack Builder that builds it and to the
+# build-time environment that selects the language version and points the package
+# manager at the on-prem artifact server. `build.commonEnv` and the dependency
+# mirror are merged into every entry's `buildEnv` when the ConfigMap is rendered,
+# so the API applies one already-resolved list. See docs/BUILD-PIPELINE.md §4.
+#
+#   builder        Name of a `build.builders` entry (several runtimes may share one).
+#   versionEnv     Buildpack env var that selects the language version.
+#   defaultVersion Used when the caller does not request a version.
+#   versions       Allow-list offered to callers. MUST be a subset of what the
+#                  pinned buildpackage ships - there is no fallback download.
+#   buildEnv       Extra build env (package-manager index URLs, ...).
 runtimesMountPath: /etc/serverless/runtimes
 runtimes:
   - name: python
+    builder: python
+    versionEnv: BP_CPYTHON_VERSION
+    defaultVersion: "3.12"
+    versions: ["3.11", "3.12", "3.13"]
+    buildEnv: []
+    # - { name: PIP_INDEX_URL, value: "https://artifactory.internal/artifactory/api/pypi/pypi/simple" }
   - name: go
+    builder: go
+    versionEnv: BP_GO_VERSION
+    defaultVersion: "1.22"
+    versions: ["1.21", "1.22"]
+    buildEnv: []
+    # - { name: GOPROXY, value: "https://artifactory.internal/artifactory/api/go/go,direct" }
+    # - { name: GOSUMDB, value: "off" }
   - name: node
-  # Built by the Node.js buildpack (there is no separate TypeScript buildpack).
+    builder: node
+    versionEnv: BP_NODE_VERSION
+    defaultVersion: "20"
+    versions: ["18", "20", "22"]
+    buildEnv: []
+    # - { name: npm_config_registry, value: "https://artifactory.internal/artifactory/api/npm/npm/" }
+  # Built by the Node.js buildpack (there is no separate TypeScript buildpack), so
+  # it deliberately resolves to the same builder as `node`.
   - name: typescript
+    builder: node
+    versionEnv: BP_NODE_VERSION
+    defaultVersion: "20"
+    versions: ["18", "20", "22"]
+    buildEnv: []
+
+# Function image builds (kpack + Cloud Native Buildpacks). See docs/BUILD-PIPELINE.md.
+#
+# This chart owns the NAMESPACED pieces only: the Builders, the build
+# ServiceAccount and its credentials. The cluster-scoped ClusterStack and
+# ClusterStore are singletons installed once per cluster by the platform chart;
+# they are referenced here by name.
+build:
+  # Set false on clusters where kpack is not installed - the API and its
+  # workloads still deploy, only the build resources are omitted.
+  enabled: true
+
+  # Cluster-scoped objects installed by the platform chart, referenced by name.
+  stack:
+    name: serverless-base
+  store:
+    name: serverless-store
+
+  # Composed builder images are pushed to `{registry.url}/{builderRepository}/{name}`.
+  # This repository must exist and be writable by the build ServiceAccount.
+  builderRepository: serverless/builders
+
+  serviceAccount:
+    name: kpack-builder
+    # One dockerconfigjson credential does double duty: kpack pushes the built
+    # image with it, and the function's KSVC pulls the image with it.
+    registrySecret:
+      name: serverless-registry-creds
+      # Create it from the ClusterSecretStore (see externalSecrets). Set false
+      # when the Secret is provided out-of-band.
+      create: true
+      key: cloudlet/platforms/serverless
+      usernameProperty: registry-username
+      passwordProperty: registry-password
+    # Persisted git credential - rebuilds happen without the caller (CVE
+    # patches, webhooks), so the token cannot be request-scoped. docs §7.2.
+    gitSecret:
+      name: serverless-git-creds
+      create: true
+      # Annotated onto the Secret as `kpack.io/git` so kpack matches it to the
+      # source repository host.
+      host: https://git.internal
+      key: cloudlet/platforms/serverless
+      usernameProperty: git-username
+      passwordProperty: git-token
+
+  # Redirects EVERY buildpack runtime download (CPython/Node/Go tarballs) to the
+  # on-prem artifact server - required for airgapped builds. `{originalHost}` is
+  # substituted with the upstream host and the upstream path is appended, so a
+  # mirror of upstream layout needs no per-file curation.
+  # A mirror requiring auth must be supplied as a `dependency-mirror` BINDING
+  # instead, so credentials stay out of this ConfigMap. See §14.4.
+  # e.g. https://artifactory.internal/artifactory/deps/{originalHost}
+  dependencyMirror: ""
+
+  # Build env applied to every runtime, merged ahead of each runtime's buildEnv.
+  commonEnv: []
+
+  # One namespaced kpack Builder per entry. `order` is a list of buildpack ids
+  # forming a single detection group.
+  builders:
+    - name: go
+      order:
+        - paketo-buildpacks/go
+    - name: python
+      order:
+        - paketo-buildpacks/python
+    - name: node
+      order:
+        - paketo-buildpacks/nodejs
 
 sites:
   - name: central                 
