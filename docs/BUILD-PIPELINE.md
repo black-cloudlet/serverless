@@ -49,6 +49,7 @@ deploy it, and the control flow that keeps it correct under active/active.
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
 | Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent) |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
+| Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
 | Git credential | Persistent secret on the build ServiceAccount (annotated `kpack.io/git`) |
 
@@ -160,6 +161,10 @@ Three independent axes. Conflating them is the most common source of confusion:
 | python | `BP_CPYTHON_VERSION` |
 | go | `BP_GO_VERSION` |
 | node / typescript | `BP_NODE_VERSION` |
+
+> Selecting a version only *asks* for it - the buildpack still has to fetch that runtime
+> from the internet. Offline, this axis works only once the download is redirected to the
+> mirror (§14.3, §14.4).
 
 ### Axis 3 - application packages (airgapped)
 
@@ -668,23 +673,66 @@ The authoritative list is the `uri` + `checksum` fields in each buildpackage's
 `buildpack.toml` (readable with `pack buildpack inspect <image>`), including the
 sub-buildpacks (`cpython`, `pip`, `poetry`, `node-engine`, `npm-install`, ...).
 
-### 14.4 Dependency-mapping bindings
+### 14.4 Redirecting the download - `dependency-mirror`
 
-Mirroring the tarballs is not enough - the buildpack still resolves the **public** URI. A
-CNB binding of type `dependency-mapping` remaps checksum -> internal URI; each key is a
-dependency's SHA256 and its value is the mirrored location:
+Mirroring the tarballs is not enough: the buildpack still resolves the **public** URI from
+`buildpack.toml`. Paketo's dependency resolver (`libpak`) offers two ways to redirect it.
+They are **mutually exclusive** - libpak warns and ignores the mappings if both are set.
+
+#### Preferred: a dependency mirror
+
+One setting redirects **every** dependency, with no per-version list to maintain. libpak's
+own documentation gives this as the reason it exists: *"avoiding too many
+dependency-mapping bindings"*.
+
+```yaml
+env:
+  - name: BP_DEPENDENCY_MIRROR
+    value: https://artifactory.internal/artifactory/deps/{originalHost}
+```
+
+The resolver replaces the scheme, host and user from the mirror and **appends the original
+path**:
+
+```
+buildpack.toml:  https://www.python.org/ftp/python/3.10.19/Python-3.10.19.tgz
+resolved to:     https://artifactory.internal/artifactory/deps/www.python.org
+                                                   /ftp/python/3.10.19/Python-3.10.19.tgz
+```
+
+Because the upstream path is preserved, a **remote/generic repository that mirrors upstream
+layout** needs no per-file curation. Related knobs:
+
+| Knob | Effect |
+|------|--------|
+| `BP_DEPENDENCY_MIRROR` | Default mirror for all upstream hosts |
+| `BP_DEPENDENCY_MIRROR_<HOSTNAME>` | Per-host mirror (encode `.`/`-` as `__`, upper case) |
+| `{originalHost}` | Placeholder substituted with the upstream hostname |
+| `skip-path` | Strips a prefix from the original path when layouts differ |
+
+Only the `https://` and `file://` schemes are accepted.
+
+> **Credentials:** the resolver honours userinfo in the mirror URL, but a mirror needing
+> auth must be supplied as a **binding** of type `dependency-mirror`, never as
+> `BP_DEPENDENCY_MIRROR` env - env lands in the world-readable runtimes ConfigMap and in
+> every `Image` spec.
+
+#### Fallback: per-dependency mappings
+
+A binding of type `dependency-mapping` maps each dependency's SHA256 to its mirrored
+location. The checksum is both the lookup key and the integrity check, so a redirect cannot
+silently serve the wrong file:
 
 ```
 type:                                                              dependency-mapping
 a078fb2d7a216071ebbe2e34b5f5355dd6b6e9b0cd1bacc4a41c63990c5a0eec:  https://artifactory.internal/.../Python-3.10.19.tgz
 ```
 
-Attached per build via `spec.build.services`, exactly like any other binding. This binding
-is **required** for §4 axis 2 to work offline.
+Use this only when the artifact server cannot reproduce upstream path structure - it must
+be regenerated whenever a buildpackage bump (§4 axis 1) changes the dependency set, or
+builds break for the versions that moved.
 
-> Whenever a buildpackage version is bumped (§4 axis 1) the dependency set changes:
-> re-extract `buildpack.toml`, mirror any new tarballs, and refresh the mapping - or builds
-> break for the versions that moved.
+Either form is attached per build through `spec.build.services`, alongside the CA binding.
 
 ---
 
@@ -694,9 +742,10 @@ is **required** for §4 axis 2 to work offline.
    standard `api/pypi`, `api/npm`, `api/go` paths, and are those repos anonymous-read? If
    they require auth, the credential must reach the build pod without landing in the
    world-readable runtimes ConfigMap (a CNB service binding, not env).
-2. **Dependency-mapping generation** (§14.4) - built by hand, or generated by a mirroring
-   job that reads each `buildpack.toml` and emits the binding? The latter is strongly
-   preferred, since the mapping must be regenerated on every buildpackage bump.
+2. **Mirror layout** (§14.4) - can the artifact server expose the runtime tarballs under
+   their upstream paths (enabling a single `BP_DEPENDENCY_MIRROR`), or must per-dependency
+   `dependency-mapping` bindings be generated from each `buildpack.toml`? The former
+   removes a regeneration step on every buildpackage bump.
 3. **Build service packaging** - separate Deployment in this chart, or a second container
    in the API pod? A watch loop and an HTTP API have different scaling and restart
    characteristics. *Default if undecided: separate Deployment, single replica.*
