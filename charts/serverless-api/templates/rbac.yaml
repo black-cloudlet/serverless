@@ -44,6 +44,12 @@ rules:
   - apiGroups: ["kpack.io"]
     resources: ["builds"]
     verbs: ["get", "list", "watch"]
+  # Each function builds under its OWN ServiceAccount, pairing that function's
+  # caller-supplied git token with the shared registry credential, so one
+  # tenant's build cannot read another's token. The API creates them. (§6)
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

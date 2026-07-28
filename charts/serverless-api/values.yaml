@@ -106,10 +106,19 @@ build:
   # This repository must exist and be writable by the build ServiceAccount.
   builderRepository: serverless/builders
 
+  # Identity the BUILDERS run as. Builders only compose and push a builder image
+  # from the stack and store - they never clone source, so this needs registry
+  # credentials and no git credential.
+  #
+  # Function builds do NOT use this account: each function's git token is its
+  # own (supplied by the caller), so the API creates a per-function
+  # ServiceAccount pairing that function's git Secret with the shared registry
+  # credential below. docs/BUILD-PIPELINE.md §6.
   serviceAccount:
     name: kpack-builder
     # One dockerconfigjson credential does double duty: kpack pushes the built
-    # image with it, and the function's KSVC pulls the image with it.
+    # image with it, and the function's KSVC pulls the image with it. It is the
+    # only build credential that is platform-wide, so it is the only one here.
     registrySecret:
       name: serverless-registry-creds
       # Create it from the ClusterSecretStore (see externalSecrets). Set false
@@ -118,17 +127,6 @@ build:
       key: cloudlet/platforms/serverless
       usernameProperty: registry-username
       passwordProperty: registry-password
-    # Persisted git credential - rebuilds happen without the caller (CVE
-    # patches, webhooks), so the token cannot be request-scoped. docs §7.2.
-    gitSecret:
-      name: serverless-git-creds
-      create: true
-      # Annotated onto the Secret as `kpack.io/git` so kpack matches it to the
-      # source repository host.
-      host: https://git.internal
-      key: cloudlet/platforms/serverless
-      usernameProperty: git-username
-      passwordProperty: git-token
 
   # Redirects EVERY buildpack runtime download (CPython/Node/Go tarballs) to the
   # on-prem artifact server - required for airgapped builds. `{originalHost}` is

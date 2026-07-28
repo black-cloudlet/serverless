@@ -51,7 +51,7 @@ deploy it, and the control flow that keeps it correct under active/active.
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
-| Git credential | Persistent secret on the build ServiceAccount (annotated `kpack.io/git`) |
+| Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
 ---
 
@@ -91,7 +91,7 @@ Platform chart                                          once per cluster
 serverless-api chart                                    per release, every site
 ├── Builder x3              ...... go | python | node   (workloads namespace)
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
-├── kpack-builder SA        ...... registry push/pull + git credentials
+├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
 ├── ExternalSecret          ...... the registry dockerconfigjson (§6)
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
 
@@ -254,7 +254,7 @@ image's life:
 
 ```
 ExternalSecret ──► Secret (dockerconfigjson)
-                     ├──► kpack-builder SA          → kpack PUSHES the built image
+                     ├──► build ServiceAccounts     → kpack PUSHES the built image
                      └──► ksvc imagePullSecrets      → Knative PULLS it to run
 ```
 
@@ -268,21 +268,49 @@ splitting the credential would mean maintaining two secrets with identical conte
 | `secrets:` | Registry auth for **push** (`spec.tag`) and pulling stack/store images |
 | `imagePullSecrets:` | The build **pod** pulling the composed builder image |
 
-### Git credential
+### Git credential - per function, never shared
 
-Per §7.2, the customer's git token is persisted (it is needed for rebuilds the user did not
-initiate - CVE patches, webhooks). kpack authenticates git through a secret on the same
-ServiceAccount, annotated with the git host:
+Unlike the registry, **the git token belongs to the function, not the platform**: the caller
+supplies it on create, and the API persists it as `{workload}-git` (per §7.2, because
+rebuilds happen without the caller - CVE patches, webhooks).
+
+kpack resolves git credentials from the ServiceAccount named by the `Image`, matching
+secrets by host annotation. A single shared account would therefore hand **one tenant's
+token to another tenant's build** - so there is no platform-wide git credential anywhere in
+this design.
+
+Instead there are **two kinds of ServiceAccount**:
+
+| Account | Created by | Holds | Used by |
+|---------|-----------|-------|---------|
+| `kpack-builder` | the chart | registry credential only | `Builder` objects (compose + push a builder image; never clone source) |
+| `fn-{name}-{group}` | the **API**, per function | that function's git Secret **+** the shared registry credential | the function's `Image` |
+
+The per-function account is created alongside the function and named on its `Image`:
 
 ```yaml
+apiVersion: v1
+kind: ServiceAccount
 metadata:
-  annotations:
-    kpack.io/git: https://git.internal
+  name: fn-hello-payments
+  namespace: serverless-workloads
+secrets:
+  - name: serverless-registry-creds     # shared, from the chart (§6)
+  - name: hello-payments-git            # this function's token, from the API
+imagePullSecrets:
+  - name: serverless-registry-creds
 ```
 
-**Scope note:** the build SA is shared platform infrastructure, so any function build can
-clone anything its git credential can reach. Scope the token read-only and to the narrowest
-project set that is workable.
+The chart passes the shared registry Secret's name to the API as
+`SERVERLESS_BUILD__REGISTRY_SECRET` so it can assemble these, and grants the API
+`serviceaccounts` write in the workloads namespace (§12).
+
+> **Secret shape - API work required.** The existing `{workload}-git` Secret is `Opaque`
+> with a single `token` key, which kpack cannot consume. kpack needs
+> `kubernetes.io/basic-auth` (`username` + `password`) carrying the annotation
+> `kpack.io/git: <host>` so it can match the credential to the source repository. Building
+> the per-function ServiceAccount therefore also means emitting the git Secret in
+> kpack's shape.
 
 ---
 
@@ -472,6 +500,7 @@ the workloads namespace of every cluster:
 | `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build service (watch) |
 | `builds.kpack.io` | get, list, watch | status resolution (§10), log lookup |
 | `pods`, `pods/log` | get, list | per-phase build logs (§7) |
+| `serviceaccounts` | get, list, create, update, patch, delete | the per-function build account (§6) |
 
 `Builder`, `ClusterStack` and `ClusterStore` are managed by Helm/ArgoCD, not by the
 services - no runtime write permission on them.
@@ -496,7 +525,7 @@ spec:
   builder:
     kind: Builder
     name: python
-  serviceAccountName: kpack-builder
+  serviceAccountName: fn-hello-payments   # per-function: its git token + the shared registry cred
   source:
     git:
       url: https://git.internal/payments/hello.git
@@ -554,6 +583,9 @@ credential when the internal registry requires auth.
 
 ### 13.4 Build ServiceAccount (registry push/pull + git)
 
+The account the **Builders** run as. No git credential: a Builder composes and pushes a
+builder image, it never clones source. The per-function build account is in §6.
+
 ```yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -562,7 +594,6 @@ metadata:
   namespace: serverless-workloads
 secrets:                       # registry auth for push + stack/store pulls
   - name: serverless-registry-creds
-  - name: serverless-git-creds # annotated kpack.io/git
 imagePullSecrets:              # build pod pulling the composed builder image
   - name: serverless-registry-creds
 ```

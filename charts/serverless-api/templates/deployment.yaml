@@ -58,6 +58,13 @@ spec:
               value: {{ .Values.caBundle.mountPath | quote }}
             - name: SERVERLESS_RUNTIMES_FILE
               value: {{ printf "%s/runtimes.yaml" .Values.runtimesMountPath | quote }}
+            {{- if .Values.build.enabled }}
+            # The shared registry credential the API attaches to each
+            # per-function build ServiceAccount alongside that function's own
+            # git Secret. docs/BUILD-PIPELINE.md §6.
+            - name: SERVERLESS_BUILD__REGISTRY_SECRET
+              value: {{ .Values.build.serviceAccount.registrySecret.name | quote }}
+            {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
             - name: REQUESTS_CA_BUNDLE
