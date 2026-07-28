@@ -20,13 +20,13 @@ def test_load_runtimes_from_file(tmp_path):
 
 def test_load_runtimes_missing_file_falls_back(tmp_path):
     reg = load_runtimes(str(tmp_path / "does-not-exist.yaml"))
-    assert reg.names() == ["python", "go", "javascript"]
+    assert reg.names() == ["python", "go", "node", "typescript"]
 
 
 def test_load_runtimes_empty_list_falls_back(tmp_path):
     f = tmp_path / "runtimes.yaml"
     f.write_text("runtimes: []\n")
-    assert load_runtimes(str(f)).names() == ["python", "go", "javascript"]
+    assert load_runtimes(str(f)).names() == ["python", "go", "node", "typescript"]
 
 
 def test_registry_helpers():

@@ -44,7 +44,9 @@ runtimesMountPath: /etc/serverless/runtimes
 runtimes:
   - name: python
   - name: go
-  - name: javascript
+  - name: node
+  # Built by the Node.js buildpack (there is no separate TypeScript buildpack).
+  - name: typescript
 
 sites:
   - name: central                 

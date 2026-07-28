@@ -27,7 +27,8 @@ deploy it, and the control flow that keeps it correct under active/active.
 11. [Lifecycle & Cleanup](#11-lifecycle--cleanup)
 12. [RBAC](#12-rbac)
 13. [Sample Manifests](#13-sample-manifests)
-14. [Open Questions](#14-open-questions)
+14. [Airgapped Mirror Inventory](#14-airgapped-mirror-inventory)
+15. [Open Questions](#15-open-questions)
 
 ---
 
@@ -603,22 +604,111 @@ spec:
 
 ---
 
-## 14. Open Questions
+## 14. Airgapped Mirror Inventory
+
+Three **distinct** classes of artefact must be mirrored. Mirroring only the first two is
+the most common airgapped failure, and it fails late - at the `build` phase of the first
+real build, not at install time.
+
+### 14.1 Container images - kpack platform
+
+Pulled by the platform chart. Registry `ghcr.io`, repository prefix
+`buildpacks-community/kpack/`, tag = the chart's `appVersion`:
+
+| Image | Pulled by |
+|-------|-----------|
+| `controller` | kpack Deployment |
+| `webhook` | kpack Deployment |
+| `build-init` | every build pod (`prepare`) |
+| `build-waiter` | every build pod |
+| `rebase` | rebase builds (CVE patches) |
+| `completion` | every build pod |
+| `lifecycle` | referenced by the `ClusterLifecycle` |
+
+### 14.2 Container images - Paketo content
+
+| Image | Used by |
+|-------|---------|
+| `paketobuildpacks/build-jammy-base` | `ClusterStack.spec.buildImage` |
+| `paketobuildpacks/run-jammy-base` | `ClusterStack.spec.runImage` (and the running function) |
+| `paketobuildpacks/go` | `ClusterStore` |
+| `paketobuildpacks/nodejs` | `ClusterStore` |
+| `paketobuildpacks/python` | `ClusterStore` |
+
+Plus the **composed builder images** this platform *produces* - they are pushed to
+`registry.internal/serverless/builders/<lang>` by the `Builder` objects, so that repository
+must exist and be writable by the build ServiceAccount.
+
+### 14.3 Runtime distributions - **not images**
+
+A Paketo buildpackage ships the buildpack *logic and metadata*, **not** the language
+runtime. Its `buildpack.toml` points at the public internet - e.g. the `cpython` buildpack
+carries 60 dependency entries of the form:
+
+```toml
+[[metadata.dependencies]]
+  id       = "python"
+  version  = "3.10.19"
+  uri      = "https://www.python.org/ftp/python/3.10.19/Python-3.10.19.tgz"
+  checksum = "sha256:a078fb2d7a216071ebbe2e34b5f5355dd6b6e9b0cd1bacc4a41c63990c5a0eec"
+```
+
+In an airgapped cluster that fetch fails, so `BP_CPYTHON_VERSION` (§4 axis 2) cannot be
+satisfied by the image alone. The tarballs for every advertised
+`runtimes[].versions` entry must be mirrored **to the artifact server** (they are files,
+not registry content):
+
+| Runtime | Upstream source to mirror |
+|---------|---------------------------|
+| python | `https://www.python.org/ftp/python/<ver>/Python-<ver>.tgz` |
+| node | `https://nodejs.org/dist/v<ver>/node-v<ver>-linux-x64.tar.gz` |
+| go | `https://go.dev/dl/go<ver>.linux-amd64.tar.gz` |
+
+The authoritative list is the `uri` + `checksum` fields in each buildpackage's
+`buildpack.toml` (readable with `pack buildpack inspect <image>`), including the
+sub-buildpacks (`cpython`, `pip`, `poetry`, `node-engine`, `npm-install`, ...).
+
+### 14.4 Dependency-mapping bindings
+
+Mirroring the tarballs is not enough - the buildpack still resolves the **public** URI. A
+CNB binding of type `dependency-mapping` remaps checksum -> internal URI; each key is a
+dependency's SHA256 and its value is the mirrored location:
+
+```
+type:                                                              dependency-mapping
+a078fb2d7a216071ebbe2e34b5f5355dd6b6e9b0cd1bacc4a41c63990c5a0eec:  https://artifactory.internal/.../Python-3.10.19.tgz
+```
+
+Attached per build via `spec.build.services`, exactly like any other binding. This binding
+is **required** for §4 axis 2 to work offline.
+
+> Whenever a buildpackage version is bumped (§4 axis 1) the dependency set changes:
+> re-extract `buildpack.toml`, mirror any new tarballs, and refresh the mapping - or builds
+> break for the versions that moved.
+
+---
+
+## 15. Open Questions
 
 1. **Artifact server layout** - are pip/npm/go served by one Artifactory/Nexus host on the
    standard `api/pypi`, `api/npm`, `api/go` paths, and are those repos anonymous-read? If
    they require auth, the credential must reach the build pod without landing in the
    world-readable runtimes ConfigMap (a CNB service binding, not env).
-2. **Runtime distributions** - do the mirrored buildpackages bundle the CPython/Node/Go
-   distributions, or is a Paketo *dependency-mapping* binding needed to resolve them
-   offline? This determines whether §4 axis 2 works airgapped as written.
-3. **`javascript` -> `node` rename** - the current runtimes list and
-   `runtimes.py::_DEFAULT_RUNTIMES` say `javascript`. Production reads the ConfigMap so the
-   rename is cosmetic, but the fallback and tests should follow, or `javascript` should be
-   kept as a fifth alias for backwards compatibility.
-4. **Build service packaging** - separate Deployment in this chart, or a second container
+2. **Dependency-mapping generation** (§14.4) - built by hand, or generated by a mirroring
+   job that reads each `buildpack.toml` and emits the binding? The latter is strongly
+   preferred, since the mapping must be regenerated on every buildpackage bump.
+3. **Build service packaging** - separate Deployment in this chart, or a second container
    in the API pod? A watch loop and an HTTP API have different scaling and restart
-   characteristics.
-5. **Prune cadence** (§11) - periodic reconcile, or triggered explicitly on switchover?
-6. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
+   characteristics. *Default if undecided: separate Deployment, single replica.*
+4. **Prune cadence** (§11) - periodic reconcile, or triggered explicitly on switchover?
+   *Default if undecided: periodic.*
+5. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
    trees (node_modules, Go module graphs) may need explicit limits and a bigger cache.
+
+### Resolved
+
+- **`javascript` -> `node` rename** - done. The runtimes list is now `python`, `go`,
+  `node`, `typescript` across the chart values, `runtimes.py::_DEFAULT_RUNTIMES`, the
+  contract docstring and the tests. Safe without a compatibility alias because function
+  creation has never succeeded (`builder.build` raises `NotImplementedError`), so no
+  deployed function carries `ANNOTATION_RUNTIME: javascript` for §9.3 to reconstruct.

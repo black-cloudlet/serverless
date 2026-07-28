@@ -214,7 +214,7 @@ flowchart LR
 | `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). |
 | `branch` | yes | Branch / ref to build. |
 | `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see §7). |
-| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `javascript`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
+| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `node`, `typescript`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
 

@@ -21,7 +21,7 @@ class BuildRequest:
         git_url: Source repository URL.
         branch: Branch to build.
         git_token: Transient git token (used to clone, never persisted).
-        runtime: Function runtime (python/go/javascript).
+        runtime: Function runtime (python/go/node/typescript).
     """
 
     name: str

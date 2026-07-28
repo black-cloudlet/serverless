@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 # Built-in fallback when the file is absent (local dev / tests); production
 # always mounts the ConfigMap.
-_DEFAULT_RUNTIMES = ("python", "go", "javascript")
+_DEFAULT_RUNTIMES = ("python", "go", "node", "typescript")
 
 
 class RuntimeSpec(BaseModel):
