@@ -1,0 +1,37 @@
+{{- if .Values.build.enabled }}
+# One namespaced kpack Builder per language, composed from the cluster-scoped
+# ClusterStack and ClusterStore that the platform chart installs once per
+# cluster. Each Builder builds and PUSHES its own builder image to the internal
+# registry, then reports it in `status.latestImage`.
+#
+# A Builder must be Ready before any Image referencing it will build - if builds
+# never start, check these first. docs/BUILD-PIPELINE.md §3.
+#
+# Several runtimes may share one Builder (typescript builds on the node Builder),
+# so these are named after the BUILDER, not the runtime; `runtimes[].builder`
+# holds the mapping.
+{{- range .Values.build.builders }}
+---
+apiVersion: kpack.io/v1alpha2
+kind: Builder
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" $ | nindent 4 }}
+spec:
+  serviceAccountName: {{ $.Values.build.serviceAccount.name }}
+  tag: {{ include "serverless-api.builderImage" (dict "root" $ "name" .name) | quote }}
+  stack:
+    name: {{ $.Values.build.stack.name }}
+    kind: ClusterStack
+  store:
+    name: {{ $.Values.build.store.name }}
+    kind: ClusterStore
+  order:
+    - group:
+        {{- range .order }}
+        - id: {{ . }}
+        {{- end }}
+{{- end }}
+{{- end }}
