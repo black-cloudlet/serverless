@@ -12,6 +12,10 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 > **airgapped** OpenShift environment.
 >
 > Release history and per-version changes live in [CHANGELOG.md](../CHANGELOG.md).
+>
+> The function **build pipeline** (kpack + Cloud Native Buildpacks) is designed in detail in
+> [BUILD-PIPELINE.md](./BUILD-PIPELINE.md), which refines §3.1, §4, §7.2 and §9 for the
+> build path.
 
 ---
 
