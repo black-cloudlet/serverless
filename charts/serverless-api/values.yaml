@@ -84,14 +84,6 @@ runtimes:
     versions: ["18", "20", "22"]
     buildEnv: []
     # - { name: npm_config_registry, value: "https://artifactory.internal/artifactory/api/npm/npm/" }
-  # Built by the Node.js buildpack (there is no separate TypeScript buildpack), so
-  # it deliberately resolves to the same builder as `node`.
-  - name: typescript
-    builder: node
-    versionEnv: BP_NODE_VERSION
-    defaultVersion: "20"
-    versions: ["18", "20", "22"]
-    buildEnv: []
 
 # Function image builds (kpack + Cloud Native Buildpacks). docs/BUILD-PIPELINE.md.
 #

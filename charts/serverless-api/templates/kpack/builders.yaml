@@ -1,5 +1,4 @@
 {{- if .Values.build.enabled }}
-# Named after the builder, not the runtime - typescript shares node's.
 # A Builder must be Ready before any Image using it will build. (§3)
 {{- range .Values.build.builders }}
 ---

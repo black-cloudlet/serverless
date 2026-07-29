@@ -40,8 +40,7 @@ deploy it, and the control flow that keeps it correct under active/active.
 | kpack install | The `kpack` Helm chart is a **subchart** of the platform chart |
 | Buildpack content | `ClusterStack`, `ClusterStore` **and** `Builder` all ship in the **serverless-api chart** |
 | Cluster singletons | Safe because one `serverless-api` release runs per cluster; `create: false` if that changes |
-| Languages | `go`, `python`, `node`, `typescript` |
-| TypeScript | **Alias** to the Node builder - Paketo builds TS with the Node.js buildpack |
+| Languages | `go`, `python`, `node` |
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **API namespace**, not the workloads one - build pods execute tenant source and stay off the tenant namespace boundary (§2.1) |
@@ -63,8 +62,8 @@ deploy it, and the control flow that keeps it correct under active/active.
 
 - Build a function from git, in-cluster, fully **airgapped** - no egress to public
   registries, PyPI, npmjs or `proxy.golang.org`.
-- Offer **four languages** (Go, Python, Node, TypeScript) with a selectable runtime
-  version, from mirrored buildpack content.
+- Offer **three languages** (Go, Python, Node) with a selectable runtime version, from
+  mirrored buildpack content.
 - **Continuously rebuild** on base-image/buildpack CVE patches without user action -
   this is the reason kpack was chosen over a one-shot builder.
 - Stay correct under **active/active** with a floating DNS address: concurrent or
@@ -163,7 +162,6 @@ airgapped cluster it usually means the Stack or Store could not pull from the mi
 | `go` | `go` | vendored (`go-mod-vendor`), non-vendored (`go mod download`) |
 | `python` | `python` | `requirements.txt` (pip), `pyproject.toml` (poetry x2) |
 | `node` | `node` | npm (`npm-install`) |
-| `typescript` | `node` | npm - same builder |
 
 Orders name **component** buildpacks explicitly rather than the language composites, so the
 platform supports exactly the paths it mirrors. yarn, pipenv and conda groups are omitted:
@@ -172,10 +170,13 @@ a build on a dependency that was never mirrored. Narrowing does not shrink the i
 mirror - it shrinks the dependency mirror (§14.3), because only buildpacks that can run
 ever download.
 
-**TypeScript is not a separate buildpack.** Paketo builds TS through the Node.js
-buildpack via the project's build script. Exposing it as a distinct *runtime* that resolves
-to the *same* builder gives users the four choices they expect without a duplicate builder
-image to compose, push and patch.
+**TypeScript is not offered.** Paketo has no TypeScript buildpack - TS builds through the
+Node.js buildpack, which runs the project's build script and therefore needs the
+`typescript` compiler pulled from npm as a devDependency. Without that mirrored, the build
+fails at `npm install`, so the runtime is not advertised. `node-run-script` stays in the
+node order (plain JS projects use build scripts too), so a TS app becomes buildable the
+moment `npm_config_registry` points at a mirror carrying its devDependencies - no chart
+change beyond re-adding the runtime entry.
 
 One shared `ClusterStack` (jammy base) serves all three builders. Per-language stacks
 (e.g. Go on `tiny`/`static` for smaller images) are a later optimisation.
@@ -198,7 +199,7 @@ Three independent axes. Conflating them is the most common source of confusion:
 |---------|---------|
 | python | `BP_CPYTHON_VERSION` |
 | go | `BP_GO_VERSION` |
-| node / typescript | `BP_NODE_VERSION` |
+| node | `BP_NODE_VERSION` |
 
 > Selecting a version only *asks* for it - the buildpack still has to fetch that runtime
 > from the internet. Offline, this axis works only once the download is redirected to the
@@ -212,7 +213,7 @@ pointed at the on-prem artifact server:
 | Runtime | Env |
 |---------|-----|
 | python | `PIP_INDEX_URL` (+ `PIP_EXTRA_INDEX_URL`) |
-| node / typescript | `npm_config_registry` |
+| node | `npm_config_registry` |
 | go | `GOPROXY`, `GOSUMDB=off` (or vendored deps with `GOFLAGS=-mod=vendor`) |
 
 > Do **not** use `PIP_TRUSTED_HOST`, `npm strict-ssl=false`, `GOINSECURE` or
@@ -235,8 +236,8 @@ runtimes:
     versions: ["3.11", "3.12", "3.13"]
     buildEnv:
       - { name: PIP_INDEX_URL, value: "https://artifactory.internal/artifactory/api/pypi/pypi/simple" }
-  - name: typescript
-    builder: node                      # alias
+  - name: node
+    builder: node
     versionEnv: BP_NODE_VERSION
     defaultVersion: "20"
     versions: ["18", "20", "22"]
@@ -907,8 +908,11 @@ Either form is attached per build through `spec.build.services`, alongside the C
 
 ### Resolved
 
-- **`javascript` -> `node` rename** - done. The runtimes list is now `python`, `go`,
-  `node`, `typescript` across the chart values, `runtimes.py::_DEFAULT_RUNTIMES`, the
-  contract docstring and the tests. Safe without a compatibility alias because function
+- **`javascript` -> `node` rename** - done. The runtimes list is `python`, `go`, `node`
+  across the chart values, `runtimes.py::_DEFAULT_RUNTIMES`, the contract docstring and
+  the tests. TypeScript was offered briefly as an alias to the node builder and has been
+  withdrawn: it needs the npm registry mirror to fetch the compiler as a devDependency,
+  which is not mirrored. A TS app can still be deployed by committing compiled JS, or by
+  building under the `node` runtime once `npm_config_registry` is set. Safe without a compatibility alias because function
   creation has never succeeded (`builder.build` raises `NotImplementedError`), so no
   deployed function carries `ANNOTATION_RUNTIME: javascript` for §9.3 to reconstruct.
