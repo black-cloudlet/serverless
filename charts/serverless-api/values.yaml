@@ -96,11 +96,72 @@ build:
   # workloads still deploy, only the build resources are omitted.
   enabled: true
 
-  # Cluster-scoped objects installed by the platform chart, referenced by name.
+  # The ClusterStack and ClusterStore are CLUSTER-SCOPED singletons. This chart
+  # owns them because exactly one serverless-api release runs per cluster; if
+  # that ever stops being true, set `create: false` on all but one release (or
+  # move them to a platform chart) - two releases would fight over one object.
+  #
+  # All images resolve against `registry.url` (the on-prem mirror), so nothing
+  # here points at a public registry.
   stack:
     name: serverless-base
+    create: true
+    # Must match the images' `io.buildpacks.stack.id` label, and build and run
+    # must be the same variant. Verify before switching to full/tiny - they
+    # carry different ids:
+    #   docker inspect <image> --format '{{ index .Config.Labels "io.buildpacks.stack.id" }}'
+    id: io.buildpacks.stacks.jammy
+    # `base` fits Go, Python and Node. `full` only adds OS libraries for native
+    # extensions - it does NOT bundle language runtimes (§14.3).
+    buildImage:
+      repository: paketobuildpacks/build-jammy-base
+      version: ""
+    runImage:
+      repository: paketobuildpacks/run-jammy-base
+      version: ""
+
   store:
     name: serverless-store
+    create: true
+    # Buildpackage images. These must collectively provide EVERY id used in the
+    # builder orders below, or a Builder never becomes Ready and nothing builds.
+    #
+    # Listed as individual components, matching the orders exactly, so the
+    # mirror carries only what the supported paths need. The alternative is the
+    # three language composites (paketobuildpacks/{go,python,nodejs}), which
+    # bundle their components - fewer entries, but pulls in the pipenv, conda
+    # and yarn buildpacks the orders never use. Confirm with
+    # `pack buildpack inspect <image>` before relying on a composite.
+    #
+    # `version` pins the mirrored tag; empty means `latest`. Pin these in an
+    # airgapped environment - a floating tag can introduce a buildpack whose
+    # dependencies were never mirrored.
+    sources:
+      # shared utilities
+      - { repository: paketobuildpacks/ca-certificates, version: "" }
+      - { repository: paketobuildpacks/watchexec, version: "" }
+      - { repository: paketobuildpacks/git, version: "" }
+      - { repository: paketobuildpacks/procfile, version: "" }
+      - { repository: paketobuildpacks/environment-variables, version: "" }
+      - { repository: paketobuildpacks/image-labels, version: "" }
+      # go
+      - { repository: paketobuildpacks/go-dist, version: "" }
+      - { repository: paketobuildpacks/go-mod-vendor, version: "" }
+      - { repository: paketobuildpacks/go-build, version: "" }
+      # python
+      - { repository: paketobuildpacks/cpython, version: "" }
+      - { repository: paketobuildpacks/pip, version: "" }
+      - { repository: paketobuildpacks/pip-install, version: "" }
+      - { repository: paketobuildpacks/poetry, version: "" }
+      - { repository: paketobuildpacks/poetry-install, version: "" }
+      - { repository: paketobuildpacks/poetry-run, version: "" }
+      - { repository: paketobuildpacks/python-start, version: "" }
+      # node
+      - { repository: paketobuildpacks/node-engine, version: "" }
+      - { repository: paketobuildpacks/npm-install, version: "" }
+      - { repository: paketobuildpacks/node-run-script, version: "" }
+      - { repository: paketobuildpacks/node-start, version: "" }
+      - { repository: paketobuildpacks/npm-start, version: "" }
 
   # Composed builder images are pushed to `{registry.url}/{builderRepository}/{name}`.
   # This repository must exist and be writable by the build ServiceAccount.

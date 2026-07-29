@@ -38,8 +38,8 @@ deploy it, and the control flow that keeps it correct under active/active.
 |-------|----------|
 | Build engine | **kpack** (Kubernetes-native Cloud Native Buildpacks), not `func`/Tekton |
 | kpack install | The `kpack` Helm chart is a **subchart** of the platform chart |
-| Cluster-scoped content | `ClusterStack` + `ClusterStore` ship in the **platform chart** (cluster singletons) |
-| Namespaced content | `Builder` objects ship in the **serverless-api chart** (workloads namespace) |
+| Buildpack content | `ClusterStack`, `ClusterStore` **and** `Builder` all ship in the **serverless-api chart** |
+| Cluster singletons | Safe because one `serverless-api` release runs per cluster; `create: false` if that changes |
 | Languages | `go`, `python`, `node`, `typescript` |
 | TypeScript | **Alias** to the Node builder - Paketo builds TS with the Node.js buildpack |
 | Stack | **One shared** jammy base stack for all languages |
@@ -84,11 +84,11 @@ Three tiers, split by **cardinality** and **rate of change**:
 
 ```
 Platform chart                                          once per cluster
-├── kpack chart (subchart)  ...... CRDs, controller, webhook, ClusterLifecycle
-├── ClusterStack            ...... jammy build + run base images
-└── ClusterStore            ...... Paketo buildpackages (go, nodejs, python)
+└── kpack chart (subchart)  ...... CRDs, controller, webhook, ClusterLifecycle
 
-serverless-api chart                                    per release, every site
+serverless-api chart                            one release per cluster/site
+├── ClusterStack            ...... jammy build + run base images   [cluster-scoped]
+├── ClusterStore            ...... the 21 buildpackages the orders use  [cluster-scoped]
 ├── Builder x3              ...... go | python | node   (workloads namespace)
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
@@ -100,11 +100,16 @@ Cluster policy                                          once per cluster
 ```
 
 **Why the split.** The kpack chart is a generic, upstream-modelled *engine* installer;
-baking Paketo content into it would make it un-reusable and would couple buildpack
-version bumps to control-plane upgrades. `ClusterStack`/`ClusterStore` are **cluster
-singletons** - two `serverless-api` releases in one cluster would collide on their names,
-so they belong one tier up. Namespaced `Builder` objects are safe per release and stay
-with the application chart.
+baking Paketo content into it would make it un-reusable and would couple buildpack version
+bumps to control-plane upgrades. Everything above the engine - stack, store and builders -
+is buildpack *content* that changes on its own cadence, so it lives together in the
+application chart where the `Builder` -> `ClusterStore` id contract is checked by one set
+of values.
+
+`ClusterStack` and `ClusterStore` are **cluster-scoped singletons**, which is safe only
+because exactly one `serverless-api` release runs per cluster. If a second release is ever
+added to a cluster, set `build.stack.create` / `build.store.create` to false on all but one,
+or promote them back to the platform chart.
 
 **Ordering.** kpack's CRDs are templated (not in a `crds/` directory) so the conversion
 webhook can target the release namespace. A `ClusterStack`/`ClusterStore` therefore cannot
@@ -118,7 +123,7 @@ with ArgoCD sync waves: engine -> cluster content -> serverless-api.
 ```
 ClusterStack  (build + run base images)  ┐
 ClusterStore  (buildpackages)            ├──► Builder ──► composes and PUSHES a
-order         (paketo-buildpacks/<lang>) ┘                builder image to the registry
+order         (explicit components)      ┘                builder image to the registry
 ```
 
 A `Builder` must report `Ready` with a `status.latestImage` before any `Image` referencing
@@ -127,12 +132,19 @@ airgapped cluster it usually means the Stack or Store could not pull from the mi
 
 ### Language mapping
 
-| Runtime | Builder | Buildpack id in `order` |
-|---------|---------|-------------------------|
-| `go` | `go` | `paketo-buildpacks/go` |
-| `python` | `python` | `paketo-buildpacks/python` |
-| `node` | `node` | `paketo-buildpacks/nodejs` |
-| `typescript` | `node` | `paketo-buildpacks/nodejs` |
+| Runtime | Builder | Detection groups (supported paths) |
+|---------|---------|-----------------------------------|
+| `go` | `go` | vendored (`go-mod-vendor`), non-vendored (`go mod download`) |
+| `python` | `python` | `requirements.txt` (pip), `pyproject.toml` (poetry x2) |
+| `node` | `node` | npm (`npm-install`) |
+| `typescript` | `node` | npm - same builder |
+
+Orders name **component** buildpacks explicitly rather than the language composites, so the
+platform supports exactly the paths it mirrors. yarn, pipenv and conda groups are omitted:
+an app on one of those fails at `detect` with "no group passed" instead of failing deep in
+a build on a dependency that was never mirrored. Narrowing does not shrink the image
+mirror - it shrinks the dependency mirror (§14.3), because only buildpacks that can run
+ever download.
 
 **TypeScript is not a separate buildpack.** Paketo builds TS through the Node.js
 buildpack via the project's build script. Exposing it as a distinct *runtime* that resolves
@@ -555,7 +567,7 @@ spec:
         - id: paketo-buildpacks/python
 ```
 
-### 13.3 ClusterStack + ClusterStore (platform chart, per cluster)
+### 13.3 ClusterStack + ClusterStore (serverless-api chart, cluster-scoped)
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
