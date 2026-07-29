@@ -149,6 +149,11 @@ build:
   # repo must exist and be writable by the build ServiceAccount.
   builderRepository: serverless/builders
 
+  # Username the API pairs with each caller's git token in the basic-auth Secret
+  # kpack clones with. GitHub and GitLab PATs ignore it; Bitbucket app passwords
+  # need the real username, so override there.
+  gitUsername: x-access-token
+
   # Identity the Builders run as - registry only, no git credential. Function
   # builds use a per-function account the API creates instead (§6).
   serviceAccount:
@@ -186,6 +191,19 @@ build:
 
   # Build env applied to every runtime, merged ahead of each runtime's buildEnv.
   commonEnv: []
+
+  # Requests/limits for the build pod (kpack Image spec.build.resources). Builds
+  # are far heavier than the function they produce - a dependency resolve plus a
+  # compile - so without limits they are BestEffort and are the first thing
+  # evicted under node pressure. A runtime may override with its own
+  # `buildResources`; node_modules trees in particular need more than go.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
 
   # One kpack Builder per entry. `order` takes ids, {id, optional} entries, or
   # explicit [{group: [...]}] groups (see the builderOrder helper).

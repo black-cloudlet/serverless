@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from api.core.config import get_settings
-from api.services.builder import FuncBuilder
+from api.services.builder import KpackBuilder
 from api.services.container import ContainerService
 from api.services.deployer import Deployer
 from api.services.function import FunctionService
@@ -26,7 +26,8 @@ def get_deployer() -> Deployer:
 def get_workload_service() -> WorkloadService:
     """The shared, offering-agnostic engine both offering services compose."""
     settings = get_settings()
-    return WorkloadService(settings, get_deployer(), FuncBuilder(settings.registry))
+    deployer = get_deployer()
+    return WorkloadService(settings, deployer, KpackBuilder(settings, deployer, get_runtimes()))
 
 
 @lru_cache

@@ -66,6 +66,10 @@ spec:
               value: {{ .Values.namespaces.api | quote }}
             - name: SERVERLESS_BUILD__REGISTRY_SECRET
               value: {{ .Values.build.serviceAccount.registrySecret.name | quote }}
+            - name: SERVERLESS_BUILD__GIT_USERNAME
+              value: {{ .Values.build.gitUsername | quote }}
+            - name: SERVERLESS_BUILD__RESOURCES
+              value: {{ .Values.build.resources | toJson | quote }}
             {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}

@@ -63,6 +63,27 @@ class RegistryConfig(BaseModel):
         return f"{url}/{org}" if org else url
 
 
+class BuildConfig(BaseModel):
+    """kpack build settings (env ``SERVERLESS_BUILD__*``, set by the Helm chart)."""
+
+    # Namespace the Image CRs, per-function build ServiceAccounts and their git
+    # Secrets are created in. Deliberately not the workloads namespace: build
+    # pods run tenant source. Empty falls back to the workloads namespace so a
+    # chart-less local run still works. docs/BUILD-PIPELINE.md §2.1.
+    namespace: str = ""
+    # The shared registry credential every build pushes with, and every function
+    # KSVC pulls with. Created by the chart from the ClusterSecretStore.
+    registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
+    # Username paired with the caller's git token in the basic-auth Secret kpack
+    # consumes. GitHub and GitLab PATs accept any username; providers that check
+    # it (Bitbucket app passwords) need this overridden.
+    git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
+    # Resource requests/limits for the build pod, applied to spec.build.resources.
+    # A runtime may override with its own `buildResources` in the runtimes file.
+    # env: SERVERLESS_BUILD__RESOURCES as a JSON object.
+    resources: dict = Field(default_factory=dict)
+
+
 class CommonSettings(BaseSettings):
     """Settings any cluster-talking service needs, loaded from ``SERVERLESS_`` env.
 
@@ -84,6 +105,12 @@ class CommonSettings(BaseSettings):
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
+    build: BuildConfig = Field(default_factory=BuildConfig)
+
+    @property
+    def build_namespace(self) -> str:
+        """Namespace for build resources, falling back to the workloads namespace."""
+        return self.build.namespace or self.workloads_namespace
 
     # Per-call timeouts to a cluster's API server (seconds). Without these a down
     # cluster would block a worker thread until the OS socket timeout.

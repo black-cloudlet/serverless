@@ -241,12 +241,12 @@ def status_code_for(overall: str, created: bool) -> int:
         created: Whether the call created a new workload (vs updated one).
 
     Returns:
-        207 for Degraded, 202 for Deploying, 201 for a create, else 200.
+        207 for Degraded, 202 for Deploying/Building, 201 for a create, else 200.
     """
     if overall == "Degraded":
         return 207
-    if overall == "Deploying":
-        return 202  # accepted, still rolling out - a non-terminal poll state
+    if overall in ("Deploying", "Building"):
+        return 202  # accepted, still in flight - a non-terminal poll state
     return 201 if created else 200
 
 

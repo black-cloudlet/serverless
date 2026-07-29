@@ -25,8 +25,11 @@ class ResourceKind(Enum):
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
     CONFIG_MAP = ("v1", "ConfigMap")
     SECRET = ("v1", "Secret")
+    SERVICE_ACCOUNT = ("v1", "ServiceAccount")
     POD = ("v1", "Pod")
     POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
+    KPACK_IMAGE = ("kpack.io/v1alpha2", "Image")
+    KPACK_BUILD = ("kpack.io/v1alpha2", "Build")
 
     @property
     def api_version(self) -> str:
@@ -75,6 +78,9 @@ class Cluster:
         self.site: str = site_config.name
         self.name: str = site_config.cluster
         self._namespace: str = settings.workloads_namespace
+        # Build resources live apart from tenant workloads, so every operation
+        # takes an optional namespace and callers pass this for build objects.
+        self.build_namespace: str = settings.build_namespace
 
         self._configuration = client.Configuration()
         self._configuration.host = f"https://api.{self.name}.{settings.base_domain}:6443"
@@ -118,11 +124,12 @@ class Cluster:
         """
         _ = self._dynamic_client
 
-    def apply(self, manifest: dict) -> list[dict]:
+    def apply(self, manifest: dict, *, namespace: str | None = None) -> list[dict]:
         """Server-side apply a manifest (create-or-update), forcing conflicts.
 
         Args:
             manifest: The resource manifest dict to apply.
+            namespace: Target namespace; defaults to the workloads namespace.
 
         Returns:
             The applied object(s) as dicts (including server-assigned fields).
@@ -131,7 +138,7 @@ class Cluster:
             self._api_client,
             manifest,
             verbose=False,
-            namespace=self._namespace,
+            namespace=namespace or self._namespace,
             apply=True,
             force_conflicts=True,
             **self._opts,
@@ -139,7 +146,12 @@ class Cluster:
         return [i.to_dict() for i in results]
 
     def get(
-        self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None
+        self,
+        kind: ResourceKind,
+        name: str | None = None,
+        label_selector: str | None = None,
+        *,
+        namespace: str | None = None,
     ) -> dict | list[dict]:
         """Get a resource by name, or list a kind by label selector.
 
@@ -147,6 +159,7 @@ class Cluster:
             kind: The resource kind to fetch.
             name: The object name for a single get; None to list.
             label_selector: Label selector for the list form.
+            namespace: Target namespace; defaults to the workloads namespace.
 
         Returns:
             The object dict (named get) or a list of object dicts (list form).
@@ -154,25 +167,25 @@ class Cluster:
         Raises:
             NotFoundError: If a named get returns a 404. Other errors propagate.
         """
+        ns = namespace or self._namespace
         dynamic_api = self._dynamic_api(kind)
         if name is None:
-            results = dynamic_api.get(
-                namespace=self._namespace, label_selector=label_selector, **self._opts
-            )
+            results = dynamic_api.get(namespace=ns, label_selector=label_selector, **self._opts)
             return [i.to_dict() for i in results.items]
         try:
-            return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
+            return dynamic_api.get(name=name, namespace=ns, **self._opts).to_dict()
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
             raise
 
-    def delete(self, kind: ResourceKind, name: str) -> None:
+    def delete(self, kind: ResourceKind, name: str, *, namespace: str | None = None) -> None:
         """Delete a resource by name.
 
         Args:
             kind: The resource kind to delete.
             name: The object name.
+            namespace: Target namespace; defaults to the workloads namespace.
 
         Raises:
             NotFoundError: If the resource is already absent (404). Other errors
@@ -180,7 +193,7 @@ class Cluster:
         """
         dynamic_api = self._dynamic_api(kind)
         try:
-            dynamic_api.delete(name=name, namespace=self._namespace, **self._opts)
+            dynamic_api.delete(name=name, namespace=namespace or self._namespace, **self._opts)
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
@@ -193,6 +206,7 @@ class Cluster:
         container: str,
         since_seconds: int | None = None,
         limit_bytes: int | None = None,
+        namespace: str | None = None,
     ) -> str:
         """Read a snapshot of one pod container's current log.
 
@@ -206,6 +220,7 @@ class Cluster:
             container: The container to read (e.g. the Knative user-container).
             since_seconds: Only return logs newer than this many seconds, if set.
             limit_bytes: Cap the number of bytes returned, if set.
+            namespace: Target namespace; defaults to the workloads namespace.
 
         Returns:
             The log text.
@@ -217,7 +232,7 @@ class Cluster:
         try:
             return core.read_namespaced_pod_log(
                 name=pod,
-                namespace=self._namespace,
+                namespace=namespace or self._namespace,
                 container=container,
                 timestamps=True,
                 since_seconds=since_seconds,

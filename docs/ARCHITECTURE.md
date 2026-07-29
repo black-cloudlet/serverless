@@ -1136,7 +1136,7 @@ Serverless/
 │   │   ├── function.py              # function orchestration (build from Git)
 │   │   ├── container.py             # container orchestration (image + pull secret)
 │   │   ├── deployer.py              # multi-site fan-out (builds each site's Cluster)
-│   │   ├── builder.py               # api-side Builder (FuncBuilder; future RemoteBuilder)
+│   │   ├── builder.py               # api-side Builder (KpackBuilder; future RemoteBuilder)
 │   │   ├── ksvc.py                  # KSVC manifest construction (+ t-shirt sizes)
 │   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
@@ -1187,7 +1187,7 @@ Serverless/
 > (`builder/`) without restructuring: it would import the build contract and the
 > cluster client from `common/`, ship its own Dockerfile + image
 > (`…/serverless/builder`), and deploy from the same chart. The API talks to it
-> through `common.contract.Builder` — today via the in-process `FuncBuilder`,
+> through `common.contract.Builder` — today via the in-process `KpackBuilder`,
 > later via a `RemoteBuilder` HTTP client — with no change to the orchestration.
 > The builder subclasses `common.config.CommonSettings` (sites, CA bundle,
 > registry, timeouts) and reuses `common.cluster.Cluster`. (Identifier/validation

@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from api.models.common import (
+    BuildStatusView,
     EnvVar,
     FileMount,
     Hostname,
@@ -76,3 +77,6 @@ class FunctionResponse(WorkloadResponse):
     runtime: str | None = None
     gitRepo: str | None = None
     branch: str | None = None
+    # Present once the function has an Image on the local site; None on a site
+    # that has never built it (e.g. straight after a switchover).
+    build: BuildStatusView | None = None

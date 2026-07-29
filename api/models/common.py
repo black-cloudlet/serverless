@@ -436,6 +436,21 @@ class FileView(BaseModel):
     content: str | None = None
 
 
+class BuildStatusView(BaseModel):
+    """A function's image build state, read from the local site's kpack Image.
+
+    Attributes:
+        state: Building / Ready / Failed / Unknown.
+        image: Last successfully built image, when known. Can lag ``state`` - a
+            failed rebuild still reports the previous good image.
+        message: Why the build failed, when it did.
+    """
+
+    state: str
+    image: str | None = None
+    message: str | None = None
+
+
 class WorkloadResponse(WorkloadBase):
     """Full single-workload view: identity, live per-site status, and config.
 

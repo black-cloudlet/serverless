@@ -57,6 +57,10 @@ class RuntimeRegistry:
         """Whether ``name`` is an available runtime."""
         return any(s.name == name for s in self._specs)
 
+    def get(self, name: str) -> RuntimeSpec | None:
+        """The spec for ``name``, or None if it isn't an available runtime."""
+        return next((s for s in self._specs if s.name == name), None)
+
 
 def load_runtimes(path: str) -> RuntimeRegistry:
     """Load the runtime registry from a YAML file, falling back to defaults.

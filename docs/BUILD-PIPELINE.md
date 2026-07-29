@@ -8,7 +8,8 @@ deploy it, and the control flow that keeps it correct under active/active.
 > for the build path specifically. Where the two disagree, this document wins for build
 > concerns and ARCHITECTURE.md wins for everything else.
 >
-> Replaces the `func`/Tekton placeholder in `api/services/builder.py`.
+> Implemented by `api/services/builder.py` (`KpackBuilder`) and
+> `api/services/kpack.py`, replacing the `func`/Tekton placeholder.
 
 ---
 
@@ -391,12 +392,13 @@ created in the API namespace (§2.1), the git Secret follows them there, and the
 needs `create`/`patch`/`delete` on Secrets in that namespace - write-only, never read
 (§12).
 
-> **Secret shape - API work required.** The existing `{workload}-git` Secret is `Opaque`
-> with a single `token` key, which kpack cannot consume. kpack needs
-> `kubernetes.io/basic-auth` (`username` + `password`) carrying the annotation
-> `kpack.io/git: <host>` so it can match the credential to the source repository. Building
-> the per-function ServiceAccount therefore also means emitting the git Secret in
-> kpack's shape.
+> **Two Secrets, one token - implemented.** The API's own `{workload}-git` Secret stays
+> `Opaque` with a single `token` key in the *workloads* namespace: that is the durable copy
+> it reads back so an edit can rebuild without the client re-sending the token. kpack cannot
+> consume it - it reads only `kubernetes.io/basic-auth` Secrets carrying the annotation
+> `kpack.io/git: <scheme>://<host>` - so `KpackBuilder` writes a second, kpack-shaped copy
+> as `fn-{workload}-git` in the *build* namespace. Same token, two shapes, in two
+> namespaces, because RBAC there is write-only (§12) and the API can never read it back.
 
 ---
 
@@ -460,10 +462,22 @@ anticipates this split (`common/cluster.py`: *"the API and a future builder serv
 reach a cluster the same way"*; `common/labels.py`: *"a future builder service stamps them
 on its build resources"*).
 
-**Contract change.** `FunctionService.create` currently calls `builder.build(...)`
-synchronously and applies the ksvc with the returned digest. Under this model a build takes
-minutes, so create/update become **asynchronous**: apply the `Image`, return `202`, and let
-the build service deploy when `latestImage` appears. "Created" no longer implies "serving".
+**Contract change - implemented.** `Builder.build` no longer returns a finished image. It
+records desired state (git Secret -> ServiceAccount -> `Image`, in dependency order) and
+returns the deterministic tag the build will push to; the ksvc is applied against that tag
+immediately, and `GET` reports `Building` until kpack finishes (§10). "Created" no longer
+implies "serving", which is why the status code for `Building` is `202`.
+
+`build` is applied on **every** create and update, not only when a build input changed.
+Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
+`Image` on a site that has never had one - which is what makes a PUT after a switchover
+self-healing (§9.5). An update that changes nothing therefore keeps the deployed image
+exactly as it is: that image may be a digest a finished build resolved, and rewriting it
+back to the tag would spawn a pointless revision.
+
+Still to come, and deliberately out of scope for the current implementation: the build
+service's watch loop, and the per-function webhook endpoint that pins a pushed SHA to
+`spec.source.git.revision` (`BuildRequest.revision` already carries it).
 
 ---
 
@@ -560,6 +574,17 @@ Two properties this gives us:
 
 Build detail is read from the local cluster only; there is no cross-site aggregation on this
 path (the ksvc fan-out in ARCHITECTURE.md §4 is unchanged).
+
+**As implemented.** `KpackBuilder.status` returns `None` when the local site has no `Image`
+- the switchover case above - and `_with_build_status` folds the rest into the rollup:
+`Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
+hands the verdict back to the ksvc. The response carries a `build` object
+(`state`/`image`/`message`), so a failed build explains itself instead of surfacing as a
+bare image-pull error. `Building` maps to HTTP `202`, like `Deploying`.
+
+The first build is the case that motivates the ordering: the ksvc is already applied and is
+failing to pull an image kpack has not pushed yet. Read deployment-first, every new function
+would report `Degraded` for the whole of its first build.
 
 ---
 
@@ -914,5 +939,5 @@ Either form is attached per build through `spec.build.services`, alongside the C
   withdrawn: it needs the npm registry mirror to fetch the compiler as a devDependency,
   which is not mirrored. A TS app can still be deployed by committing compiled JS, or by
   building under the `node` runtime once `npm_config_registry` is set. Safe without a compatibility alias because function
-  creation has never succeeded (`builder.build` raises `NotImplementedError`), so no
-  deployed function carries `ANNOTATION_RUNTIME: javascript` for §9.3 to reconstruct.
+  creation had never succeeded at the time (`builder.build` raised `NotImplementedError`),
+  so no deployed function carries `ANNOTATION_RUNTIME: javascript` for §9.3 to reconstruct.

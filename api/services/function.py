@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
@@ -55,6 +57,26 @@ class FunctionService:
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a
     # status URL to poll. Deploys (esp. function builds) can be slow.
+    async def _build(self, req: BuildRequest):
+        """Declare a build off the event loop, mapping an absent backend to 503.
+
+        The builder does blocking cluster calls, and this runs inside the
+        background deploy task, so it must not occupy the loop.
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The build result.
+
+        Raises:
+            ServiceUnavailableError: If no build backend is wired.
+        """
+        try:
+            return await asyncio.to_thread(self._engine.builder.build, req)
+        except NotImplementedError as exc:
+            raise ServiceUnavailableError(str(exc)) from exc
+
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
@@ -135,19 +157,17 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        try:
-            build = self._engine.builder.build(
-                BuildRequest(
-                    name=spec.name,
-                    group=group,
-                    git_url=spec.gitRepo,
-                    branch=spec.branch,
-                    git_token=spec.gitToken,
-                    runtime=spec.runtime,
-                )
+        build = await self._build(
+            BuildRequest(
+                name=spec.name,
+                group=group,
+                git_url=spec.gitRepo,
+                branch=spec.branch,
+                git_token=spec.gitToken,
+                runtime=spec.runtime,
+                owner=user.username,
             )
-        except NotImplementedError as exc:
-            raise ServiceUnavailableError(str(exc)) from exc
+        )
 
         await self._engine.assert_workload_absent(
             spec.name, group, self._engine.deployer.resolve_targets(spec.sites)
@@ -217,36 +237,44 @@ class FunctionService:
         stored_token = existing.get("git_token")
         token = spec.gitToken or stored_token
 
-        # Rebuild only when a build input actually changes, or when the token is
-        # rotated (a config-only edit re-sends the same build inputs and does not
-        # rebuild). Otherwise keep the current image.
+        # A build input change (or a rotated token) means the image must be
+        # rebuilt; a config-only edit re-sends the same inputs and must not
+        # disturb the running image.
         build_inputs_changed = (
             git_url != existing.get("gitUrl")
             or branch != existing.get("branch")
             or runtime != existing.get("runtime")
         )
         token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
-        if build_inputs_changed or token_rotated:
-            if token is None:
-                raise ValidationError(
-                    "a git token is required to rebuild; none was supplied and none is stored"
+        if build_inputs_changed and token is None:
+            raise ValidationError(
+                "a git token is required to rebuild; none was supplied and none is stored"
+            )
+
+        image = existing["image"]
+        if token is not None:
+            # Applied on EVERY update, not only when an input changed. The
+            # manifests are a pure function of the request, so re-applying an
+            # unchanged spec is a no-op that kpack does not rebuild from - but it
+            # recreates the Image on a site that has never had one, which is what
+            # makes an update after a switchover self-healing (§9.5).
+            build = await self._build(
+                BuildRequest(
+                    name=name,
+                    group=group,
+                    git_url=git_url,
+                    branch=branch,
+                    git_token=token,
+                    runtime=runtime,
+                    owner=user.username,
                 )
-            try:
-                build = self._engine.builder.build(
-                    BuildRequest(
-                        name=name,
-                        group=group,
-                        git_url=git_url,
-                        branch=branch,
-                        git_token=token,
-                        runtime=runtime,
-                    )
-                )
-            except NotImplementedError as exc:
-                raise ServiceUnavailableError(str(exc)) from exc
-            image = build.digest or build.image
-        else:
-            image = existing["image"]
+            )
+            # Only move the KSVC when the build inputs actually changed. Otherwise
+            # keep what is deployed: it may be a digest the build service resolved
+            # from a completed build, and rewriting it back to the tag would spawn
+            # a pointless revision.
+            if build_inputs_changed or token_rotated:
+                image = build.digest or build.image
 
         # Re-store the token only when the client supplied one (rotation); omitting
         # it leaves the stored copy in place (extra_secrets empty -> not pruned).

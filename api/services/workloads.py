@@ -26,6 +26,7 @@ from api.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     LABEL_WORKLOAD,
+    BuildStatusView,
     LogsResponse,
     PodLogs,
     SiteStatus,
@@ -76,6 +77,31 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 def object_name(name: str, group: str) -> str:
     """The OpenShift name of a workload and its derived resources: {name}-{group}."""
     return f"{name}-{group}"
+
+
+def _with_build_status(overall: str, build: "BuildStatusView | None") -> str:
+    """Fold a function's build state into the KSVC rollup (docs §10).
+
+    The build is checked FIRST because a function whose image does not exist yet
+    is not broken - its KSVC is failing to pull an image kpack has not pushed,
+    which would otherwise read as ``Degraded`` for the whole of a normal first
+    build. A failed build is the honest cause of that same symptom, so it does
+    report ``Degraded``, with the reason on ``build.message``.
+
+    Args:
+        overall: The rollup of the per-site KSVC statuses.
+        build: The local site's build status, or None if it has no build.
+
+    Returns:
+        The status to report.
+    """
+    if build is None:
+        return overall
+    if build.state == "Building":
+        return "Building"
+    if build.state == "Failed":
+        return "Degraded"
+    return overall
 
 
 def _dig(obj: dict, *path: str, default=None):
@@ -1013,11 +1039,13 @@ class WorkloadService:
         if kind == OFFERING_FUNCTION:
             # function-only: runtime (from annotation); no image (built artifact)
             annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) if obj else {}
+            build = await asyncio.to_thread(self._build_status, name, group)
             return FunctionResponse(
-                **common,
+                **{**common, "overallStatus": _with_build_status(overall, build)},
                 runtime=(annotations or {}).get(ANNOTATION_RUNTIME),
                 gitRepo=spec.gitRepo if spec else None,
                 branch=spec.branch if spec else None,
+                build=build,
             )
         # container-only: the client-supplied image
         return ContainerResponse(
@@ -1026,6 +1054,27 @@ class WorkloadService:
             registryUsername=spec.registryUsername if spec else None,
             port=spec.port if spec else None,
         )
+
+    def _build_status(self, name: str, group: str) -> BuildStatusView | None:
+        """The function's build state from the LOCAL site, or None if it has no build.
+
+        Local-only on purpose: each site builds its own image (§9), so another
+        site's build says nothing about this one, and a cross-site fan-out would
+        add latency to every GET for a value that is per-site anyway.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+
+        Returns:
+            The build status, or None when there is no Image here or the build
+            backend cannot be read - never an error, since a function whose
+            image already exists must still report its KSVC status.
+        """
+        status = self.builder.status(self.deployer.local_cluster(), name, group)
+        if status is None:
+            return None
+        return BuildStatusView(state=status.state, image=status.image, message=status.message)
 
     def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
         """Decoded ``data`` of a Secret (base64 -> str); ``{}`` if it doesn't exist.
@@ -1138,6 +1187,13 @@ class WorkloadService:
             # {workload}-files Secret & ConfigMap, the imagePullSecret, and the
             # DomainMapping (whose name is the host, freeing it for reuse).
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
+            if offering == OFFERING_FUNCTION:
+                # Build objects are in another namespace, so ownerReferences
+                # cannot reach them - an orphaned Image would keep rebuilding
+                # the function forever after it is gone (§11). Every site is
+                # cleaned, not just the local one: a switchover can leave an
+                # Image behind on a site that built this function earlier.
+                self.builder.cleanup(cluster, name, group)
             return SiteStatus(site=cluster.site, status="Deleted")
 
         targets = self.deployer.resolve_targets(None)

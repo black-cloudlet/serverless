@@ -285,15 +285,29 @@ class _FakeCluster:
         raise _NF(f"{name} not found")
 
 
+class _NullBuilder:
+    """Builder that records nothing; for the non-function paths."""
+
+    def build(self, req):
+        from common.contract import BuildResult
+
+        return BuildResult(image="reg/built:1")
+
+    def status(self, cluster, name, group):
+        return None
+
+    def cleanup(self, cluster, name, group):
+        return None
+
+
 def _workload_service(clusters, builder=None, local_site=None):
-    from api.services.builder import FuncBuilder
     from api.services.workloads import WorkloadService
 
     settings = _settings_with_sites()
     d = Deployer(settings)
     d._clusters = clusters  # inject fakes (name -> _FakeCluster)
     d._local_site = local_site
-    return WorkloadService(settings, d, builder or FuncBuilder(settings.registry))
+    return WorkloadService(settings, d, builder or _NullBuilder())
 
 
 def test_host_for_resolution_and_validation():
@@ -790,7 +804,7 @@ class _ApplyCluster:
             return self._secrets[name]
         raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret
 
-    def apply(self, manifest):
+    def apply(self, manifest, namespace=None):
         self.applied.append(manifest)
         # Mirror the real client: return the applied object(s), with a uid the
         # server would assign (used to build ownerReferences for derived objects).
@@ -936,7 +950,7 @@ async def test_function_update_rebuilds_when_token_given():
     from api.services.ksvc import build_ksvc
     from api.services.workloads import _extract_image
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def __init__(self):
             self.calls = 0
 
@@ -991,7 +1005,7 @@ async def test_function_update_without_token_keeps_image():
     from api.services.ksvc import build_ksvc
     from api.services.workloads import _extract_image
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def __init__(self):
             self.calls = 0
 
@@ -1045,7 +1059,7 @@ async def test_function_create_persists_git_secret():
     from api.services.function import FunctionService
     from api.services.secrets import GIT_TOKEN_KEY
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def build(self, req):
             return BuildResult(image="reg/built:1", digest="sha256:abc")
 
@@ -1075,7 +1089,7 @@ async def test_function_update_reuses_stored_git_token():
     from api.services.ksvc import build_ksvc
     from api.services.secrets import build_git_secret, git_secret_name
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def __init__(self):
             self.calls = 0
 
