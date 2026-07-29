@@ -48,6 +48,37 @@ to). Call with the builder name:
 {{- end -}}
 
 {{/*
+A Builder's detection order, normalised to kpack's `spec.order` shape. Accepts
+three forms so a real Paketo order can be pasted in verbatim:
+
+  order: [paketo-buildpacks/go]                  one group, shorthand ids
+  order: [{id: ..., optional: true}, ...]        one group, with flags
+  order: [{group: [{id: ...}, ...]}, ...]        explicit groups, passed through
+
+Groups are tried in order and the first one whose non-optional buildpacks all
+detect wins, so the multi-group form matters: the upstream python composite has
+eight groups (pip / pipenv / poetry / ...) and collapsing them by hand loses the
+package managers you did not expand.
+*/}}
+{{- define "serverless-api.builderOrder" -}}
+{{- $order := . -}}
+{{- $first := first $order -}}
+{{- if and (kindIs "map" $first) (hasKey $first "group") -}}
+{{- toYaml $order -}}
+{{- else -}}
+{{- $entries := list -}}
+{{- range $order -}}
+{{- if kindIs "string" . -}}
+{{- $entries = append $entries (dict "id" .) -}}
+{{- else -}}
+{{- $entries = append $entries . -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml (list (dict "group" $entries)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The runtimes file, with each runtime's build environment fully resolved so the
 API applies one list and needs no merge logic of its own. Precedence, lowest
 first: ``build.commonEnv``, the dependency mirror, then the runtime's own

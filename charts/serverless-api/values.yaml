@@ -140,12 +140,45 @@ build:
   # Build env applied to every runtime, merged ahead of each runtime's buildEnv.
   commonEnv: []
 
-  # One namespaced kpack Builder per entry. `order` is a list of buildpack ids
-  # forming a single detection group.
+  # One namespaced kpack Builder per entry.
+  #
+  # `order` accepts three forms (see the builderOrder helper): a list of ids, a
+  # list of {id, optional, version} entries forming one group, or explicit
+  # [{group: [...]}] groups passed straight through to kpack.
+  #
+  # The composite ids below are deliberate. A language-family buildpackage
+  # carries BOTH the composite and every component buildpack, so mirroring the
+  # one image is enough - expanding the order does not shorten the mirror list.
+  # What expanding DOES cost is detection groups: the upstream python composite
+  # defines eight (pip / pipenv / poetry / ...) and nodejs three (yarn / npm /
+  # ...), so a hand-written single group silently drops the package managers it
+  # did not spell out. Go is the safe one to expand - it has two groups that
+  # differ only by go-mod-vendor.
+  #
+  # Every id referenced here must exist in the ClusterStore, or the Builder
+  # never becomes Ready and nothing builds. `optional` governs detection, not
+  # whether the buildpack has to be present.
   builders:
     - name: go
       order:
         - paketo-buildpacks/go
+      # Expanded equivalent, if you want explicit control over the components:
+      # - id: paketo-buildpacks/ca-certificates
+      #   optional: true
+      # - id: paketo-buildpacks/watchexec
+      #   optional: true
+      # - id: paketo-buildpacks/go-dist
+      # - id: paketo-buildpacks/git
+      #   optional: true
+      # - id: paketo-buildpacks/go-mod-vendor
+      #   optional: true          # optional here collapses upstream's two groups
+      # - id: paketo-buildpacks/go-build
+      # - id: paketo-buildpacks/procfile
+      #   optional: true
+      # - id: paketo-buildpacks/environment-variables
+      #   optional: true
+      # - id: paketo-buildpacks/image-labels
+      #   optional: true
     - name: python
       order:
         - paketo-buildpacks/python

@@ -29,9 +29,6 @@ spec:
     name: {{ $.Values.build.store.name }}
     kind: ClusterStore
   order:
-    - group:
-        {{- range .order }}
-        - id: {{ . }}
-        {{- end }}
+    {{- include "serverless-api.builderOrder" .order | nindent 4 }}
 {{- end }}
 {{- end }}
