@@ -60,17 +60,18 @@ class Builder(Protocol):
         ...
 
 
-def image_reference(registry_url: str, req: BuildRequest) -> str:
-    """The image reference convention for a build: ``{registry}/{group}/{name}:{branch}``.
+def image_reference(registry_base: str, req: BuildRequest) -> str:
+    """The image reference convention for a build: ``{base}/{group}/{name}:{branch}``.
 
     Shared so the API and the builder agree on where a build's image lands.
 
     Args:
-        registry_url: The internal registry host.
+        registry_base: Registry host, plus organization when the registry has
+            one (``RegistryConfig.base``).
         req: The build request.
 
     Returns:
         The fully-qualified image reference.
     """
-    registry = registry_url.rstrip("/")
-    return f"{registry}/{req.group}/{req.name}:{req.branch}"
+    base = registry_base.rstrip("/")
+    return f"{base}/{req.group}/{req.name}:{req.branch}"

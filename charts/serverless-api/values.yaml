@@ -39,6 +39,12 @@ sso:
 
 registry:
   url: registry.internal
+  # Organization/project path segment, when the registry namespaces its repos
+  # (Harbor projects, Quay/GitLab orgs, Artifactory repo keys). Prefixes every
+  # image the chart references and every image the API builds. Leave empty for
+  # a flat registry. Not part of the pull-secret auth key - docker keys those
+  # by host.
+  organization: ""
 
 # Function runtimes offered to clients, mounted as a file (see services.runtimes).
 #
@@ -147,8 +153,8 @@ build:
       - { repository: paketobuildpacks/node-start, version: "" }
       - { repository: paketobuildpacks/npm-start, version: "" }
 
-  # Builder images land in `{registry.url}/{builderRepository}/{name}`; the repo
-  # must exist and be writable by the build ServiceAccount.
+  # Builder images land in `{registry base}/{builderRepository}/{name}`; the
+  # repo must exist and be writable by the build ServiceAccount.
   builderRepository: serverless/builders
 
   # Identity the Builders run as - registry only, no git credential. Function

@@ -37,12 +37,25 @@ leaves it "latest" on main), and this image tracks it automatically. An optional
 {{- end -}}
 
 {{/*
+Registry host plus organization - the prefix every internal image hangs off.
+Matches RegistryConfig.base in common/config.py; keep the two in step.
+*/}}
+{{- define "serverless-api.registryBase" -}}
+{{- $url := trimAll "/" .Values.registry.url -}}
+{{- with trimAll "/" (default "" .Values.registry.organization) -}}
+{{ $url }}/{{ . }}
+{{- else -}}
+{{ $url }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The image a Builder composes and pushes.
 
   {{ include "serverless-api.builderImage" (dict "root" $ "name" "python") }}
 */}}
 {{- define "serverless-api.builderImage" -}}
-{{- printf "%s/%s/%s" .root.Values.registry.url .root.Values.build.builderRepository .name -}}
+{{- printf "%s/%s/%s" (include "serverless-api.registryBase" .root) .root.Values.build.builderRepository .name -}}
 {{- end -}}
 
 {{/*
@@ -51,7 +64,7 @@ A buildpack or stack image. Takes {repository, version}; empty version = latest.
   {{ include "serverless-api.buildpackImage" (dict "root" $ "img" .buildImage) }}
 */}}
 {{- define "serverless-api.buildpackImage" -}}
-{{- printf "%s/%s:%s" .root.Values.registry.url .img.repository (.img.version | default "latest") -}}
+{{- printf "%s/%s:%s" (include "serverless-api.registryBase" .root) .img.repository (.img.version | default "latest") -}}
 {{- end -}}
 
 {{/*

@@ -40,7 +40,7 @@ class FuncBuilder:
         Returns:
             The fully-qualified image reference.
         """
-        return image_reference(self._registry.url, req)
+        return image_reference(self._registry.base, req)
 
     def build(self, req: BuildRequest) -> BuildResult:
         """Build the function image and push it to the internal registry.

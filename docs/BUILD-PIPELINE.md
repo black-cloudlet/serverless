@@ -52,6 +52,7 @@ deploy it, and the control flow that keeps it correct under active/active.
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
+| Registry layout | `registry.url` + optional `registry.organization`, prefixing every image the chart and the API reference (§4.5) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
 ---
@@ -247,6 +248,36 @@ runtimes:
 certain interpreter versions, and in an airgapped cluster there is no fallback download.
 Whenever `build.store.sources[].version` is bumped, re-check that every advertised
 `runtimes[].versions` entry is still available, or builds will fail at `detect`/`build`.
+
+### 4.5 Registry layout
+
+Registries that namespace their repositories - Harbor projects, Quay and GitLab
+organizations, Artifactory repository keys - need a path segment between the host and
+the repository. `registry.organization` supplies it, and everything derives from the
+pair:
+
+```
+{registry.url}/{registry.organization}/...          <- the "registry base"
+
+  base/paketobuildpacks/build-jammy-base:<tag>      ClusterStack
+  base/paketobuildpacks/<component>:<tag>           ClusterStore sources
+  base/{build.builderRepository}/{name}             Builder tags
+  base/{group}/{name}:{branch}                      function images (the API)
+```
+
+Empty organization collapses this to the flat `{host}/{repository}` layout, so existing
+installs are unaffected.
+
+One deliberate exception: the pull/push Secret's `auths` key stays `registry.url` with
+**no** organization. Docker credentials are keyed by registry *host*; adding the path
+there produces a secret that silently never matches, and the failure surfaces as an
+unauthenticated pull much later.
+
+The chart and the API must agree on this, so the same rule is implemented twice - the
+`serverless-api.registryBase` template helper and `RegistryConfig.base` in
+`common/config.py`. The Deployment passes both halves as `SERVERLESS_REGISTRY__URL` and
+`SERVERLESS_REGISTRY__ORGANIZATION`; changing one implementation without the other will
+push builder images and function images to different places.
 
 ---
 
@@ -587,7 +618,7 @@ metadata:
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello-payments
 spec:
-  tag: registry.internal/serverless/functions/hello-payments
+  tag: registry.internal/<org>/payments/hello       # {base}/{group}/{name} (§4.5)
   builder:
     kind: Builder
     name: python
@@ -613,7 +644,7 @@ metadata:
   namespace: serverless-api
 spec:
   serviceAccountName: kpack-builder
-  tag: registry.internal/serverless/builders/python
+  tag: registry.internal/<org>/serverless/builders/python
   stack: { name: serverless-base, kind: ClusterStack }
   store: { name: serverless-store, kind: ClusterStore }
   order:
@@ -740,7 +771,7 @@ Pulled by the platform chart. Registry `ghcr.io`, repository prefix
 | `paketobuildpacks/python` | `ClusterStore` |
 
 Plus the **composed builder images** this platform *produces* - they are pushed to
-`registry.internal/serverless/builders/<lang>` by the `Builder` objects, so that repository
+`{registry base}/serverless/builders/<lang>` by the `Builder` objects, so that repository
 must exist and be writable by the build ServiceAccount.
 
 ### 14.3 Runtime distributions - **not images**

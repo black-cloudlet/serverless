@@ -50,6 +50,17 @@ class RegistryConfig(BaseModel):
     """Internal (mirrored) container registry."""
 
     url: str = "registry.internal"
+    # Organization/project path segment, when the registry namespaces its repos
+    # (Harbor projects, Quay/GitLab orgs, Artifactory repo keys). Empty for a
+    # flat registry.
+    organization: str = ""
+
+    @property
+    def base(self) -> str:
+        """Registry host plus organization, the prefix every image ref hangs off."""
+        url = self.url.strip("/")
+        org = self.organization.strip("/")
+        return f"{url}/{org}" if org else url
 
 
 class CommonSettings(BaseSettings):
