@@ -6,8 +6,12 @@
 # npm and go all trust internal TLS. Verification stays ON - see values.yaml.
 #
 # The bundle is the OpenShift-injected `ca-bundle` ConfigMap this chart already
-# creates in the workloads namespace, so it rotates with the cluster and needs
-# no ExternalSecret and no `ca-certificates` entry in any builder order.
+# creates in the API namespace, so it rotates with the cluster and needs no
+# ExternalSecret and no `ca-certificates` entry in any builder order.
+#
+# Scoped to the API namespace: build pods run there, apart from the tenant
+# functions (§2). The `kpack.io/build` selector still matters - it keeps the
+# mutation off the API's own Deployment, which shares the namespace.
 #
 # WHY initContainers MATTERS: kpack runs the CNB lifecycle as INIT containers
 # (prepare -> analyze -> detect -> restore -> build -> export); only `completion`
@@ -36,7 +40,7 @@ spec:
               kinds:
                 - Pod
               namespaces:
-                - {{ .Values.namespaces.workloads }}
+                - {{ .Values.namespaces.api }}
               selector:
                 matchExpressions:
                   # Set by kpack on every build pod, and on nothing else.

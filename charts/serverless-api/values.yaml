@@ -15,7 +15,14 @@ image:
 replicaCount: 2
 
 namespaces:
+  # Platform side: the API, and every kpack build resource (Builders, build
+  # ServiceAccounts, Image CRs and the build pods themselves). Builds run here
+  # rather than in `workloads` so that build pods - which execute tenant source
+  # and tenant dependency trees - are never scheduled beside the running
+  # functions. docs/BUILD-PIPELINE.md §2.
   api: serverless-api
+  # Tenant side: Knative Services, their config/secrets, their pods. Nothing
+  # the platform builds runs here; only what it has already built.
   workloads: serverless-workloads
   labels: {}
   apiLabels: {}
@@ -95,6 +102,18 @@ build:
   # Set false on clusters where kpack is not installed - the API and its
   # workloads still deploy, only the build resources are omitted.
   enabled: true
+
+  # Everything below is created in `namespaces.api`, NOT `namespaces.workloads`.
+  # A build pod executes tenant source and resolves tenant dependencies, so it
+  # is treated as platform infrastructure and kept out of the namespace serving
+  # live functions. Practical consequences:
+  #   - the registry credential is projected into BOTH namespaces (push here,
+  #     KSVC pull there);
+  #   - the client-cert user carries a second, build-only Role in this
+  #     namespace, with write-only access to Secrets (see templates/rbac.yaml);
+  #   - build pods are not covered by the workloads default-deny NetworkPolicy,
+  #     which is what lets them reach the git server and the mirror.
+  # docs/BUILD-PIPELINE.md §2.
 
   # The ClusterStack and ClusterStore are CLUSTER-SCOPED singletons. This chart
   # owns them because exactly one serverless-api release runs per cluster; if

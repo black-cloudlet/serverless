@@ -59,6 +59,12 @@ spec:
             - name: SERVERLESS_RUNTIMES_FILE
               value: {{ printf "%s/runtimes.yaml" .Values.runtimesMountPath | quote }}
             {{- if .Values.build.enabled }}
+            # Where the API creates Image CRs, per-function build
+            # ServiceAccounts and their git Secrets. Distinct from
+            # WORKLOADS_NAMESPACE: builds are platform-side and must not be
+            # scheduled beside tenant functions. docs/BUILD-PIPELINE.md §2.
+            - name: SERVERLESS_BUILD__NAMESPACE
+              value: {{ .Values.namespaces.api | quote }}
             # The shared registry credential the API attaches to each
             # per-function build ServiceAccount alongside that function's own
             # git Secret. docs/BUILD-PIPELINE.md §6.

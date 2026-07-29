@@ -44,6 +44,7 @@ deploy it, and the control flow that keeps it correct under active/active.
 | TypeScript | **Alias** to the Node builder - Paketo builds TS with the Node.js buildpack |
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
+| Build namespace | The **API namespace**, not the workloads one - build pods execute tenant source and stay off the tenant namespace boundary (§2.1) |
 | Image CR writer | The **API** (POST / PUT / webhook) |
 | Digest propagation | The **build service** watches `status.latestImage` and updates the ksvc in *all* sites |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
@@ -89,13 +90,39 @@ Platform chart                                          once per cluster
 serverless-api chart                            one release per cluster/site
 ├── ClusterStack            ...... jammy build + run base images   [cluster-scoped]
 ├── ClusterStore            ...... the 21 buildpackages the orders use  [cluster-scoped]
-├── Builder x3              ...... go | python | node   (workloads namespace)
+├── Builder x3              ...... go | python | node        (API namespace)
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
-├── ExternalSecret          ...... the registry dockerconfigjson (§6)
+├── ExternalSecret x2       ...... the registry dockerconfigjson, both ns (§6)
+├── Role/RoleBinding        ...... build rights for the client-cert user (§12)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (§5)  [cluster-scoped]
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
 ```
+
+### 2.1 Namespace split: builds are platform-side
+
+Every build object - `Builder`, the build `ServiceAccount`s, the per-function `Image`
+CRs, and therefore the **build pods** - lives in `namespaces.api`. The workloads
+namespace holds only what has already been built: KSVCs, their config and their pods.
+
+The reason is what a build pod actually is. It clones tenant source, resolves a tenant
+dependency tree and executes buildpack lifecycle binaries against both. That is
+platform infrastructure doing untrusted work, and it does not belong on the same
+namespace boundary as the running tenant functions - a namespace is the unit that
+NetworkPolicy, quota, RBAC and (on OpenShift) SCC all key off, so sharing one means a
+build and a live function share every one of those.
+
+Four things follow, and each is load-bearing:
+
+| | Consequence |
+|---|---|
+| **Registry credential** | Its two roles now straddle the split: **push** (build, API ns) and **pull** (KSVC, workloads ns). Secrets do not cross namespaces, so the chart renders **two** `ExternalSecret`s from the same ClusterSecretStore key. One source of truth, two projections, rotating together. |
+| **Git credential** | The per-function git Secret and per-function build `ServiceAccount` move to the API namespace too - not a choice: kpack resolves a build's credentials from the ServiceAccount in the **Image's own** namespace (§6). |
+| **RBAC** | The client-cert user gets a second, build-only `Role` in the API namespace and loses all kpack rights in the workloads one. That Role's Secret access is **write-only** (`create`/`update`/`patch`/`delete`, no `get`/`list`) because the API namespace also holds the platform's own ESO-projected credentials; server-side apply is a PATCH, so nothing needs to read back. |
+| **NetworkPolicy** | The workloads namespace is default-deny with a narrow egress allowlist (`templates/networkpolicy.yaml`) - a build pod there could not reach the git server or the mirror without widening it for tenant pods too. The API namespace carries no such policy, so builds reach what they need and the tenant allowlist stays shut. |
+
+The CA bundle needed no change: the chart already creates the `ca-bundle` ConfigMap in
+both namespaces, so the Kyverno mutation (§5) finds it where the build pods now run.
 
 **Why the split.** The kpack chart is a generic, upstream-modelled *engine* installer;
 baking Paketo content into it would make it un-reusable and would couple buildpack version
@@ -313,7 +340,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: fn-hello-payments
-  namespace: serverless-workloads
+  namespace: serverless-api          # with the Image it serves, not the KSVC (§2.1)
 secrets:
   - name: serverless-registry-creds     # shared, from the chart (§6)
   - name: hello-payments-git            # this function's token, from the API
@@ -322,8 +349,15 @@ imagePullSecrets:
 ```
 
 The chart passes the shared registry Secret's name to the API as
-`SERVERLESS_BUILD__REGISTRY_SECRET` so it can assemble these, and grants the API
-`serviceaccounts` write in the workloads namespace (§12).
+`SERVERLESS_BUILD__REGISTRY_SECRET`, the build namespace as
+`SERVERLESS_BUILD__NAMESPACE`, and grants the API `serviceaccounts` write there (§12).
+
+Both the account and the git Secret it references must sit in the **same namespace as
+the `Image`** - kpack resolves a build's credentials from the ServiceAccount named on
+the Image, in the Image's own namespace, and will not look elsewhere. Since Images are
+created in the API namespace (§2.1), the git Secret follows them there, and the API
+needs `create`/`patch`/`delete` on Secrets in that namespace - write-only, never read
+(§12).
 
 > **Secret shape - API work required.** The existing `{workload}-git` Secret is `Opaque`
 > with a single `token` key, which kpack cannot consume. kpack needs
@@ -512,15 +546,27 @@ Build history is bounded per `Image` by `spec.successBuildHistoryLimit` /
 
 ## 12. RBAC
 
-The API and build service identities (per ARCHITECTURE.md §6.3, the cert CN user) need, in
-the workloads namespace of every cluster:
+The API and build service identities (per ARCHITECTURE.md §6.3, the cert CN user) hold
+**two** Roles per cluster, one on each side of the namespace split (§2.1). The tenant Role
+in the workloads namespace is unchanged and carries no build rights at all; everything
+below is the second, build-only Role in the **API** namespace:
 
 | Resource | Verbs | Used by |
 |----------|-------|---------|
 | `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build service (watch) |
 | `builds.kpack.io` | get, list, watch | status resolution (§10), log lookup |
-| `pods`, `pods/log` | get, list | per-phase build logs (§7) |
+| `pods`, `pods/log` | get, list, watch | per-phase build logs (§7) |
 | `serviceaccounts` | get, list, create, update, patch, delete | the per-function build account (§6) |
+| `secrets` | create, update, patch, delete - **no get, no list** | the per-function git Secret (§6) |
+
+The missing read verbs on `secrets` are the point, not an oversight. The API namespace
+also holds the platform's own ESO-projected credentials - the registry push credential,
+the API's SSO and signing material - and a single `list` here would hand all of them to
+the client-cert user. Nothing in the build path needs a read: the API writes each git
+Secret from a token the caller just supplied, server-side apply is a `PATCH` rather than
+a read-modify-write, and cleanup only needs `delete`. This is strictly tighter than the
+previous arrangement, where the same identity had full `secrets` access in the namespace
+that then hosted the builds.
 
 `Builder`, `ClusterStack` and `ClusterStore` are managed by Helm/ArgoCD, not by the
 services - no runtime write permission on them.
@@ -536,7 +582,7 @@ apiVersion: kpack.io/v1alpha2
 kind: Image
 metadata:
   name: fn-hello-payments              # deterministic: fn-{name}-{group}
-  namespace: serverless-workloads
+  namespace: serverless-api            # builds are platform-side (§2.1)
   labels:                              # common/labels.py
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello-payments
@@ -564,7 +610,7 @@ apiVersion: kpack.io/v1alpha2
 kind: Builder
 metadata:
   name: python
-  namespace: serverless-workloads
+  namespace: serverless-api
 spec:
   serviceAccountName: kpack-builder
   tag: registry.internal/serverless/builders/python
@@ -611,7 +657,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kpack-builder
-  namespace: serverless-workloads
+  namespace: serverless-api
 secrets:                       # registry auth for push + stack/store pulls
   - name: serverless-registry-creds
 imagePullSecrets:              # build pod pulling the composed builder image
@@ -634,7 +680,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [serverless-workloads]
+              namespaces: [serverless-api]     # where build pods run (§2.1)
               selector:
                 matchExpressions:
                   - { key: kpack.io/build, operator: Exists }
