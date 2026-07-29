@@ -11,7 +11,7 @@ function cannot leave an Image behind that rebuilds it forever. That
 co-location is also why a function needs only ONE git Secret: kpack reads the
 workload's own ``{workload}-git``.
 
-Declaring is not completing, so ``manifests`` returns the deterministic tag the
+Declaring is not completing, so ``plan`` returns the deterministic tag the
 build will push to. Callers deploy against that tag and read progress back
 through :meth:`KpackBuilder.status` - the reason a just-created function reports
 ``Building`` rather than ``Ready`` (§10).
@@ -24,7 +24,7 @@ from api.services import secrets as secret_svc
 from api.services.runtimes import RuntimeRegistry
 from common.cluster import Cluster, ResourceKind
 from common.config import CommonSettings
-from common.contract import BuildRequest, BuildStatus, image_reference
+from common.contract import BuildPlan, BuildRequest, BuildStatus, image_reference
 from common.errors import NotFoundError, ValidationError
 from common.logging import get_logger
 
@@ -46,13 +46,15 @@ class KpackBuilder:
         self._runtimes = runtimes
 
     @property
-    def pull_secret(self) -> str:
+    def pull_secret(self) -> str | None:
         """The registry Secret a built function's KSVC pulls its image with.
 
         The same credential kpack pushes with - one image, one registry, one
         credential - so a function never needs registry details from the caller.
+        None when unset, so the KSVC does not reference a Secret that the chart
+        never created.
         """
-        return self._build.registry_secret
+        return self._build.registry_secret or None
 
     def image_ref(self, req: BuildRequest) -> str:
         """The image reference a build pushes to (deterministic, no cluster call).
@@ -103,19 +105,24 @@ class KpackBuilder:
         resources = extra.get("buildResources") or self._build.resources
         return builder, env, dict(resources or {})
 
-    def manifests(self, req: BuildRequest, labels: dict[str, str]) -> tuple[str, list[dict]]:
-        """The build manifests for one function, and the tag they push to.
+    def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
+        """The build manifests for one function, split by replication scope.
 
         Pure - no cluster call - so the caller can apply them in the same pass as
         the KSVC's other derived resources and have them owner-stamped.
+
+        The git Secret is ``replicated`` while the Image and ServiceAccount are
+        not. Only one site builds, but EVERY site must be able to: after a
+        switchover the new local site rebuilds from the token it already holds,
+        and a token is not something the platform can recover if the only copy
+        was on the site that went away.
 
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
 
         Returns:
-            ``(tag, manifests)``: the git Secret, the build ServiceAccount and
-            the Image, in dependency order.
+            The build plan; ``local`` is in dependency order.
 
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
@@ -125,25 +132,30 @@ class KpackBuilder:
         tag = self.image_ref(req)
         object_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
-        return tag, [
-            secret_svc.build_git_secret(
-                git_secret, labels, req.git_token, req.git_url, self._build.git_username
-            ),
-            kpack.build_service_account(
-                object_name, labels, git_secret, self._build.registry_secret
-            ),
-            kpack.build_image(
-                object_name,
-                labels,
-                tag=tag,
-                builder=builder,
-                service_account=object_name,
-                git_url=req.git_url,
-                revision=req.build_revision,
-                env=env,
-                resources=resources,
-            ),
-        ]
+        return BuildPlan(
+            tag=tag,
+            replicated=[
+                secret_svc.build_git_secret(
+                    git_secret, labels, req.git_token, req.git_url, self._build.git_username
+                )
+            ],
+            local=[
+                kpack.build_service_account(
+                    object_name, labels, git_secret, self._build.registry_secret
+                ),
+                kpack.build_image(
+                    object_name,
+                    labels,
+                    tag=tag,
+                    builder=builder,
+                    service_account=object_name,
+                    git_url=req.git_url,
+                    revision=req.build_revision,
+                    env=env,
+                    resources=resources,
+                ),
+            ],
+        )
 
     def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
         """Read a function's build state from one cluster.

@@ -8,7 +8,7 @@ from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
 from api.services.runtimes import RuntimeRegistry, get_runtimes
 from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
-from common.contract import BuildRequest
+from common.contract import BuildPlan, BuildRequest
 from common.errors import ServiceUnavailableError, ValidationError
 from common.labels import workload_labels
 
@@ -42,8 +42,8 @@ class FunctionService:
                 f"unsupported runtime '{runtime}'; available runtimes: {available}"
             )
 
-    def _build(self, req: BuildRequest, user: Principal) -> tuple[str, list[dict]]:
-        """The image tag and the owned manifests that declare the build.
+    def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
+        """The owned manifests that declare the build, and the tag they push to.
 
         Includes the workload's ``{workload}-git`` Secret: one Secret serves both
         the API (reading the token back on a later edit) and kpack (cloning with
@@ -54,7 +54,7 @@ class FunctionService:
             user: The authenticated caller, for the ownership labels.
 
         Returns:
-            The image tag and the build manifests.
+            The build plan.
 
         Raises:
             ServiceUnavailableError: If no build backend is wired.
@@ -62,7 +62,7 @@ class FunctionService:
         oname = object_name(req.name, req.group)
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
         try:
-            return self._engine.builder.manifests(req, labels)
+            return self._engine.builder.plan(req, labels)
         except NotImplementedError as exc:
             raise ServiceUnavailableError(str(exc)) from exc
 
@@ -149,7 +149,7 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        image, build_manifests = self._build(
+        plan = self._build(
             BuildRequest(
                 name=spec.name,
                 group=group,
@@ -169,7 +169,7 @@ class FunctionService:
             name=spec.name,
             user=user,
             group=group,
-            image=image,
+            image=plan.tag,
             offering=OFFERING_FUNCTION,
             env=spec.env,
             files=spec.files,
@@ -188,7 +188,10 @@ class FunctionService:
             runtime=spec.runtime,
             git_url=spec.gitRepo,
             branch=spec.branch,
-            local_resources=build_manifests,
+            # The git credential goes to every site so any of them can rebuild
+            # after a switchover; only one site gets the Image (§9.5).
+            extra_secrets=plan.replicated,
+            local_resources=plan.local,
         )
         return body, code
 
@@ -248,14 +251,15 @@ class FunctionService:
             )
 
         image = existing["image"]
-        build_manifests: list[dict] = []
+        replicated: list[dict] = []
+        local: list[dict] = []
         if token is not None:
             # Emitted on EVERY update, not only when an input changed. The
             # manifests are a pure function of the request, so re-applying an
             # unchanged spec is a no-op that kpack does not rebuild from - but it
             # recreates the Image on a site that has never had one, which is what
             # makes an update after a switchover self-healing (§9.5).
-            tag, build_manifests = self._build(
+            plan = self._build(
                 BuildRequest(
                     name=name,
                     group=group,
@@ -267,12 +271,13 @@ class FunctionService:
                 ),
                 user,
             )
+            replicated, local = plan.replicated, plan.local
             # Only move the KSVC when the build inputs actually changed. Otherwise
             # keep what is deployed: it may be a digest the build service resolved
             # from a completed build, and rewriting it back to the tag would spawn
             # a pointless revision.
             if build_inputs_changed or token_rotated:
-                image = tag
+                image = plan.tag
 
         body, code = await self._engine.apply_workload(
             name=name,
@@ -297,7 +302,8 @@ class FunctionService:
             prev_host=existing.get("host"),
             kept_env=existing.get("env_values"),
             kept_files=existing.get("files_values"),
-            local_resources=build_manifests,
+            extra_secrets=replicated,
+            local_resources=local,
         )
         return body, code
 

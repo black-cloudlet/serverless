@@ -46,6 +46,25 @@ class BuildRequest:
 
 
 @dataclass
+class BuildPlan:
+    """What declaring a build produces, split by how far each piece travels.
+
+    Attributes:
+        tag: The image reference the build pushes to.
+        replicated: Manifests every site needs. The git credential lives here:
+            a site that has never built the function still has to be able to,
+            which is the whole switchover story (§9.5).
+        local: Manifests for the one site that builds - the Image and its
+            ServiceAccount. Replicating these would have every site build the
+            same source and race to push the same tag (§9.1).
+    """
+
+    tag: str
+    replicated: list[dict]
+    local: list[dict]
+
+
+@dataclass
 class BuildStatus:
     """A function's current build state, read back from the build backend.
 
@@ -73,8 +92,8 @@ class Builder(Protocol):
         """The image reference the build will push to (deterministic, no I/O)."""
         ...
 
-    def manifests(self, req: BuildRequest, labels: dict[str, str]) -> tuple[str, list[dict]]:
-        """The manifests declaring the build, and the tag they push to.
+    def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
+        """The manifests declaring the build, split by replication scope.
 
         Pure: returning does not mean an image exists, or even that anything has
         been applied. A backend that builds asynchronously (kpack) describes the
@@ -86,7 +105,7 @@ class Builder(Protocol):
             labels: Ownership labels to stamp on each manifest.
 
         Returns:
-            The image tag, and the manifests in dependency order.
+            The build plan.
         """
         ...
 

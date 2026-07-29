@@ -67,8 +67,13 @@ def _request(**over):
     return BuildRequest(**kwargs)
 
 
+def _plan(builder=None, **over):
+    return (builder or _builder()).plan(_request(**over), {"lbl": "v"})
+
+
 def _manifests(builder=None, **over):
-    return (builder or _builder()).manifests(_request(**over), {"lbl": "v"})
+    plan = _plan(builder, **over)
+    return plan.tag, plan.replicated + plan.local
 
 
 def _by_kind(manifests, kind):
@@ -218,8 +223,8 @@ def test_build_resources_come_from_settings_and_runtime_override():
     runtimes = RuntimeRegistry(
         [RuntimeSpec(name="python", builder="python", buildResources={"limits": {"memory": "8Gi"}})]
     )
-    _, manifests = KpackBuilder(settings, runtimes).manifests(_request(), {})
-    assert _by_kind(manifests, "Image")["spec"]["build"]["resources"] == {
+    plan = KpackBuilder(settings, runtimes).plan(_request(), {})
+    assert _by_kind(plan.local, "Image")["spec"]["build"]["resources"] == {
         "limits": {"memory": "8Gi"}
     }
 
@@ -240,6 +245,15 @@ def test_manifests_use_a_pinned_revision_over_the_branch():
 def test_manifests_are_convergent_across_repeated_calls():
     builder = _builder()
     assert _manifests(builder)[1] == _manifests(builder)[1]
+
+
+def test_the_git_credential_replicates_but_the_image_does_not():
+    plan = _plan()
+    # every site must be able to rebuild after a switchover, and a token is not
+    # recoverable if its only copy was on the site that went away
+    assert [m["kind"] for m in plan.replicated] == ["Secret"]
+    # ...but only one site builds, or both race to push the same tag
+    assert [m["kind"] for m in plan.local] == ["ServiceAccount", "Image"]
 
 
 def test_pull_secret_is_the_credential_kpack_pushed_with():
@@ -360,17 +374,27 @@ class _RecordingBuilder:
     def image_ref(self, req):
         return "reg/acme/payments/hello:main"
 
-    def manifests(self, req, labels):
+    def plan(self, req, labels):
+        from common.contract import BuildPlan
+
         self.calls += 1
         self.reqs.append(req)
-        return self.image_ref(req), [
-            {
-                "apiVersion": "kpack.io/v1alpha2",
-                "kind": "Image",
-                "metadata": {"name": "fn-hello-payments", "labels": dict(labels)},
-                "spec": {},
-            }
-        ]
+        return BuildPlan(
+            tag=self.image_ref(req),
+            replicated=[
+                secret_svc.build_git_secret(
+                    "hello-payments-git", labels, req.git_token, req.git_url
+                )
+            ],
+            local=[
+                {
+                    "apiVersion": "kpack.io/v1alpha2",
+                    "kind": "Image",
+                    "metadata": {"name": "fn-hello-payments", "labels": dict(labels)},
+                    "spec": {},
+                }
+            ],
+        )
 
     def status(self, cluster, name, group):
         from common.contract import BuildStatus
@@ -430,7 +454,13 @@ async def test_build_manifests_are_applied_and_owned_by_the_ksvc():
     assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
 
 
-async def test_build_resources_go_to_the_local_site_only():
+def _git_secrets(cluster):
+    from tests.test_auth_and_deployer import _applied_kind
+
+    return [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"].endswith("-git")]
+
+
+async def test_only_one_site_builds_but_every_site_gets_the_credential():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("site-a", {})
@@ -440,11 +470,34 @@ async def test_build_resources_go_to_the_local_site_only():
     )
     await svc.create("payments", _create_spec(), _principal())
 
-    # each site builds its own image (§9.1); fanning the Image out would have
-    # both sites build the same source and race to push the same tag
+    # one builder: fanning the Image out would have both sites build the same
+    # source and race to push the same tag (§9.1)
     assert len(_applied_kind(local, "Image")) == 1
     assert _applied_kind(remote, "Image") == []
     assert len(_applied_kind(remote, "Service")) == 1  # ...but the KSVC goes everywhere
+    # the token, though, must be everywhere: after a switchover the new local
+    # site rebuilds from the copy it already holds, and nothing can recover a
+    # token whose only copy was on the site that went away (§9.5)
+    assert len(_git_secrets(local)) == 1
+    assert len(_git_secrets(remote)) == 1
+
+
+async def test_a_site_set_excluding_the_local_one_still_builds_somewhere():
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    local = _ApplyCluster("site-a", {})
+    remote = _ApplyCluster("site-b", {})
+    svc = _function_service(
+        {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
+    )
+    spec = _create_spec()
+    spec.sites = ["site-b"]  # the local site is not a target
+    await svc.create("payments", spec, _principal())
+
+    # the build falls back to a targeted site; skipping it would leave the KSVC
+    # pointing at a tag that nothing ever builds
+    assert _applied_kind(local, "Service") == []
+    assert len(_applied_kind(remote, "Image")) == 1
 
 
 async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment():
@@ -521,3 +574,31 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
     )
     assert builder.calls == 1
     assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+
+
+async def test_a_pre_upgrade_opaque_token_is_still_usable_for_a_rebuild():
+    """Upgrade path: functions created before the Secret became basic-auth."""
+    from api.models.function import FunctionUpdate
+    from api.services import resources as res
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    legacy = res.build_secret(
+        "hello-payments-git", {}, {secret_svc.LEGACY_GIT_TOKEN_KEY: "ghp_old"}
+    )
+    cluster = _ApplyCluster(
+        "site-a", {"hello-payments": _ksvc()}, secrets={"hello-payments-git": legacy}
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            branch="release",  # a build input changed -> a token is required
+        ),
+        _principal(),
+    )
+    # read back through the old key, so the caller is not asked to re-send it
+    assert builder.calls == 1
+    assert builder.reqs[0].git_token == "ghp_old"

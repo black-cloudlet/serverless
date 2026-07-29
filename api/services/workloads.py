@@ -482,10 +482,11 @@ class WorkloadService:
             extra_secrets: Additional owned Secret manifests to apply (e.g. the
                 function git-token Secret). Owner-stamped and GC'd with the KSVC;
                 not in the managed prune set, so omitting one keeps the stored copy.
-            local_resources: Owned manifests applied to the LOCAL site only - the
-                function's build objects. Each site builds its own image (§9.1),
-                so fanning these out would have every site build the same source
-                and race to push the same tag.
+            local_resources: Owned manifests applied to ONE site only - the
+                function's Image and build ServiceAccount. Fanning them out would
+                have every site build the same source and race to push the same
+                tag. The local site is used when it is a target, else the first
+                target.
 
         Returns:
             The response body and HTTP status code.
@@ -549,7 +550,16 @@ class WorkloadService:
                 applied_derived.add((ResourceKind.SECRET, pull_secret_name))
         to_prune = () if created else managed_derived - applied_derived
 
-        local_site = self.deployer.local_site() if local_resources else None
+        # The build runs on ONE site. Prefer the local one; if the request targets
+        # sites that exclude it, build on the first target instead - the image has
+        # to be produced by a cluster that will actually run it, and every cluster
+        # has the build stack (§9.1). Silently skipping would leave the KSVC
+        # pointing at a tag nothing ever builds.
+        build_site = None
+        if local_resources:
+            target_sites = [c.site for c in targets]
+            local = self.deployer.local_site()
+            build_site = local if local in target_sites else target_sites[0]
 
         def apply(cluster: Cluster) -> SiteStatus:
             return self._apply_to_site(
@@ -557,7 +567,7 @@ class WorkloadService:
                 oname=oname,
                 ksvc=ksvc,
                 backing=(
-                    backing + list(local_resources) if cluster.site == local_site else backing
+                    backing + list(local_resources) if cluster.site == build_site else backing
                 ),
                 pull_secret_manifest=pull_secret_manifest,
                 mapping=mapping,
@@ -806,7 +816,11 @@ class WorkloadService:
         # rebuild without the client re-supplying it.
         if offering == OFFERING_FUNCTION:
             git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
-            state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
+            # Falls back to the key used before the Secret became basic-auth, so a
+            # function created earlier is not forced to re-supply its token.
+            state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY) or git.get(
+                secret_svc.LEGACY_GIT_TOKEN_KEY
+            )
         return state
 
     def validate_spec(

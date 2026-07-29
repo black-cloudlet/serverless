@@ -476,9 +476,18 @@ implies "serving", which is why the status code for `Building` is `202`.
 The manifests are **owned resources of the KSVC**, applied in the same pass as the
 function's env Secret and DomainMapping and carrying the same `ownerReference`. That is
 what deletes them with the function (§11) - there is no cleanup code, because there is
-nothing to clean up. They are applied to the **local site only**: each site builds its own
-image (§9.1), and fanning the `Image` out would have every site build the same source and
-race to push the same tag.
+nothing to clean up.
+
+`Builder.plan` splits them by how far each piece travels, and the split is load-bearing:
+
+| | Scope | Why |
+|---|---|---|
+| git `Secret` | **every site** | Only one site builds, but every site must be *able* to. After a switchover the new local site rebuilds from the token it already holds, and nothing can recover a token whose only copy was on the site that went away (§9.5). |
+| `Image` + build `ServiceAccount` | **one site** | Replicating them would have every site build the same source and race to push the same tag (§9.1). |
+
+The building site is the local one when it is among the request's target sites, and the
+first target otherwise - a function deployed only to a remote site still has to be built
+by a cluster that will run it.
 
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the

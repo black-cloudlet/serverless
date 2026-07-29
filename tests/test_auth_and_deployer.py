@@ -293,8 +293,10 @@ class _NullBuilder:
     def image_ref(self, req):
         return "reg/built:1"
 
-    def manifests(self, req, labels):
-        return self.image_ref(req), []
+    def plan(self, req, labels):
+        from common.contract import BuildPlan
+
+        return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
 
     def status(self, cluster, name, group):
         return None
@@ -956,10 +958,12 @@ async def test_function_update_rebuilds_when_token_given():
         def image_ref(self, req):
             return "reg/built:rel"
 
-        def manifests(self, req, labels):
+        def plan(self, req, labels):
+            from common.contract import BuildPlan
+
             self.calls += 1
             self.req = req
-            return self.image_ref(req), []
+            return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
 
     existing = build_ksvc(
         name="fn-team",
@@ -1011,7 +1015,7 @@ async def test_function_update_without_token_keeps_image():
         def __init__(self):
             self.calls = 0
 
-        def manifests(self, req, labels):
+        def plan(self, req, labels):
             self.calls += 1
             raise AssertionError("no token stored -> nothing to declare a build with")
 
@@ -1061,11 +1065,15 @@ async def test_function_create_persists_git_secret():
     from api.services.secrets import GIT_TOKEN_KEY, build_git_secret
 
     class _StubBuilder(_NullBuilder):
-        def manifests(self, req, labels):
+        def plan(self, req, labels):
+            from common.contract import BuildPlan
+
             # the git Secret is now part of what the builder declares
-            return self.image_ref(req), [
-                build_git_secret("fn-team-git", labels, req.git_token, req.git_url)
-            ]
+            return BuildPlan(
+                tag=self.image_ref(req),
+                replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
+                local=[],
+            )
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
     engine = _workload_service({"site-a": cluster}, builder=_StubBuilder())
@@ -1096,10 +1104,12 @@ async def test_function_update_reuses_stored_git_token():
         def __init__(self):
             self.calls = 0
 
-        def manifests(self, req, labels):
+        def plan(self, req, labels):
+            from common.contract import BuildPlan
+
             self.calls += 1
             self.req = req
-            return "reg/built:rel", []
+            return BuildPlan(tag="reg/built:rel", replicated=[], local=[])
 
     existing = build_ksvc(
         name="fn-team",
