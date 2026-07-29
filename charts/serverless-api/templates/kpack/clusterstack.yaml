@@ -1,15 +1,7 @@
 {{- if and .Values.build.enabled .Values.build.stack.create }}
-# The base images every build runs on and every function image is layered onto:
-# `buildImage` is the OS the buildpacks execute in, `runImage` is the base of
-# the produced image (so it also ships in the running function).
-#
-# CLUSTER-SCOPED singleton - see the note in values.yaml. `spec.id` must match
-# the images' io.buildpacks.stack.id label, and build/run must be the same
-# variant, or builds fail with a stack mismatch.
-#
-# Updating runImage is what triggers kpack's CVE rebuilds: existing Images are
-# rebased onto the new base without re-running buildpacks.
-# docs/BUILD-PIPELINE.md §3 / §7.
+# Cluster-scoped singleton (see values.yaml). `spec.id` must match both images'
+# io.buildpacks.stack.id or builds fail with a stack mismatch.
+# Bumping runImage is what triggers kpack's CVE rebases. (§3 / §7)
 apiVersion: kpack.io/v1alpha2
 kind: ClusterStack
 metadata:

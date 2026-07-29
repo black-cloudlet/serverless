@@ -2,22 +2,8 @@
 {{- $ca := .Values.caBundle }}
 {{- $inj := .Values.build.caInjection }}
 {{- $certPath := printf "%s/%s" $inj.mountPath $ca.key }}
-# Mounts the internal CA bundle into every kpack build container so git, pip,
-# npm and go all trust internal TLS. Verification stays ON - see values.yaml.
-#
-# The bundle is the OpenShift-injected `ca-bundle` ConfigMap this chart already
-# creates in the API namespace, so it rotates with the cluster and needs no
-# ExternalSecret and no `ca-certificates` entry in any builder order.
-#
-# Scoped to the API namespace: build pods run there, apart from the tenant
-# functions (§2). The `kpack.io/build` selector still matters - it keeps the
-# mutation off the API's own Deployment, which shares the namespace.
-#
-# WHY initContainers MATTERS: kpack runs the CNB lifecycle as INIT containers
-# (prepare -> analyze -> detect -> restore -> build -> export); only `completion`
-# is a normal container. `prepare` clones the source and `build` runs the
-# package managers, so a policy patching only spec.containers would silently do
-# nothing where the CA is actually needed. docs/BUILD-PIPELINE.md §5 / §7.
+# Mounts the internal CA bundle into build containers so git, pip, npm and go
+# trust internal TLS. Verification stays on. (§5)
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -29,8 +15,6 @@ metadata:
     policies.kyverno.io/category: Build
     policies.kyverno.io/subject: Pod
 spec:
-  # Mutation applies at admission; build pods are ephemeral so there is nothing
-  # to reconcile in the background.
   background: false
   rules:
     - name: mount-ca-bundle
@@ -43,7 +27,7 @@ spec:
                 - {{ .Values.namespaces.api }}
               selector:
                 matchExpressions:
-                  # Set by kpack on every build pod, and on nothing else.
+                  # Keeps the mutation off the API's own pods, same namespace.
                   - key: kpack.io/build
                     operator: Exists
       mutate:
@@ -53,8 +37,9 @@ spec:
               - name: internal-ca
                 configMap:
                   name: {{ $ca.name }}
-            # `(name): "*"` is a Kyverno conditional anchor: apply to EVERY
-            # entry in the list.
+            # `(name): "*"` = every entry in the list. initContainers is the
+            # important one: kpack runs the whole lifecycle there, including
+            # the git clone and the package managers.
             initContainers:
               - (name): "*"
                 volumeMounts:

@@ -37,9 +37,7 @@ leaves it "latest" on main), and this image tracks it automatically. An optional
 {{- end -}}
 
 {{/*
-The image a namespaced kpack Builder composes and pushes, on the internal
-registry (``registry.url`` - the same on-prem server the functions are pushed
-to). Call with the builder name:
+The image a Builder composes and pushes.
 
   {{ include "serverless-api.builderImage" (dict "root" $ "name" "python") }}
 */}}
@@ -48,8 +46,7 @@ to). Call with the builder name:
 {{- end -}}
 
 {{/*
-A buildpack / stack image on the internal registry. Takes {repository, version};
-an empty version means `latest`. Airgapped installs should pin.
+A buildpack or stack image. Takes {repository, version}; empty version = latest.
 
   {{ include "serverless-api.buildpackImage" (dict "root" $ "img" .buildImage) }}
 */}}
@@ -58,17 +55,14 @@ an empty version means `latest`. Airgapped installs should pin.
 {{- end -}}
 
 {{/*
-A Builder's detection order, normalised to kpack's `spec.order` shape. Accepts
-three forms so a real Paketo order can be pasted in verbatim:
+A Builder's detection order, normalised to kpack's `spec.order`. Three forms, so
+a real Paketo order can be pasted in verbatim:
 
   order: [paketo-buildpacks/go]                  one group, shorthand ids
   order: [{id: ..., optional: true}, ...]        one group, with flags
   order: [{group: [{id: ...}, ...]}, ...]        explicit groups, passed through
 
-Groups are tried in order and the first one whose non-optional buildpacks all
-detect wins, so the multi-group form matters: the upstream python composite has
-eight groups (pip / pipenv / poetry / ...) and collapsing them by hand loses the
-package managers you did not expand.
+The multi-group form matters: collapsing groups by hand drops package managers.
 */}}
 {{- define "serverless-api.builderOrder" -}}
 {{- $order := . -}}
@@ -89,10 +83,8 @@ package managers you did not expand.
 {{- end -}}
 
 {{/*
-The runtimes file, with each runtime's build environment fully resolved so the
-API applies one list and needs no merge logic of its own. Precedence, lowest
-first: ``build.commonEnv``, the dependency mirror, then the runtime's own
-``buildEnv`` (so a runtime can override a shared default).
+The runtimes file with build env resolved, so the API applies one list and needs
+no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 */}}
 {{- define "serverless-api.resolvedRuntimes" -}}
 {{- $root := . -}}
@@ -115,9 +107,7 @@ first: ``build.commonEnv``, the dependency mirror, then the runtime's own
 {{ dict "runtimes" $out | toYaml }}
 {{- end -}}
 
-{{/*
-Fail fast on build configuration that would render unusable manifests.
-*/}}
+{{/* Fail fast on build config that would render unusable manifests. */}}
 {{- define "serverless-api.validateBuild" -}}
 {{- if .Values.build.enabled -}}
 {{- $names := list -}}

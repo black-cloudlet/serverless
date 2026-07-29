@@ -1,15 +1,6 @@
 {{- if .Values.build.enabled }}
-# One namespaced kpack Builder per language, composed from the cluster-scoped
-# ClusterStack and ClusterStore that the platform chart installs once per
-# cluster. Each Builder builds and PUSHES its own builder image to the internal
-# registry, then reports it in `status.latestImage`.
-#
-# A Builder must be Ready before any Image referencing it will build - if builds
-# never start, check these first. docs/BUILD-PIPELINE.md §3.
-#
-# Several runtimes may share one Builder (typescript builds on the node Builder),
-# so these are named after the BUILDER, not the runtime; `runtimes[].builder`
-# holds the mapping.
+# Named after the builder, not the runtime - typescript shares node's.
+# A Builder must be Ready before any Image using it will build. (§3)
 {{- range .Values.build.builders }}
 ---
 apiVersion: kpack.io/v1alpha2

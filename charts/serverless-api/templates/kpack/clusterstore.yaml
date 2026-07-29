@@ -1,14 +1,7 @@
 {{- if and .Values.build.enabled .Values.build.store.create }}
-# The set of buildpacks available to the Builders. kpack reads each image and
-# registers every buildpack inside it, so the store must collectively provide
-# every id referenced by a builder `order` - a missing id leaves that Builder
-# permanently not-Ready and no function builds.
-#
-# CLUSTER-SCOPED singleton - see the note in values.yaml.
-#
-# Adding or bumping a source is what triggers kpack's BUILDPACK rebuilds:
-# every Image whose builder includes the changed buildpack is rebuilt.
-# docs/BUILD-PIPELINE.md §3 / §7.
+# Cluster-scoped singleton (see values.yaml). Must provide every id used in a
+# builder order - a missing id leaves that Builder permanently not-Ready.
+# Bumping a source is what triggers kpack's BUILDPACK rebuilds. (§3 / §7)
 apiVersion: kpack.io/v1alpha2
 kind: ClusterStore
 metadata:
