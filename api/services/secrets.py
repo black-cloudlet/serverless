@@ -1,8 +1,8 @@
 """Pure builders/decoders for the credential Secrets a workload owns.
 
 Covers the imagePullSecret built from customer registry credentials and the
-Opaque ``{workload}-git`` Secret that stores a function's git token so it
-survives edits and can be reused to rebuild without the client re-sending it.
+``{workload}-git`` Secret that stores a function's git token so it survives
+edits and can be reused to rebuild without the client re-sending it.
 Secret *values* are never returned on read - only the workload's update path
 reads them back, to preserve a "keep" (redacted) field. The caller supplies the
 labels.
@@ -12,11 +12,19 @@ from __future__ import annotations
 
 import base64
 import json
+from urllib.parse import urlsplit
 
 from api.services import resources as res
 
-# Data key of the git token inside the ``{workload}-git`` Secret.
-GIT_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name, not a credential
+# Data keys of the ``{workload}-git`` basic-auth Secret.
+GIT_USERNAME_KEY = "username"
+GIT_TOKEN_KEY = "password"  # noqa: S105 - a Secret data key name, not a credential
+# The key earlier releases used, when the Secret was Opaque. Still read so a
+# function created before the switch keeps working without a token re-send.
+LEGACY_GIT_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name
+
+# kpack matches a credential to a repository through this annotation.
+GIT_ANNOTATION = "kpack.io/git"
 
 
 def registry_of(image: str) -> str:
@@ -127,33 +135,73 @@ def git_secret_name(workload: str) -> str:
     return f"{workload}-git"
 
 
-def build_git_secret(name: str, labels: dict[str, str], token: str) -> dict:
-    """Build an Opaque Secret holding a function's git token.
+def build_git_secret(
+    name: str,
+    labels: dict[str, str],
+    token: str,
+    git_url: str = "",
+    username: str = "x-access-token",
+) -> dict:
+    """Build the ``kubernetes.io/basic-auth`` Secret holding a function's git token.
 
-    Stored so the token survives edits and can be reused to rebuild without the
-    client re-supplying it. The value is never returned on read.
+    One Secret serves both readers. The API reads it back so an edit can rebuild
+    without the client re-supplying the token, and kpack clones with it - which
+    is why it is basic-auth carrying the ``kpack.io/git`` annotation rather than
+    Opaque: kpack ignores a credential in any other shape. Keeping it to one
+    object is only possible because builds run in the workload's own namespace.
 
     Args:
         name: The Secret name (``{workload}-git``).
         labels: Labels to stamp on it.
-        token: The git token to store.
+        token: The git token to store, as the basic-auth password.
+        git_url: Source repository, reduced to scheme+host for the annotation.
+            Omitted for a token stored outside a build context.
+        username: Username paired with the token. GitHub and GitLab PATs accept
+            any value; providers that check it need the real one.
 
     Returns:
         The Secret manifest dict.
     """
-    return res.build_secret(name, labels, {GIT_TOKEN_KEY: token})
+    secret = res.build_secret(
+        name,
+        labels,
+        {GIT_USERNAME_KEY: username, GIT_TOKEN_KEY: token},
+        "kubernetes.io/basic-auth",
+    )
+    if git_url:
+        secret["metadata"]["annotations"] = {GIT_ANNOTATION: git_credential_host(git_url)}
+    return secret
+
+
+def git_credential_host(git_url: str) -> str:
+    """The ``kpack.io/git`` annotation value for a repository URL.
+
+    kpack compares this annotation against the repository URL to pick a
+    credential, so it must be scheme and host only - no path, no userinfo.
+
+    Args:
+        git_url: The repository URL.
+
+    Returns:
+        ``{scheme}://{host}``; the input unchanged if it has no scheme to split.
+    """
+    parts = urlsplit(git_url)
+    if not parts.scheme or not parts.netloc:
+        return git_url
+    return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
 
 
 def git_token(secret: dict) -> str | None:
     """Decode the git token from a ``{workload}-git`` Secret (update path only).
 
     Args:
-        secret: The Opaque git Secret object.
+        secret: The git Secret object.
 
     Returns:
         The token, or None if it can't be read.
     """
-    raw = (secret.get("data") or {}).get(GIT_TOKEN_KEY)
+    data = secret.get("data") or {}
+    raw = data.get(GIT_TOKEN_KEY) or data.get(LEGACY_GIT_TOKEN_KEY)
     if not raw:
         return None
     try:

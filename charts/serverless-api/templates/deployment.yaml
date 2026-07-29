@@ -61,9 +61,6 @@ spec:
             - name: SERVERLESS_RUNTIMES_FILE
               value: {{ printf "%s/runtimes.yaml" .Values.runtimesMountPath | quote }}
             {{- if .Values.build.enabled }}
-            # Images, build SAs and git Secrets go here, not WORKLOADS_NAMESPACE (§2.1).
-            - name: SERVERLESS_BUILD__NAMESPACE
-              value: {{ .Values.namespaces.api | quote }}
             - name: SERVERLESS_BUILD__REGISTRY_SECRET
               value: {{ .Values.build.serviceAccount.registrySecret.name | quote }}
             - name: SERVERLESS_BUILD__GIT_USERNAME

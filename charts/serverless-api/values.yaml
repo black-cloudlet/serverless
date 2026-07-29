@@ -158,8 +158,9 @@ build:
   # builds use a per-function account the API creates instead (§6).
   serviceAccount:
     name: kpack-builder
-    # The one platform-wide build credential: kpack pushes with it, the KSVC
-    # pulls with it.
+    # The one platform-wide build credential: kpack pushes the built image with
+    # it, the build pod pulls the builder image with it, and every function's
+    # KSVC pulls its image with it - so a function never supplies registry creds.
     registrySecret:
       name: serverless-registry-creds
       # False when the Secret is provided out-of-band.
@@ -364,3 +365,23 @@ networkPolicy:
     exceptCIDRs:
       - 10.128.0.0/14 # pod network
       - 172.30.0.0/16 # service network
+
+  # Build pods share the workloads namespace and its default-deny, but need to
+  # reach things tenant pods must not: git, the registry, the artifact mirror.
+  # NetworkPolicies are additive, so this opens those paths for pods labelled
+  # `kpack.io/build` ONLY - the tenant allowlist above is untouched.
+  #
+  # The off-cluster rule above already covers a git/registry/mirror that lives
+  # outside the cluster; `egressCIDRs` is for the ones that do not, since the
+  # internal pod and service CIDRs are excluded there.
+  build:
+    enabled: true
+    # Namespaces allowed to reach build pods. kpack drives builds through the
+    # API server and reads logs via the kubelet, so nothing normally connects
+    # in; this is here for a kpack that grows a direct call.
+    ingressNamespaces:
+      - kpack
+    # Namespaces build pods may reach - an in-cluster registry or git server.
+    egressNamespaces: []
+    # In-cluster CIDRs for the same, when they are not a namespace you can name.
+    egressCIDRs: []

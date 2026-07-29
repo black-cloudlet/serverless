@@ -17,5 +17,5 @@ spec:
   # Credentials for pulling the base images from the internal mirror.
   serviceAccountRef:
     name: {{ .Values.build.serviceAccount.name }}
-    namespace: {{ .Values.namespaces.api }}
+    namespace: {{ .Values.namespaces.workloads }}
 {{- end }}

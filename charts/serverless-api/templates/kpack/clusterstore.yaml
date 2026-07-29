@@ -16,5 +16,5 @@ spec:
   # Credentials for pulling the buildpackages from the internal mirror.
   serviceAccountRef:
     name: {{ .Values.build.serviceAccount.name }}
-    namespace: {{ .Values.namespaces.api }}
+    namespace: {{ .Values.namespaces.workloads }}
 {{- end }}

@@ -46,19 +46,6 @@ class BuildRequest:
 
 
 @dataclass
-class BuildResult:
-    """The result of a build: the pushed image and (optionally) its digest.
-
-    Attributes:
-        image: The pushed image reference.
-        digest: The immutable digest, when known (deployed for cross-site parity).
-    """
-
-    image: str
-    digest: str | None = None
-
-
-@dataclass
 class BuildStatus:
     """A function's current build state, read back from the build backend.
 
@@ -77,27 +64,34 @@ class BuildStatus:
 class Builder(Protocol):
     """Declares function builds and reports their state."""
 
-    def build(self, req: BuildRequest) -> BuildResult:
-        """Declare the build for ``req``.
+    @property
+    def pull_secret(self) -> str:
+        """The registry Secret a built function's KSVC pulls its image with."""
+        ...
 
-        Returning does not mean an image exists - a backend that builds
-        asynchronously (kpack) records the desired state and returns the
-        reference the build will push to.
+    def image_ref(self, req: BuildRequest) -> str:
+        """The image reference the build will push to (deterministic, no I/O)."""
+        ...
+
+    def manifests(self, req: BuildRequest, labels: dict[str, str]) -> tuple[str, list[dict]]:
+        """The manifests declaring the build, and the tag they push to.
+
+        Pure: returning does not mean an image exists, or even that anything has
+        been applied. A backend that builds asynchronously (kpack) describes the
+        desired state and lets the caller apply it as owned resources of the
+        workload.
 
         Args:
             req: The build request.
+            labels: Ownership labels to stamp on each manifest.
 
         Returns:
-            The build result (image and digest).
+            The image tag, and the manifests in dependency order.
         """
         ...
 
     def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
         """The build state on one cluster, or None if it has no build for this workload."""
-        ...
-
-    def cleanup(self, cluster: Cluster, name: str, group: str) -> None:
-        """Remove the workload's build objects from one cluster."""
         ...
 
 

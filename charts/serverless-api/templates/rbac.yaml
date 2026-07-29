@@ -1,6 +1,5 @@
-# Least-privilege RBAC for the client-cert user (CN = DNS name), split across the
-# two namespaces it works in: tenant resources here, build resources in the API
-# namespace (second Role below). docs §6.3 / §12.4
+# Least-privilege RBAC for the client-cert user (CN = DNS name) in the workloads
+# namespace. docs §6.3 / §12.4
 #
 # Routes are NOT in this Role: on OpenShift Serverless the operator auto-creates
 # the OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.
@@ -33,6 +32,22 @@ rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
+  {{- if .Values.build.enabled }}
+  # Function image builds. The API applies one Image per function; it is an owned
+  # resource of the KSVC, so GC deletes it with the function. (§8)
+  - apiGroups: ["kpack.io"]
+    resources: ["images"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Builds are read-only: GET reports build state before falling through to the
+  # KSVC status (§10), and their pods carry the per-phase build logs.
+  - apiGroups: ["kpack.io"]
+    resources: ["builds"]
+    verbs: ["get", "list", "watch"]
+  # Per-function build account: that function's git Secret + the registry cred (§6).
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -49,53 +64,3 @@ roleRef:
   kind: Role
   name: {{ .Values.name }}
   apiGroup: rbac.authorization.k8s.io
-{{- if .Values.build.enabled }}
----
-# Build rights, in the API namespace where builds run (§2.1).
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ .Values.name }}-build
-  namespace: {{ .Values.namespaces.api }}
-  labels:
-    {{- include "serverless-api.labels" . | nindent 4 }}
-rules:
-  - apiGroups: ["kpack.io"]
-    resources: ["images"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["kpack.io"]
-    resources: ["builds"]
-    verbs: ["get", "list", "watch"]
-  # Build pods and their per-phase logs; kpack creates them, the API only reads.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
-  # Per-function build account: that function's git token + the registry cred (§6).
-  - apiGroups: [""]
-    resources: ["serviceaccounts"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
-  # Write-only on purpose: this namespace holds the platform's own ESO secrets,
-  # and writing a git Secret never needs to read one back (SSA is a PATCH).
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["create", "update", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ .Values.name }}-build
-  namespace: {{ .Values.namespaces.api }}
-  labels:
-    {{- include "serverless-api.labels" . | nindent 4 }}
-subjects:
-  - kind: User
-    name: {{ .Values.certificate.user }}
-    apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: Role
-  name: {{ .Values.name }}-build
-  apiGroup: rbac.authorization.k8s.io
-{{- end }}

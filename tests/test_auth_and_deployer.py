@@ -286,17 +286,17 @@ class _FakeCluster:
 
 
 class _NullBuilder:
-    """Builder that records nothing; for the non-function paths."""
+    """Builder that declares nothing; for the non-function paths."""
 
-    def build(self, req):
-        from common.contract import BuildResult
+    pull_secret = "reg-creds"
 
-        return BuildResult(image="reg/built:1")
+    def image_ref(self, req):
+        return "reg/built:1"
+
+    def manifests(self, req, labels):
+        return self.image_ref(req), []
 
     def status(self, cluster, name, group):
-        return None
-
-    def cleanup(self, cluster, name, group):
         return None
 
 
@@ -804,7 +804,7 @@ class _ApplyCluster:
             return self._secrets[name]
         raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret
 
-    def apply(self, manifest, namespace=None):
+    def apply(self, manifest):
         self.applied.append(manifest)
         # Mirror the real client: return the applied object(s), with a uid the
         # server would assign (used to build ownerReferences for derived objects).
@@ -945,7 +945,6 @@ async def test_function_update_rebuilds_when_token_given():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.builder import BuildResult
     from api.services.function import FunctionService
     from api.services.ksvc import build_ksvc
     from api.services.workloads import _extract_image
@@ -954,10 +953,13 @@ async def test_function_update_rebuilds_when_token_given():
         def __init__(self):
             self.calls = 0
 
-        def build(self, req):
+        def image_ref(self, req):
+            return "reg/built:rel"
+
+        def manifests(self, req, labels):
             self.calls += 1
             self.req = req
-            return BuildResult(image="reg/built:rel", digest="sha256:abc")
+            return self.image_ref(req), []
 
     existing = build_ksvc(
         name="fn-team",
@@ -994,7 +996,7 @@ async def test_function_update_rebuilds_when_token_given():
     assert builder.req.git_url == "https://git/old.git"
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert _extract_image(ksvc) == "sha256:abc"  # rebuilt digest deployed
+    assert _extract_image(ksvc) == "reg/built:rel"  # deployed at the rebuilt tag
 
 
 async def test_function_update_without_token_keeps_image():
@@ -1009,9 +1011,9 @@ async def test_function_update_without_token_keeps_image():
         def __init__(self):
             self.calls = 0
 
-        def build(self, req):
+        def manifests(self, req, labels):
             self.calls += 1
-            raise AssertionError("must not rebuild for a config-only update")
+            raise AssertionError("no token stored -> nothing to declare a build with")
 
     existing = build_ksvc(
         name="fn-team",
@@ -1055,13 +1057,15 @@ async def test_function_create_persists_git_secret():
 
     from api.auth.claims import Principal
     from api.models.function import FunctionCreate
-    from api.services.builder import BuildResult
     from api.services.function import FunctionService
-    from api.services.secrets import GIT_TOKEN_KEY
+    from api.services.secrets import GIT_TOKEN_KEY, build_git_secret
 
     class _StubBuilder(_NullBuilder):
-        def build(self, req):
-            return BuildResult(image="reg/built:1", digest="sha256:abc")
+        def manifests(self, req, labels):
+            # the git Secret is now part of what the builder declares
+            return self.image_ref(req), [
+                build_git_secret("fn-team-git", labels, req.git_token, req.git_url)
+            ]
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
     engine = _workload_service({"site-a": cluster}, builder=_StubBuilder())
@@ -1084,7 +1088,6 @@ async def test_function_update_reuses_stored_git_token():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.builder import BuildResult
     from api.services.function import FunctionService
     from api.services.ksvc import build_ksvc
     from api.services.secrets import build_git_secret, git_secret_name
@@ -1093,10 +1096,10 @@ async def test_function_update_reuses_stored_git_token():
         def __init__(self):
             self.calls = 0
 
-        def build(self, req):
+        def manifests(self, req, labels):
             self.calls += 1
             self.req = req
-            return BuildResult(image="reg/built:rel", digest="sha256:def")
+            return "reg/built:rel", []
 
     existing = build_ksvc(
         name="fn-team",

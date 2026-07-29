@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
-from api.services import secrets as secret_svc
 from api.services.runtimes import RuntimeRegistry, get_runtimes
 from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
 from common.contract import BuildRequest
@@ -45,38 +42,33 @@ class FunctionService:
                 f"unsupported runtime '{runtime}'; available runtimes: {available}"
             )
 
-    def _git_secret(self, name: str, group: str, user: Principal, token: str) -> dict:
-        """Build the ``{workload}-git`` Secret holding the git token."""
-        oname = object_name(name, group)
-        return secret_svc.build_git_secret(
-            secret_svc.git_secret_name(oname),
-            workload_labels(group, user.username, oname, OFFERING_FUNCTION),
-            token,
-        )
+    def _build(self, req: BuildRequest, user: Principal) -> tuple[str, list[dict]]:
+        """The image tag and the owned manifests that declare the build.
 
-    # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
-    # run the build+deploy in the background and return 202 Accepted with a
-    # status URL to poll. Deploys (esp. function builds) can be slow.
-    async def _build(self, req: BuildRequest):
-        """Declare a build off the event loop, mapping an absent backend to 503.
-
-        The builder does blocking cluster calls, and this runs inside the
-        background deploy task, so it must not occupy the loop.
+        Includes the workload's ``{workload}-git`` Secret: one Secret serves both
+        the API (reading the token back on a later edit) and kpack (cloning with
+        it), because the build runs in the workload's own namespace.
 
         Args:
             req: The build request.
+            user: The authenticated caller, for the ownership labels.
 
         Returns:
-            The build result.
+            The image tag and the build manifests.
 
         Raises:
             ServiceUnavailableError: If no build backend is wired.
         """
+        oname = object_name(req.name, req.group)
+        labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
         try:
-            return await asyncio.to_thread(self._engine.builder.build, req)
+            return self._engine.builder.manifests(req, labels)
         except NotImplementedError as exc:
             raise ServiceUnavailableError(str(exc)) from exc
 
+    # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
+    # run the build+deploy in the background and return 202 Accepted with a
+    # status URL to poll. Deploys (esp. function builds) can be slow.
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
@@ -157,7 +149,7 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        build = await self._build(
+        image, build_manifests = self._build(
             BuildRequest(
                 name=spec.name,
                 group=group,
@@ -166,7 +158,8 @@ class FunctionService:
                 git_token=spec.gitToken,
                 runtime=spec.runtime,
                 owner=user.username,
-            )
+            ),
+            user,
         )
 
         await self._engine.assert_workload_absent(
@@ -176,7 +169,7 @@ class FunctionService:
             name=spec.name,
             user=user,
             group=group,
-            image=build.digest or build.image,
+            image=image,
             offering=OFFERING_FUNCTION,
             env=spec.env,
             files=spec.files,
@@ -184,15 +177,18 @@ class FunctionService:
             size=spec.size,
             hostname=spec.hostname,
             sites=spec.sites,
-            pull_secret_name=None,
+            # The image is on the platform's own registry, so it pulls with the
+            # same credential kpack pushed it with. The Secret is the chart's,
+            # shared by every function, so it is referenced and never applied or
+            # pruned here.
+            pull_secret_name=self._engine.builder.pull_secret,
             pull_secret_manifest=None,
             port=None,
             created=True,
             runtime=spec.runtime,
             git_url=spec.gitRepo,
             branch=spec.branch,
-            # Persist the git token so a later edit can rebuild without re-sending it.
-            extra_secrets=[self._git_secret(spec.name, group, user, spec.gitToken)],
+            local_resources=build_manifests,
         )
         return body, code
 
@@ -252,13 +248,14 @@ class FunctionService:
             )
 
         image = existing["image"]
+        build_manifests: list[dict] = []
         if token is not None:
-            # Applied on EVERY update, not only when an input changed. The
+            # Emitted on EVERY update, not only when an input changed. The
             # manifests are a pure function of the request, so re-applying an
             # unchanged spec is a no-op that kpack does not rebuild from - but it
             # recreates the Image on a site that has never had one, which is what
             # makes an update after a switchover self-healing (§9.5).
-            build = await self._build(
+            tag, build_manifests = self._build(
                 BuildRequest(
                     name=name,
                     group=group,
@@ -267,22 +264,16 @@ class FunctionService:
                     git_token=token,
                     runtime=runtime,
                     owner=user.username,
-                )
+                ),
+                user,
             )
             # Only move the KSVC when the build inputs actually changed. Otherwise
             # keep what is deployed: it may be a digest the build service resolved
             # from a completed build, and rewriting it back to the tag would spawn
             # a pointless revision.
             if build_inputs_changed or token_rotated:
-                image = build.digest or build.image
+                image = tag
 
-        # Re-store the token only when the client supplied one (rotation); omitting
-        # it leaves the stored copy in place (extra_secrets empty -> not pruned).
-        extra_secrets = (
-            [self._git_secret(name, group, user, spec.gitToken)]
-            if spec.gitToken is not None
-            else []
-        )
         body, code = await self._engine.apply_workload(
             name=name,
             user=user,
@@ -295,7 +286,7 @@ class FunctionService:
             size=spec.size,
             hostname=spec.hostname,
             sites=None,
-            pull_secret_name=None,
+            pull_secret_name=self._engine.builder.pull_secret,
             pull_secret_manifest=None,
             port=None,
             created=False,
@@ -306,7 +297,7 @@ class FunctionService:
             prev_host=existing.get("host"),
             kept_env=existing.get("env_values"),
             kept_files=existing.get("files_values"),
-            extra_secrets=extra_secrets,
+            local_resources=build_manifests,
         )
         return body, code
 

@@ -443,6 +443,7 @@ class WorkloadService:
         kept_env: dict[str, str] | None = None,
         kept_files: dict[str, str] | None = None,
         extra_secrets: list[dict] = (),
+        local_resources: list[dict] = (),
     ) -> tuple[WorkloadResponse, int]:
         """Build the manifests once and apply the workload to every target site.
 
@@ -481,6 +482,10 @@ class WorkloadService:
             extra_secrets: Additional owned Secret manifests to apply (e.g. the
                 function git-token Secret). Owner-stamped and GC'd with the KSVC;
                 not in the managed prune set, so omitting one keeps the stored copy.
+            local_resources: Owned manifests applied to the LOCAL site only - the
+                function's build objects. Each site builds its own image (§9.1),
+                so fanning these out would have every site build the same source
+                and race to push the same tag.
 
         Returns:
             The response body and HTTP status code.
@@ -544,12 +549,16 @@ class WorkloadService:
                 applied_derived.add((ResourceKind.SECRET, pull_secret_name))
         to_prune = () if created else managed_derived - applied_derived
 
+        local_site = self.deployer.local_site() if local_resources else None
+
         def apply(cluster: Cluster) -> SiteStatus:
             return self._apply_to_site(
                 cluster,
                 oname=oname,
                 ksvc=ksvc,
-                backing=backing,
+                backing=(
+                    backing + list(local_resources) if cluster.site == local_site else backing
+                ),
                 pull_secret_manifest=pull_secret_manifest,
                 mapping=mapping,
                 to_prune=to_prune,
@@ -1184,16 +1193,11 @@ class WorkloadService:
             self._assert_offering(obj, offering)
             # Deleting the KSVC cascades to every derived resource via their
             # ownerReferences (set at apply time): the {workload}-env /
-            # {workload}-files Secret & ConfigMap, the imagePullSecret, and the
-            # DomainMapping (whose name is the host, freeing it for reuse).
+            # {workload}-files Secret & ConfigMap, the imagePullSecret, the
+            # DomainMapping (whose name is the host, freeing it for reuse), and a
+            # function's build objects - so no orphaned Image is left rebuilding
+            # a function that no longer exists (§11).
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
-            if offering == OFFERING_FUNCTION:
-                # Build objects are in another namespace, so ownerReferences
-                # cannot reach them - an orphaned Image would keep rebuilding
-                # the function forever after it is gone (§11). Every site is
-                # cleaned, not just the local one: a switchover can leave an
-                # Image behind on a site that built this function earlier.
-                self.builder.cleanup(cluster, name, group)
             return SiteStatus(site=cluster.site, status="Deleted")
 
         targets = self.deployer.resolve_targets(None)

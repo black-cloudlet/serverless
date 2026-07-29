@@ -66,11 +66,6 @@ class RegistryConfig(BaseModel):
 class BuildConfig(BaseModel):
     """kpack build settings (env ``SERVERLESS_BUILD__*``, set by the Helm chart)."""
 
-    # Namespace the Image CRs, per-function build ServiceAccounts and their git
-    # Secrets are created in. Deliberately not the workloads namespace: build
-    # pods run tenant source. Empty falls back to the workloads namespace so a
-    # chart-less local run still works. docs/BUILD-PIPELINE.md §2.1.
-    namespace: str = ""
     # The shared registry credential every build pushes with, and every function
     # KSVC pulls with. Created by the chart from the ClusterSecretStore.
     registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
@@ -106,11 +101,6 @@ class CommonSettings(BaseSettings):
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     build: BuildConfig = Field(default_factory=BuildConfig)
-
-    @property
-    def build_namespace(self) -> str:
-        """Namespace for build resources, falling back to the workloads namespace."""
-        return self.build.namespace or self.workloads_namespace
 
     # Per-call timeouts to a cluster's API server (seconds). Without these a down
     # cluster would block a worker thread until the OS socket timeout.

@@ -44,7 +44,8 @@ def test_git_secret_roundtrips_token():
     name = git_secret_name("app-team")
     assert name == "app-team-git"
     s = build_git_secret(name, {"app": "x"}, "ghp_secret")
-    assert s["kind"] == "Secret" and s["type"] == "Opaque"
+    # basic-auth, not Opaque: kpack clones with this same Secret
+    assert s["kind"] == "Secret" and s["type"] == "kubernetes.io/basic-auth"
     assert s["metadata"]["name"] == name and s["metadata"]["labels"] == {"app": "x"}
     # stored base64-encoded under the token key; the update path decodes it back
     assert base64.b64decode(s["data"][GIT_TOKEN_KEY]).decode() == "ghp_secret"

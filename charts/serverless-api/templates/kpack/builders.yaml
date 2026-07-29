@@ -6,7 +6,7 @@ apiVersion: kpack.io/v1alpha2
 kind: Builder
 metadata:
   name: {{ .name }}
-  namespace: {{ $.Values.namespaces.api }}
+  namespace: {{ $.Values.namespaces.workloads }}
   labels:
     {{- include "serverless-api.labels" $ | nindent 4 }}
 spec:

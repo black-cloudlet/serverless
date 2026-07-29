@@ -24,10 +24,11 @@ spec:
               kinds:
                 - Pod
               namespaces:
-                - {{ .Values.namespaces.api }}
+                - {{ .Values.namespaces.workloads }}
               selector:
                 matchExpressions:
-                  # Keeps the mutation off the API's own pods, same namespace.
+                  # Set by kpack on build pods, and on nothing else - this
+                  # namespace is full of tenant pods that must not be touched.
                   - key: kpack.io/build
                     operator: Exists
       mutate:

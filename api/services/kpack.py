@@ -1,82 +1,25 @@
 """Pure builders for the kpack objects a function build needs.
 
-Three objects per function, all in the build namespace (docs §2.1): a git Secret
-in the shape kpack consumes, the ServiceAccount pairing it with the shared
-registry credential, and the ``Image`` CR itself. No I/O here - the caller
-applies them (see :mod:`api.services.builder`).
+Two manifests per function - the build ServiceAccount and the ``Image`` - plus a
+reading of the Image's status. No I/O: the caller applies them alongside the
+KSVC's other derived resources, in the workload's own namespace, so they are
+owner-stamped and garbage-collected with it (see :mod:`api.services.builder`).
 
-Names are prefixed ``fn-`` so they never collide with the workloads-namespace
-objects of the same function, in particular the API's own ``{workload}-git``
-Secret, which is a different shape in a different namespace.
+The git credential is not here - it is the workload's own ``{workload}-git``
+Secret, which :mod:`api.services.secrets` already builds in the shape kpack
+consumes.
 """
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
-
-from api.services import resources as res
-
-GIT_ANNOTATION = "kpack.io/git"
-
 
 def build_object_name(workload: str) -> str:
-    """Name shared by a function's Image and build ServiceAccount: ``fn-{workload}``."""
+    """Name shared by a function's Image and build ServiceAccount: ``fn-{workload}``.
+
+    Prefixed so it cannot collide with the KSVC or any other object the workload
+    owns in the same namespace.
+    """
     return f"fn-{workload}"
-
-
-def git_secret_name(workload: str) -> str:
-    """Name of a function's kpack git Secret: ``fn-{workload}-git``."""
-    return f"fn-{workload}-git"
-
-
-def git_credential_host(git_url: str) -> str:
-    """The ``kpack.io/git`` annotation value for a repository URL.
-
-    kpack matches a credential to a source repository by comparing this
-    annotation against the repository URL, so it must be the scheme and host
-    with no path and no embedded userinfo.
-
-    Args:
-        git_url: The repository URL (e.g. ``https://git.internal/team/app.git``).
-
-    Returns:
-        ``{scheme}://{host}`` (e.g. ``https://git.internal``); the input
-        unchanged if it has no scheme to split on.
-    """
-    parts = urlsplit(git_url)
-    if not parts.scheme or not parts.netloc:
-        return git_url
-    host = parts.netloc.rsplit("@", 1)[-1]  # drop any user:pass@
-    return f"{parts.scheme}://{host}"
-
-
-def build_git_secret(
-    name: str, labels: dict[str, str], git_url: str, username: str, token: str
-) -> dict:
-    """Build the ``kubernetes.io/basic-auth`` git Secret kpack clones with.
-
-    Distinct from the API's own ``{workload}-git`` Secret, which is Opaque with a
-    single ``token`` key: kpack only reads basic-auth (or ssh-auth) Secrets, and
-    only when they carry the ``kpack.io/git`` annotation naming the repository
-    host. Both hold the same caller-supplied token; the Opaque one is the API's
-    durable copy (readable, in the workloads namespace) and this one is kpack's
-    (write-only, in the build namespace). docs/BUILD-PIPELINE.md §6.
-
-    Args:
-        name: The Secret name.
-        labels: Labels to stamp on it.
-        git_url: The repository URL, reduced to scheme+host for the annotation.
-        username: Username paired with the token (``build.git_username``).
-        token: The caller-supplied git token.
-
-    Returns:
-        The Secret manifest dict.
-    """
-    secret = res.build_secret(
-        name, labels, {"username": username, "password": token}, "kubernetes.io/basic-auth"
-    )
-    secret["metadata"]["annotations"] = {GIT_ANNOTATION: git_credential_host(git_url)}
-    return secret
 
 
 def build_service_account(
@@ -93,7 +36,7 @@ def build_service_account(
     Args:
         name: The ServiceAccount name.
         labels: Labels to stamp on it.
-        git_secret: The function's basic-auth git Secret.
+        git_secret: The workload's basic-auth git Secret.
         registry_secret: The shared registry dockerconfigjson Secret.
 
     Returns:

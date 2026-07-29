@@ -7,8 +7,8 @@ import base64
 import pytest
 
 from api.services import kpack
+from api.services import secrets as secret_svc
 from api.services.builder import KpackBuilder
-from api.services.deployer import Deployer
 from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 from common.config import CommonSettings, SiteConfig
 from common.errors import NotFoundError, ValidationError
@@ -21,37 +21,11 @@ def anyio_backend():
     return "asyncio"
 
 
-class _Cluster:
-    """Records applies/deletes per namespace; serves preset objects."""
-
-    def __init__(self, name="site-a", objects=None):
-        self.site = name
-        self.name = name
-        self._objects = objects or {}  # (kind, name) -> obj
-        self.applied = []  # [(namespace, manifest)]
-        self.deleted = []  # [(namespace, kind, name)]
-
-    def get(self, kind, name=None, label_selector=None, namespace=None):
-        try:
-            return self._objects[(kind, name)]
-        except KeyError:
-            raise NotFoundError(f"{name} not found") from None
-
-    def apply(self, manifest, namespace=None):
-        self.applied.append((namespace, manifest))
-        return [manifest]
-
-    def delete(self, kind, name, namespace=None):
-        if (kind, name) not in self._objects:
-            raise NotFoundError(f"{name} not found")
-        self.deleted.append((namespace, kind, name))
-
-
 def _settings(**over):
     base = dict(
         sites=[SiteConfig(name="site-a", cluster="a-0")],
         workloads_namespace="wl",
-        build={"namespace": "bld", "registry_secret": "reg-creds"},
+        build={"registry_secret": "reg-creds"},
         registry={"url": "registry.internal", "organization": "acme"},
     )
     base.update(over)
@@ -73,11 +47,8 @@ def _runtimes():
     )
 
 
-def _builder(cluster, settings=None):
-    settings = settings or _settings()
-    deployer = Deployer(settings)
-    deployer._clusters = {"site-a": cluster}
-    return KpackBuilder(settings, deployer, _runtimes())
+def _builder(settings=None):
+    return KpackBuilder(settings or _settings(), _runtimes())
 
 
 def _request(**over):
@@ -96,33 +67,47 @@ def _request(**over):
     return BuildRequest(**kwargs)
 
 
+def _manifests(builder=None, **over):
+    return (builder or _builder()).manifests(_request(**over), {"lbl": "v"})
+
+
+def _by_kind(manifests, kind):
+    return next(m for m in manifests if m["kind"] == kind)
+
+
 # --------------------------------------------------------------- manifests
 
 
 def test_git_credential_host_strips_path_and_userinfo():
-    assert kpack.git_credential_host("https://git.internal/team/app.git") == "https://git.internal"
-    assert (
-        kpack.git_credential_host("https://u:p@git.internal:8443/a") == "https://git.internal:8443"
-    )
-    # kpack needs a host; a bare path has none to give, so it passes through
-    assert kpack.git_credential_host("git@host:team/app.git") == "git@host:team/app.git"
+    host = secret_svc.git_credential_host
+    assert host("https://git.internal/team/app.git") == "https://git.internal"
+    assert host("https://u:p@git.internal:8443/a") == "https://git.internal:8443"
+    # kpack needs a host; a bare scp-style path has none to give, so it passes through
+    assert host("git@host:team/app.git") == "git@host:team/app.git"
 
 
-def test_git_secret_is_basic_auth_with_the_kpack_annotation():
-    secret = kpack.build_git_secret(
-        "fn-x-git", {"a": "b"}, "https://git.internal/t/a.git", "x-access-token", "ghp_tok"
+def test_one_git_secret_serves_both_the_api_and_kpack():
+    secret = secret_svc.build_git_secret(
+        "hello-git", {"a": "b"}, "ghp_tok", "https://git.internal/t/a.git"
     )
     # kpack ignores an Opaque secret and one without the annotation, so both matter
     assert secret["type"] == "kubernetes.io/basic-auth"
-    assert secret["metadata"]["annotations"][kpack.GIT_ANNOTATION] == "https://git.internal"
-    assert base64.b64decode(secret["data"]["password"]).decode() == "ghp_tok"
-    assert base64.b64decode(secret["data"]["username"]).decode() == "x-access-token"
+    assert secret["metadata"]["annotations"][secret_svc.GIT_ANNOTATION] == "https://git.internal"
+    # ...and the API must still read the token back for a later rebuild
+    assert secret_svc.git_token(secret) == "ghp_tok"
+
+
+def test_git_token_still_reads_secrets_written_before_the_shape_change():
+    from api.services import resources as res
+
+    legacy = res.build_secret("hello-git", {}, {secret_svc.LEGACY_GIT_TOKEN_KEY: "ghp_old"})
+    assert secret_svc.git_token(legacy) == "ghp_old"
 
 
 def test_service_account_carries_registry_in_both_lists():
-    sa = kpack.build_service_account("fn-x", {}, "fn-x-git", "reg-creds")
+    sa = kpack.build_service_account("fn-x", {}, "x-git", "reg-creds")
     # `secrets` is what kpack pushes with; `imagePullSecrets` is the build pod's
-    assert sa["secrets"] == [{"name": "fn-x-git"}, {"name": "reg-creds"}]
+    assert sa["secrets"] == [{"name": "x-git"}, {"name": "reg-creds"}]
     assert sa["imagePullSecrets"] == [{"name": "reg-creds"}]
 
 
@@ -175,101 +160,118 @@ def test_build_status_keeps_last_image_through_a_failure():
 # ----------------------------------------------------------------- builder
 
 
-def test_build_applies_secret_account_and_image_into_the_build_namespace():
-    cluster = _Cluster()
-    result = _builder(cluster).build(_request())
+def test_manifests_are_pure_and_in_dependency_order():
+    tag, manifests = _manifests()
+    # the SA references the Secret and the Image references the SA, so a partial
+    # apply must never leave a build pointing at credentials that do not exist
+    assert [m["kind"] for m in manifests] == ["Secret", "ServiceAccount", "Image"]
+    assert tag == "registry.internal/acme/payments/hello:main"
+    # none carries a namespace: they are applied into the workload's own
+    assert all("namespace" not in m["metadata"] for m in manifests)
 
-    namespaces = {ns for ns, _ in cluster.applied}
-    assert namespaces == {"bld"}, "build objects must not land in the workloads namespace"
 
-    kinds = [m["kind"] for _, m in cluster.applied]
-    # dependency order: the SA references the Secret, the Image references the SA
-    assert kinds == ["Secret", "ServiceAccount", "Image"]
+def test_manifests_share_one_git_secret_between_the_api_and_kpack():
+    _, manifests = _manifests()
+    secret = _by_kind(manifests, "Secret")
+    sa = _by_kind(manifests, "ServiceAccount")
+    # exactly one Secret, and it is the workload's own {workload}-git
+    assert len([m for m in manifests if m["kind"] == "Secret"]) == 1
+    assert secret["metadata"]["name"] == "hello-payments-git"
+    assert sa["secrets"][0]["name"] == "hello-payments-git"
+    assert base64.b64decode(secret["data"]["password"]).decode() == "ghp_tok"
 
-    image = cluster.applied[-1][1]
+
+def test_image_and_service_account_share_one_name():
+    _, manifests = _manifests()
+    image = _by_kind(manifests, "Image")
     assert image["metadata"]["name"] == "fn-hello-payments"
     assert image["spec"]["serviceAccountName"] == "fn-hello-payments"
     assert image["spec"]["source"]["git"] == {
         "url": "https://git.internal/payments/hello.git",
         "revision": "main",
     }
-    assert result.image == "registry.internal/acme/payments/hello:main"
-    assert result.digest is None, "the build has only been requested, not finished"
+
+
+def test_labels_are_stamped_on_every_manifest():
+    _, manifests = _manifests()
+    # the engine owner-stamps these, and GC plus the group selectors rely on labels
+    assert all(m["metadata"]["labels"] == {"lbl": "v"} for m in manifests)
 
 
 def test_build_env_merges_runtime_env_and_version():
-    cluster = _Cluster()
-    _builder(cluster).build(_request())
-    env = cluster.applied[-1][1]["spec"]["build"]["env"]
+    _, manifests = _manifests()
+    env = _by_kind(manifests, "Image")["spec"]["build"]["env"]
     assert {"name": "PIP_INDEX_URL", "value": "https://art/simple"} in env
     assert {"name": "BP_CPYTHON_VERSION", "value": "3.12"} in env
 
 
 def test_build_resources_come_from_settings_and_runtime_override():
     settings = _settings(
-        build={
-            "namespace": "bld",
-            "registry_secret": "reg-creds",
-            "resources": {"limits": {"memory": "4Gi"}},
-        }
+        build={"registry_secret": "reg-creds", "resources": {"limits": {"memory": "4Gi"}}}
     )
-    cluster = _Cluster()
-    _builder(cluster, settings).build(_request())
-    assert cluster.applied[-1][1]["spec"]["build"]["resources"] == {"limits": {"memory": "4Gi"}}
+    _, manifests = _manifests(_builder(settings))
+    assert _by_kind(manifests, "Image")["spec"]["build"]["resources"] == {
+        "limits": {"memory": "4Gi"}
+    }
 
     # a runtime's own buildResources wins over the shared default
     runtimes = RuntimeRegistry(
-        [
-            RuntimeSpec(
-                name="python",
-                builder="python",
-                buildResources={"limits": {"memory": "8Gi"}},
-            )
-        ]
+        [RuntimeSpec(name="python", builder="python", buildResources={"limits": {"memory": "8Gi"}})]
     )
-    deployer = Deployer(settings)
-    deployer._clusters = {"site-a": cluster}
-    cluster.applied.clear()
-    KpackBuilder(settings, deployer, runtimes).build(_request())
-    assert cluster.applied[-1][1]["spec"]["build"]["resources"] == {"limits": {"memory": "8Gi"}}
+    _, manifests = KpackBuilder(settings, runtimes).manifests(_request(), {})
+    assert _by_kind(manifests, "Image")["spec"]["build"]["resources"] == {
+        "limits": {"memory": "8Gi"}
+    }
 
 
-def test_build_rejects_a_runtime_with_no_builder():
-    cluster = _Cluster()
+def test_manifests_reject_a_runtime_with_no_builder():
     with pytest.raises(ValidationError, match="no `builder`"):
-        _builder(cluster).build(_request(runtime="broken"))
-    assert cluster.applied == [], "nothing may be applied when the runtime is unusable"
+        _manifests(runtime="broken")
 
 
-def test_build_uses_a_pinned_revision_over_the_branch():
-    cluster = _Cluster()
-    _builder(cluster).build(_request(revision="9f2c1ab"))
-    image = cluster.applied[-1][1]
+def test_manifests_use_a_pinned_revision_over_the_branch():
+    _, manifests = _manifests(revision="9f2c1ab")
+    image = _by_kind(manifests, "Image")
     assert image["spec"]["source"]["git"]["revision"] == "9f2c1ab"
     # the tag still follows the branch, so a rebuild replaces the same tag
     assert image["spec"]["tag"].endswith(":main")
 
 
-def test_build_is_convergent_across_repeated_applies():
-    cluster = _Cluster()
-    builder = _builder(cluster)
-    builder.build(_request())
-    first = [m for _, m in cluster.applied]
-    cluster.applied.clear()
-    builder.build(_request())
-    assert [m for _, m in cluster.applied] == first
+def test_manifests_are_convergent_across_repeated_calls():
+    builder = _builder()
+    assert _manifests(builder)[1] == _manifests(builder)[1]
+
+
+def test_pull_secret_is_the_credential_kpack_pushed_with():
+    # one image, one registry, one credential - a function never supplies its own
+    assert _builder().pull_secret == "reg-creds"
+
+
+# ------------------------------------------------------------------ status
+
+
+class _StatusCluster:
+    def __init__(self, objects=None):
+        self.site = self.name = "site-a"
+        self._objects = objects or {}
+
+    def get(self, kind, name=None, label_selector=None):
+        try:
+            return self._objects[(kind, name)]
+        except KeyError:
+            raise NotFoundError(f"{name} not found") from None
 
 
 def test_status_returns_none_when_the_site_has_no_image():
     # normal after a switchover: the caller must fall through to the KSVC status
-    assert _builder(_Cluster()).status(_Cluster(), "hello", "payments") is None
+    assert _builder().status(_StatusCluster(), "hello", "payments") is None
 
 
-def test_status_reads_the_image_from_the_build_namespace():
+def test_status_reads_the_image_by_its_derived_name():
     from common.cluster import ResourceKind
 
-    cluster = _Cluster(
-        objects={
+    cluster = _StatusCluster(
+        {
             (ResourceKind.KPACK_IMAGE, "fn-hello-payments"): {
                 "status": {
                     "latestImage": "reg/x@sha256:1",
@@ -278,29 +280,8 @@ def test_status_reads_the_image_from_the_build_namespace():
             }
         }
     )
-    status = _builder(cluster).status(cluster, "hello", "payments")
+    status = _builder().status(cluster, "hello", "payments")
     assert (status.state, status.image) == ("Ready", "reg/x@sha256:1")
-
-
-def test_cleanup_removes_all_three_objects_and_tolerates_absence():
-    from common.cluster import ResourceKind
-
-    objects = {
-        (ResourceKind.KPACK_IMAGE, "fn-hello-payments"): {},
-        (ResourceKind.SERVICE_ACCOUNT, "fn-hello-payments"): {},
-        # the git Secret is already gone - cleanup must not raise
-    }
-    cluster = _Cluster(objects=objects)
-    _builder(cluster).cleanup(cluster, "hello", "payments")
-    assert [(ns, k.kind, n) for ns, k, n in cluster.deleted] == [
-        ("bld", "Image", "fn-hello-payments"),
-        ("bld", "ServiceAccount", "fn-hello-payments"),
-    ]
-
-
-def test_build_namespace_falls_back_to_workloads_when_unset():
-    settings = CommonSettings(workloads_namespace="wl")
-    assert settings.build_namespace == "wl"
 
 
 # ------------------------------------------------------- status resolution
@@ -367,50 +348,118 @@ def _ksvc(image="reg/fn:old", branch="main"):
 
 
 class _RecordingBuilder:
-    """Counts build calls and reports a configurable build state."""
+    """Counts manifest requests and reports a configurable build state."""
+
+    pull_secret = "reg-creds"
 
     def __init__(self, state=None):
         self.calls = 0
         self.reqs = []
         self._state = state
 
-    def build(self, req):
-        from common.contract import BuildResult
+    def image_ref(self, req):
+        return "reg/acme/payments/hello:main"
 
+    def manifests(self, req, labels):
         self.calls += 1
         self.reqs.append(req)
-        return BuildResult(image="reg/acme/payments/hello:main")
+        return self.image_ref(req), [
+            {
+                "apiVersion": "kpack.io/v1alpha2",
+                "kind": "Image",
+                "metadata": {"name": "fn-hello-payments", "labels": dict(labels)},
+                "spec": {},
+            }
+        ]
 
     def status(self, cluster, name, group):
         from common.contract import BuildStatus
 
         return BuildStatus(state=self._state) if self._state else None
 
-    def cleanup(self, cluster, name, group):
-        return None
 
-
-async def test_config_only_update_still_reapplies_the_image_but_keeps_the_deployment():
-    """Switchover self-heal: an unchanged spec must still recreate a missing Image."""
+def _principal():
     from api.auth.claims import Principal
+
+    return Principal(subject="u", username="alice", groups=["payments"])
+
+
+def _create_spec():
+    from api.models.function import FunctionCreate
+
+    return FunctionCreate(
+        name="hello",
+        gitRepo="https://git.internal/payments/hello.git",
+        gitToken="ghp_tok",
+        runtime="python",
+    )
+
+
+def _function_service(clusters, builder, local_site=None):
+    from api.services.function import FunctionService
+    from tests.test_auth_and_deployer import _workload_service
+
+    return FunctionService(_workload_service(clusters, builder=builder, local_site=local_site))
+
+
+async def test_create_deploys_with_the_platform_pull_secret():
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    await svc.create("payments", _create_spec(), _principal())
+
+    pod = _applied_kind(cluster, "Service")[0]["spec"]["template"]["spec"]
+    # the built image lives on the platform registry, so it pulls with the same
+    # credential kpack pushed it with - the caller supplies no registry details
+    assert pod["imagePullSecrets"] == [{"name": "reg-creds"}]
+
+
+async def test_build_manifests_are_applied_and_owned_by_the_ksvc():
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    await svc.create("payments", _create_spec(), _principal())
+
+    images = _applied_kind(cluster, "Image")
+    assert len(images) == 1
+    # the ownerReference is what deletes the Image with the function - without it
+    # an orphan keeps rebuilding a function that no longer exists
+    owners = images[0]["metadata"]["ownerReferences"]
+    assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
+
+
+async def test_build_resources_go_to_the_local_site_only():
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    local = _ApplyCluster("site-a", {})
+    remote = _ApplyCluster("site-b", {})
+    svc = _function_service(
+        {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
+    )
+    await svc.create("payments", _create_spec(), _principal())
+
+    # each site builds its own image (§9.1); fanning the Image out would have
+    # both sites build the same source and race to push the same tag
+    assert len(_applied_kind(local, "Image")) == 1
+    assert _applied_kind(remote, "Image") == []
+    assert len(_applied_kind(remote, "Service")) == 1  # ...but the KSVC goes everywhere
+
+
+async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment():
+    """Switchover self-heal: an unchanged spec must still recreate a missing Image."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.function import FunctionService
-    from api.services.secrets import build_git_secret, git_secret_name
     from api.services.workloads import _extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster, _workload_service
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    stored = build_git_secret(git_secret_name("hello-payments"), {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
-        {"hello-payments": _ksvc()},
-        secrets={"hello-payments-git": stored},
+        "site-a", {"hello-payments": _ksvc()}, secrets={"hello-payments-git": stored}
     )
     builder = _RecordingBuilder()
-    engine = _workload_service({"site-a": cluster}, builder=builder)
-    user = Principal(subject="u", username="alice", groups=["payments"])
-
-    await FunctionService(engine).update(
+    await _function_service({"site-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -418,31 +467,26 @@ async def test_config_only_update_still_reapplies_the_image_but_keeps_the_deploy
             runtime="python",
             scaling=Scaling(minScale=2, maxScale=2),
         ),
-        user,
+        _principal(),
     )
-
-    # applied even though no build input changed - that is what recreates the
+    # emitted even though no build input changed - that is what recreates the
     # Image on a site that has never built this function
     assert builder.calls == 1
     assert builder.reqs[0].git_token == "ghp_stored"
+    assert len(_applied_kind(cluster, "Image")) == 1
     # ...but the running image is untouched: it may be a digest a finished build
     # resolved, and rewriting it back to the tag would spawn a pointless revision
     assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
 
 
-async def test_update_without_any_token_applies_nothing():
-    from api.auth.claims import Principal
+async def test_update_without_any_token_emits_no_build():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.function import FunctionService
-    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
     builder = _RecordingBuilder()
-    engine = _workload_service({"site-a": cluster}, builder=builder)
-    user = Principal(subject="u", username="alice", groups=["payments"])
-
-    await FunctionService(engine).update(
+    await _function_service({"site-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -450,25 +494,21 @@ async def test_update_without_any_token_applies_nothing():
             runtime="python",
             scaling=Scaling(minScale=2, maxScale=2),
         ),
-        user,
+        _principal(),
     )
     # no token anywhere -> the git Secret cannot be written, so no build is declared
     assert builder.calls == 0
+    assert _applied_kind(cluster, "Image") == []
 
 
 async def test_branch_change_moves_the_deployment_to_the_new_tag():
-    from api.auth.claims import Principal
     from api.models.function import FunctionUpdate
-    from api.services.function import FunctionService
     from api.services.workloads import _extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster, _workload_service
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
     builder = _RecordingBuilder()
-    engine = _workload_service({"site-a": cluster}, builder=builder)
-    user = Principal(subject="u", username="alice", groups=["payments"])
-
-    await FunctionService(engine).update(
+    await _function_service({"site-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -477,28 +517,7 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
             branch="release",
             gitToken="ghp_new",
         ),
-        user,
+        _principal(),
     )
     assert builder.calls == 1
     assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
-
-
-async def test_function_delete_cleans_up_the_build_objects():
-    from api.auth.claims import Principal
-    from api.services.function import FunctionService
-    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
-
-    cleaned = []
-
-    class _Builder(_RecordingBuilder):
-        def cleanup(self, cluster, name, group):
-            cleaned.append((cluster.site, name, group))
-
-    cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
-    engine = _workload_service({"site-a": cluster}, builder=_Builder())
-    user = Principal(subject="u", username="alice", groups=["payments"])
-
-    await FunctionService(engine).delete("hello", "payments", user)
-    # ownerReferences cannot reach across namespaces, so an orphaned Image would
-    # keep rebuilding a deleted function forever
-    assert cleaned == [("site-a", "hello", "payments")]
