@@ -146,45 +146,100 @@ build:
   # list of {id, optional, version} entries forming one group, or explicit
   # [{group: [...]}] groups passed straight through to kpack.
   #
-  # The composite ids below are deliberate. A language-family buildpackage
-  # carries BOTH the composite and every component buildpack, so mirroring the
-  # one image is enough - expanding the order does not shorten the mirror list.
-  # What expanding DOES cost is detection groups: the upstream python composite
-  # defines eight (pip / pipenv / poetry / ...) and nodejs three (yarn / npm /
-  # ...), so a hand-written single group silently drops the package managers it
-  # did not spell out. Go is the safe one to expand - it has two groups that
-  # differ only by go-mod-vendor.
+  # Orders are written out EXPLICITLY rather than referencing the language
+  # composite ids, so the platform supports exactly the paths it mirrors and
+  # nothing else. An app outside these groups fails cleanly at `detect` ("no
+  # group passed") instead of dying mid-build on a download that was never
+  # mirrored. Supported paths:
   #
-  # Every id referenced here must exist in the ClusterStore, or the Builder
-  # never becomes Ready and nothing builds. `optional` governs detection, not
-  # whether the buildpack has to be present.
+  #   go      - vendored (vendor/) and non-vendored (go mod download)
+  #   python  - requirements.txt (pip) and pyproject.toml (poetry)
+  #   node    - npm (package-lock.json); yarn is deliberately NOT offered
+  #
+  # Groups are tried in order; the first whose non-optional buildpacks all
+  # detect wins. Each group is copied verbatim from the upstream composite, so
+  # behaviour matches Paketo exactly for the paths that are kept.
+  #
+  # Every id must exist in the ClusterStore or the Builder never becomes Ready
+  # and nothing builds - `optional` governs detection, not whether a buildpack
+  # has to be present. Narrowing the order does not shrink the image mirror
+  # (a composite buildpackage carries all its components); it shrinks the
+  # DEPENDENCY mirror, because only buildpacks that can run ever download.
   builders:
+    # Two groups, differing only by go-mod-vendor: vendored apps take the
+    # first, everything else falls through to the second and needs GOPROXY.
     - name: go
       order:
-        - paketo-buildpacks/go
-      # Expanded equivalent, if you want explicit control over the components:
-      # - id: paketo-buildpacks/ca-certificates
-      #   optional: true
-      # - id: paketo-buildpacks/watchexec
-      #   optional: true
-      # - id: paketo-buildpacks/go-dist
-      # - id: paketo-buildpacks/git
-      #   optional: true
-      # - id: paketo-buildpacks/go-mod-vendor
-      #   optional: true          # optional here collapses upstream's two groups
-      # - id: paketo-buildpacks/go-build
-      # - id: paketo-buildpacks/procfile
-      #   optional: true
-      # - id: paketo-buildpacks/environment-variables
-      #   optional: true
-      # - id: paketo-buildpacks/image-labels
-      #   optional: true
+        - group:
+            - { id: paketo-buildpacks/ca-certificates, optional: true }
+            - { id: paketo-buildpacks/watchexec, optional: true }
+            - { id: paketo-buildpacks/go-dist }
+            - { id: paketo-buildpacks/git, optional: true }
+            - { id: paketo-buildpacks/go-mod-vendor }
+            - { id: paketo-buildpacks/go-build }
+            - { id: paketo-buildpacks/procfile, optional: true }
+            - { id: paketo-buildpacks/environment-variables, optional: true }
+            - { id: paketo-buildpacks/image-labels, optional: true }
+        - group:
+            - { id: paketo-buildpacks/ca-certificates, optional: true }
+            - { id: paketo-buildpacks/watchexec, optional: true }
+            - { id: paketo-buildpacks/go-dist }
+            - { id: paketo-buildpacks/git, optional: true }
+            - { id: paketo-buildpacks/go-build }
+            - { id: paketo-buildpacks/procfile, optional: true }
+            - { id: paketo-buildpacks/environment-variables, optional: true }
+            - { id: paketo-buildpacks/image-labels, optional: true }
+    # pip first, then the two poetry variants (poetry-run vs python-start).
+    # pipenv and conda groups are omitted - their dependencies are not mirrored.
     - name: python
       order:
-        - paketo-buildpacks/python
+        - group:
+            - { id: paketo-buildpacks/ca-certificates, optional: true }
+            - { id: paketo-buildpacks/watchexec, optional: true }
+            - { id: paketo-buildpacks/cpython }
+            - { id: paketo-buildpacks/pip }
+            - { id: paketo-buildpacks/pip-install }
+            - { id: paketo-buildpacks/python-start }
+            - { id: paketo-buildpacks/procfile, optional: true }
+            - { id: paketo-buildpacks/environment-variables, optional: true }
+            - { id: paketo-buildpacks/image-labels, optional: true }
+        - group:
+            - { id: paketo-buildpacks/ca-certificates, optional: true }
+            - { id: paketo-buildpacks/watchexec, optional: true }
+            - { id: paketo-buildpacks/cpython }
+            - { id: paketo-buildpacks/pip }
+            - { id: paketo-buildpacks/poetry }
+            - { id: paketo-buildpacks/poetry-install }
+            - { id: paketo-buildpacks/poetry-run }
+            - { id: paketo-buildpacks/procfile, optional: true }
+            - { id: paketo-buildpacks/environment-variables, optional: true }
+            - { id: paketo-buildpacks/image-labels, optional: true }
+        - group:
+            - { id: paketo-buildpacks/ca-certificates, optional: true }
+            - { id: paketo-buildpacks/watchexec, optional: true }
+            - { id: paketo-buildpacks/cpython }
+            - { id: paketo-buildpacks/pip }
+            - { id: paketo-buildpacks/poetry }
+            - { id: paketo-buildpacks/poetry-install }
+            - { id: paketo-buildpacks/python-start }
+            - { id: paketo-buildpacks/procfile, optional: true }
+            - { id: paketo-buildpacks/environment-variables, optional: true }
+            - { id: paketo-buildpacks/image-labels, optional: true }
+    # npm only. The upstream yarn group is omitted, so a yarn.lock app fails at
+    # detect rather than requiring the yarn dependencies to be mirrored.
     - name: node
       order:
-        - paketo-buildpacks/nodejs
+        - group:
+            - { id: paketo-buildpacks/ca-certificates, optional: true }
+            - { id: paketo-buildpacks/watchexec, optional: true }
+            - { id: paketo-buildpacks/node-engine }
+            - { id: paketo-buildpacks/npm-install }
+            - { id: paketo-buildpacks/node-run-script, optional: true }
+            - { id: paketo-buildpacks/node-start, optional: true }
+            - { id: paketo-buildpacks/npm-start, optional: true }
+            - { id: paketo-buildpacks/procfile, optional: true }
+            - { id: paketo-buildpacks/environment-variables, optional: true }
+            - { id: paketo-buildpacks/image-labels, optional: true }
 
 sites:
   - name: central                 

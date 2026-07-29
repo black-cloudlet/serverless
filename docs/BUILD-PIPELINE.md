@@ -694,15 +694,36 @@ satisfied by the image alone. The tarballs for every advertised
 `runtimes[].versions` entry must be mirrored **to the artifact server** (they are files,
 not registry content):
 
-| Runtime | Upstream source to mirror |
-|---------|---------------------------|
-| python | `https://www.python.org/ftp/python/<ver>/Python-<ver>.tgz` |
-| node | `https://nodejs.org/dist/v<ver>/node-v<ver>-linux-x64.tar.gz` |
-| go | `https://go.dev/dl/go<ver>.linux-amd64.tar.gz` |
+Proof that nothing is bundled: each buildpack's own `include-files` lists everything that
+goes into its image - `buildpack.toml` plus a few `bin/` scripts, and no archives.
 
-The authoritative list is the `uri` + `checksum` fields in each buildpackage's
-`buildpack.toml` (readable with `pack buildpack inspect <image>`), including the
-sub-buildpacks (`cpython`, `pip`, `poetry`, `node-engine`, `npm-install`, ...).
+**Only the buildpacks that *provide* a tool download anything.** The ones that *use* it
+(`pip-install`, `poetry-install`, `npm-install`, `go-build`, `*-start`, ...) are pure
+logic. Across the orders in §3 this is the complete download set:
+
+| Component | Entries (amd64) | Upstream hosts |
+|-----------|-----------------|----------------|
+| `cpython` | 30 | www.python.org, artifacts.paketo.io |
+| `node-engine` | 11 | nodejs.org |
+| `go-dist` | 5 | go.dev |
+| `poetry` | 12 | files.pythonhosted.org |
+| `pip` | 2 | artifacts.paketo.io |
+| `watchexec` | 1 | github.com |
+
+Two things keep this small:
+
+- **Filter by what is advertised.** `cpython`'s 30 amd64 entries cover ten minor versions;
+  only the `runtimes[].versions` on offer are ever requested - six files for 3.11/3.12/3.13,
+  three if only the newest patch of each is kept.
+- **A dependency is fetched only if its buildpack can run.** Narrowing the orders (§3) is
+  what shrinks this list: with no pipenv or conda group, `pipenv` and `miniconda` never
+  execute and their files are never needed.
+
+Note the **five distinct upstream hosts** - that is why the mirror in §14.4 uses
+`{originalHost}` rather than a single flat prefix.
+
+The authoritative list is always the `uri` + `checksum` fields in each buildpack's
+`buildpack.toml`, readable with `pack buildpack inspect <image>`.
 
 ### 14.4 Redirecting the download - `dependency-mirror`
 
