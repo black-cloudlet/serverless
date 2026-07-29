@@ -93,10 +93,8 @@ serverless-api chart                            one release per cluster/site
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
 ├── ExternalSecret          ...... the registry dockerconfigjson (§6)
+├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (§5)  [cluster-scoped]
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
-
-Cluster policy                                          once per cluster
-└── Kyverno ClusterPolicy   ...... CA bundle -> build pods (§5)
 ```
 
 **Why the split.** The kpack chart is a generic, upstream-modelled *engine* installer;
@@ -251,9 +249,19 @@ Because the OpenShift bundle is the **complete** trust store (system CAs + inter
 mounting it at a path and exporting `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` / `PIP_CERT` /
 `GIT_SSL_CAINFO` is preferred over overwriting `/etc/ssl/certs/ca-certificates.crt`.
 
-**Operational risk:** Kyverno becomes a hard dependency of the build path, and a missing
-policy fails *late and confusingly* (a TLS error deep inside pip). Cover it with a smoke
-test that builds a function pulling one internal dependency.
+**Operational risk:** Kyverno becomes a hard dependency of the build path. The policy
+therefore ships with `failurePolicy: Fail` (`build.caInjection.failurePolicy`): a build pod
+is *rejected* if Kyverno cannot mutate it, rather than starting without the CA and dying
+later with an opaque TLS error from pip, npm or git. The cost is that Kyverno being down
+blocks builds - acceptable, since builds are asynchronous and retried, and a rejected pod
+names the cause. Set it to `Ignore` only if you would rather builds proceed unmutated.
+
+Cover the path with a smoke test that builds a function pulling one internal dependency;
+that is the only thing that proves the mount reached the phase that needed it.
+
+If Kyverno is not available, set `build.caInjection.enabled: false` and bake the CA into
+the mirrored stack images instead (`update-ca-certificates` at mirror time) - that also
+covers the run image, so the running function trusts internal TLS too.
 
 ---
 
@@ -611,6 +619,8 @@ imagePullSecrets:              # build pod pulling the composed builder image
 ```
 
 ### 13.5 Kyverno policy - CA into build pods
+
+Shipped as `templates/kpack/ca-policy.yaml`, gated on `build.caInjection.enabled`. Abridged:
 
 ```yaml
 apiVersion: kyverno.io/v1

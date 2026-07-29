@@ -189,6 +189,29 @@ build:
       usernameProperty: registry-username
       passwordProperty: registry-password
 
+  # Internal-CA trust for build pods, via a Kyverno ClusterPolicy that mounts the
+  # existing OpenShift-injected `caBundle` ConfigMap into every build container.
+  #
+  # A Kyverno mutation is used rather than the Paketo ca-certificates buildpack
+  # binding because the binding only covers the CNB build phase - it does NOT
+  # cover `prepare`, which is where kpack clones the git source over TLS.
+  # docs/BUILD-PIPELINE.md §5.
+  #
+  # TLS verification is never disabled: no PIP_TRUSTED_HOST, no strict-ssl=false,
+  # no GOINSECURE, no NODE_TLS_REJECT_UNAUTHORIZED.
+  caInjection:
+    # Requires Kyverno in the cluster. Set false if the CA is baked into the
+    # mirrored stack images instead.
+    enabled: true
+    # Deliberately NOT `caBundle.mountPath` (/etc/ssl/certs): mounting there
+    # would shadow the build image's own trust store. A separate path plus the
+    # per-tool env below is additive.
+    mountPath: /etc/serverless/ca
+    # Fail: a build pod is rejected if Kyverno cannot mutate it. Prefer this to
+    # Ignore, which would let builds start without the CA and fail much later
+    # with an opaque TLS error from pip/npm/git.
+    failurePolicy: Fail
+
   # Redirects EVERY buildpack runtime download (CPython/Node/Go tarballs) to the
   # on-prem artifact server - required for airgapped builds. `{originalHost}` is
   # substituted with the upstream host and the upstream path is appended, so a
