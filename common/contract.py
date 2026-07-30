@@ -10,16 +10,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic.dataclasses import dataclass as validated_dataclass
+
 from common.cluster import Cluster
+from common.names import Branch, Group, Name, image_tag
 
 
-@dataclass
+@validated_dataclass
 class BuildRequest:
     """Inputs for building a function image from source.
 
+    Validated on construction rather than trusted: these fields become
+    Kubernetes object names and an image reference, and the build path is
+    reachable off the HTTP edge (the webhook, and later the build service),
+    where request-model validation has not run.
+
     Attributes:
-        name: Workload name.
-        group: Owning group.
+        name: Workload name (DNS-1123 label).
+        group: Owning group (DNS-1123 label, normalised).
         git_url: Source repository URL.
         branch: Branch to build.
         git_token: The caller's git token, stored for kpack to clone with.
@@ -30,10 +38,10 @@ class BuildRequest:
             pushed SHA here so a rebuild is idempotent.
     """
 
-    name: str
-    group: str
+    name: Name
+    group: Group
     git_url: str
-    branch: str
+    branch: Branch
     git_token: str
     runtime: str
     owner: str = ""
@@ -115,9 +123,14 @@ class Builder(Protocol):
 
 
 def image_reference(registry_base: str, req: BuildRequest) -> str:
-    """The image reference convention for a build: ``{base}/{group}/{name}:{branch}``.
+    """The image reference convention for a build: ``{base}/{group}/{name}:{tag}``.
 
     Shared so the API and the builder agree on where a build's image lands.
+
+    The tag is the branch projected into what an OCI tag allows - a branch may
+    contain ``/`` and a tag may not, so ``feature/login`` pushes to
+    ``feature-login``. Only the tag is rewritten; the build still compiles that
+    exact ref (see ``BuildRequest.build_revision``).
 
     Args:
         registry_base: Registry host, plus organization when the registry has
@@ -128,4 +141,4 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
         The fully-qualified image reference.
     """
     base = registry_base.rstrip("/")
-    return f"{base}/{req.group}/{req.name}:{req.branch}"
+    return f"{base}/{req.group}/{req.name}:{image_tag(req.branch)}"

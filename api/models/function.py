@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from api.models.common import (
+    Branch,
     BuildStatusView,
     EnvVar,
     FileMount,
@@ -30,7 +31,7 @@ class FunctionCreate(BaseModel):
 
     name: Name
     gitRepo: str
-    branch: str = "main"
+    branch: Branch = "main"
     gitToken: str
     runtime: str
     env: list[EnvVar] = Field(default_factory=list)
@@ -56,7 +57,7 @@ class FunctionUpdate(BaseModel):
     """
 
     gitRepo: str
-    branch: str = "main"
+    branch: Branch = "main"
     gitToken: str | None = None  # keep-on-omit: reuses the stored token
     runtime: str
     env: list[EnvVar] = Field(default_factory=list)

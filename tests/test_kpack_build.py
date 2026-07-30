@@ -602,3 +602,43 @@ async def test_a_pre_upgrade_opaque_token_is_still_usable_for_a_rebuild():
     # read back through the old key, so the caller is not asked to re-send it
     assert builder.calls == 1
     assert builder.reqs[0].git_token == "ghp_old"
+
+
+# ------------------------------------------------------- request validation
+
+
+def test_build_request_validates_its_own_name_and_group():
+    """The build path is reachable off the HTTP edge, so it cannot trust inputs."""
+    import pydantic
+
+    for bad in ({"name": "Bad Name!"}, {"group": "UPPER"}, {"name": "x" * 64}):
+        with pytest.raises(pydantic.ValidationError):
+            _request(**bad)
+
+
+@pytest.mark.parametrize("bad", ["", " ", "has space", "-leading", "a..b", "x/", "with:colon"])
+def test_build_request_rejects_unusable_branches(bad):
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        _request(branch=bad)
+
+
+def test_a_slashed_branch_builds_that_ref_but_pushes_a_legal_tag():
+    """`feature/login` is an everyday branch; `/` is illegal in an OCI tag."""
+    plan = _plan(branch="feature/login")
+    assert plan.tag == "registry.internal/acme/payments/hello:feature-login"
+    # the git revision keeps the real ref - only the tag is a projection
+    image = _by_kind(plan.local, "Image")
+    assert image["spec"]["source"]["git"]["revision"] == "feature/login"
+    assert image["spec"]["tag"] == plan.tag
+
+
+def test_image_tag_projection_rules():
+    from common.names import image_tag
+
+    assert image_tag("main") == "main"
+    assert image_tag("release/1.2.x") == "release-1.2.x"
+    # a tag must start alphanumeric or '_', so leading '.'/'-' are dropped
+    assert image_tag(".hidden") == "hidden"
+    assert len(image_tag("x" * 200)) == 128

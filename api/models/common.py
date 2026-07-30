@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Annotated, Literal, get_args
+from typing import Literal, get_args
 
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 # Ownership label keys are shared platform identity (common.labels); re-exported
 # here for the api models/services that read and stamp them.
@@ -17,6 +17,23 @@ from common.labels import (  # noqa: F401
     LABEL_OWNER,
     LABEL_WORKLOAD,
     MANAGED_BY_VALUE,
+)
+
+# Name/group/branch rules live in `common` because they bound what can be written
+# to a cluster, and the builder applies the same rules off the HTTP path.
+# Re-exported so request models and query params keep one import site.
+from common.names import (  # noqa: F401
+    DNS1123,
+    HOSTNAME,
+    Branch,
+    Group,
+    Hostname,
+    Name,
+    normalize_group,
+    validate_branch,
+    validate_group,
+    validate_hostname,
+    validate_name,
 )
 
 ANNOTATION_HOST = "serverless.platform/host"
@@ -57,104 +74,14 @@ _METRIC_UNITS = {
 # request-only (no limit -> no throttling).
 WorkloadSize = Literal["small", "medium", "large"]
 
-DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
-# RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
-HOSTNAME = re.compile(
-    r"^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
-)
-# Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
-# "ggd-1234-platforms" is the group "platforms").
-_GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
+# Name/group/branch rules live in `common` because they bound what can be written
+# to a cluster, and the builder applies the same rules off the HTTP path.
+# Re-exported so request models and query params keep one import site.
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
 _SCALE_DOWN_DELAY_MAX_SECONDS = 3600  # Knative maximum
 _SCALE_DOWN_DELAY_MAX = "1h"
-
-
-def normalize_group(group: str) -> str:
-    """Normalize a group name to its bare form.
-
-    Strips the Keycloak path prefix ("/") and a leading ``ggd-<1-4 digits>-``
-    prefix, so e.g. "/ggd-1234-platforms" and "platforms" name the same group.
-    Applied both to groups from the OIDC token and to a request-supplied group.
-
-    Args:
-        group: The raw group name.
-
-    Returns:
-        The normalized group name.
-    """
-    return _GGD_PREFIX.sub("", group.lstrip("/"))
-
-
-def validate_name(name: str) -> str:
-    """Validate a workload name as a DNS-1123 label.
-
-    Args:
-        name: The candidate workload name.
-
-    Returns:
-        The name unchanged.
-
-    Raises:
-        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
-    """
-    if not DNS1123.match(name) or len(name) > 63:
-        raise ValueError(
-            "name must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
-        )
-    return name
-
-
-def validate_group(group: str) -> str:
-    """Normalize and validate a group name as a DNS-1123 label.
-
-    Args:
-        group: The candidate group name (a ``ggd-<digits>-`` prefix is stripped).
-
-    Returns:
-        The normalized group name.
-
-    Raises:
-        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
-    """
-    group = normalize_group(group)
-    if not DNS1123.match(group) or len(group) > 63:
-        raise ValueError(
-            "group must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
-        )
-    return group
-
-
-def validate_hostname(host: str) -> str:
-    """Validate a custom hostname as a DNS-1123 label or a lowercase FQDN.
-
-    Either a single DNS-1123 label (the platform base domain is appended by the
-    API) or a full lowercase FQDN. That the FQDN sits under the platform base
-    domain is enforced in the service layer, where the base domain is known.
-
-    Args:
-        host: The candidate hostname.
-
-    Returns:
-        The host unchanged.
-
-    Raises:
-        ValueError: If it is neither a DNS-1123 label nor a valid lowercase FQDN.
-    """
-    if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
-        return host
-    raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
-
-
-# Validated string types shared by request models and query params. The group
-# validator also NORMALIZES ("/ggd-1234-team" -> "team"), so every group entering
-# the app is already in bare, canonical form at the edge - nothing downstream
-# re-normalizes.
-Name = Annotated[str, AfterValidator(validate_name)]
-Group = Annotated[str, AfterValidator(validate_group)]
-Hostname = Annotated[str, AfterValidator(validate_hostname)]
 
 
 class EnvVar(BaseModel):
