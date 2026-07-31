@@ -642,3 +642,52 @@ def test_image_tag_projection_rules():
     # a tag must start alphanumeric or '_', so leading '.'/'-' are dropped
     assert image_tag(".hidden") == "hidden"
     assert len(image_tag("x" * 200)) == 128
+
+
+# ------------------------------------------------------ the runtimes contract
+
+
+def test_runtime_spec_declares_what_the_builder_reads():
+    """These are the ConfigMap contract, not incidental extra keys."""
+    declared = set(RuntimeSpec.model_fields)
+    assert {
+        "name",
+        "builder",
+        "versionEnv",
+        "defaultVersion",
+        "versions",
+        "buildEnv",
+        "buildResources",
+    } <= declared
+
+
+def test_runtime_spec_keeps_keys_it_does_not_know():
+    # a newer chart must be deployable ahead of the API
+    spec = RuntimeSpec(name="python", somethingNew="x")
+    assert spec.model_dump()["somethingNew"] == "x"
+
+
+def test_unquoted_yaml_numbers_do_not_break_the_runtimes_file():
+    # `defaultVersion: 3.12` unquoted is a float in YAML; rejecting it would take
+    # the whole runtimes file down over a missing pair of quotes
+    spec = RuntimeSpec(name="python", defaultVersion=3.12, versions=[3.11, 3.12])
+    assert spec.defaultVersion == "3.12"
+    assert spec.versions == ["3.11", "3.12"]
+
+
+def test_an_explicit_version_in_build_env_is_not_overridden():
+    runtimes = RuntimeRegistry(
+        [
+            RuntimeSpec(
+                name="python",
+                builder="python",
+                versionEnv="BP_CPYTHON_VERSION",
+                defaultVersion="3.12",
+                buildEnv=[{"name": "BP_CPYTHON_VERSION", "value": "3.11"}],
+            )
+        ]
+    )
+    plan = KpackBuilder(_settings(), runtimes).plan(_request(), {})
+    env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
+    versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
+    assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"

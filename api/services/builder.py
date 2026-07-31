@@ -89,21 +89,22 @@ class KpackBuilder:
             raise ValidationError(
                 f"unsupported runtime '{runtime}'; available runtimes: {available}"
             )
-        extra = spec.model_dump()
-        builder = extra.get("builder")
-        if not builder:
+        if not spec.builder:
             raise ValidationError(
                 f"runtime '{runtime}' has no `builder`; the runtimes ConfigMap must map "
                 "every runtime to a kpack Builder before functions can be built."
             )
-        env = [dict(e) for e in (extra.get("buildEnv") or [])]
+        env = [dict(e) for e in spec.buildEnv]
         # Pin the language version the same way the chart documents it: the
-        # runtime names the env var, so a version bump is a ConfigMap edit.
-        version_env, version = extra.get("versionEnv"), extra.get("defaultVersion")
-        if version_env and version and not any(e.get("name") == version_env for e in env):
-            env.append({"name": version_env, "value": str(version)})
-        resources = extra.get("buildResources") or self._build.resources
-        return builder, env, dict(resources or {})
+        # runtime names the env var, so a version bump is a ConfigMap edit. An
+        # explicit buildEnv entry wins - it was set deliberately.
+        if (
+            spec.versionEnv
+            and spec.defaultVersion
+            and not any(e.get("name") == spec.versionEnv for e in env)
+        ):
+            env.append({"name": spec.versionEnv, "value": spec.defaultVersion})
+        return spec.builder, env, dict(spec.buildResources or self._build.resources)
 
     def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
         """The build manifests for one function, split by replication scope.
