@@ -199,7 +199,7 @@ class Cluster:
     ) -> str:
         """Read a snapshot of one pod container's current log.
 
-        Uses CoreV1Api directly — the dynamic client can't read the ``log``
+        Uses CoreV1Api directly - the dynamic client can't read the ``log``
         subresource. The returned text is whatever the node currently holds for
         the container (Kubernetes keeps no ring buffer beyond the node's rotated
         log file); it is not a live stream.

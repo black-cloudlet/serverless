@@ -1,7 +1,7 @@
 """Settings shared by every service (api, builder, …).
 
-The connection identity — sites, the client cert, the trusted CA bundle, the
-internal registry, and per-cluster timeouts — is the same for any service that
+The connection identity - sites, the client cert, the trusted CA bundle, the
+internal registry, and per-cluster timeouts - is the same for any service that
 talks to the clusters, so it lives here as :class:`CommonSettings`. Each service
 subclasses it and adds its own fields (the API adds SSO, CORS, the route domain,
 …). All settings load from the ``SERVERLESS_`` env prefix.
@@ -22,8 +22,8 @@ class SiteConfig(BaseModel):
     bundle, and workloads namespace are global (the same in every cluster).
     """
 
-    name: str  # site/region, e.g. "central"
-    cluster: str  # cluster instance name, e.g. "central-0"
+    name: str
+    cluster: str
 
 
 class CABundleConfig(BaseModel):
@@ -50,9 +50,6 @@ class RegistryConfig(BaseModel):
     """Internal (mirrored) container registry."""
 
     url: str = "registry.internal"
-    # Organization/project path segment, when the registry namespaces its repos
-    # (Harbor projects, Quay/GitLab orgs, Artifactory repo keys). Empty for a
-    # flat registry.
     organization: str = ""
 
     @property
@@ -66,15 +63,8 @@ class RegistryConfig(BaseModel):
 class BuildConfig(BaseModel):
     """kpack build settings (env ``SERVERLESS_BUILD__*``, set by the Helm chart)."""
 
-    # The shared registry credential every build pushes with, and every function
-    # KSVC pulls with. Created by the chart from the ClusterSecretStore.
-    registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
-    # Username paired with the caller's git token in the basic-auth Secret kpack
-    # consumes. GitHub and GitLab PATs accept any username; providers that check
-    # it (Bitbucket app passwords) need this overridden.
+    registry_secret: str = "serverless-registry-creds"
     git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
-    # Resource requests/limits for the build pod, applied to spec.build.resources.
-    # env: SERVERLESS_BUILD__RESOURCES as a JSON object.
     resources: dict = Field(default_factory=dict)
 
 
@@ -93,7 +83,6 @@ class CommonSettings(BaseSettings):
     )
 
     base_domain: str = "example.com"
-    # Namespace (same in every cluster) where workloads live.
     workloads_namespace: str = "serverless-workloads"
 
     client_cert_dir: str = "/etc/serverless/client"
@@ -101,17 +90,11 @@ class CommonSettings(BaseSettings):
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     build: BuildConfig = Field(default_factory=BuildConfig)
 
-    # Per-call timeouts to a cluster's API server (seconds). Without these a down
-    # cluster would block a worker thread until the OS socket timeout.
     cluster_connect_timeout: float = 2.0
     cluster_read_timeout: float = 5.0
-    # Backstop for a whole per-site operation (covers several sequential calls).
     site_op_timeout: float = 60.0
 
     sites: list[SiteConfig] = Field(default_factory=list)
-    # The site this instance runs in (active/active). Injected per-cluster from
-    # the Helm `global.site` value (env SERVERLESS_LOCAL_SITE); reads of data that
-    # is uniform across sites prefer it, defaulting to the first site when unset.
     local_site: str | None = None
 
     @property

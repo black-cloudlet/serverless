@@ -39,11 +39,6 @@ sso:
 
 registry:
   url: registry.internal
-  # Organization/project path segment, when the registry namespaces its repos
-  # (Harbor projects, Quay/GitLab orgs, Artifactory repo keys). Prefixes every
-  # image the chart references and every image the API builds. Leave empty for
-  # a flat registry. Not part of the pull-secret auth key - docker keys those
-  # by host.
   organization: ""
 
 # Function runtimes offered to clients, mounted as a file (see services.runtimes).
@@ -67,23 +62,27 @@ runtimes:
     versionEnv: BP_CPYTHON_VERSION
     defaultVersion: "3.12"
     versions: ["3.11", "3.12", "3.13"]
-    buildEnv: []
-    # - { name: PIP_INDEX_URL, value: "https://artifactory.internal/artifactory/api/pypi/pypi/simple" }
+    buildEnv:
+      - name: PIP_INDEX_URL
+        value: "https://artifactory.internal/artifactory/api/pypi/pypi/simple"
   - name: go
     builder: go
     versionEnv: BP_GO_VERSION
     defaultVersion: "1.22"
     versions: ["1.21", "1.22"]
-    buildEnv: []
-    # - { name: GOPROXY, value: "https://artifactory.internal/artifactory/api/go/go,direct" }
-    # - { name: GOSUMDB, value: "off" }
+    buildEnv:
+      - name: GOPROXY
+        value: "https://artifactory.internal/artifactory/api/go/go,direct"
+      - name: GOSUMDB
+        value: "off"
   - name: node
     builder: node
     versionEnv: BP_NODE_VERSION
     defaultVersion: "20"
     versions: ["18", "20", "22"]
-    buildEnv: []
-    # - { name: npm_config_registry, value: "https://artifactory.internal/artifactory/api/npm/npm/" }
+    buildEnv:
+      - name: npm_config_registry
+        value: "https://artifactory.internal/artifactory/api/npm/npm/"
 
 # Function image builds (kpack + Cloud Native Buildpacks). docs/BUILD-PIPELINE.md.
 #

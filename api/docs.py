@@ -1,7 +1,7 @@
 """SSO login wiring for Swagger UI (API-specific; airgap docs live in common.web).
 
 Lets Swagger UI's "Authorize" obtain an SSO token via Auth Code + PKCE. This is
-documentation/UI only — ``require_auth`` still enforces at runtime. The offline
+documentation/UI only - ``require_auth`` still enforces at runtime. The offline
 Swagger/ReDoc serving is shared and lives in :func:`common.web.mount_offline_docs`.
 """
 

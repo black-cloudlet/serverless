@@ -34,9 +34,7 @@ class Deployer:
         """
         self._op_timeout = settings.site_op_timeout
         self._local_site = settings.local_site
-        # One Cluster per configured site, built once up front (not per request).
-        # The k8s connection stays lazy (on first use), so startup doesn't fail
-        # if a site is down.
+
         self._clusters: dict[str, Cluster] = {
             site.name: Cluster(site, settings) for site in settings.sites
         }

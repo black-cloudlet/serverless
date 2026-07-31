@@ -286,7 +286,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` - users cannot reference arbitrary existing cluster Secrets/ConfigMaps. **CA-trust defaults** (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`) are injected automatically, pointed at the mounted trusted-CA bundle, so cross-language tooling trusts internal TLS with no user action. They are **transparent**: a var the user sets themselves is left as-is (their value wins), and the injected defaults are recorded in a `serverless.platform/injected-env` annotation so they're hidden from the workload's GET. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** - one ConfigMap and one Secret per workload, a key per file - and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
-| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on the per-offering `GET /api/v1/{containers,functions}/info`** (per-metric `minScaleFloor`, target default/min/max/unit) — derived from the same model that validates a create, so a client UI can render the form without drift. |
+| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on the per-offering `GET /api/v1/{containers,functions}/info`** (per-metric `minScaleFloor`, target default/min/max/unit) - derived from the same model that validates a create, so a client UI can render the form without drift. |
 | **Resource size** | `size: small\|medium\|large` (default `small`) - a t-shirt size, so clients pick capacity without Kubernetes units. Maps to container resources: **memory** is set `request==limit` (a hard, predictable OOM boundary - exceeding it restarts that replica), **CPU** is **request-only** (no limit, so workloads are never CPU-throttled). `small`=100m/256Mi, `medium`=250m/512Mi, `large`=500m/1Gi. The CPU/memory request is also what lets the `cpu`/`memory` autoscaling metrics compute utilization. |
 
 A canonical scaling sub-object in the API:
@@ -439,10 +439,10 @@ only the paths Knative + OpenShift need. Net effect: a workload pod **can't talk
 workload pod** (no cross-tenant lateral movement in the shared namespace) or reach other
 namespaces, and its egress is constrained:
 
-- **Ingress** — allowed only from the configured system namespaces (Knative activator +
+- **Ingress** - allowed only from the configured system namespaces (Knative activator +
   Kourier ingress, the OpenShift router, monitoring). Same-namespace pods are *not* selected,
   so pod-to-pod ingress stays denied.
-- **Egress** — DNS (`openshift-dns`), the platform API namespace ("our side") + the Knative
+- **Egress** - DNS (`openshift-dns`), the platform API namespace ("our side") + the Knative
   control plane, and **off-cluster** destinations (LBs/Routes/external services) with the
   cluster-internal CIDRs excluded, so pods reach platform services via a Route/LB rather than
   directly. All namespaces/CIDRs are values (`networkPolicy.*`), verified per cluster.
@@ -630,9 +630,9 @@ flowchart LR
     it**; sending `gitToken` again rotates it. One Secret serves both readers - see
     BUILD-PIPELINE.md §6.
   - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the
-    KSVC. Registry creds mirror a secret env var — the username is the identifier, the token
+    KSVC. Registry creds mirror a secret env var - the username is the identifier, the token
     the value: **username + token** sets/rotates; **username only** (token null) keeps, but it
-    must be the *stored* username — a **different** username without a token is a `400` (there's
+    must be the *stored* username - a **different** username without a token is a `400` (there's
     no token to rotate the credential with); **neither** removes the pull secret and treats the
     image as public. Because a pull secret is keyed to a specific registry host, a keep
     re-materializes it against the **current image's registry** (reading the stored token
@@ -909,7 +909,7 @@ source, not images.)
 > values and non-secret file contents (from the workload's ConfigMap) are returned in full.
 > Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
 > stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
-> stored; echoing the stored `registryUsername` back without a token keeps the credential —
+> stored; echoing the stored `registryUsername` back without a token keeps the credential -
 > re-keyed to the current image's registry if the image moved (sending a *different* username
 > without a token is a `400`, since there's no token to rotate with); omitting `gitToken` keeps
 > the stored git token. So the redacted GET body can be sent straight back on `PUT` without wiping a secret.
@@ -920,7 +920,7 @@ source, not images.)
 >
 > **Keep is `null`, not `""`.** Only an omitted/`null` value is a keep; an empty string is a
 > real value that **sets** the secret to empty. So a secret var/file must be sent with its
-> `value`/`content` omitted (`null`) to keep it — never `""`. A **new** secret (one not
+> `value`/`content` omitted (`null`) to keep it - never `""`. A **new** secret (one not
 > already stored) sent with a `null` value is a synchronous `400` (`"…has no value and none is
 > stored to keep"`): keep only applies to something already stored, so a new secret must carry
 > its value. A non-secret var/file always requires a value. These checks run in the update
@@ -938,7 +938,7 @@ desired state, with the keep-on-write rules above for secrets. The list of `env`
 entries you send is the complete set (drop one to remove it). Each example is a body for
 `PUT /api/v1/groups/{group}/{containers|functions}/{name}`.
 
-**Config-only edit — keep every secret (echo the redacted GET straight back).** The
+**Config-only edit - keep every secret (echo the redacted GET straight back).** The
 secret env value and the registry token were `null` in the GET; sending them back unchanged
 keeps them:
 
@@ -968,7 +968,7 @@ is kept (no value); the previously-present `OLD_FLAG` is simply absent, so it's 
 }
 ```
 
-**Add a new secret — must carry a value** (a new `secret: true` with no value is a `400`):
+**Add a new secret - must carry a value** (a new `secret: true` with no value is a `400`):
 
 ```json
 { "image": "reg.example.com/team/orders:1", "registryUsername": "svc-team",
@@ -994,7 +994,7 @@ re-keyed to the new image's registry):
 { "image": "docker.io/library/nginx:1.27" }
 ```
 
-**Rebuild a function from a new branch — no token needed** (the stored git token is reused):
+**Rebuild a function from a new branch - no token needed** (the stored git token is reused):
 
 ```json
 { "branch": "release", "runtime": "python", "scaling": { "minScale": 0, "maxScale": 3 } }
@@ -1148,9 +1148,9 @@ Serverless/
 ├── common/                          # shared by api + (future) builder service
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
-│   ├── contract.py                  # BuildRequest/BuildPlan/BuildStatus/Builder — the API↔builder contract
+│   ├── contract.py                  # BuildRequest/BuildPlan/BuildStatus/Builder - the API↔builder contract
 │   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the builder)
-│   ├── names.py                     # name/branch rules + object_name — the {name}-{group} primary key
+│   ├── names.py                     # name/branch rules + object_name - the {name}-{group} primary key
 │   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
 │   ├── labels.py                    # ownership label keys + workload_labels
 │   ├── errors.py                    # error envelope, typed errors, exception handlers
@@ -1191,8 +1191,8 @@ Serverless/
 > (`builder/`) without restructuring: it would import the build contract and the
 > cluster client from `common/`, ship its own Dockerfile + image
 > (`…/serverless/builder`), and deploy from the same chart. The API talks to it
-> through `common.contract.Builder` — today via the in-process `KpackBuilder`,
-> later via a `RemoteBuilder` HTTP client — with no change to the orchestration.
+> through `common.contract.Builder` - today via the in-process `KpackBuilder`,
+> later via a `RemoteBuilder` HTTP client - with no change to the orchestration.
 > The builder subclasses `common.config.CommonSettings` (sites, CA bundle,
 > registry, timeouts) and reuses `common.cluster.Cluster`. (Identifier/validation
 > helpers are the next candidate to lift into `common/`.)
@@ -1428,7 +1428,7 @@ spec:
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
 | **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Degraded, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
-| **Observability** | The `/logs` endpoint returns a **local-site, point-in-time** snapshot (node-local, ephemeral). Centralized/durable logging, metrics, and tracing for tenant workloads — and a cross-site log backing store (Loki/EFK) behind `/logs` — remain to be designed. |
+| **Observability** | The `/logs` endpoint returns a **local-site, point-in-time** snapshot (node-local, ephemeral). Centralized/durable logging, metrics, and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) behind `/logs` - remain to be designed. |
 | **Audit logging** | Who deployed/changed/deleted what - likely required for enterprise/compliance. |
 | **Stronger isolation** | Optional move from shared-namespace to **namespace-per-group** for hard multi-tenancy. |
 | **Build pipeline hardening** | Where `func` builds run (Tekton task vs. in-API job), build caching, and signed images (cosign in airgap). |

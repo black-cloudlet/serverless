@@ -21,29 +21,29 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   back on GET). Functions are unchanged: their port stays the build's
   responsibility, not a request field.
 - **Breaking:** workload update (`PUT`) is now a true full replace for both
-  offerings — the body is the complete desired state. For containers, `image` and
+  offerings - the body is the complete desired state. For containers, `image` and
   `port` are required on update just like on create. For functions, the build
   inputs `gitRepo` and `runtime` are required and `branch` resets to `main` when
   omitted; they no longer carry forward from the deployed workload. In both cases
   the only keep-on-omit is redacted secret material that can't be read back to
-  re-send — the registry/git token and secret env/file values. Functions still
+  re-send - the registry/git token and secret env/file values. Functions still
   rebuild only when a build input actually changes or the token is rotated, so a
   config-only edit (that re-sends the same build inputs) keeps the current image.
 - Request correlation: the error envelope's `requestId` is now populated (was
   always `null`). A middleware adopts an inbound `X-Request-ID` (e.g. from the
   OpenShift router) or mints a UUID, echoes it in the `X-Request-ID` response
-  header on every response, and binds it into the server logs — so a `requestId`
+  header on every response, and binds it into the server logs - so a `requestId`
   from an error body greps straight to that request's log lines.
 - Every function/container now gets CA-trust env vars pointed at the mounted
   trusted-CA bundle so tooling trusts internal TLS out of the box:
   `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`,
   `GIT_SSL_CAINFO`. A var the caller sets themselves is left untouched (their
-  value wins); the injected defaults are transparent — recorded in a
+  value wins); the injected defaults are transparent - recorded in a
   `serverless.platform/injected-env` annotation and hidden from the workload's
   GET response.
 - Configurable labels on the chart-created namespaces: `namespaces.labels`
   (applied to both) plus `namespaces.apiLabels` / `namespaces.workloadsLabels`
-  (per-namespace, override the shared set) — e.g. to set
+  (per-namespace, override the shared set) - e.g. to set
   `pod-security.kubernetes.io/enforce` or a `namespaceSelector` target.
 
 ### Fixed
@@ -54,7 +54,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `except (ValueError, AttributeError):`.
 - A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
   reports `Ready=False`, the per-site `error` carries the specific cause from the
-  Revision's failing sub-condition (e.g. `ContainerHealthy` — image-pull error,
+  Revision's failing sub-condition (e.g. `ContainerHealthy` - image-pull error,
   crash, quota), falling back to the KSVC's aggregate message and then a reason
   code, instead of `status: "Failed"` with `error: null`. Reuses the Revision
   read already done for the replica count, so no extra cluster call.
@@ -69,7 +69,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   the redacted GET body can be sent straight back without wiping anything: a
   `secret: true` env var or file sent without a value/content keeps what's stored;
   the git token is now **stored** in a `{workload}-git` Secret so a build-input
-  change (`gitRepo`/`branch`/`runtime`) rebuilds using it — the client no longer
+  change (`gitRepo`/`branch`/`runtime`) rebuilds using it - the client no longer
   re-sends `gitToken` (sending it rotates the token). Registry creds mirror a
   secret env var (username = identifier, token = value): **username + token** sets/
   rotates; the **stored username only** keeps (re-keyed to the current image's
@@ -107,10 +107,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
-- `GET /api/v1/info` — a public, static discovery document (version, sites,
+- `GET /api/v1/info` - a public, static discovery document (version, sites,
   runtimes, sizes, per-metric scaling options, `routeDomain`,
   `defaultHostTemplate`) so a UI can render its create form from the server.
-- `GET /api/v1/{type}/{name}/logs` — a point-in-time, local-site snapshot of a
+- `GET /api/v1/{type}/{name}/logs` - a point-in-time, local-site snapshot of a
   workload's pod logs (needs the `pods/log` RBAC subresource).
 - Config-driven FaaS runtimes: a mounted ConfigMap read into a registry, with
   `runtime` validated against it (add a runtime by editing the ConfigMap, no
@@ -120,7 +120,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Configurable API Route (`route.host` / `route.labels` / `route.annotations`).
 - CI/CD hardening: image scanning (Trivy), keyless signing (cosign), SBOM +
   provenance, a one-click release workflow, pinned action SHAs, gitleaks,
-  kubeconform (with custom CRD schemas), and a ≥90% coverage gate — split into
+  kubeconform (with custom CRD schemas), and a ≥90% coverage gate - split into
   `checks` / `ci` / `release` workflows.
 
 ### Changed
