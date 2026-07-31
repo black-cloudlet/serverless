@@ -287,6 +287,31 @@ def test_status_reads_the_image_by_its_derived_name():
 # ------------------------------------------------------- status resolution
 
 
+def test_the_built_image_never_reaches_a_function_response():
+    """A function's client deals in source, not images.
+
+    The digest stays on the internal BuildStatus, which the build service reads
+    to move the KSVC; the view carries state and reason only.
+    """
+    from api.models.common import BuildStatusView
+    from api.models.function import FunctionResponse
+    from common.contract import BuildStatus
+
+    assert "image" in BuildStatus.__dataclass_fields__
+    assert "image" not in BuildStatusView.model_fields
+
+    body = FunctionResponse(
+        name="hello",
+        group="payments",
+        type="function",
+        hostname="hello-payments.ex.com",
+        overallStatus="Building",
+        build=BuildStatusView(state="Building"),
+    ).model_dump()
+    assert "image" not in body
+    assert "image" not in body["build"]
+
+
 @pytest.mark.parametrize(
     ("overall", "state", "expected"),
     [

@@ -1071,7 +1071,7 @@ class WorkloadService:
         status = self.builder.status(self.deployer.local_cluster(), name, group)
         if status is None:
             return None
-        return BuildStatusView(state=status.state, image=status.image, message=status.message)
+        return BuildStatusView(state=status.state, message=status.message)
 
     def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
         """Decoded ``data`` of a Secret (base64 -> str); ``{}`` if it doesn't exist.
