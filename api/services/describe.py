@@ -12,6 +12,7 @@ import base64
 
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_PATH,
     ANNOTATION_GIT_URL,
     ANNOTATION_INJECTED_ENV,
     CA_BUNDLE_VOLUME,
@@ -243,4 +244,5 @@ def parse_spec(
         registryUsername=registry_username,
         gitRepo=meta.get(ANNOTATION_GIT_URL),
         branch=meta.get(ANNOTATION_GIT_BRANCH),
+        path=meta.get(ANNOTATION_GIT_PATH),
     )

@@ -64,6 +64,7 @@ def build_image(
     service_account: str,
     git_url: str,
     revision: str,
+    sub_path: str = "",
     env: list[dict[str, str]] | None = None,
     resources: dict | None = None,
 ) -> dict:
@@ -84,6 +85,7 @@ def build_image(
         service_account: The per-function build ServiceAccount.
         git_url: Source repository URL.
         revision: Branch or commit SHA to build.
+        sub_path: Directory within the clone to build; "" builds the root.
         env: Build-time environment (runtime version, package index URLs, the
             dependency mirror).
         resources: Requests/limits for the build pod.
@@ -99,6 +101,10 @@ def build_image(
         "serviceAccountName": service_account,
         "source": {"git": {"url": git_url, "revision": revision}},
     }
+    # subPath sits on source, beside git - it selects the directory the
+    # buildpacks detect and build in, not the ref that is cloned.
+    if sub_path:
+        spec["source"]["subPath"] = sub_path
     build: dict = {}
     if env:
         build["env"] = [dict(e) for e in env]

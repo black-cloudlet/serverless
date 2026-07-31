@@ -15,6 +15,7 @@ from api.models.common import (
     Hostname,
     Name,
     Scaling,
+    SourcePath,
     WorkloadResponse,
     WorkloadSize,
 )
@@ -33,6 +34,7 @@ class FunctionCreate(BaseModel):
     name: Name
     gitRepo: GitUrl
     branch: Branch = "main"
+    path: SourcePath = ""
     gitToken: str
     runtime: str
     env: list[EnvVar] = Field(default_factory=list)
@@ -59,6 +61,7 @@ class FunctionUpdate(BaseModel):
 
     gitRepo: GitUrl
     branch: Branch = "main"
+    path: SourcePath = ""
     gitToken: str | None = None  # keep-on-omit: reuses the stored token
     runtime: str
     env: list[EnvVar] = Field(default_factory=list)
@@ -79,6 +82,7 @@ class FunctionResponse(WorkloadResponse):
     runtime: str | None = None
     gitRepo: str | None = None
     branch: str | None = None
+    path: str | None = None
     # Present once the function has an Image on the local site; None on a site
     # that has never built it (e.g. straight after a switchover).
     build: BuildStatusView | None = None

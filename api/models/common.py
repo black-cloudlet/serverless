@@ -30,12 +30,14 @@ from common.names import (  # noqa: F401
     Group,
     Hostname,
     Name,
+    SourcePath,
     normalize_group,
     validate_branch,
     validate_git_url,
     validate_group,
     validate_hostname,
     validate_name,
+    validate_source_path,
 )
 
 ANNOTATION_HOST = "serverless.platform/host"
@@ -43,6 +45,7 @@ ANNOTATION_SIZE = "serverless.platform/size"
 ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
+ANNOTATION_GIT_PATH = "serverless.platform/git-path"
 # Comma-separated names of the platform-injected env vars (the CA-trust defaults).
 # Stamped on the KSVC so read-back can hide them from the user's spec - they are
 # transparent defaults, not part of what the user submitted. A var the user set

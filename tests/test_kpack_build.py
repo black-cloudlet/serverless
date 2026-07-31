@@ -326,7 +326,7 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-def _ksvc(image="reg/fn:old", branch="main"):
+def _ksvc(image="reg/fn:old", branch="main", path=""):
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
 
@@ -344,6 +344,7 @@ def _ksvc(image="reg/fn:old", branch="main"):
         runtime="python",
         git_url="https://git.internal/payments/hello.git",
         branch=branch,
+        path=path,
     )
 
 
@@ -594,6 +595,35 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
 
 
+async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
+    """path is a build input: a different directory is a different application."""
+    from api.models.function import FunctionUpdate
+    from api.services.workloads import _extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(path="services/api")},
+        secrets={"hello-payments-git": stored},
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            path="services/worker",
+        ),
+        _principal(),
+    )
+
+    assert builder.reqs[0].path == "services/worker"
+    # a config-only update keeps the running image; this one must not
+    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+
+
 async def test_update_without_any_token_emits_no_build():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
@@ -714,6 +744,48 @@ def test_a_branch_with_no_ascii_still_projects_to_a_usable_tag():
 
     req = _request(branch="功能")
     assert not image_reference("reg.internal", req).endswith(":")
+
+
+def test_source_path_selects_a_directory_without_changing_the_ref():
+    """subPath picks the build directory; the whole repo is still cloned."""
+    _, manifests = _manifests(path="services/api")
+    source = _by_kind(manifests, "Image")["spec"]["source"]
+
+    assert source["subPath"] == "services/api"
+    assert source["git"] == {
+        "url": "https://git.internal/payments/hello.git",
+        "revision": "main",
+    }
+
+
+def test_no_source_path_leaves_sub_path_off_the_image():
+    """A monorepo field must not change the manifest of a root-built function."""
+    _, manifests = _manifests()
+    assert "subPath" not in _by_kind(manifests, "Image")["spec"]["source"]
+
+
+def test_the_source_path_does_not_change_the_image_tag():
+    """Two directories in one repo are two functions, told apart by name."""
+    assert _plan(path="services/api").tag == _plan().tag
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("src", "src"), ("/src", "src"), ("src/", "src"), ("  a/b  ", "a/b"), ("", "")],
+)
+def test_source_path_normalization(given, expected):
+    from common.names import validate_source_path
+
+    assert validate_source_path(given) == expected
+
+
+@pytest.mark.parametrize("bad", ["..", "../etc", "a/../b", "a//b", "a/./b", "a b", "a\\b"])
+def test_source_path_rejects_escapes_and_unusable_segments(bad):
+    """kpack resolves subPath inside the clone; '..' would build something else."""
+    from common.names import validate_source_path
+
+    with pytest.raises(ValueError):
+        validate_source_path(bad)
 
 
 # ------------------------------------------------------ the runtimes contract

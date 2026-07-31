@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_PATH,
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
     ANNOTATION_INJECTED_ENV,
@@ -129,6 +130,7 @@ def build_ksvc(
     runtime: str | None = None,
     git_url: str | None = None,
     branch: str | None = None,
+    path: str | None = None,
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
     ca_file: str | None = None,
@@ -154,6 +156,7 @@ def build_ksvc(
         runtime: Function runtime annotation, if any.
         git_url: Function source repo annotation, if any.
         branch: Function source branch annotation, if any.
+        path: Function source sub-directory annotation, if any.
         ca_config_map: Trusted-CA ConfigMap to mount, if configured.
         ca_mount_path: Mount path for the trusted CA, if configured.
         ca_file: Absolute path to the CA file inside the pod; when the CA is
@@ -221,6 +224,8 @@ def build_ksvc(
         meta_annotations[ANNOTATION_GIT_URL] = git_url
     if branch:
         meta_annotations[ANNOTATION_GIT_BRANCH] = branch
+    if path:
+        meta_annotations[ANNOTATION_GIT_PATH] = path
     if injected:
         meta_annotations[ANNOTATION_INJECTED_ENV] = ",".join(injected)
 

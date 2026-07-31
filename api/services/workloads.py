@@ -19,6 +19,7 @@ from api.auth.claims import Principal
 from api.core.config import Settings
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_PATH,
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
     ANNOTATION_RUNTIME,
@@ -436,6 +437,7 @@ class WorkloadService:
         runtime: str | None = None,
         git_url: str | None = None,
         branch: str | None = None,
+        path: str | None = None,
         prev_host: str | None = None,
         kept_env: dict[str, str] | None = None,
         kept_files: dict[str, str] | None = None,
@@ -469,6 +471,7 @@ class WorkloadService:
             runtime: Function runtime, stamped as an annotation.
             git_url: Function source repo, stamped as an annotation.
             branch: Function source branch, stamped as an annotation.
+            path: Function source sub-directory, stamped as an annotation.
             prev_host: The host the workload currently uses (update only); when it
                 differs from the resolved host, the old DomainMapping is retired so
                 the old host doesn't stay claimed.
@@ -516,6 +519,7 @@ class WorkloadService:
             runtime=runtime,
             git_url=git_url,
             branch=branch,
+            path=path,
             ca_config_map=self.settings.ca_bundle.config_map,
             ca_mount_path=self.settings.ca_bundle.mount_path,
             ca_file=self.settings.ca_bundle.file,
@@ -594,7 +598,7 @@ class WorkloadService:
         )
         if offering == OFFERING_FUNCTION:
             body: WorkloadResponse = FunctionResponse(
-                **common, runtime=runtime, gitRepo=git_url, branch=branch
+                **common, runtime=runtime, gitRepo=git_url, branch=branch, path=path
             )
         else:
             body = ContainerResponse(**common, image=image, port=port)
@@ -822,6 +826,7 @@ class WorkloadService:
             "runtime": ann.get(ANNOTATION_RUNTIME),
             "gitUrl": ann.get(ANNOTATION_GIT_URL),
             "branch": ann.get(ANNOTATION_GIT_BRANCH),
+            "path": ann.get(ANNOTATION_GIT_PATH),
             "host": ann.get(ANNOTATION_HOST),
             "pull_secret": ps_name,
             # Existing secret values, so an update can keep a redacted secret the
@@ -1094,6 +1099,7 @@ class WorkloadService:
                 runtime=(annotations or {}).get(ANNOTATION_RUNTIME),
                 gitRepo=spec.gitRepo if spec else None,
                 branch=spec.branch if spec else None,
+                path=spec.path if spec else None,
                 build=build,
             )
         # container-only: the client-supplied image

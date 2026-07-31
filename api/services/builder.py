@@ -153,6 +153,7 @@ class KpackBuilder:
                     service_account=build_name,
                     git_url=req.git_url,
                     revision=req.build_revision,
+                    sub_path=req.path,
                     env=env,
                     resources=self._build.resources,
                 ),

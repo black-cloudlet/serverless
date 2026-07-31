@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic.dataclasses import dataclass as validated_dataclass
 
-from common.names import Branch, GitUrl, Group, Name, image_tag
+from common.names import Branch, GitUrl, Group, Name, SourcePath, image_tag
 
 if TYPE_CHECKING:  # a type hint only - importing it would pull the k8s client
     from common.cluster import Cluster
@@ -33,6 +33,8 @@ class BuildRequest:
         group: Owning group (DNS-1123 label, normalised).
         git_url: Source repository URL.
         branch: Branch to build.
+        path: Directory inside the repository holding the application; ""
+            builds from the repository root.
         git_token: The caller's git token, stored for kpack to clone with.
         runtime: Function runtime (python/go/node).
         owner: Creating username, stamped on the build objects' labels.
@@ -47,6 +49,7 @@ class BuildRequest:
     branch: Branch
     git_token: str
     runtime: str
+    path: SourcePath = ""
     owner: str = ""
     revision: str | None = None
 

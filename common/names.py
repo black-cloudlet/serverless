@@ -198,6 +198,35 @@ def validate_branch(branch: str) -> str:
     return branch
 
 
+def validate_source_path(path: str) -> str:
+    """Validate the directory inside the repository that holds the application.
+
+    Surrounding ``/`` are stripped rather than rejected, so "/src" and "src"
+    name the same directory. ".." is refused: kpack resolves the path inside the
+    clone, and escaping it would build something other than the repository.
+
+    Args:
+        path: A repository-relative directory; "" is the repository root.
+
+    Returns:
+        The path without surrounding "/", or "" for the root.
+
+    Raises:
+        ValueError: If it escapes the repository or holds whitespace, a
+            backslash, or an empty segment.
+    """
+    cleaned = path.strip().strip("/")
+    if not cleaned:
+        return ""
+    if "\\" in cleaned or any(c.isspace() or ord(c) < 0x20 for c in cleaned):
+        raise ValueError("path must not contain whitespace or '\\'")
+    if any(seg in ("", ".", "..") for seg in cleaned.split("/")):
+        raise ValueError("path must not contain empty, '.' or '..' segments")
+    if len(cleaned) > 255:
+        raise ValueError("path must be at most 255 characters")
+    return cleaned
+
+
 def object_name(name: str, group: str) -> str:
     """The cluster name of a workload and everything derived from it.
 
@@ -289,3 +318,4 @@ Group = Annotated[str, AfterValidator(validate_group)]
 Hostname = Annotated[str, AfterValidator(validate_hostname)]
 Branch = Annotated[str, AfterValidator(validate_branch)]
 GitUrl = Annotated[str, AfterValidator(validate_git_url)]
+SourcePath = Annotated[str, AfterValidator(validate_source_path)]

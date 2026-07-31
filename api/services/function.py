@@ -87,6 +87,7 @@ class FunctionService:
             runtime=spec.runtime,
             gitRepo=spec.gitRepo,
             branch=spec.branch,
+            path=spec.path,
         )
 
     async def accept(
@@ -163,6 +164,7 @@ class FunctionService:
                 group=group,
                 git_url=spec.gitRepo,
                 branch=spec.branch,
+                path=spec.path,
                 git_token=spec.gitToken,
                 runtime=spec.runtime,
                 owner=user.username,
@@ -196,6 +198,7 @@ class FunctionService:
             runtime=spec.runtime,
             git_url=spec.gitRepo,
             branch=spec.branch,
+            path=spec.path,
             # The git credential goes to every site so any of them can rebuild
             # after a switchover; only one site gets the Image (§9.5).
             extra_secrets=plan.replicated,
@@ -241,6 +244,7 @@ class FunctionService:
         runtime = spec.runtime
         git_url = spec.gitRepo
         branch = spec.branch
+        path = spec.path
         stored_token = existing.get("git_token")
         token = spec.gitToken or stored_token
 
@@ -250,6 +254,7 @@ class FunctionService:
         build_inputs_changed = (
             git_url != existing.get("gitUrl")
             or branch != existing.get("branch")
+            or path != (existing.get("path") or "")
             or runtime != existing.get("runtime")
         )
         token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
@@ -273,6 +278,7 @@ class FunctionService:
                     group=group,
                     git_url=git_url,
                     branch=branch,
+                    path=path,
                     git_token=token,
                     runtime=runtime,
                     owner=user.username,
@@ -307,6 +313,7 @@ class FunctionService:
             runtime=runtime,
             git_url=git_url,
             branch=branch,
+            path=path,
             prev_host=existing.get("host"),
             kept_env=existing.get("env_values"),
             kept_files=existing.get("files_values"),
