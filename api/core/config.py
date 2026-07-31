@@ -1,7 +1,7 @@
 """API service settings.
 
 Configuration is environment-driven (12-factor); in production the values are
-projected from Vault via the External Secrets Operator (see docs/ARCHITECTURE.md §7).
+projected from Vault via the External Secrets Operator (see docs/ARCHITECTURE.md - Secrets).
 The connection identity (sites, CA bundle, client cert, registry, timeouts) is
 shared and lives in :mod:`common.config`; this module adds the API's own fields.
 Site connection profiles are supplied as a JSON list in ``SERVERLESS_SITES``.

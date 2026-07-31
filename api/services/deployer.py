@@ -1,4 +1,4 @@
-"""Multi-site fan-out and status aggregation (docs §4).
+"""Multi-site fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Site).
 
 Every deploy is applied to all target sites concurrently; results are aggregated
 into a single response. Partial failure -> Degraded (HTTP 207); total failure ->

@@ -200,7 +200,7 @@ class FunctionService:
             branch=spec.branch,
             path=spec.path,
             # The git credential goes to every site so any of them can rebuild
-            # after a switchover; only one site gets the Image (§9.5).
+            # after a switchover; only one site gets the Image (docs/BUILDING.md - Active/Active).
             extra_secrets=plan.replicated,
             local_resources=plan.local,
         )
@@ -271,7 +271,7 @@ class FunctionService:
             # manifests are a pure function of the request, so re-applying an
             # unchanged spec is a no-op that kpack does not rebuild from - but it
             # recreates the Image on a site that has never had one, which is what
-            # makes an update after a switchover self-healing (§9.5).
+            # makes an update after a switchover self-healing (docs/BUILDING.md - Active/Active).
             plan = self._build(
                 BuildRequest(
                     name=name,

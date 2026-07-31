@@ -63,12 +63,12 @@ class ContainerUpdate(BaseModel):
     ``image`` and ``port`` are required just like on create. The only keep-on-omit
     is redacted secret material - the registry token, secret env values, and
     secret file contents - which can't be read back, so omitting it keeps what's
-    stored (see the registry-creds semantics below and docs §7.2).
+    stored (see the registry-creds semantics below and docs/ARCHITECTURE.md - Secrets).
     """
 
     image: str
     # Registry creds: username+token rotates, username-only keeps, neither removes
-    # (public); a token needs a username. See docs §7.2 for the full semantics.
+    # (public); a token needs a username. See docs/ARCHITECTURE.md - Secrets for the full semantics.
     registryUsername: str | None = None
     registryToken: str | None = None
     env: list[EnvVar] = Field(default_factory=list)

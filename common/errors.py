@@ -1,4 +1,4 @@
-"""Domain errors raised by any service (docs/ARCHITECTURE.md §10).
+"""Domain errors raised by any service (docs/ARCHITECTURE.md - REST API).
 
 Deliberately free of any web framework: these are raised deep in the service and
 cluster layers, so importing one must not drag FastAPI into a process that

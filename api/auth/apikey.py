@@ -1,7 +1,8 @@
 """Static admin API-key auth (opaque ``Authorization: Bearer``).
 
 For admin automation that cannot do OIDC, the API accepts a static key in the
-same ``Authorization: Bearer`` header (docs §6). The key is supplied to the API
+same ``Authorization: Bearer`` header (docs/ARCHITECTURE.md). The key is
+supplied to the API
 as the **raw token** (from Vault via ESO, env ``SERVERLESS_ADMIN_API_KEY``); the
 caller sends that same raw token in the header.
 

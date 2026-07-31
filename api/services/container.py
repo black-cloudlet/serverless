@@ -190,7 +190,7 @@ class ContainerService:
         image = spec.image
         port = spec.port
 
-        # Resolve the pull secret from the registry creds (docs §7.2): token ->
+        # Resolve the pull secret from the registry creds (docs/ARCHITECTURE.md - Secrets): token ->
         # rotate; username only -> keep (re-key stored creds to the image's
         # registry); neither -> remove (public).
         labels = workload_labels(group, user.username, oname, OFFERING_CONTAINER)

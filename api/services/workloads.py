@@ -4,7 +4,7 @@ Offering-agnostic. :class:`~api.services.function.FunctionService` and
 :class:`~api.services.container.ContainerService` compose this engine and
 add only the offering-specific prep (build-from-Git vs image + pull secret);
 everything else - apply, host/absence checks, access control, get/delete - lives
-here. See docs §3, §4, §6.2.
+here. See docs/ARCHITECTURE.md - Multi-Site and Authentication.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 
 def _with_build_status(overall: str, build: "BuildStatusView | None") -> str:
-    """Fold a function's build state into the KSVC rollup (docs §10).
+    """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md).
 
     The build is checked FIRST because a function whose image does not exist yet
     is not broken - its KSVC is failing to pull an image kpack has not pushed,
@@ -551,9 +551,8 @@ class WorkloadService:
                 applied_derived.add((ResourceKind.SECRET, pull_secret_name))
         to_prune = () if created else managed_derived - applied_derived
 
-        # The image is always built on the LOCAL site (§9.1), whether or not the
-        # function runs here: one site builds, and it is this one. The registry is
-        # shared, so a site that only runs the workload pulls what this one pushed.
+        # Always built on the LOCAL site, whether or not the function runs here.
+        # The registry is shared, so a site that only runs it pulls what we pushed.
         build_site = self.deployer.local_site() if local_resources else None
         # When the local site is not a target it gets the build objects and
         # nothing else - no KSVC there to own them, so they are applied unowned
@@ -1113,7 +1112,7 @@ class WorkloadService:
     def _build_status(self, name: str, group: str) -> BuildStatusView | None:
         """The function's build state from the LOCAL site, or None if it has none.
 
-        One site builds and it is always this one (§9.1), including for a
+        One site builds and it is always this one (docs/BUILDING.md), including for a
         function deployed only elsewhere - so the Image is here whenever it
         exists anywhere, and a cross-site fan-out would add latency to every GET
         for something that cannot be found anywhere else.
@@ -1243,7 +1242,7 @@ class WorkloadService:
             # {workload}-files Secret & ConfigMap, the imagePullSecret, the
             # DomainMapping (whose name is the host, freeing it for reuse), and a
             # function's build objects - so no orphaned Image is left rebuilding
-            # a function that no longer exists (§11).
+            # a function that no longer exists (docs/BUILDING.md - Lifecycle & Cleanup).
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
             return SiteStatus(site=cluster.site, status="Deleted")
 

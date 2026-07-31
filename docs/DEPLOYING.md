@@ -1,0 +1,393 @@
+# Deploying & Operating
+
+Installing and running the platform: the Helm charts, GitOps, RBAC, and
+sample manifests.
+
+## Contents
+
+- [Deployment & GitOps](#deployment--gitops)
+- [Chart Topology](#chart-topology)
+- [RBAC](#rbac)
+- [Sample Manifests](#sample-manifests)
+
+## Deployment & GitOps
+
+The FastAPI control-plane app is delivered via a **Helm chart that lives in this repo** and
+is reconciled by an **ArgoCD `ApplicationSet` that lives in a separate, central GitOps repo**
+(this repo does **not** contain the ArgoCD Application/ApplicationSet).
+
+```mermaid
+flowchart LR
+    GITAPP[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
+    GITHELM[("This repo<br/>Helm chart + values")]
+    ARGO["ArgoCD"]
+    subgraph Cluster["OpenShift - each site (A and B)"]
+        DEP["Deployment: serverless-api (active/active)"]
+        CERT["cert-manager Certificate (ACME)"]
+        RBAC["Role / RoleBinding (CN user)"]
+        ESOC["ExternalSecret (refs existing ClusterSecretStore)"]
+    end
+    GITAPP --> ARGO
+    ARGO -->|renders chart from| GITHELM
+    ARGO --> DEP
+    ARGO --> CERT
+    ARGO --> RBAC
+    ARGO --> ESOC
+```
+
+- **Helm chart (this repo)** templates: two `Namespace`s (`serverless-api` for the API and
+  `serverless-workloads` for customer workloads, both annotated
+  `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
+  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-sites`
+  **`ConfigMap`** holding just the OpenShift **sites data** (per-site API endpoint, name,
+  namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
+  plain `env` on the Deployment), a `serverless-api-runtimes` **`ConfigMap`** holding the
+  available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
+  workloads namespace (ARCHITECTURE.md: Networking & Exposure), `Deployment`, `Service`, `Route` (for the API itself, with a
+  configurable host/labels/annotations), `Role`/`RoleBinding` (bound to the client-cert CN
+  user, in the workloads namespace), cert-manager `Certificate`, **one ESO `ExternalSecret`
+  per kind of data** (each its own target Secret, referencing the pre-existing
+  `ClusterSecretStore`; enabled ones `envFrom`'d into the API), and `values.yaml` describing
+  the site profiles. It does **not** ship a
+  SecretStore, and the API pod runs as the namespace `default` ServiceAccount (cluster auth is
+  the client certificate, not the SA token).
+- **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
+  site**, each pointing at this repo's chart with a per-site values file. Sync waves order
+  Secrets/RBAC before the Deployment; health checks gate rollout.
+- All referenced images are the **internal mirrored** images (airgap, ARCHITECTURE.md: Airgapped Considerations).
+
+### Platform prerequisites (installed separately)
+
+This repo's chart **consumes** cluster capabilities that are installed and managed
+**elsewhere** (a separate platform/cluster-bootstrap GitOps repo), not by this chart:
+
+| Prerequisite | Provides | Install |
+|--------------|----------|---------|
+| **OpenShift Serverless Operator** | Knative Serving (`Service`/`DomainMapping` CRDs), kourier ingress in `knative-serving-ingress`, and **automatic OpenShift Route creation** for Knative ingresses | OLM `Subscription` → `KnativeServing` CR (mirrored for airgap via `oc-mirror`) |
+| **cert-manager** | issues the API's ACME client certificate (ARCHITECTURE.md: Authentication & Authorization) | OLM (mirrored) |
+| **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (ARCHITECTURE.md: Secrets Management) | OLM (mirrored) |
+| **RHBK** | OIDC identity provider (ARCHITECTURE.md: Authentication & Authorization) | platform-managed |
+
+On OpenShift you must use the **OpenShift Serverless Operator** - not an upstream/community
+or Helm-based Knative install. The chart assumes the operator's conventions (kourier in
+`knative-serving-ingress`, operator-managed Routes, the Knative CRDs).
+
+---
+
+## Chart Topology
+
+Three tiers, split by **cardinality** and **rate of change**:
+
+```
+Platform chart                                          once per cluster
+└── kpack chart (subchart)  ...... CRDs, controller, webhook, ClusterLifecycle
+
+serverless-api chart                            one release per cluster/site
+├── ClusterStack            ...... jammy build + run base images   [cluster-scoped]
+├── ClusterStore            ...... the 21 buildpackages the orders use  [cluster-scoped]
+├── Builder x3              ...... go | python | node   (workloads namespace)
+├── runtimes ConfigMap      ...... runtime -> builder + version + build env
+├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
+├── ExternalSecret          ...... the registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
+├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Chart Topology)
+├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
+└── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
+```
+
+### Builds run beside the workloads
+
+Every build object - the `Builder`s, the per-function `Image`, its build
+`ServiceAccount` and its git `Secret` - lives in `namespaces.workloads`, the same
+namespace as the KSVC it belongs to. Three things follow, and each removes a moving part
+rather than adding one:
+
+| | |
+|---|---|
+| **Ownership** | A function's `Image` and build `ServiceAccount` are ordinary owned resources of its KSVC, carrying the same `ownerReference` as its env Secret and DomainMapping. Deleting the function garbage-collects them - no explicit cleanup path, and no way to orphan an `Image` that would rebuild a deleted function forever (BUILDING.md: Lifecycle & Cleanup). ownerReferences cannot cross namespaces, so this only works co-located. |
+| **One git credential** | The workload's `{workload}-git` Secret is the *only* copy of the token. It is `kubernetes.io/basic-auth` carrying `kpack.io/git`, which is the shape kpack clones with, and the API reads the password back to rebuild on a later edit. Split across namespaces this had to be two Secrets holding the same token. |
+| **One registry credential** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in one namespace, so one `ExternalSecret` rather than a projection per namespace (BUILDING.md: Registry & Git Credentials). |
+
+The cost is that build pods - which execute tenant source and resolve tenant dependency
+trees - are scheduled beside the running functions and share their namespace boundary.
+That boundary is `networkPolicy` and quota, so the two are worth stating plainly:
+
+- **Network.** The namespace is default-deny with a narrow allowlist, which a build pod
+  would fail under: it must reach git, the registry and the artifact mirror. Rather than
+  widen the tenant allowlist, `networkPolicy.build` adds a policy selecting **only** pods
+  labelled `kpack.io/build`. NetworkPolicies are additive, so tenant pods keep exactly the
+  egress they had.
+- **Quota.** A build is far heavier than the function it produces, and it now draws on the
+  same namespace quota. `build.resources` bounds it (BUILDING.md: Runtime Versions & Dependencies); size the namespace quota for
+  concurrent builds plus the running functions, not just the latter.
+
+**Why the split.** The kpack chart is a generic, upstream-modelled *engine* installer;
+baking Paketo content into it would make it un-reusable and would couple buildpack version
+bumps to control-plane upgrades. Everything above the engine - stack, store and builders -
+is buildpack *content* that changes on its own cadence, so it lives together in the
+application chart where the `Builder` -> `ClusterStore` id contract is checked by one set
+of values.
+
+`ClusterStack` and `ClusterStore` are **cluster-scoped singletons**, which is safe only
+because exactly one `serverless-api` release runs per cluster. If a second release is ever
+added to a cluster, set `build.stack.create` / `build.store.create` to false on all but one,
+or promote them back to the platform chart.
+
+**Ordering.** kpack's CRDs are templated (not in a `crds/` directory) so the conversion
+webhook can target the release namespace. A `ClusterStack`/`ClusterStore` therefore cannot
+be applied until the CRDs are Established *and* the kpack webhook is admitting - enforce
+with ArgoCD sync waves: engine -> cluster content -> serverless-api.
+
+---
+
+## RBAC
+
+The API and build service identities (per ARCHITECTURE.md: Authentication & Authorization, the cert CN user) need, in
+the workloads namespace of every cluster:
+
+| Resource | Verbs | Used by |
+|----------|-------|---------|
+| `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build service (watch) |
+| `builds.kpack.io` | get, list, watch | status resolution (FUNCTIONS.md: Function Status Resolution), log lookup |
+| `pods`, `pods/log` | get, list | per-phase build logs (BUILDING.md: Build Flow) |
+| `serviceaccounts` | get, list, create, update, patch, delete | the per-function build account (BUILDING.md: Registry & Git Credentials) |
+
+No second Role and no extra Secret rights: the git Secret is one of the workload's own
+derived Secrets, which this identity already manages.
+
+### Network policy for build pods
+
+The workloads namespace is default-deny with a narrow allowlist, and a build pod needs
+more than a function does - git, the registry, the artifact mirror. `networkPolicy.build`
+adds a policy selecting **only** pods labelled `kpack.io/build`. NetworkPolicies are
+additive, so tenant pods keep exactly the egress they had; nothing is widened for them.
+
+An off-cluster git/registry/mirror is already covered by the namespace's external-egress
+rule. `egressNamespaces` / `egressCIDRs` are for in-cluster ones, which that rule excludes
+along with the rest of the pod and service networks.
+
+`Builder`, `ClusterStack` and `ClusterStore` are managed by Helm/ArgoCD, not by the
+services - no runtime write permission on them.
+
+---
+
+## Sample Manifests
+
+> Illustrative only - final values are templated by Helm and parameterized per site.
+
+### Knative Service (KSVC)
+
+```yaml
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: orders-api-team        # {name}-{group}
+  namespace: serverless-workloads
+  labels:
+    serverless.platform/group: team
+    serverless.platform/workload: orders-api-team
+    serverless.platform/managed-by: serverless-api
+  annotations:
+    serverless.platform/host: orders-api-team.serverless.example.com
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+        autoscaling.knative.dev/max-scale: "8"
+        autoscaling.knative.dev/metric: "concurrency"
+        autoscaling.knative.dev/target: "50"
+    spec:
+      imagePullSecrets:
+        - name: orders-api-pull
+      containers:
+        - image: registry.internal/team/orders-api:1.4.2
+          resources:                     # from size (e.g. medium); mem request==limit, cpu request-only
+            requests: { cpu: 250m, memory: 512Mi }
+            limits:   { memory: 512Mi }
+          env:
+            - name: LOG_LEVEL
+              value: info
+          volumeMounts:
+            - name: app-config
+              mountPath: /etc/app
+            - name: ca-bundle            # injected CA bundle, mounted into every workload
+              mountPath: /etc/ssl/certs
+              readOnly: true
+      volumes:
+        - name: app-config
+          configMap:
+            name: orders-config
+        - name: ca-bundle
+          configMap:
+            name: ca-bundle
+```
+
+### 12.1a Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ca-bundle
+  namespace: serverless-workloads   # also created in serverless-api
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"   # OpenShift fills .data
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+# .data (ca-bundle.crt) is populated by OpenShift; configure ArgoCD to ignore it.
+```
+
+### Knative DomainMapping (custom host; operator creates the Route)
+
+> On OpenShift Serverless the API does **not** create an OpenShift Route. It creates a
+> `DomainMapping` for the custom host in each cluster, and the Serverless Operator
+> auto-provisions the corresponding Route. The host is identical in both clusters;
+> `*.serverless.{base_domain}` DNS forwards to the active site.
+
+```yaml
+apiVersion: serving.knative.dev/v1beta1
+kind: DomainMapping
+metadata:
+  name: orders-api-team.serverless.example.com   # the custom host
+  namespace: serverless-workloads
+  labels:
+    serverless.platform/group: team
+    serverless.platform/workload: orders-api-team
+    serverless.platform/offering: container
+spec:
+  ref:
+    name: orders-api-team        # the {name}-{group} KSVC
+    kind: Service
+    apiVersion: serving.knative.dev/v1
+```
+
+### cert-manager Certificate (cluster client cert, CN = DNS name, ACME)
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: serverless-api-central-client
+  namespace: serverless-api
+spec:
+  secretName: central-client                       # mounted into the API pod
+  commonName: serverless-api.clients.example.com  # DNS name => Kubernetes username
+  dnsNames:
+    - serverless-api.clients.example.com          # required for ACME issuance
+  usages:
+    - client auth
+  issuerRef:
+    name: internal-acme                # ACME ClusterIssuer (internal ACME endpoint, airgap)
+    kind: ClusterIssuer
+```
+
+### RBAC for the CN user (per site, shared workload namespace)
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: serverless-api-workloads
+  namespace: serverless-workloads
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "domainmappings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]              # for GET /api/v1/groups/{group}/{type}/{name}/logs
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: serverless-api-workloads
+  namespace: serverless-workloads
+subjects:
+  - kind: User
+    name: serverless-api.clients.example.com   # matches the Certificate CN (DNS name)
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: serverless-api-workloads
+  apiGroup: rbac.authorization.k8s.io
+```
+
+### ESO - ExternalSecret only (references pre-existing ClusterSecretStore)
+
+> The `ClusterSecretStore` already exists in the clusters and is **not** shipped by this
+> repo. We deploy only the `ExternalSecret` below, referencing it by name.
+
+Each **kind** of data gets its own `ExternalSecret`/target Secret (separate rotation and
+exposure); the chart renders one per enabled entry in `externalSecrets.secrets` and the
+Deployment `envFrom`s each enabled Secret (so `secretKey`s must be valid env var names).
+
+```yaml
+# e.g. the admin API-keys Secret (separate from the SSO secret)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: serverless-api-keys
+  namespace: serverless-api
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend            # <-- name of the PRE-EXISTING ClusterSecretStore
+    kind: ClusterSecretStore
+  target:
+    name: serverless-api-keys      # consumed by the API via envFrom
+  data:
+    - secretKey: SERVERLESS_ADMIN_API_KEY
+      remoteRef:
+        key: cloudlet/platforms/serverless-api
+        property: admin-api-key
+```
+
+### ArgoCD ApplicationSet - *reference only (lives in the separate GitOps repo)*
+
+> This manifest is **not** part of this repository. It is shown so the platform team can wire
+> this chart into the central GitOps repo's `ApplicationSet`, generating one Application per
+> site that renders `charts/serverless-api` with a per-site values file.
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: serverless-api
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - site: central
+            cluster: https://api.central-0.example.com:6443
+            valuesFile: values-central.yaml
+          - site: south
+            cluster: https://api.south-0.example.com:6443
+            valuesFile: values-south.yaml
+  template:
+    metadata:
+      name: "serverless-api-{{site}}"
+    spec:
+      project: serverless
+      source:
+        repoURL: https://git.internal/team/serverless.git   # THIS repo (the chart)
+        targetRevision: main
+        path: charts/serverless-api
+        helm:
+          valueFiles:
+            - "{{valuesFile}}"
+      destination:
+        server: "{{cluster}}"        # deploy the API into each cluster (active/active)
+        namespace: serverless-api
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions: [ "CreateNamespace=false" ]
+```
+
+---

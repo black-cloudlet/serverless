@@ -1,41 +1,22 @@
-# Serverless Platform - Architecture & Design
+# Architecture & Design
 
-A self-service **FaaS (Function as a Service)** and **CaaS (Container as a Service)**
-platform that wraps the open-source **Knative** project on **OpenShift**, exposed through a
-**Python / FastAPI** REST API.
+How the platform fits together: goals, the multi-site model, networking,
+authentication, secrets, and the REST conventions both offerings share.
+Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 
-> **Status:** Implemented. This document is the source of truth for the architecture; the
-> FastAPI application (`api/`) and its shared library (`common/`), the Helm chart
-> (`charts/serverless-api`), and the CI/CD
-> workflows (`.github/workflows/{checks,ci,release}.yml`) are in this repo. The GitOps
-> manifests (ArgoCD `ApplicationSet`) live in a separate central GitOps repo, targeting an
-> **airgapped** OpenShift environment.
->
-> Release history and per-version changes live in [CHANGELOG.md](../CHANGELOG.md).
->
-> The function **build pipeline** (kpack + Cloud Native Buildpacks) is designed in detail in
-> [BUILD-PIPELINE.md](./BUILD-PIPELINE.md), which refines §3.1, §4, §7.2 and §9 for the
-> build path.
+## Contents
 
----
-
-## Table of Contents
-
-1. [Overview & Goals](#1-overview--goals)
-2. [High-Level Architecture](#2-high-level-architecture)
-3. [Core Service Offerings](#3-core-service-offerings)
-4. [Multi-Site (Active/Active HA) Design](#4-multi-site-activeactive-ha-design)
-5. [Networking & Exposure](#5-networking--exposure)
-6. [Authentication & Authorization](#6-authentication--authorization)
-7. [Secrets Management](#7-secrets-management)
-8. [Deployment & GitOps](#8-deployment--gitops)
-9. [Airgapped Considerations](#9-airgapped-considerations)
-10. [REST API Specification](#10-rest-api-specification)
-11. [Proposed Repository Layout](#11-proposed-repository-layout)
-12. [Sample Manifests](#12-sample-manifests)
-13. [Open Questions / Future Work](#13-open-questions--future-work)
-
----
+- [Design Decisions (locked in)](#design-decisions-locked-in)
+- [Overview & Goals](#overview--goals)
+- [High-Level Architecture](#high-level-architecture)
+- [Multi-Site (Active/Active HA) Design](#multi-site-activeactive-ha-design)
+- [Networking & Exposure](#networking--exposure)
+- [Authentication & Authorization](#authentication--authorization)
+- [Secrets Management](#secrets-management)
+- [Airgapped Considerations](#airgapped-considerations)
+- [REST API Specification](#rest-api-specification)
+- [Proposed Repository Layout](#proposed-repository-layout)
+- [Open Questions / Future Work](#open-questions--future-work)
 
 ## Design Decisions (locked in)
 
@@ -56,7 +37,7 @@ platform that wraps the open-source **Knative** project on **OpenShift**, expose
 
 ---
 
-## 1. Overview & Goals
+## Overview & Goals
 
 ### Problem statement
 
@@ -65,7 +46,7 @@ want two consumption models:
 
 - **FaaS** - "give us your source code, we build and run it." The client provides a Git
   repository URL, branch, an access token, and the source lives in that repo. Supported
-  runtimes are **configurable** (default **Python, Go, JavaScript**; see §3.1) and listed on
+  runtimes are **configurable** (default **Python, Go, JavaScript**; see FUNCTIONS.md: FaaS - Function as a Service) and listed on
   `GET /api/v1/functions/info`.
 - **CaaS** - "give us your image, we run it." The client provides a container image
   reference plus registry credentials (username + token).
@@ -93,7 +74,7 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 - Cross-site traffic steering is handled **outside** the API by a **DNS record that forwards
   to the active serverless site** (the Route host is identical in both clusters). The API is
   not a GSLB.
-- Billing/metering, quota enforcement, and a full observability stack (see §13).
+- Billing/metering, quota enforcement, and a full observability stack (see ARCHITECTURE.md: Open Questions / Future Work).
 
 ### Glossary
 
@@ -111,7 +92,7 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 
 ---
 
-## 2. High-Level Architecture
+## High-Level Architecture
 
 ```mermaid
 flowchart TB
@@ -184,102 +165,7 @@ flowchart TB
 
 ---
 
-## 3. Core Service Offerings
-
-Both offerings converge on the same primitive: **create/update a Knative `Service` (KSVC)
-in both sites**, then ensure an OpenShift Route exists. They differ only in how the runnable
-**image** is produced.
-
-```mermaid
-flowchart LR
-    subgraph FaaS
-        G["Git repo<br/>(URL, branch, token)"] --> B["Build via func / buildpacks<br/>(mirrored builder image)"]
-        B --> I1["OCI image pushed to<br/>internal registry"]
-    end
-    subgraph CaaS
-        IMG["Image ref + registry creds"] --> PS["Create imagePullSecret"]
-        PS --> I2["Existing image in registry"]
-    end
-    I1 --> KSVC["Knative Service (both sites)"]
-    I2 --> KSVC
-    KSVC --> RT["OpenShift Route (per site)"]
-```
-
-### 3.1 FaaS - Function as a Service
-
-**Inputs (request body):**
-
-| Field | Required | Notes |
-|-------|----------|-------|
-| `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). `http://` is accepted for an internal host, but sends the token in the clear. SSH/scp-style refs (`git@host:org/repo.git`) are rejected: the clone authenticates with a basic-auth Secret, which only applies over http(s). Credentials embedded in the URL are rejected rather than stripped - it is written verbatim to the kpack `Image`, which is readable far more widely than the Secret; send the token as `gitToken`. |
-| `branch` | yes | Branch / ref to build. |
-| `path` | no | Directory inside the repository holding the application, for a monorepo (e.g. `services/api`). Defaults to the repository root. Surrounding `/` are stripped; `..` is rejected. Changing it rebuilds. |
-| `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see §7). |
-| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
-| `name` | yes | Logical workload name (DNS-1123). |
-| `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
-
-**Build flow (Knative Functions / buildpacks):**
-
-1. The API launches a **build** (in-cluster) using **Knative Functions** (`func`) with
-   **Cloud Native Buildpacks**. The builder/run images are the **mirrored** versions hosted
-   in the internal registry (see §9) - buildpack autodetection picks the right
-   Python/Go/JS buildpack.
-2. Source is cloned from `gitRepo@branch` using `gitToken`.
-3. The resulting OCI image is pushed to the **internal container registry** under a
-   deterministic tag, e.g. `registry.internal/<group>/<name>:<gitsha>`.
-4. The API then creates/updates the **KSVC** referencing that image (§3.3), in **both
-   sites**.
-
-> The build runs once and the **same image digest** is deployed to both sites to guarantee
-> bit-for-bit parity across the active/active pair.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as Client
-    participant API as FastAPI API
-    participant Build as func / buildpacks (build job)
-    participant Reg as Internal Registry
-    participant ZA as Site A (Knative)
-    participant ZB as Site B (Knative)
-
-    U->>API: POST /api/v1/groups/{group}/functions (git, runtime, ...)
-    API->>API: AuthN (JWT) + AuthZ (group)
-    API->>Build: build(gitRepo@branch, runtime)
-    Build->>Reg: push image @digest
-    Build-->>API: image digest
-    par Deploy to both sites (same digest)
-        API->>ZA: apply KSVC + ensure Route
-        API->>ZB: apply KSVC + ensure Route
-    end
-    ZA-->>API: route URL A, status
-    ZB-->>API: route URL B, status
-    API-->>U: 201 Created { sites: [A,B], urls, status }
-```
-
-### 3.2 CaaS - Container as a Service
-
-**Inputs (request body):**
-
-| Field | Required | Notes |
-|-------|----------|-------|
-| `image` | yes | Fully-qualified image reference in the internal registry (airgap). |
-| `registryUsername` | no | Registry username. Optional - omit both creds for a public image; if either is given, **both** are required. Returned on GET (`spec.registryUsername`). |
-| `registryToken` | no | Registry access token; used to create an `imagePullSecret`, **not persisted** and **never returned**. |
-| `name` | yes | Logical workload name (DNS-1123). |
-| `env`, `files`, `scaling` | no | Shared capabilities, see §3.3. |
-
-**Flow:**
-
-1. The API creates a Kubernetes `kubernetes.io/dockerconfigjson` **imagePullSecret** from
-   the supplied credentials in each site, **labeled** with the owning group (§6) and linked
-   to the KSVC's service account. The secret's `auths` entry is keyed to the **registry host
-   parsed from the client's `image`** (the org runs several registries), not the platform's
-   own registry.
-2. The API creates/updates the **KSVC** referencing `image` in **both sites**.
-
-### 3.3 Shared capabilities (FaaS and CaaS)
+### Shared capabilities (FaaS and CaaS)
 
 Applied identically to both offerings; modeled on the KSVC pod spec.
 
@@ -306,7 +192,7 @@ A canonical scaling sub-object in the API:
 
 ---
 
-## 4. Multi-Site (Active/Active HA) Design
+## Multi-Site (Active/Active HA) Design
 
 The platform deploys **every** workload to **both** OpenShift clusters (Site A and Site B)
 on each create/update, and the **API itself runs active/active on both clusters**. Because
@@ -377,7 +263,7 @@ sites:
   `site_op_timeout`.)
 - Operations are **idempotent** (Kubernetes **server-side apply** by object name), so a
   client can safely retry to heal a degraded deployment.
-- **Build once, deploy the same digest to both sites** (see §3.1) so the two sites are
+- **Build once, deploy the same digest to both sites** (see FUNCTIONS.md: FaaS - Function as a Service) so the two sites are
   identical.
 
 > Cross-site traffic steering is handled by the **`*.serverless.{base_domain}` DNS record
@@ -385,7 +271,7 @@ sites:
 
 ---
 
-## 5. Networking & Exposure
+## Networking & Exposure
 
 - This runs on **OpenShift Serverless** (the Operator-installed Knative). The Serverless
   Operator's ingress controller **automatically creates the OpenShift `Route`** for each
@@ -418,7 +304,7 @@ to manage. The offering (`function`/`container`) is tracked as a **label**, not 
 **Object naming.** The OpenShift name of the workload (KSVC) and all its derived resources
 (`{workload}-env` Secret, `{workload}-files` ConfigMap/Secret, pull secret) is
 **`{name}-{group}`** - unique per tenant in the shared namespace. `{group}` here is the
-**normalized** group (§6.2), so a group written `My_Team` in SSO appears as `my-team` in both
+**normalized** group (ARCHITECTURE.md: Authentication & Authorization), so a group written `My_Team` in SSO appears as `my-team` in both
 the object name and the host.
 
 **Custom hostname.** A client may override the host with a `hostname` field. Because the
@@ -459,7 +345,7 @@ host convention above.
 
 ---
 
-## 6. Authentication & Authorization
+## Authentication & Authorization
 
 Two distinct identities are involved:
 
@@ -468,7 +354,7 @@ Two distinct identities are involved:
    whose **CN is the DNS name `serverless-api.clients.{base_domain}`**; that name is the
    Kubernetes user, bound by RBAC.
 
-### 6.1 End-user authentication (SSO OIDC)
+### End-user authentication (SSO OIDC)
 
 ```mermaid
 sequenceDiagram
@@ -511,7 +397,7 @@ var to enable it.
 #### Auth as an internal component (not a separate microservice)
 
 All OIDC interaction is encapsulated in a **self-contained auth component inside the API**
-(the `api/auth/` package - see §11), **not** a separately-deployed microservice. Because
+(the `api/auth/` package - see ARCHITECTURE.md: Proposed Repository Layout), **not** a separately-deployed microservice. Because
 token validation is **stateless** (verify signature against cached JWKS + read claims),
 there is no shared state to centralize; a standalone auth service would only add a network
 hop, another deployment to secure in both clusters, and a failure point. The component owns:
@@ -523,9 +409,9 @@ hop, another deployment to secure in both clusters, and a failure point. The com
 
 > If auth-at-the-edge is ever wanted (to keep tokens out of app code / defense-in-depth), the
 > OpenShift-native drop-ins are **oauth2-proxy** or **Authorino** as a sidecar/gateway - an
-> infra change, not an API rewrite. (See §13.)
+> infra change, not an API rewrite. (See ARCHITECTURE.md: Open Questions / Future Work.)
 
-### 6.2 Group-based authorization (tenancy)
+### Group-based authorization (tenancy)
 
 - Tenancy is **shared-namespace, label-scoped**. Every resource the API creates is labeled:
 
@@ -576,11 +462,11 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   > the same way, so they may be written in any spelling.
 
 > Isolation is enforced **in the API layer** plus label selectors. Because all tenants share
-> a namespace, the cluster RBAC for the API's service identity is namespace-wide (see §6.3);
+> a namespace, the cluster RBAC for the API's service identity is namespace-wide (see ARCHITECTURE.md: Authentication & Authorization);
 > per-tenant isolation is therefore the API's responsibility. (A future hardening option is
-> namespace-per-group - see §13.)
+> namespace-per-group - see ARCHITECTURE.md: Open Questions / Future Work.)
 
-### 6.3 Cluster-side identity (cert-manager client cert + RBAC)
+### Cluster-side identity (cert-manager client cert + RBAC)
 
 - The Helm chart ships a cert-manager **`Certificate`** per site, issued via **ACME** (an
   internal ACME endpoint in airgap). Because ACME requires the identity to be a DNS name, the
@@ -596,12 +482,12 @@ hop, another deployment to secure in both clusters, and a failure point. The com
 - The cert is mounted **once** (global, not per-site) at `SERVERLESS_CLIENT_CERT_DIR`
   (`tls.crt`/`tls.key`); the API uses it to authenticate to **every** cluster via mTLS. There
   is no in-cluster/ServiceAccount fallback - always certificate-based.
-- The CA used to verify the API servers is the **trusted CA bundle** (§9), pointed at by
+- The CA used to verify the API servers is the **trusted CA bundle** (ARCHITECTURE.md: Airgapped Considerations), pointed at by
   `SERVERLESS_CA_BUNDLE__*`; it is the same for every cluster.
 
 ---
 
-## 7. Secrets Management
+## Secrets Management
 
 **Principle: the API never persists *its own platform* secrets**, and **ESO is used only for
 those platform secrets** - never for customer workload data. There are three distinct
@@ -613,7 +499,7 @@ categories:
 | 7.2 **Customer credentials** (git/registry tokens) | Supplied per-request, stored as scoped, labeled workload Secrets; never returned on read | No |
 | 7.3 **Customer config & secret mounts** (what the user wants inside their workload) | **Created and managed by the API directly**; readable back via the API | **No** |
 
-### 7.1 The API's own platform secrets - Vault → ESO → Kubernetes Secret
+### The API's own platform secrets - Vault → ESO → Kubernetes Secret
 
 The API needs, e.g., the SSO client secret and per-site client-cert material. These are
 stored in **Vault** and projected into the cluster by **ESO**.
@@ -639,7 +525,7 @@ flowchart LR
 - ESO reconciles and keeps the Kubernetes Secret in sync; the API consumes it via `envFrom`
   or volume mounts. **No secret values live in Git or in the API's code/config.**
 
-### 7.2 Customer-provided credentials (git/registry tokens)
+### Customer-provided credentials (git/registry tokens)
 
 - `gitToken` (FaaS) and `registryToken` (CaaS) arrive in the request body **over TLS**.
 - Each is stored as a **scoped, labeled Kubernetes Secret** owned by the tenant group, in
@@ -649,7 +535,7 @@ flowchart LR
     `kpack.io/git` so kpack clones with it, and read back by the API so a later edit can
     rebuild (on a `gitRepo`/`branch`/`runtime` change) **without the client re-supplying
     it**; sending `gitToken` again rotates it. One Secret serves both readers - see
-    BUILD-PIPELINE.md §6.
+    BUILDING.md: Registry & Git Credentials.
   - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the
     KSVC. Registry creds mirror a secret env var - the username is the identifier, the token
     the value: **username + token** sets/rotates; **username only** (token null) keeps, but it
@@ -661,11 +547,11 @@ flowchart LR
 - **These tokens are never returned on read.** A GET redacts them (the pull secret's
   `registryUsername` is shown, its token is not; the git token is omitted). To let a client
   edit a workload without re-entering a secret it can't see, `PUT` treats a **redacted/absent
-  secret field as "keep the stored value"** (see §3.3 and the read-back note below), so the
+  secret field as "keep the stored value"** (see ARCHITECTURE.md: Shared capabilities and the read-back note below), so the
   redacted GET body can be sent straight back. The API still does **not** write these to its
   own datastore, logs, or Git.
 
-### 7.3 Customer config & secret mounts (API-managed, **not ESO**)
+### Customer config & secret mounts (API-managed, **not ESO**)
 
 When a user wants config files or secret values **inside their function/container**, those
 are **created and managed by the API itself from the deploy request** - **not** through
@@ -673,81 +559,17 @@ ESO/Vault. There are no separate secret/config endpoints; they are derived inlin
 workload spec:
 
 - **`env` with `secret: true`** → values aggregated into a single **`{workload}-env`**
-  Kubernetes Secret; the container reads each via a `secretKeyRef` (§3.3).
+  Kubernetes Secret; the container reads each via a `secretKeyRef` (ARCHITECTURE.md: Shared capabilities).
 - **`files`** → non-secret files aggregated into one **`{workload}-files`** ConfigMap and
-  secret files into one **`{workload}-files`** Secret, mounted per file via `subPath` (§3.3).
+  secret files into one **`{workload}-files`** Secret, mounted per file via `subPath` (ARCHITECTURE.md: Shared capabilities).
 
 All are created in the **workload namespace of both clusters**, stamped with the ownership
-labels (§6.2), kept consistent by the API, and cleaned up with the workload. **They never
+labels (ARCHITECTURE.md: Authentication & Authorization), kept consistent by the API, and cleaned up with the workload. **They never
 touch Vault or ESO.**
 
 ---
 
-## 8. Deployment & GitOps
-
-The FastAPI control-plane app is delivered via a **Helm chart that lives in this repo** and
-is reconciled by an **ArgoCD `ApplicationSet` that lives in a separate, central GitOps repo**
-(this repo does **not** contain the ArgoCD Application/ApplicationSet).
-
-```mermaid
-flowchart LR
-    GITAPP[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
-    GITHELM[("This repo<br/>Helm chart + values")]
-    ARGO["ArgoCD"]
-    subgraph Cluster["OpenShift - each site (A and B)"]
-        DEP["Deployment: serverless-api (active/active)"]
-        CERT["cert-manager Certificate (ACME)"]
-        RBAC["Role / RoleBinding (CN user)"]
-        ESOC["ExternalSecret (refs existing ClusterSecretStore)"]
-    end
-    GITAPP --> ARGO
-    ARGO -->|renders chart from| GITHELM
-    ARGO --> DEP
-    ARGO --> CERT
-    ARGO --> RBAC
-    ARGO --> ESOC
-```
-
-- **Helm chart (this repo)** templates: two `Namespace`s (`serverless-api` for the API and
-  `serverless-workloads` for customer workloads, both annotated
-  `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
-  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-sites`
-  **`ConfigMap`** holding just the OpenShift **sites data** (per-site API endpoint, name,
-  namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
-  plain `env` on the Deployment), a `serverless-api-runtimes` **`ConfigMap`** holding the
-  available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
-  workloads namespace (§5), `Deployment`, `Service`, `Route` (for the API itself, with a
-  configurable host/labels/annotations), `Role`/`RoleBinding` (bound to the client-cert CN
-  user, in the workloads namespace), cert-manager `Certificate`, **one ESO `ExternalSecret`
-  per kind of data** (each its own target Secret, referencing the pre-existing
-  `ClusterSecretStore`; enabled ones `envFrom`'d into the API), and `values.yaml` describing
-  the site profiles. It does **not** ship a
-  SecretStore, and the API pod runs as the namespace `default` ServiceAccount (cluster auth is
-  the client certificate, not the SA token).
-- **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
-  site**, each pointing at this repo's chart with a per-site values file. Sync waves order
-  Secrets/RBAC before the Deployment; health checks gate rollout.
-- All referenced images are the **internal mirrored** images (airgap, §9).
-
-### Platform prerequisites (installed separately)
-
-This repo's chart **consumes** cluster capabilities that are installed and managed
-**elsewhere** (a separate platform/cluster-bootstrap GitOps repo), not by this chart:
-
-| Prerequisite | Provides | Install |
-|--------------|----------|---------|
-| **OpenShift Serverless Operator** | Knative Serving (`Service`/`DomainMapping` CRDs), kourier ingress in `knative-serving-ingress`, and **automatic OpenShift Route creation** for Knative ingresses | OLM `Subscription` → `KnativeServing` CR (mirrored for airgap via `oc-mirror`) |
-| **cert-manager** | issues the API's ACME client certificate (§6.3) | OLM (mirrored) |
-| **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (§7.1) | OLM (mirrored) |
-| **RHBK** | OIDC identity provider (§6.1) | platform-managed |
-
-On OpenShift you must use the **OpenShift Serverless Operator** - not an upstream/community
-or Helm-based Knative install. The chart assumes the operator's conventions (kourier in
-`knative-serving-ingress`, operator-managed Routes, the Knative CRDs).
-
----
-
-## 9. Airgapped Considerations
+## Airgapped Considerations
 
 Nothing may reach the public internet. Everything is mirrored to internal infrastructure.
 
@@ -764,9 +586,9 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 
 ---
 
-## 10. REST API Specification
+## REST API Specification
 
-Base path: `/api/v1`. All endpoints require a valid SSO bearer token (§6) **except the public
+Base path: `/api/v1`. All endpoints require a valid SSO bearer token (ARCHITECTURE.md: Authentication & Authorization) **except the public
 discovery endpoints `GET /api/v1/{containers,functions}/info` and the health probes**. All responses are JSON. Times
 are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rendered in
 **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving aware).
@@ -792,14 +614,14 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 
 > Workload secrets and config files are **not** separate endpoints - they are derived
 > **inline** from the deploy request (`env` with `secret: true`, and `files`) and created by
-> the API as `{workload}-env` / `{workload}-files` objects (§3.3, §7.3).
+> the API as `{workload}-env` / `{workload}-files` objects (ARCHITECTURE.md: Shared capabilities, ARCHITECTURE.md: Secrets Management).
 
 > **Async (submit + poll).** `POST`/`PUT` validate synchronously (so the caller gets
 > immediate `400`/`404`/`409`), then **return `202 Accepted`** with `overallStatus: "Pending"`
 > and a `statusUrl`; the build/deploy runs in the background. Clients poll
 > `GET {statusUrl}` (the resource itself, `/api/v1/groups/{group}/{type}/{name}`) until
 > `overallStatus` is `Ready` (or `Degraded`). This suits slow FaaS builds and ServiceNow
-> workflow patterns (§10.x).
+> workflow patterns (ARCHITECTURE.md: REST API Specification).
 >
 > **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
 > workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
@@ -843,243 +665,14 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 }
 ```
 
-### FaaS - `POST /api/v1/groups/{group}/functions`
-
-Request:
-
-```json
-{
-  "name": "image-resizer",
-  "gitRepo": "https://git.internal/team/image-resizer.git",
-  "branch": "main",
-  "gitToken": "<repo-access-token>",
-  "runtime": "python",
-  "env": [ { "name": "MAX_PX", "value": "2048" } ],
-  "scaling": { "minScale": 0, "maxScale": 20 }
-}
-```
-
-Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
-
-```json
-{
-  "name": "image-resizer",
-  "type": "function",
-  "runtime": "python",
-  "hostname": "image-resizer-team.serverless.example.com",
-  "overallStatus": "Pending",
-  "sites": [],
-  "statusUrl": "/api/v1/groups/team/functions/image-resizer"
-}
-```
-
-Then `GET /api/v1/groups/team/functions/image-resizer` once Ready:
-
-The response is a **`FunctionResponse`** - flat, mirroring the `FunctionCreate`
-body (secrets redacted) with the live status alongside:
-
-```json
-{
-  "name": "image-resizer",
-  "group": "team",
-  "type": "function",
-  "hostname": "image-resizer-team.serverless.example.com",
-  "overallStatus": "Ready",
-  "size": "small",
-  "createdAt": "2026-06-21T15:00:00+03:00",
-  "runtime": "python",
-  "gitRepo": "https://git.example.com/team/image-resizer.git",
-  "branch": "main",
-  "scaling": { "minScale": 0, "maxScale": 3, "metric": "concurrency", "target": 100 },
-  "env": [
-    { "name": "LOG_LEVEL", "value": "debug", "secret": false },
-    { "name": "API_KEY", "value": null, "secret": true }
-  ],
-  "files": [
-    { "mountPath": "/etc/app/config.yaml", "readOnly": true, "secret": false,
-      "content": "level: debug\n" },
-    { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
-  ],
-  "sites": [
-    { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
-      "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" } },
-    { "site": "south", "status": "Ready", "revision": "image-resizer-00001",
-      "replicas": 1, "usage": { "cpu": "90m", "memory": "175Mi" } }
-  ]
-}
-```
-
-A **`ContainerResponse`** is the same idea mirroring `ContainerCreate`: instead of
-`gitRepo`/`branch`/`runtime` it carries `image` and `registryUsername`. (Functions
-expose **no image** - the built image is an internal artifact; the client deals in
-source, not images.)
-
-> **Shape.** Each offering has its own response model (`FunctionResponse` /
-> `ContainerResponse`) so the response is the same shape as the create body - no
-> irrelevant fields (a container never shows `gitRepo`; a function never shows
-> `registryUsername`). Both share `WorkloadBase` (name, group, type, hostname,
-> overallStatus, size) with the list summary. `hostname` is the bare external host
-> (no scheme), mirroring the create body's `hostname`; reach the workload at
-> `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
-> the source fields) are read from the **local site** (uniform across sites); the
-> per-site `sites[]` status/`replicas`/`usage` come from fanning out to every site.
->
-> **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
-> values and secret file contents come back `null` with `secret: true`; the **git token**
-> is omitted and the **registry token** is not shown (`registryUsername` is). Non-secret env
-> values and non-secret file contents (from the workload's ConfigMap) are returned in full.
-> Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
-> stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
-> stored; echoing the stored `registryUsername` back without a token keeps the credential -
-> re-keyed to the current image's registry if the image moved (sending a *different* username
-> without a token is a `400`, since there's no token to rotate with); omitting `gitToken` keeps
-> the stored git token. So the redacted GET body can be sent straight back on `PUT` without wiping a secret.
-> To change a secret, send its new value; to remove an env var or file, drop it from the list;
-> to make a private image public, send **neither** registry cred (dropping the username, like
-> dropping an env var, removes the pull secret). `scaling.target` reflects the *effective*
-> target deployed (an omitted cpu/memory target shows `70`).
->
-> **Keep is `null`, not `""`.** Only an omitted/`null` value is a keep; an empty string is a
-> real value that **sets** the secret to empty. So a secret var/file must be sent with its
-> `value`/`content` omitted (`null`) to keep it - never `""`. A **new** secret (one not
-> already stored) sent with a `null` value is a synchronous `400` (`"…has no value and none is
-> stored to keep"`): keep only applies to something already stored, so a new secret must carry
-> its value. A non-secret var/file always requires a value. These checks run in the update
-> pre-flight, so they surface as an immediate `400`, not a background deploy failure.
->
-> **Live status.** `replicas` is the autoscaler's live scale
-> (`Revision.status.actualReplicas`); `usage` is live cpu/memory summed over a
-> site's running pods (user container only, not the queue-proxy sidecar),
-> best-effort and `null` when scaled to zero or the metrics API is unavailable.
-
-#### Editing a workload: `PUT` request recipes
-
-All `PUT`s are a **full replace** of the mutable spec: whatever you send is the new
-desired state, with the keep-on-write rules above for secrets. The list of `env`/`files`
-entries you send is the complete set (drop one to remove it). Each example is a body for
-`PUT /api/v1/groups/{group}/{containers|functions}/{name}`.
-
-**Config-only edit - keep every secret (echo the redacted GET straight back).** The
-secret env value and the registry token were `null` in the GET; sending them back unchanged
-keeps them:
-
-```json
-{
-  "image": "reg.example.com/team/orders:1",
-  "registryUsername": "svc-team",
-  "scaling": { "minScale": 1, "maxScale": 5 },
-  "env": [
-    { "name": "LOG_LEVEL", "value": "debug", "secret": false },
-    { "name": "API_KEY", "secret": true }
-  ]
-}
-```
-
-**Rotate one secret, keep another, remove a third.** `API_KEY` gets a new value; `DB_URL`
-is kept (no value); the previously-present `OLD_FLAG` is simply absent, so it's removed:
-
-```json
-{
-  "image": "reg.example.com/team/orders:1",
-  "registryUsername": "svc-team",
-  "env": [
-    { "name": "API_KEY", "value": "sk-new-value", "secret": true },
-    { "name": "DB_URL", "secret": true }
-  ]
-}
-```
-
-**Add a new secret - must carry a value** (a new `secret: true` with no value is a `400`):
-
-```json
-{ "image": "reg.example.com/team/orders:1", "registryUsername": "svc-team",
-  "env": [ { "name": "NEW_TOKEN", "value": "s3cret", "secret": true } ] }
-```
-
-**Rotate registry credentials** (username + token together):
-
-```json
-{ "registryUsername": "svc-team", "registryToken": "new-registry-pat" }
-```
-
-**Move to a different registry, keep the same creds** (username only → kept creds are
-re-keyed to the new image's registry):
-
-```json
-{ "image": "reg-b.example.com/team/orders:2", "registryUsername": "svc-team" }
-```
-
-**Make a private image public** (drop both registry creds → the pull secret is removed):
-
-```json
-{ "image": "docker.io/library/nginx:1.27" }
-```
-
-**Rebuild a function from a new branch - no token needed** (the stored git token is reused):
-
-```json
-{ "branch": "release", "runtime": "python", "scaling": { "minScale": 0, "maxScale": 3 } }
-```
-
-**Rotate the git token** (sending it also triggers a rebuild):
-
-```json
-{ "gitToken": "ghp_new-token" }
-```
-
-And `GET /api/v1/groups/team/functions` to list the group's functions - general
-info only (no live usage/replicas; use the single-workload GET for those):
-
-```json
-[
-  {
-    "name": "image-resizer",
-    "group": "team",
-    "type": "function",
-    "hostname": "image-resizer-team.serverless.example.com",
-    "overallStatus": "Ready",
-    "size": "small",
-    "createdAt": "2026-06-21T15:00:00+03:00",
-    "sites": ["central", "south"]
-  }
-]
-```
-
-> The list **fans out to all sites** and merges by workload name (best-effort):
-> each workload's `sites` lists the sites that returned it and `overallStatus` is
-> rolled up across them (`Ready`/`Deploying`/`Degraded`, or `Terminating` while a
-> workload is being deleted). A site that is unreachable is skipped; only if
-> **every** site is down does the call fail (502). It returns general info only (no
-> live replicas/usage) - use the single-workload GET for per-site live health.
-
-### CaaS - `POST /api/v1/groups/{group}/containers`
-
-Request:
-
-```json
-{
-  "name": "orders-api",
-  "image": "registry.internal/team/orders-api:1.4.2",
-  "registryUsername": "svc-team",
-  "registryToken": "<registry-token>",
-  // registryUsername/registryToken are optional (omit both for a public image)
-  "env": [ { "name": "LOG_LEVEL", "value": "info" } ],
-  "files": [ { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false } ],
-  "scaling": { "minScale": 1, "maxScale": 8, "metric": "concurrency", "target": 50 }
-}
-```
-
-Response `202 Accepted`: same envelope as the FaaS response (`type: "container"`, no
-`runtime` build fields; `image` echoed back), then poll `statusUrl`.
-
-### 10.x ServiceNow integration (frontend)
+### ServiceNow integration (frontend)
 
 The API is the backend for a **ServiceNow** frontend; the design accommodates that:
 
 - **Authentication - forward the end-user token.** ServiceNow obtains the user's **SSO
   (OIDC) access token** (OAuth authorization-code / on-behalf-of) and sends it as the
   `Authorization: Bearer` header. The JWT carries the real user and `groups`, so the API's
-  group-based authz (§6.2) works unchanged - actions are attributed to the actual requester.
+  group-based authz (ARCHITECTURE.md: Authentication & Authorization) works unchanged - actions are attributed to the actual requester.
   Configure ServiceNow as an OAuth client of the SSO whose tokens carry `aud = serverless-api`.
 - **CORS.** When a ServiceNow Service Portal widget calls the API **from the browser**, set
   `SERVERLESS_CORS_ALLOW_ORIGINS` (Helm `corsAllowOrigins`) to the ServiceNow instance
@@ -1140,7 +733,7 @@ every response (success and error) and bound into the server logs, so a
 
 ---
 
-## 11. Proposed Repository Layout
+## Proposed Repository Layout
 
 ```text
 Serverless/
@@ -1226,229 +819,7 @@ Serverless/
 
 ---
 
-## 12. Sample Manifests
-
-> Illustrative only - final values are templated by Helm and parameterized per site.
-
-### 12.1 Knative Service (KSVC)
-
-```yaml
-apiVersion: serving.knative.dev/v1
-kind: Service
-metadata:
-  name: orders-api-team        # {name}-{group}
-  namespace: serverless-workloads
-  labels:
-    serverless.platform/group: team
-    serverless.platform/workload: orders-api-team
-    serverless.platform/managed-by: serverless-api
-  annotations:
-    serverless.platform/host: orders-api-team.serverless.example.com
-spec:
-  template:
-    metadata:
-      annotations:
-        autoscaling.knative.dev/min-scale: "1"
-        autoscaling.knative.dev/max-scale: "8"
-        autoscaling.knative.dev/metric: "concurrency"
-        autoscaling.knative.dev/target: "50"
-    spec:
-      imagePullSecrets:
-        - name: orders-api-pull
-      containers:
-        - image: registry.internal/team/orders-api:1.4.2
-          resources:                     # from size (e.g. medium); mem request==limit, cpu request-only
-            requests: { cpu: 250m, memory: 512Mi }
-            limits:   { memory: 512Mi }
-          env:
-            - name: LOG_LEVEL
-              value: info
-          volumeMounts:
-            - name: app-config
-              mountPath: /etc/app
-            - name: ca-bundle            # injected CA bundle, mounted into every workload
-              mountPath: /etc/ssl/certs
-              readOnly: true
-      volumes:
-        - name: app-config
-          configMap:
-            name: orders-config
-        - name: ca-bundle
-          configMap:
-            name: ca-bundle
-```
-
-### 12.1a Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ca-bundle
-  namespace: serverless-workloads   # also created in serverless-api
-  labels:
-    config.openshift.io/inject-trusted-cabundle: "true"   # OpenShift fills .data
-  annotations:
-    argocd.argoproj.io/sync-options: Prune=false
-# .data (ca-bundle.crt) is populated by OpenShift; configure ArgoCD to ignore it.
-```
-
-### 12.2 Knative DomainMapping (custom host; operator creates the Route)
-
-> On OpenShift Serverless the API does **not** create an OpenShift Route. It creates a
-> `DomainMapping` for the custom host in each cluster, and the Serverless Operator
-> auto-provisions the corresponding Route. The host is identical in both clusters;
-> `*.serverless.{base_domain}` DNS forwards to the active site.
-
-```yaml
-apiVersion: serving.knative.dev/v1beta1
-kind: DomainMapping
-metadata:
-  name: orders-api-team.serverless.example.com   # the custom host
-  namespace: serverless-workloads
-  labels:
-    serverless.platform/group: team
-    serverless.platform/workload: orders-api-team
-    serverless.platform/offering: container
-spec:
-  ref:
-    name: orders-api-team        # the {name}-{group} KSVC
-    kind: Service
-    apiVersion: serving.knative.dev/v1
-```
-
-### 12.3 cert-manager Certificate (cluster client cert, CN = DNS name, ACME)
-
-```yaml
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: serverless-api-central-client
-  namespace: serverless-api
-spec:
-  secretName: central-client                       # mounted into the API pod
-  commonName: serverless-api.clients.example.com  # DNS name => Kubernetes username
-  dnsNames:
-    - serverless-api.clients.example.com          # required for ACME issuance
-  usages:
-    - client auth
-  issuerRef:
-    name: internal-acme                # ACME ClusterIssuer (internal ACME endpoint, airgap)
-    kind: ClusterIssuer
-```
-
-### 12.4 RBAC for the CN user (per site, shared workload namespace)
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: serverless-api-workloads
-  namespace: serverless-workloads
-rules:
-  - apiGroups: ["serving.knative.dev"]
-    resources: ["services", "domainmappings"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["secrets", "configmaps"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["pods", "events"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/log"]              # for GET /api/v1/groups/{group}/{type}/{name}/logs
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: serverless-api-workloads
-  namespace: serverless-workloads
-subjects:
-  - kind: User
-    name: serverless-api.clients.example.com   # matches the Certificate CN (DNS name)
-    apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: Role
-  name: serverless-api-workloads
-  apiGroup: rbac.authorization.k8s.io
-```
-
-### 12.5 ESO - ExternalSecret only (references pre-existing ClusterSecretStore)
-
-> The `ClusterSecretStore` already exists in the clusters and is **not** shipped by this
-> repo. We deploy only the `ExternalSecret` below, referencing it by name.
-
-Each **kind** of data gets its own `ExternalSecret`/target Secret (separate rotation and
-exposure); the chart renders one per enabled entry in `externalSecrets.secrets` and the
-Deployment `envFrom`s each enabled Secret (so `secretKey`s must be valid env var names).
-
-```yaml
-# e.g. the admin API-keys Secret (separate from the SSO secret)
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
-metadata:
-  name: serverless-api-keys
-  namespace: serverless-api
-spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    name: vault-backend            # <-- name of the PRE-EXISTING ClusterSecretStore
-    kind: ClusterSecretStore
-  target:
-    name: serverless-api-keys      # consumed by the API via envFrom
-  data:
-    - secretKey: SERVERLESS_ADMIN_API_KEY
-      remoteRef:
-        key: cloudlet/platforms/serverless-api
-        property: admin-api-key
-```
-
-### 12.6 ArgoCD ApplicationSet - *reference only (lives in the separate GitOps repo)*
-
-> This manifest is **not** part of this repository. It is shown so the platform team can wire
-> this chart into the central GitOps repo's `ApplicationSet`, generating one Application per
-> site that renders `charts/serverless-api` with a per-site values file.
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: ApplicationSet
-metadata:
-  name: serverless-api
-  namespace: argocd
-spec:
-  generators:
-    - list:
-        elements:
-          - site: central
-            cluster: https://api.central-0.example.com:6443
-            valuesFile: values-central.yaml
-          - site: south
-            cluster: https://api.south-0.example.com:6443
-            valuesFile: values-south.yaml
-  template:
-    metadata:
-      name: "serverless-api-{{site}}"
-    spec:
-      project: serverless
-      source:
-        repoURL: https://git.internal/team/serverless.git   # THIS repo (the chart)
-        targetRevision: main
-        path: charts/serverless-api
-        helm:
-          valueFiles:
-            - "{{valuesFile}}"
-      destination:
-        server: "{{cluster}}"        # deploy the API into each cluster (active/active)
-        namespace: serverless-api
-      syncPolicy:
-        automated: { prune: true, selfHeal: true }
-        syncOptions: [ "CreateNamespace=false" ]
-```
-
----
-
-## 13. Open Questions / Future Work
+## Open Questions / Future Work
 
 | Item | Notes |
 |------|-------|

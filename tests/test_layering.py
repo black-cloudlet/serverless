@@ -1,7 +1,7 @@
 """Enforce the module layering described in ``common/__init__.py``.
 
 These assertions are about *reach*, not style. A second service - the build
-service in docs/BUILD-PIPELINE.md §8 - is meant to reuse the domain and cluster
+service in docs/BUILDING.md - Ownership - is meant to reuse the domain and cluster
 layers without inheriting the API's web stack, and nothing else in the suite
 would notice if an innocuous import quietly took that away.
 """

@@ -2,7 +2,7 @@
 
 Shared rather than API-local because both halves of the build path speak it -
 the API writes the ``Image`` (:mod:`api.services.builder`), and the build
-service reads ``status.latestImage`` back off it (docs/BUILD-PIPELINE.md §8).
+service reads ``status.latestImage`` back off it (docs/BUILDING.md - Ownership).
 Naming it in one place is what keeps them agreeing on which object is which.
 
 Pure: no I/O and no framework, so it sits in the domain layer beside

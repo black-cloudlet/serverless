@@ -67,10 +67,10 @@ class BuildPlan:
         tag: The image reference the build pushes to.
         replicated: Manifests every site needs. The git credential lives here:
             a site that has never built the function still has to be able to,
-            which is the whole switchover story (§9.5).
+            which is the whole switchover story (docs/BUILDING.md - Active/Active).
         local: Manifests for the one site that builds - the Image and its
             ServiceAccount. Replicating these would have every site build the
-            same source and race to push the same tag (§9.1).
+            same source and race to push the same tag (docs/BUILDING.md - Active/Active).
     """
 
     tag: str

@@ -5,7 +5,7 @@ Operator's ingress controller automatically creates the OpenShift Route for each
 Knative ingress. To expose a workload at a custom, cluster-independent host we
 create a ``DomainMapping`` for that host (identical in both clusters); the
 operator then provisions the corresponding Route. A ``*.serverless.{base_domain}``
-DNS record forwards to the active site (docs §5).
+DNS record forwards to the active site (docs/ARCHITECTURE.md - Networking).
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 ``common`` is not "utilities". A module earns a place here only if **more than
 one service needs it** - today the API, tomorrow the build service (see
-docs/BUILD-PIPELINE.md §8). Anything only the API needs belongs in ``api``.
+docs/BUILDING.md - Ownership). Anything only the API needs belongs in ``api``.
 
 The modules are layered by what they may depend on, heaviest last.
 ``tests/test_layering.py`` enforces it, so an import that breaks the split fails

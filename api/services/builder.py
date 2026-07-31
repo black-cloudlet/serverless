@@ -1,4 +1,4 @@
-"""Function builds, driven by kpack ``Image`` CRs (docs/BUILD-PIPELINE.md §8).
+"""Function builds, driven by kpack ``Image`` CRs (docs/BUILDING.md - Ownership).
 
 The API does not run builds; it declares them. Each create/update emits the
 function's git Secret, build ServiceAccount and ``Image`` alongside the KSVC's
@@ -14,7 +14,7 @@ workload's own ``{workload}-git``.
 Declaring is not completing, so ``plan`` returns the deterministic tag the
 build will push to. Callers deploy against that tag and read progress back
 through :meth:`KpackBuilder.status` - the reason a just-created function reports
-``Building`` rather than ``Ready`` (§10).
+``Building`` rather than ``Ready`` (docs/FUNCTIONS.md - Function Status Resolution).
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ class KpackBuilder:
             The build status, or None when the function has no Image on this
             cluster - which is the normal case for a site that has never built
             it, and must fall through to the KSVC status rather than read as a
-            failure (§10).
+            failure (docs/FUNCTIONS.md - Function Status Resolution).
         """
         image_name = kpack.build_object_name(object_name(name, group))
         try:
