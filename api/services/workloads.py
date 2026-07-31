@@ -50,6 +50,7 @@ from api.services.deployer import (
 )
 from api.services.env import env_secret_name, resolve_env
 from api.services.files import files_name, resolve_files
+from common import kpack
 from common.cluster import Cluster, ResourceKind
 from common.contract import Builder
 from common.errors import (
@@ -546,16 +547,20 @@ class WorkloadService:
                 applied_derived.add((ResourceKind.SECRET, pull_secret_name))
         to_prune = () if created else managed_derived - applied_derived
 
-        # The build runs on ONE site. Prefer the local one; if the request targets
-        # sites that exclude it, build on the first target instead - the image has
-        # to be produced by a cluster that will actually run it, and every cluster
-        # has the build stack (§9.1). Silently skipping would leave the KSVC
-        # pointing at a tag nothing ever builds.
-        build_site = None
-        if local_resources:
-            target_sites = [c.site for c in targets]
-            local = self.deployer.local_site()
-            build_site = local if local in target_sites else target_sites[0]
+        # The image is always built on the LOCAL site (§9.1), whether or not the
+        # function runs here: one site builds, and it is this one. The registry is
+        # shared, so a site that only runs the workload pulls what this one pushed.
+        build_site = self.deployer.local_site() if local_resources else None
+        # When the local site is not a target it gets the build objects and
+        # nothing else - no KSVC there to own them, so they are applied unowned
+        # and delete() reclaims them by name.
+        build_only = bool(local_resources) and not any(c.site == build_site for c in targets)
+        if build_only:
+            await asyncio.to_thread(
+                self._apply_build_objects,
+                self.deployer.local_cluster(),
+                list(extra_secrets) + list(local_resources),
+            )
 
         def apply(cluster: Cluster) -> SiteStatus:
             return self._apply_to_site(
@@ -594,6 +599,31 @@ class WorkloadService:
         else:
             body = ContainerResponse(**common, image=image, port=port)
         return body, status_code_for(overall, created=created)
+
+    def _apply_build_objects(self, cluster: Cluster, manifests: list[dict]) -> None:
+        """Apply a function's build objects to a site that runs no copy of it.
+
+        Only reached when the local site is excluded from the function's sites.
+        The build still belongs here, so the git Secret, build ServiceAccount and
+        Image are applied on their own.
+
+        They are applied UNOWNED, which is not a choice: an ownerReference has to
+        name an owner in the same cluster, and the KSVC that would be it was never
+        applied here. Nothing garbage-collects them, so :meth:`delete` removes
+        them by name - an Image left behind would keep rebuilding a function that
+        no longer exists.
+
+        Args:
+            cluster: The local site's cluster client.
+            manifests: The git Secret, build ServiceAccount and Image.
+
+        Raises:
+            Exception: Any apply error. Failing here means the image would never
+                be built, so it is surfaced rather than leaving a function whose
+                tag nothing ever pushes.
+        """
+        for manifest in manifests:
+            cluster.apply(manifest)
 
     def _apply_to_site(
         self,
@@ -1075,36 +1105,23 @@ class WorkloadService:
         )
 
     def _build_status(self, name: str, group: str) -> BuildStatusView | None:
-        """The function's build state, or None if it has no build anywhere.
+        """The function's build state from the LOCAL site, or None if it has none.
 
-        Only one site builds (§9.1), and it is the local one only when the local
-        site is among the function's targets - apply_workload falls back to the
-        first target otherwise. So the local site is where to look FIRST, not the
-        only place: a function deployed to sites that exclude this one keeps its
-        Image elsewhere, and stopping at the local site would report no build at
-        all, making a normal first build read as Degraded.
-
-        The common case still costs one call. The fan-out runs only when the
-        local site has no Image, which is exactly when the answer is not there.
+        One site builds and it is always this one (§9.1), including for a
+        function deployed only elsewhere - so the Image is here whenever it
+        exists anywhere, and a cross-site fan-out would add latency to every GET
+        for something that cannot be found anywhere else.
 
         Args:
             name: The workload name.
             group: The owning group.
 
         Returns:
-            The build status, or None when no site has an Image or the build
+            The build status, or None when there is no Image here or the build
             backend cannot be read - never an error, since a function whose
             image already exists must still report its KSVC status.
         """
-        local = self.deployer.local_cluster()
-        status = self.builder.status(local, name, group)
-        if status is None:
-            for cluster in self.deployer.resolve_targets(None):
-                if cluster.site == local.site:
-                    continue
-                status = self.builder.status(cluster, name, group)
-                if status is not None:
-                    break
+        status = self.builder.status(self.deployer.local_cluster(), name, group)
         if status is None:
             return None
         return BuildStatusView(state=status.state, image=status.image, message=status.message)
@@ -1226,8 +1243,41 @@ class WorkloadService:
 
         targets = self.deployer.resolve_targets(None)
         statuses = await self.deployer.fanout(targets, remove)
+        if offering == OFFERING_FUNCTION:
+            await asyncio.to_thread(
+                self._delete_build_objects, self.deployer.local_cluster(), oname
+            )
         if all(s.error is not None for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
+
+    def _delete_build_objects(self, cluster: Cluster, oname: str) -> None:
+        """Remove a function's build objects from the local site, by name.
+
+        The build always runs here, and when the function is not deployed here
+        the objects are unowned (see :meth:`_apply_build_objects`) - nothing
+        cascades, so a leftover Image would keep rebuilding a function that no
+        longer exists. When the local site does run the workload, deleting the
+        KSVC has already cascaded to these and each delete is a no-op 404.
+
+        Best-effort: the KSVC is gone by now either way, and failing the delete
+        over a build object would report a workload as undeleted when it is.
+
+        Args:
+            cluster: The local site's cluster client.
+            oname: The object name (``{name}-{group}``).
+        """
+        build_name = kpack.build_object_name(oname)
+        for kind, obj in (
+            (ResourceKind.KPACK_IMAGE, build_name),
+            (ResourceKind.SERVICE_ACCOUNT, build_name),
+            (ResourceKind.SECRET, secret_svc.git_secret_name(oname)),
+        ):
+            try:
+                cluster.delete(kind, obj)
+            except NotFoundError:
+                pass  # owned and already cascaded, or never built here
+            except Exception:  # noqa: BLE001 - a leftover is logged, not fatal
+                logger.exception("could not delete %s '%s' in %s", kind, obj, cluster.site)
 
     async def logs(
         self,

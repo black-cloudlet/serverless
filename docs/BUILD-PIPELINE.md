@@ -504,11 +504,18 @@ nothing to clean up.
 | | Scope | Why |
 |---|---|---|
 | git `Secret` | **every site** | Only one site builds, but every site must be *able* to. After a switchover the new local site rebuilds from the token it already holds, and nothing can recover a token whose only copy was on the site that went away (§9.5). |
-| `Image` + build `ServiceAccount` | **one site** | Replicating them would have every site build the same source and race to push the same tag (§9.1). |
+| `Image` + build `ServiceAccount` | **the local site** | Replicating them would have every site build the same source and race to push the same tag (§9.1). |
 
-The building site is the local one when it is among the request's target sites, and the
-first target otherwise - a function deployed only to a remote site still has to be built
-by a cluster that will run it.
+The building site is **always the local one**, whether or not the function runs there.
+The registry is shared, so a site that only runs the workload pulls what the local site
+pushed, and the site that reads build status is always the site that has the `Image`.
+
+When the request's target sites exclude the local one, it receives the build objects and
+nothing else - no `KSVC`, no `DomainMapping`. Those objects are applied **unowned**: an
+`ownerReference` must name an owner in the same cluster, and the `KSVC` that would be it
+was never applied here. Nothing cascades, so `delete` removes them by name (`Image`,
+build `ServiceAccount`, git `Secret`); a leftover `Image` would keep rebuilding a
+function that no longer exists.
 
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
@@ -615,7 +622,8 @@ Two properties this gives us:
   it is still running the previously-built digest. The absence of a build is not an error.
 
 Build detail is read from the local cluster only; there is no cross-site aggregation on this
-path (the ksvc fan-out in ARCHITECTURE.md §4 is unchanged).
+path (the ksvc fan-out in ARCHITECTURE.md §4 is unchanged). That read is complete precisely
+because the build site is always local: if an `Image` exists at all, it exists here.
 
 **As implemented.** `KpackBuilder.status` returns `None` when the local site has no `Image`
 - the switchover case above - and `_with_build_status` folds the rest into the rollup:

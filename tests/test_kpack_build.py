@@ -484,7 +484,13 @@ async def test_only_one_site_builds_but_every_site_gets_the_credential():
     assert len(_git_secrets(remote)) == 1
 
 
-async def test_a_site_set_excluding_the_local_one_still_builds_somewhere():
+async def test_the_local_site_builds_even_when_it_runs_no_copy_of_the_function():
+    """The build site is the local one, always - deployment targets do not move it.
+
+    A function targeted elsewhere still builds here and pushes to the shared
+    registry, which the running site pulls from. The local site gets the build
+    objects and nothing else: no KSVC, no DomainMapping.
+    """
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("site-a", {})
@@ -496,34 +502,41 @@ async def test_a_site_set_excluding_the_local_one_still_builds_somewhere():
     spec.sites = ["site-b"]  # the local site is not a target
     await svc.create("payments", spec, _principal())
 
-    # the build falls back to a targeted site; skipping it would leave the KSVC
-    # pointing at a tag that nothing ever builds
+    assert len(_applied_kind(local, "Image")) == 1
+    assert _applied_kind(remote, "Image") == []
+    # ...and only the build: the workload itself runs where it was asked to
     assert _applied_kind(local, "Service") == []
-    assert len(_applied_kind(remote, "Image")) == 1
+    assert _applied_kind(local, "DomainMapping") == []
+    assert len(_applied_kind(remote, "Service")) == 1
+    # the builder needs the token on the site that clones
+    assert len(_git_secrets(local)) == 1
 
 
-def test_build_status_is_read_from_the_site_that_built_not_always_the_local_one():
-    """The read has to look where the write put the Image.
+async def test_build_objects_on_a_non_target_local_site_are_deleted_explicitly():
+    """Nothing owns them there, so nothing cascades when the function goes.
 
-    apply_workload builds on the local site only when it is a target, and falls
-    back to the first target otherwise. A read fixed on the local site therefore
-    finds no Image for such a function and folds in no build state at all - so a
-    normal first build reports Degraded, the exact reading _with_build_status
-    exists to prevent.
+    An ownerReference must name an owner in the same cluster, and the KSVC that
+    would be it was never applied here. A leftover Image would keep rebuilding a
+    function that no longer exists.
     """
-    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("site-a", {})
     remote = _ApplyCluster("site-b", {})
-    svc = _workload_service(
-        {"site-a": local, "site-b": remote},
-        builder=_SiteAwareBuilder(built_on="site-b", state="Building"),
-        local_site="site-a",
+    svc = _function_service(
+        {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
     )
+    spec = _create_spec()
+    spec.sites = ["site-b"]
+    await svc.create("payments", spec, _principal())
+    assert len(_applied_kind(local, "Image")) == 1
 
-    view = svc._build_status("hello", "payments")
-    assert view is not None, "no build state found: the read only looked at the local site"
-    assert view.state == "Building"
+    await svc.delete("hello", "payments", _principal())
+
+    deleted = {(k.value[1], n) for k, n in local.deleted}
+    assert ("Image", "fn-hello-payments") in deleted
+    assert ("ServiceAccount", "fn-hello-payments") in deleted
+    assert ("Secret", "hello-payments-git") in deleted
 
 
 def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
