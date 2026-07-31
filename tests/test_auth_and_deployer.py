@@ -5,6 +5,7 @@ from api.core.config import Settings, SiteConfig, SSOConfig
 from api.models.common import SiteStatus
 from api.services.deployer import Deployer, aggregate, status_code_for
 from common.errors import SiteTotalFailure, ValidationError
+from tests.conftest import runtime_registry
 
 
 def test_principal_from_claims_strips_and_detects_admin():
@@ -983,7 +984,7 @@ async def test_function_update_rebuilds_when_token_given():
     cluster = _ApplyCluster("site-a", {"fn-team": existing})
     builder = _StubBuilder()
     engine = _workload_service({"site-a": cluster}, builder=builder)
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # rebuild from a new branch; gitRepo/runtime re-sent unchanged (full replace)
@@ -1037,7 +1038,7 @@ async def test_function_update_without_token_keeps_image():
     cluster = _ApplyCluster("site-a", {"fn-team": existing})
     builder = _StubBuilder()
     engine = _workload_service({"site-a": cluster}, builder=builder)
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # config-only edit re-sends the same build inputs -> no rebuild
@@ -1077,7 +1078,7 @@ async def test_function_create_persists_git_secret():
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
     engine = _workload_service({"site-a": cluster}, builder=_StubBuilder())
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await fsvc.create(
@@ -1130,7 +1131,7 @@ async def test_function_update_reuses_stored_git_token():
     cluster = _ApplyCluster("site-a", {"fn-team": existing}, secrets={"fn-team-git": stored})
     builder = _StubBuilder()
     engine = _workload_service({"site-a": cluster}, builder=builder)
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # change the branch WITHOUT re-supplying a token -> rebuild uses the stored one
@@ -2470,7 +2471,7 @@ async def test_function_service_logs_delegates_to_engine():
         pods=[_pod("app-team-00001-a")],
         logs={"app-team-00001-a": "fn-log"},
     )
-    fsvc = FunctionService(_workload_service({"site-a": cluster}))
+    fsvc = FunctionService(_workload_service({"site-a": cluster}), runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     resp = await fsvc.logs(

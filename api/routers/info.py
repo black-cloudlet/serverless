@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends
 
 from api import __version__
 from api.core.config import Settings, get_settings
+from api.dependencies import RuntimesDep
 from api.models.common import Scaling
 from api.models.container import PORT_MAX, PORT_MIN
 from api.models.info import ContainerInfoResponse, FunctionInfoResponse, PortCapability
 from api.services import route as route_svc
 from api.services.ksvc import workload_sizes
-from api.services.runtimes import RuntimeRegistry, get_runtimes
 
 router = APIRouter(prefix="/api/v1", tags=["info"])
 
@@ -55,7 +55,7 @@ async def get_container_info(
 @router.get("/functions/info", response_model=FunctionInfoResponse)
 async def get_function_info(
     settings: Annotated[Settings, Depends(get_settings)],
-    runtimes: Annotated[RuntimeRegistry, Depends(get_runtimes)],
+    runtimes: RuntimesDep,
 ) -> FunctionInfoResponse:
     """Return static function capabilities for dynamic UI rendering.
 

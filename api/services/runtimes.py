@@ -4,6 +4,10 @@ The runtimes a function may be built with are data, not code: a ConfigMap is
 mounted as a YAML file (see the Helm chart) and read here. Ops add a runtime by
 editing the ConfigMap - no image rebuild.
 
+Loading only: the cached, request-injectable registry is assembled in
+:mod:`api.dependencies` with the platform's other singletons, so this module
+stays free of FastAPI and can be reused by a service that has no HTTP layer.
+
 The file is **required**. There is no built-in fallback: a default list would be
 indistinguishable from a real one at the API surface while naming no Builder, so
 a broken mount would look like a working platform until the first function
@@ -13,13 +17,11 @@ failed to build. Missing or empty is a startup failure instead - see
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from api.core.config import get_settings
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,6 +29,7 @@ logger = get_logger(__name__)
 
 class RuntimeConfigError(RuntimeError):
     """The runtimes file is missing or unusable - a deployment misconfiguration."""
+
 
 class RuntimeSpec(BaseModel):
     """One available runtime, as the chart renders it into the runtimes ConfigMap.
@@ -141,9 +144,3 @@ def load_runtimes(path: str) -> RuntimeRegistry:
         raise RuntimeConfigError(f"runtimes file {path} is malformed: {exc}") from exc
     logger.info("loaded %d runtimes from %s: %s", len(specs), path, [s.name for s in specs])
     return RuntimeRegistry(specs)
-
-
-@lru_cache
-def get_runtimes() -> RuntimeRegistry:
-    """The cached runtime registry (read once from the configured file)."""
-    return load_runtimes(get_settings().runtimes_file)

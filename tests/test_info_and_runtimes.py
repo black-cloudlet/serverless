@@ -56,7 +56,8 @@ def test_startup_fails_when_the_runtimes_file_is_missing(monkeypatch, tmp_path):
     import pytest
 
     from api.core.config import get_settings
-    from api.services.runtimes import RuntimeConfigError, get_runtimes
+    from api.dependencies import get_runtimes
+    from api.services.runtimes import RuntimeConfigError
 
     monkeypatch.setenv("SERVERLESS_RUNTIMES_FILE", str(tmp_path / "absent.yaml"))
     get_settings.cache_clear()

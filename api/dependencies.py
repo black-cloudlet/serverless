@@ -12,8 +12,19 @@ from api.services.builder import KpackBuilder
 from api.services.container import ContainerService
 from api.services.deployer import Deployer
 from api.services.function import FunctionService
-from api.services.runtimes import get_runtimes
+from api.services.runtimes import RuntimeRegistry, load_runtimes
 from api.services.workloads import WorkloadService
+
+
+@lru_cache
+def get_runtimes() -> RuntimeRegistry:
+    """The cached runtime registry, read once from the mounted ConfigMap.
+
+    Raises on a missing or unusable file (see ``load_runtimes``); ``api.main``
+    calls it during startup so that surfaces as a failed pod rather than a 500
+    on the first function request.
+    """
+    return load_runtimes(get_settings().runtimes_file)
 
 
 @lru_cache
@@ -41,5 +52,6 @@ def get_container_service() -> ContainerService:
     return ContainerService(get_workload_service())
 
 
+RuntimesDep = Annotated[RuntimeRegistry, Depends(get_runtimes)]
 FunctionDep = Annotated[FunctionService, Depends(get_function_service)]
 ContainerDep = Annotated[ContainerService, Depends(get_container_service)]

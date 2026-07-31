@@ -6,7 +6,7 @@ from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
-from api.services.runtimes import RuntimeRegistry, get_runtimes
+from api.services.runtimes import RuntimeRegistry
 from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
 from common.contract import BuildPlan, BuildRequest
 from common.errors import ValidationError
@@ -16,16 +16,19 @@ from common.labels import workload_labels
 class FunctionService:
     """Function-specific orchestration; delegates the shared work to WorkloadService."""
 
-    def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry | None = None):
+    def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry):
         """Initialize the service.
 
         Args:
             engine: The shared workload engine doing the cross-site work.
-            runtimes: The available-runtimes registry; defaults to the process
-                registry loaded from the mounted config file.
+            runtimes: The available-runtimes registry. Required rather than
+                defaulted: reaching for the process-wide registry here would
+                make the service depend on module state that only the DI layer
+                should own, and would put api.dependencies and this module in an
+                import cycle.
         """
         self._engine = engine
-        self._runtimes = runtimes or get_runtimes()
+        self._runtimes = runtimes
 
     def _assert_runtime(self, runtime: str) -> None:
         """Reject a runtime that is unknown or unbuildable (400, before the 202).

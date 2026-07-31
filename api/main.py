@@ -11,11 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import __version__
 from api.auth.deps import get_validator
 from api.core.config import Settings, get_settings
-from api.dependencies import get_workload_service
+from api.dependencies import get_runtimes, get_workload_service
 from api.docs import wire_sso_login
 from api.routers import containers, functions, info
 from api.services.deployer import Deployer
-from api.services.runtimes import get_runtimes
 from common.errors import register_exception_handlers
 from common.logging import configure_logging, get_logger
 from common.requestid import RequestIDMiddleware

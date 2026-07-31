@@ -421,9 +421,12 @@ def _create_spec():
 
 def _function_service(clusters, builder, local_site=None):
     from api.services.function import FunctionService
+    from tests.conftest import runtime_registry
     from tests.test_auth_and_deployer import _workload_service
 
-    return FunctionService(_workload_service(clusters, builder=builder, local_site=local_site))
+    return FunctionService(
+        _workload_service(clusters, builder=builder, local_site=local_site), runtime_registry()
+    )
 
 
 async def test_create_deploys_with_the_platform_pull_secret():

@@ -30,6 +30,17 @@ runtimes:
 """
 
 
+def runtime_registry(names=("python", "go", "node"), builder="python"):
+    """A registry for services built directly, without the DI layer.
+
+    FunctionService requires its registry rather than defaulting to the
+    process-wide one, so tests supply it the same way api.dependencies does.
+    """
+    from api.services.runtimes import RuntimeRegistry, RuntimeSpec
+
+    return RuntimeRegistry([RuntimeSpec(name=n, builder=builder) for n in names])
+
+
 @pytest.fixture(autouse=True)
 def runtimes_file(tmp_path_factory, monkeypatch):
     """Point the API at a real runtimes file, and reset the cached settings.
@@ -39,7 +50,7 @@ def runtimes_file(tmp_path_factory, monkeypatch):
     behaviour and would otherwise make most of the suite unrunnable.
     """
     from api.core.config import get_settings
-    from api.services.runtimes import get_runtimes
+    from api.dependencies import get_runtimes
 
     path = tmp_path_factory.mktemp("runtimes") / "runtimes.yaml"
     path.write_text(RUNTIMES_YAML)
