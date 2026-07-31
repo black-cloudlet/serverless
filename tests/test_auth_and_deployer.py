@@ -1824,6 +1824,57 @@ def test_validate_group_strips_ggd_prefix_on_input():
     assert normalize_group("ggd-1234platforms") == "ggd-1234platforms"  # no dash -> kept
 
 
+def test_group_underscores_fold_to_hyphens():
+    # An SSO group may use "_" as a separator, which is legal in Keycloak but not
+    # in the DNS-1123 object names/hosts the group ends up in. Both spellings
+    # normalize to the same canonical, DNS-safe group.
+    from api.models.common import normalize_group, validate_group
+
+    assert validate_group("my_team") == "my-team"
+    assert validate_group("my-team") == "my-team"
+    assert normalize_group("/ggd-1234-my_team") == "my-team"  # applied after the prefixes
+    assert validate_group("a_b_c") == "a-b-c"  # every separator, not just the first
+
+
+def test_group_case_is_folded_to_lower():
+    # Mixed case is legal in Keycloak but not in a DNS-1123 name/host, so the group
+    # is lowercased. Lowercasing runs before the other rules, so an upper-case
+    # ggd- prefix is still stripped and "_" in a mixed-case name is still folded.
+    from api.models.common import normalize_group, validate_group
+
+    assert validate_group("Platforms") == "platforms"
+    assert validate_group("My_Team") == "my-team"
+    assert normalize_group("/GGD-1234-My_Team") == "my-team"
+    assert normalize_group("GGD-7-TEAM-A") == "team-a"
+
+
+def test_group_still_rejected_when_normalizing_cannot_save_it():
+    # Normalization is not a licence to accept anything: the DNS-1123 check runs on
+    # the normalized form, so a name that is still invalid after folding is rejected.
+    import pytest as _pytest
+
+    from api.models.common import validate_group
+
+    for bad in ["_team", "team_", "my team", "my_team/x", "a" * 64, "-team", "tëam"]:
+        with _pytest.raises(ValueError):
+            validate_group(bad)
+
+
+def test_principal_normalizes_underscored_groups_and_admin_groups():
+    # The admin groups come from config in their raw SSO spelling; they are
+    # normalized on both sides so the comparison still matches.
+    from api.auth.claims import principal_from_claims
+    from api.core.config import SSOConfig
+
+    cfg = SSOConfig(groups_claim="groups", admin_groups=["Platform_Admins"])
+    p = principal_from_claims({"sub": "u", "groups": ["/My_Team", "platform_admins"]}, cfg)
+
+    assert p.groups == ["my-team", "platform-admins"]
+    assert p.is_admin is True
+    # Membership is checked against the canonical form the routers also produce.
+    assert p.can_access_group("my-team") is True
+
+
 def test_sso_endpoints_derived_from_issuer():
     from api.core.config import SSOConfig
 

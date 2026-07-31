@@ -31,8 +31,10 @@ class Principal(BaseModel):
 def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
     """Build a Principal from validated OIDC token claims.
 
-    Normalizes group names (strips the Keycloak "/" and ``ggd-<digits>`` prefixes)
-    and marks the caller an admin if any group is in the configured admin groups.
+    Normalizes group names (strips the Keycloak "/" and ``ggd-<digits>`` prefixes,
+    lowercases, folds "_" to "-") and marks the caller an admin if any group is in
+    the configured admin groups. Request-supplied groups go through the same
+    normalization, so membership checks compare canonical forms on both sides.
 
     Args:
         claims: The validated JWT claims.
@@ -45,7 +47,8 @@ def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
     if isinstance(groups, str):
         groups = [groups]
     groups = [normalize_group(g) for g in groups]
-    is_admin = any(g in config.admin_groups for g in groups)
+    admin_groups = {normalize_group(g) for g in config.admin_groups}
+    is_admin = any(g in admin_groups for g in groups)
     return Principal(
         subject=claims.get("sub", ""),
         username=claims.get("preferred_username") or claims.get("sub", ""),
