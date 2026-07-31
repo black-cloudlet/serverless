@@ -68,8 +68,8 @@ class KpackBuilder:
         """
         return image_reference(self._registry.base, req)
 
-    def _runtime_config(self, runtime: str) -> tuple[str, list[dict], dict]:
-        """Resolve a runtime to ``(builder, build_env, resources)``.
+    def _runtime_config(self, runtime: str) -> tuple[str, list[dict]]:
+        """Resolve a runtime to ``(builder, build_env)``.
 
         The runtimes file is rendered by the chart with each entry's build
         environment already merged (shared env, dependency mirror, per-runtime
@@ -79,7 +79,7 @@ class KpackBuilder:
             runtime: The requested runtime name.
 
         Returns:
-            The Builder name, the build env list, and the build pod resources.
+            The Builder name and the build env list.
 
         Raises:
             ValidationError: If the runtime is unknown or names no Builder.
@@ -105,7 +105,7 @@ class KpackBuilder:
             and not any(e.get("name") == spec.versionEnv for e in env)
         ):
             env.append({"name": spec.versionEnv, "value": spec.defaultVersion})
-        return spec.builder, env, dict(spec.buildResources or self._build.resources)
+        return spec.builder, env
 
     def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
         """The build manifests for one function, split by replication scope.
@@ -130,7 +130,7 @@ class KpackBuilder:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
         oname = object_name(req.name, req.group)
-        builder, env, resources = self._runtime_config(req.runtime)
+        builder, env = self._runtime_config(req.runtime)
         tag = self.image_ref(req)
         build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
@@ -154,7 +154,7 @@ class KpackBuilder:
                     git_url=req.git_url,
                     revision=req.build_revision,
                     env=env,
-                    resources=resources,
+                    resources=self._build.resources,
                 ),
             ],
         )

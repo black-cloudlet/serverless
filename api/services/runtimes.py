@@ -55,8 +55,6 @@ class RuntimeSpec(BaseModel):
             pinned buildpackage ships - airgapped, there is no fallback download.
         buildEnv: Build environment, already merged by the chart (shared env,
             dependency mirror, per-runtime overrides).
-        buildResources: Requests/limits for the build pod, overriding
-            ``build.resources``.
     """
 
     model_config = ConfigDict(extra="allow", coerce_numbers_to_str=True)
@@ -67,7 +65,6 @@ class RuntimeSpec(BaseModel):
     defaultVersion: str | None = None
     versions: list[str] = Field(default_factory=list)
     buildEnv: list[dict[str, str]] = Field(default_factory=list)
-    buildResources: dict = Field(default_factory=dict)
 
 
 class RuntimeRegistry:

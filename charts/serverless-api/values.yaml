@@ -196,8 +196,8 @@ build:
   # Requests/limits for the build pod (kpack Image spec.build.resources). Builds
   # are far heavier than the function they produce - a dependency resolve plus a
   # compile - so without limits they are BestEffort and are the first thing
-  # evicted under node pressure. A runtime may override with its own
-  # `buildResources`; node_modules trees in particular need more than go.
+  # evicted under node pressure. One bound for every build: the variance that
+  # matters is small function vs large one, not Go vs Node.
   resources:
     requests:
       cpu: 500m

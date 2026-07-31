@@ -74,7 +74,6 @@ class BuildConfig(BaseModel):
     # it (Bitbucket app passwords) need this overridden.
     git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
     # Resource requests/limits for the build pod, applied to spec.build.resources.
-    # A runtime may override with its own `buildResources` in the runtimes file.
     # env: SERVERLESS_BUILD__RESOURCES as a JSON object.
     resources: dict = Field(default_factory=dict)
 

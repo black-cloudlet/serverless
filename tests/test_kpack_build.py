@@ -210,22 +210,15 @@ def test_build_env_merges_runtime_env_and_version():
     assert {"name": "BP_CPYTHON_VERSION", "value": "3.12"} in env
 
 
-def test_build_resources_come_from_settings_and_runtime_override():
+def test_build_resources_come_from_settings():
     settings = _settings(
         build={"registry_secret": "reg-creds", "resources": {"limits": {"memory": "4Gi"}}}
     )
     _, manifests = _manifests(_builder(settings))
+    # one platform-wide bound: a build is heavier than the function it produces,
+    # and unset it would be BestEffort and first evicted under node pressure
     assert _by_kind(manifests, "Image")["spec"]["build"]["resources"] == {
         "limits": {"memory": "4Gi"}
-    }
-
-    # a runtime's own buildResources wins over the shared default
-    runtimes = RuntimeRegistry(
-        [RuntimeSpec(name="python", builder="python", buildResources={"limits": {"memory": "8Gi"}})]
-    )
-    plan = KpackBuilder(settings, runtimes).plan(_request(), {})
-    assert _by_kind(plan.local, "Image")["spec"]["build"]["resources"] == {
-        "limits": {"memory": "8Gi"}
     }
 
 
@@ -660,7 +653,6 @@ def test_runtime_spec_declares_what_the_builder_reads():
         "defaultVersion",
         "versions",
         "buildEnv",
-        "buildResources",
     } <= declared
 
 

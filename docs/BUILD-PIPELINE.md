@@ -8,8 +8,8 @@ deploy it, and the control flow that keeps it correct under active/active.
 > for the build path specifically. Where the two disagree, this document wins for build
 > concerns and ARCHITECTURE.md wins for everything else.
 >
-> Implemented by `api/services/builder.py` (`KpackBuilder`) and
-> `api/services/kpack.py`, replacing the `func`/Tekton placeholder.
+> Implemented by `api/services/builder.py` (`KpackBuilder`) and `common/kpack.py`,
+> replacing the `func`/Tekton placeholder.
 
 ---
 
@@ -249,7 +249,7 @@ runtimes:
 
 **The runtimes file is the contract.** `RuntimeSpec` declares every key the builder
 reads - `builder`, `versionEnv`, `defaultVersion`, `versions`, `buildEnv`,
-`buildResources` - and keeps unknown keys, so a newer chart can be rolled out ahead of the
+`buildEnv` - and keeps unknown keys, so a newer chart can be rolled out ahead of the
 API. Numbers are coerced to strings, because an unquoted `defaultVersion: 3.12` is a float
 in YAML and rejecting it would take down every runtime over a missing pair of quotes.
 
@@ -304,9 +304,14 @@ push builder images and function images to different places.
 
 A build is far heavier than the function it produces - a dependency resolve plus a compile
 - and it now draws on the workloads namespace quota (§2.1). `build.resources` sets
-`Image.spec.build.resources`; a runtime may override with its own `buildResources`, which
-matters because a `node_modules` tree needs considerably more than a Go build. Unset, the
-build pod is BestEffort and is the first thing evicted under node pressure.
+`Image.spec.build.resources`. Unset, the build pod is BestEffort and is the first thing
+evicted under node pressure.
+
+**One bound for every build, deliberately.** A per-language override was tried and
+removed: the variance that matters is between a small function and a large one, not
+between Go and Node, so language is the wrong axis to tune on. If per-build tuning is ever
+needed it belongs on the function, alongside its `size` - a different feature, not a
+generalisation of this one.
 
 ## 5. Trust: CA Injection
 
