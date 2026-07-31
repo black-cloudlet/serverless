@@ -11,6 +11,7 @@ from api.auth.apikey import verify_admin_key
 from api.auth.claims import Principal, principal_from_claims
 from api.auth.oidc import TokenValidator, looks_like_jwt
 from api.core.config import Settings, get_settings
+from api.models.common import normalize_group
 from common.errors import ForbiddenError, UnauthenticatedError
 
 
@@ -79,7 +80,10 @@ def require_auth(
 
     if verify_admin_key(token, settings.admin_api_key):
         return Principal(
-            subject="admin", username="admin", groups=settings.sso.admin_groups, is_admin=True
+            subject="admin",
+            username="admin",
+            groups=[normalize_group(g) for g in settings.sso.admin_groups],
+            is_admin=True,
         )
 
     raise UnauthenticatedError("Invalid bearer token.")

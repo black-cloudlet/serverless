@@ -74,10 +74,6 @@ _METRIC_UNITS = {
 # request-only (no limit -> no throttling).
 WorkloadSize = Literal["small", "medium", "large"]
 
-# Name/group/branch rules live in `common` because they bound what can be written
-# to a cluster, and the builder applies the same rules off the HTTP path.
-# Re-exported so request models and query params keep one import site.
-
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
 _SCALE_DOWN_DELAY_MAX_SECONDS = 3600  # Knative maximum

@@ -572,9 +572,20 @@ def test_build_request_validates_its_own_name_and_group():
     """The build path is reachable off the HTTP edge, so it cannot trust inputs."""
     import pydantic
 
-    for bad in ({"name": "Bad Name!"}, {"group": "UPPER"}, {"name": "x" * 64}):
+    for bad in ({"name": "Bad Name!"}, {"group": "has space"}, {"name": "x" * 64}):
         with pytest.raises(pydantic.ValidationError):
             _request(**bad)
+
+
+def test_build_request_normalizes_the_group_the_same_way_the_http_edge_does():
+    """A build is addressed by group, so it must land on the HTTP edge's spelling.
+
+    Uppercase and "_" are legal in an SSO group and normalized (not rejected) at
+    the edge. If the contract validated without normalizing, the same team would
+    build to a different repository path than it deploys to.
+    """
+    assert _request(group="My_Team").group == "my-team"
+    assert _request(group="GGD-1234-Platforms").group == "platforms"
 
 
 @pytest.mark.parametrize("bad", ["", " ", "has space", "-leading", "a..b", "x/", "with:colon"])

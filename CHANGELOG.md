@@ -48,6 +48,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- SSO groups whose names use `_` or mixed case (e.g. `My_Team`) were unusable: the
+  caller authenticated fine and carried the group in their `groups` claim, but
+  every request naming that group was rejected with a `422`, because both are legal
+  in a Keycloak group and illegal in the DNS-1123 object names and hosts the group
+  is interpolated into (`{name}-{group}`, `{name}-{group}.{base_domain}`).
+  `normalize_group` now lowercases and folds `_` to `-` alongside the existing `/`
+  and `ggd-<digits>-` stripping (lowercasing runs first, so an upper-case
+  `GGD-1234-` prefix is still recognized). Because normalization is applied at both
+  edges — the token claim and the `{group}` path segment — the API accepts any
+  spelling in the path and they all resolve to the same group; the lowercase
+  hyphenated form is what is stored, deployed, and returned. Configured admin
+  groups are normalized before the admin-membership comparison too, so an admin
+  group written `Platform_Admins` still matches. Names normalization can't rescue
+  (a leading/trailing `_`, whitespace, non-ASCII) are still rejected — the DNS-1123
+  check runs on the normalized form.
 - `_creation_time` used the Python-2 `except ValueError, AttributeError:` form,
   a `SyntaxError` on any supported Python that broke importing the entire
   `workloads` module (and with it the whole API); parenthesized to
