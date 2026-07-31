@@ -2,9 +2,13 @@
 
 The runtimes a function may be built with are data, not code: a ConfigMap is
 mounted as a YAML file (see the Helm chart) and read here. Ops add a runtime by
-editing the ConfigMap - no image rebuild. The file is intentionally minimal
-today (just ``name``); extra keys (versions, builder image, ...) are preserved
-so it can grow for the airgapped builder without a schema change.
+editing the ConfigMap - no image rebuild.
+
+The file is **required**. There is no built-in fallback: a default list would be
+indistinguishable from a real one at the API surface while naming no Builder, so
+a broken mount would look like a working platform until the first function
+failed to build. Missing or empty is a startup failure instead - see
+:func:`load_runtimes`.
 """
 
 from __future__ import annotations
@@ -13,17 +17,16 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from api.core.config import get_settings
 from common.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Built-in fallback when the file is absent (local dev / tests); production
-# always mounts the ConfigMap. Name only - these cannot build (no Builder).
-_DEFAULT_RUNTIMES = ("python", "go", "node")
 
+class RuntimeConfigError(RuntimeError):
+    """The runtimes file is missing or unusable - a deployment misconfiguration."""
 
 class RuntimeSpec(BaseModel):
     """One available runtime, as the chart renders it into the runtimes ConfigMap.
@@ -94,36 +97,49 @@ class RuntimeRegistry:
 
 
 def load_runtimes(path: str) -> RuntimeRegistry:
-    """Load the runtime registry from a YAML file, falling back to defaults.
+    """Load the runtime registry from a YAML file.
 
     The file shape is ``{"runtimes": [{"name": "python", ...}, ...]}`` - see
-    :class:`RuntimeSpec`. A missing file or an empty list falls back to the
-    built-in defaults so local dev and tests run without the mounted ConfigMap.
-    Those defaults name no Builder, so they answer ``/info`` but cannot build:
-    a real deployment always mounts the ConfigMap.
+    :class:`RuntimeSpec`.
+
+    Required, and loud when it is missing: the chart always mounts it, so a
+    missing or empty file means a broken mount or a bad values override. Raising
+    here makes that a startup failure (:mod:`api.main` loads the registry in its
+    lifespan), so a misconfigured pod never passes readiness - rather than
+    serving an API that accepts functions it can never build.
 
     Args:
         path: Path to the mounted runtimes YAML file.
 
     Returns:
         The resolved registry.
+
+    Raises:
+        RuntimeConfigError: If the file is missing, unreadable, malformed, or
+            declares no runtimes.
     """
     try:
-        raw = yaml.safe_load(Path(path).read_text()) or {}
-    except FileNotFoundError:
-        # Expected only in local dev and tests. In a deployment the chart always
-        # mounts the ConfigMap, so reaching this means the mount is broken - and
-        # the defaults name no Builder, so every function create will 400.
-        logger.warning(
-            "runtimes file %s not found; falling back to name-only defaults, "
-            "which cannot build - check the runtimes ConfigMap mount",
-            path,
+        raw = yaml.safe_load(Path(path).read_text())
+    except FileNotFoundError as exc:
+        raise RuntimeConfigError(
+            f"runtimes file {path} not found; it is mounted from the runtimes "
+            "ConfigMap and is required - check the volume mount and "
+            "SERVERLESS_RUNTIMES_FILE"
+        ) from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeConfigError(f"runtimes file {path} could not be read: {exc}") from exc
+
+    items = (raw or {}).get("runtimes") or []
+    if not items:
+        raise RuntimeConfigError(
+            f"runtimes file {path} declares no runtimes; a function cannot be built "
+            "without at least one runtime mapped to a kpack Builder"
         )
-        raw = {}
-    items = raw.get("runtimes") or []
-    specs = [RuntimeSpec(**item) for item in items]
-    if not specs:
-        specs = [RuntimeSpec(name=n) for n in _DEFAULT_RUNTIMES]
+    try:
+        specs = [RuntimeSpec(**item) for item in items]
+    except (TypeError, ValidationError) as exc:
+        raise RuntimeConfigError(f"runtimes file {path} is malformed: {exc}") from exc
+    logger.info("loaded %d runtimes from %s: %s", len(specs), path, [s.name for s in specs])
     return RuntimeRegistry(specs)
 
 

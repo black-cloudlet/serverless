@@ -18,15 +18,51 @@ def test_load_runtimes_from_file(tmp_path):
     assert reg.specs[0].model_dump()["versions"] == ["3.13"]
 
 
-def test_load_runtimes_missing_file_falls_back(tmp_path):
-    reg = load_runtimes(str(tmp_path / "does-not-exist.yaml"))
-    assert reg.names() == ["python", "go", "node"]
+def test_a_missing_runtimes_file_is_fatal(tmp_path):
+    """No fallback: a default list would name no Builder, so the API would
+    accept functions it can never build and only fail minutes later."""
+    import pytest
+
+    from api.services.runtimes import RuntimeConfigError
+
+    with pytest.raises(RuntimeConfigError, match="not found"):
+        load_runtimes(str(tmp_path / "does-not-exist.yaml"))
 
 
-def test_load_runtimes_empty_list_falls_back(tmp_path):
+def test_an_empty_runtimes_file_is_fatal(tmp_path):
+    import pytest
+
+    from api.services.runtimes import RuntimeConfigError
+
     f = tmp_path / "runtimes.yaml"
     f.write_text("runtimes: []\n")
-    assert load_runtimes(str(f)).names() == ["python", "go", "node"]
+    with pytest.raises(RuntimeConfigError, match="declares no runtimes"):
+        load_runtimes(str(f))
+
+
+def test_a_malformed_runtimes_file_is_fatal(tmp_path):
+    import pytest
+
+    from api.services.runtimes import RuntimeConfigError
+
+    f = tmp_path / "runtimes.yaml"
+    f.write_text("runtimes:\n  - versions: ['3.13']\n")  # no `name`
+    with pytest.raises(RuntimeConfigError, match="malformed"):
+        load_runtimes(str(f))
+
+
+def test_startup_fails_when_the_runtimes_file_is_missing(monkeypatch, tmp_path):
+    """The lifespan loads it, so a broken mount never reaches readiness."""
+    import pytest
+
+    from api.core.config import get_settings
+    from api.services.runtimes import RuntimeConfigError, get_runtimes
+
+    monkeypatch.setenv("SERVERLESS_RUNTIMES_FILE", str(tmp_path / "absent.yaml"))
+    get_settings.cache_clear()
+    get_runtimes.cache_clear()
+    with pytest.raises(RuntimeConfigError):
+        get_runtimes()
 
 
 def test_registry_helpers():

@@ -253,10 +253,15 @@ reads - `builder`, `versionEnv`, `defaultVersion`, `versions`, `buildEnv`,
 API. Numbers are coerced to strings, because an unquoted `defaultVersion: 3.12` is a float
 in YAML and rejecting it would take down every runtime over a missing pair of quotes.
 
-If the ConfigMap is not mounted the API falls back to name-only defaults, which name no
-Builder. That is deliberately a **loud** failure: the fallback is logged as a warning, and
-a create is rejected with `400 runtime 'python' is not buildable` before the 202 - not
-minutes later as a failed background deploy that reads like a broken build.
+The file is **required and has no fallback**. A built-in default list would be
+indistinguishable from a real one at the API surface while naming no Builder, so a broken
+mount would look like a working platform right up until the first function failed to
+build. Instead `load_runtimes` raises, the lifespan loads it before serving, and a
+misconfigured pod never reaches readiness.
+
+A runtime that is present but maps to no Builder - a partially filled ConfigMap - is
+caught separately, as a `400 runtime 'python' is not buildable` before the 202, rather
+than minutes later as a failed background deploy that reads like a broken build.
 
 **Coupling warning.** Axis 2 is bounded by axis 1: a pinned buildpackage only *contains*
 certain interpreter versions, and in an airgapped cluster there is no fallback download.
