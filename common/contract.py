@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic.dataclasses import dataclass as validated_dataclass
 
-from common.names import Branch, Group, Name, image_tag
+from common.names import Branch, GitUrl, Group, Name, image_tag
 
 if TYPE_CHECKING:  # a type hint only - importing it would pull the k8s client
     from common.cluster import Cluster
@@ -43,7 +43,7 @@ class BuildRequest:
 
     name: Name
     group: Group
-    git_url: str
+    git_url: GitUrl
     branch: Branch
     git_token: str
     runtime: str

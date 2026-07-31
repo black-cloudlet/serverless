@@ -616,6 +616,33 @@ def test_image_tag_projection_rules():
     assert len(image_tag("x" * 200)) == 128
 
 
+def test_a_branch_with_no_ascii_still_projects_to_a_usable_tag():
+    """Git refs are UTF-8, so every character can be one the tag grammar forbids.
+
+    Such a branch replaces to all '-' and strips to "", and an empty tag makes
+    the reference "repo:" - malformed on both the Image and the KSVC. The
+    fallback must be non-empty, stable (active/active applies converge) and
+    distinct per branch.
+    """
+    import re
+
+    from common.contract import image_reference
+    from common.names import image_tag
+
+    for branch in ("功能", "релиз", "機能/ログイン"):
+        tag = image_tag(branch)
+        assert tag, f"{branch!r} projected to an empty tag"
+        assert re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$", tag)
+
+    assert image_tag("功能") == image_tag("功能")
+    assert image_tag("功能") != image_tag("релиз")
+    # a branch only partly non-ASCII keeps its readable part, no fallback needed
+    assert image_tag("功能-login") == "login"
+
+    req = _request(branch="功能")
+    assert not image_reference("reg.internal", req).endswith(":")
+
+
 # ------------------------------------------------------ the runtimes contract
 
 

@@ -73,26 +73,26 @@ def test_valid_function():
 
 def test_invalid_name_rejected():
     with pytest.raises(ValidationError):
-        FunctionCreate(name="Bad_Name", gitRepo="g", gitToken="t", runtime="python")
+        FunctionCreate(name="Bad_Name", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python")
 
 
 def test_runtime_is_a_free_string_on_the_model():
     # The valid runtime set is data (a mounted ConfigMap), so the model accepts
     # any string; the service validates it against the live registry (see
     # test_auth_and_deployer.test_function_accept_rejects_unknown_runtime).
-    fn = FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="ruby")
+    fn = FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby")
     assert fn.runtime == "ruby"
 
 
 def test_size_default_and_choices():
-    fn = FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go")
+    fn = FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go")
     assert fn.size == "small"  # default
     assert (
-        FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="large").size
+        FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", size="large").size
         == "large"
     )
     with pytest.raises(ValidationError):  # unknown size
-        FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="xl")
+        FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", size="xl")
 
 
 def test_envvar_value_required_unless_secret_keep():
@@ -178,15 +178,43 @@ def test_scaling_hpa_metric_cannot_scale_to_zero():
 def test_optional_hostname_validated():
     fn = FunctionCreate(
         name="my-fn",
-        gitRepo="g",
+        gitRepo="https://git.internal/o/r.git",
         gitToken="t",
         runtime="python",
         hostname="app.example.com",
     )
     assert fn.hostname == "app.example.com"
     # default (no hostname) is allowed
-    assert FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go").hostname is None
+    assert FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go").hostname is None
     # invalid hostnames rejected
     for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
         with pytest.raises(ValidationError):
-            FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", hostname=bad)
+            FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", hostname=bad)
+
+
+def test_git_repo_must_be_an_http_url_the_build_can_authenticate_to():
+    """The clone authenticates with a basic-auth Secret, which needs http(s).
+
+    Unvalidated, an empty or scp-style URL is accepted (202) and only fails in
+    the background build - and an scp-style ref yields a kpack.io/git annotation
+    kpack cannot match, so it surfaces as an auth error nowhere near its cause.
+    """
+    for bad in ["", "   ", "g", "not a url", "git@github.com:o/r.git",
+                "ssh://git@host/r.git", "file:///etc/passwd", "https://"]:
+        with pytest.raises(ValidationError):
+            FunctionCreate(name="x", gitRepo=bad, gitToken="t", runtime="go")
+
+    for ok in ["https://git.internal/o/r.git", "http://git.internal:8080/o/r.git"]:
+        assert FunctionCreate(name="x", gitRepo=ok, gitToken="t", runtime="go").gitRepo == ok
+
+
+def test_git_repo_rejects_embedded_credentials_rather_than_stripping_them():
+    """The URL is written verbatim to Image.spec.source.git.url.
+
+    That object is readable by anyone with get on kpack Images, which is far
+    wider than the Secret the token belongs in.
+    """
+    with pytest.raises(ValidationError, match="must not embed credentials"):
+        FunctionCreate(
+            name="x", gitRepo="https://user:pw@git.internal/o/r.git", gitToken="t", runtime="go"
+        )

@@ -334,6 +334,25 @@ def test_host_for_resolution_and_validation():
         svc.host_for("app", "a.b.serverless.example.com", "team")
 
 
+def test_a_name_and_group_each_legal_alone_are_rejected_when_too_long_together():
+    """{name}-{group} is the KSVC name and the first label of the host: max 63.
+
+    Each half passes its own <=63 check, so without a combined one the request is
+    accepted (202) and the API server rejects the KSVC later, in the background
+    deploy - after the config Secrets for it have already been written.
+    """
+    from common.errors import ValidationError
+
+    svc = _workload_service({})
+    name, group = "n" * 40, "g" * 40
+
+    with pytest.raises(ValidationError, match="too long together"):
+        svc.validate_spec(name, group, "alice", [], [])
+
+    # 63 exactly is the boundary and must still pass.
+    svc.validate_spec("n" * 31, "g" * 31, "alice", [], [])
+
+
 async def test_host_available_when_unused():
     svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     # no DomainMapping exists -> no raise
@@ -2576,7 +2595,7 @@ async def test_function_accept_rejects_a_runtime_with_no_builder():
 
     fsvc = _function_service_with_runtimes(["python"], builder=None)
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="python")
+    spec = FunctionCreate(name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python")
 
     with pytest.raises(ValidationError, match="not buildable"):
         await fsvc.accept("team", spec, user, BackgroundTasks())
@@ -2591,7 +2610,7 @@ async def test_function_accept_rejects_unknown_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="ruby")
+    spec = FunctionCreate(name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby")
 
     with pytest.raises(ValidationError):
         await fsvc.accept("team", spec, user, BackgroundTasks())
@@ -2605,7 +2624,7 @@ async def test_function_accept_allows_known_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="go")
+    spec = FunctionCreate(name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go")
 
     resp = await fsvc.accept("team", spec, user, BackgroundTasks())
     assert resp.overallStatus == "Pending" and resp.runtime == "go"

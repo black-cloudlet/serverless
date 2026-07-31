@@ -11,6 +11,7 @@ from api.models.common import (
     BuildStatusView,
     EnvVar,
     FileMount,
+    GitUrl,
     Hostname,
     Name,
     Scaling,
@@ -30,7 +31,7 @@ class FunctionCreate(BaseModel):
     """
 
     name: Name
-    gitRepo: str
+    gitRepo: GitUrl
     branch: Branch = "main"
     gitToken: str
     runtime: str
@@ -56,7 +57,7 @@ class FunctionUpdate(BaseModel):
     that re-sends the same build inputs keeps the current image.
     """
 
-    gitRepo: str
+    gitRepo: GitUrl
     branch: Branch = "main"
     gitToken: str | None = None  # keep-on-omit: reuses the stored token
     runtime: str

@@ -61,7 +61,7 @@ from common.errors import (
     ValidationError,
 )
 from common.logging import get_logger
-from common.names import object_name
+from common.names import object_name, validate_object_name
 
 logger = get_logger(__name__)
 
@@ -845,9 +845,13 @@ class WorkloadService:
                 on (update only; empty/None on create).
 
         Raises:
-            ValidationError: If the env or files cannot be resolved.
+            ValidationError: If the env or files cannot be resolved, or if the
+                name and group are too long together to be a DNS label.
         """
-        oname = object_name(name, group)
+        try:
+            oname = validate_object_name(name, group)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         resolve_files(oname, group, owner, files, kept_files)
         resolve_env(oname, group, owner, env, kept_env)
 

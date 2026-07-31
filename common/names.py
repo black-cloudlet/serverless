@@ -12,8 +12,10 @@ query params keep importing them from there.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import AfterValidator
 
@@ -32,6 +34,9 @@ _UNDERSCORE = str.maketrans({"_": "-"})
 # or '_' and is capped at 128 characters.
 _TAG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _TAG_MAX = 128
+
+# A KSVC name and a DNS label are both capped here, and {name}-{group} is both.
+MAX_OBJECT_NAME = 63
 
 
 def normalize_group(group: str) -> str:
@@ -121,6 +126,44 @@ def validate_hostname(host: str) -> str:
     raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
 
 
+def validate_git_url(url: str) -> str:
+    """Validate a source repository URL as http(s) with a host and no userinfo.
+
+    The platform authenticates a clone with a basic-auth Secret (a username and
+    the caller's token), which only applies over http(s). An scp-style ref like
+    ``git@host:org/repo.git`` has no scheme, so it silently becomes a
+    ``kpack.io/git`` annotation kpack cannot match the credential against, and
+    the build fails as an auth error nowhere near its cause. An empty URL is
+    accepted by every check downstream and fails the same way.
+
+    Embedded credentials are rejected rather than stripped: the URL is written
+    verbatim to ``Image.spec.source.git.url``, so a password in it would sit in
+    plaintext on an object with much wider read access than the Secret. The
+    token belongs in the Secret, which is where the caller already sends it.
+
+    Args:
+        url: The repository URL.
+
+    Returns:
+        The URL unchanged.
+
+    Raises:
+        ValueError: If it is not an http(s) URL with a host, or carries userinfo.
+    """
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError(
+            "gitRepo must be an http(s) URL (e.g. https://git.internal/org/repo.git); "
+            "SSH and scp-style refs are not supported - the build authenticates "
+            "with a token over https"
+        )
+    if "@" in parts.netloc:
+        raise ValueError(
+            "gitRepo must not embed credentials; send the token as gitToken instead"
+        )
+    return url.strip()
+
+
 def validate_branch(branch: str) -> str:
     """Validate a git branch name.
 
@@ -174,6 +217,37 @@ def object_name(name: str, group: str) -> str:
     return f"{name}-{group}"
 
 
+def validate_object_name(name: str, group: str) -> str:
+    """Check that ``{name}-{group}`` still fits where it has to be written.
+
+    ``name`` and ``group`` are each a legal DNS-1123 label, but the primary key
+    is their concatenation and that is what becomes the KSVC name and the first
+    label of ``{name}-{group}.{route_domain}``. Both are capped at 63: Knative
+    backs a Service with a Kubernetes Service, and a DNS label cannot be longer.
+    Two 63-character halves are individually valid and produce a 127-character
+    name the cluster rejects, so the pair has to be checked as a pair.
+
+    Args:
+        name: The workload name.
+        group: The owning group.
+
+    Returns:
+        The derived object name.
+
+    Raises:
+        ValueError: If the pair exceeds 63 characters together.
+    """
+    oname = object_name(name, group)
+    if len(oname) > MAX_OBJECT_NAME:
+        raise ValueError(
+            f"name and group are too long together: '{name}' + '{group}' is "
+            f"{len(oname)} characters and the limit is {MAX_OBJECT_NAME} "
+            f"(the name is used as a DNS label); shorten the name by "
+            f"{len(oname) - MAX_OBJECT_NAME}"
+        )
+    return oname
+
+
 def image_tag(branch: str) -> str:
     """Reduce a branch name to a legal OCI tag.
 
@@ -188,14 +262,22 @@ def image_tag(branch: str) -> str:
     pair is unusual in one repository. The git revision is never rewritten, so a
     build always compiles the branch that was asked for.
 
+    A branch can also project to *nothing*: git refs are UTF-8, so a branch with
+    no ASCII in it at all is legal and every character of it is replaced. An
+    empty tag would silently produce the malformed reference ``repo:`` on both
+    the kpack Image and the KSVC, so those fall back to a digest of the branch -
+    unreadable, but deterministic, which is what active/active convergence needs.
+
     Args:
         branch: The branch name (already validated).
 
     Returns:
-        The tag to push to.
+        The tag to push to, never empty.
     """
-    tag = _TAG_UNSAFE.sub("-", branch).lstrip(".-")
-    return tag[:_TAG_MAX]
+    tag = _TAG_UNSAFE.sub("-", branch).lstrip(".-")[:_TAG_MAX]
+    if not tag:
+        return "b-" + hashlib.sha256(branch.encode()).hexdigest()[:12]
+    return tag
 
 
 # Validated string types shared by request models, query params and the build
@@ -206,3 +288,4 @@ Name = Annotated[str, AfterValidator(validate_name)]
 Group = Annotated[str, AfterValidator(validate_group)]
 Hostname = Annotated[str, AfterValidator(validate_hostname)]
 Branch = Annotated[str, AfterValidator(validate_branch)]
+GitUrl = Annotated[str, AfterValidator(validate_git_url)]
