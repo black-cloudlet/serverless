@@ -609,7 +609,7 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
 | `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
-| `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions`, `defaultVersion` and `buildable`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
+| `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
 `overallStatus` set (and is the `Literal` the responses are typed with, so it cannot drift from what is

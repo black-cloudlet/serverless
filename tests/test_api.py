@@ -258,9 +258,6 @@ def test_info_publishes_each_runtime_with_the_versions_a_build_accepts():
     assert runtimes["python"]["versions"] == ["3.11", "3.12"]
     assert runtimes["python"]["defaultVersion"] == "3.12"
     assert runtimes["node"]["versions"] == ["18", "20", "22"]
-    # a runtime with no kpack Builder is advertised but flagged, so a UI can stop
-    # a create that is certain to fail
-    assert runtimes["python"]["buildable"] is True
 
 
 def test_info_publishes_the_status_and_error_vocabularies():

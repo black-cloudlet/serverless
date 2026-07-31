@@ -95,7 +95,6 @@ async def get_function_info(
                 name=spec.name,
                 versions=spec.versions,
                 defaultVersion=spec.defaultVersion,
-                buildable=bool(spec.builder),
             )
             for spec in runtimes.specs
         ],

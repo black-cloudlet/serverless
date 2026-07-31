@@ -17,14 +17,11 @@ class RuntimeCapability(BaseModel):
         name: The value to send as ``runtime``.
         versions: Selectable language versions; empty when the runtime pins one.
         defaultVersion: Applied when the caller picks none.
-        buildable: False when the runtime maps to no kpack Builder, so a UI can
-            show it without offering a create that is certain to fail.
     """
 
     name: str
     versions: list[str] = []
     defaultVersion: str | None = None
-    buildable: bool = True
 
 
 class ErrorCode(BaseModel):
