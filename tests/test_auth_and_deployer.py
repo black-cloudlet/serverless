@@ -2503,13 +2503,31 @@ async def test_container_service_logs_delegates_to_engine():
 # --- runtime validation against the registry (config-driven) ---------------
 
 
-def _function_service_with_runtimes(names):
+def _function_service_with_runtimes(names, builder="python"):
     from api.services.function import FunctionService
     from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
-    registry = RuntimeRegistry([RuntimeSpec(name=n) for n in names])
+    # `builder` is what makes a runtime buildable; pass None for one that is
+    # advertised but unusable (the shape of an unmounted runtimes ConfigMap).
+    registry = RuntimeRegistry([RuntimeSpec(name=n, builder=builder) for n in names])
     return FunctionService(engine, registry)
+
+
+async def test_function_accept_rejects_a_runtime_with_no_builder():
+    """An unmounted runtimes ConfigMap must 400 now, not fail the deploy later."""
+    from starlette.background import BackgroundTasks
+
+    from api.auth.claims import Principal
+    from api.models.function import FunctionCreate
+    from common.errors import ValidationError
+
+    fsvc = _function_service_with_runtimes(["python"], builder=None)
+    user = Principal(subject="u", username="alice", groups=["team"])
+    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="python")
+
+    with pytest.raises(ValidationError, match="not buildable"):
+        await fsvc.accept("team", spec, user, BackgroundTasks())
 
 
 async def test_function_accept_rejects_unknown_runtime():

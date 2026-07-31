@@ -1,8 +1,9 @@
 """The build contract shared by the API (client) and the builder service.
 
 Both sides import these types, so the request/response shape can't drift between
-the caller and the builder. The concrete build backend (func/buildpacks, a
-Tekton pipeline, a remote builder microservice) implements :class:`Builder`.
+the caller and the builder. :class:`Builder` is implemented today by the
+in-process ``KpackBuilder``; a remote builder microservice would implement the
+same protocol with no change to callers.
 """
 
 from __future__ import annotations

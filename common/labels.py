@@ -1,8 +1,8 @@
 """Ownership labels stamped on every managed resource (shared by all services).
 
 The label *keys* and the ``managed-by`` value are the platform's identity
-convention: the API stamps them on workloads and their derived objects, and a
-future builder service stamps them on its build resources, so everything the
+convention: the API stamps them on every workload and on everything derived from
+it - config Secrets, the DomainMapping, the kpack build objects - so anything the
 platform creates is attributable and selectable the same way.
 """
 

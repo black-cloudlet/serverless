@@ -624,9 +624,11 @@ flowchart LR
 - Each is stored as a **scoped, labeled Kubernetes Secret** owned by the tenant group, in
   the workload namespace of both sites, and **garbage-collected with the workload** (via the
   KSVC `ownerReference`):
-  - `gitToken` → an Opaque **`{workload}-git`** Secret. Used for the build clone and kept so
-    a later edit can rebuild (on a `gitRepo`/`branch`/`runtime` change) **without the client
-    re-supplying it**; sending `gitToken` again rotates it.
+  - `gitToken` → a `kubernetes.io/basic-auth` **`{workload}-git`** Secret, annotated
+    `kpack.io/git` so kpack clones with it, and read back by the API so a later edit can
+    rebuild (on a `gitRepo`/`branch`/`runtime` change) **without the client re-supplying
+    it**; sending `gitToken` again rotates it. One Secret serves both readers - see
+    BUILD-PIPELINE.md §6.
   - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the
     KSVC. Registry creds mirror a secret env var — the username is the identifier, the token
     the value: **username + token** sets/rotates; **username only** (token null) keeps, but it
@@ -1146,7 +1148,7 @@ Serverless/
 ├── common/                          # shared by api + (future) builder service
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
-│   ├── contract.py                  # BuildRequest/BuildResult/Builder — the API↔builder contract
+│   ├── contract.py                  # BuildRequest/BuildPlan/BuildStatus/Builder — the API↔builder contract
 │   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
 │   ├── labels.py                    # ownership label keys + workload_labels
 │   ├── errors.py                    # error envelope, typed errors, exception handlers

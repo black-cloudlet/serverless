@@ -247,6 +247,17 @@ runtimes:
       - { name: npm_config_registry, value: "https://artifactory.internal/artifactory/api/npm/npm/" }
 ```
 
+**The runtimes file is the contract.** `RuntimeSpec` declares every key the builder
+reads - `builder`, `versionEnv`, `defaultVersion`, `versions`, `buildEnv`,
+`buildResources` - and keeps unknown keys, so a newer chart can be rolled out ahead of the
+API. Numbers are coerced to strings, because an unquoted `defaultVersion: 3.12` is a float
+in YAML and rejecting it would take down every runtime over a missing pair of quotes.
+
+If the ConfigMap is not mounted the API falls back to name-only defaults, which name no
+Builder. That is deliberately a **loud** failure: the fallback is logged as a warning, and
+a create is rejected with `400 runtime 'python' is not buildable` before the 202 - not
+minutes later as a failed background deploy that reads like a broken build.
+
 **Coupling warning.** Axis 2 is bounded by axis 1: a pinned buildpackage only *contains*
 certain interpreter versions, and in an airgapped cluster there is no fallback download.
 Whenever `build.store.sources[].version` is bumped, re-check that every advertised

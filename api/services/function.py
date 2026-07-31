@@ -9,7 +9,7 @@ from api.services import describe as describe_svc
 from api.services.runtimes import RuntimeRegistry, get_runtimes
 from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
 from common.contract import BuildPlan, BuildRequest
-from common.errors import ServiceUnavailableError, ValidationError
+from common.errors import ValidationError
 from common.labels import workload_labels
 
 
@@ -28,18 +28,29 @@ class FunctionService:
         self._runtimes = runtimes or get_runtimes()
 
     def _assert_runtime(self, runtime: str) -> None:
-        """Reject a runtime not in the registry (synchronous 400, before accept).
+        """Reject a runtime that is unknown or unbuildable (400, before the 202).
+
+        Checking that it maps to a Builder - not just that it exists - is what
+        turns a mounted-ConfigMap problem into an immediate, accurate 400. Left
+        to the build path it would surface minutes later as a failed background
+        deploy, which reads like a broken build rather than broken configuration.
 
         Args:
             runtime: The requested runtime.
 
         Raises:
-            ValidationError: If ``runtime`` isn't an available runtime.
+            ValidationError: If ``runtime`` isn't available, or names no Builder.
         """
-        if not self._runtimes.has(runtime):
-            available = ", ".join(self._runtimes.names())
+        spec = self._runtimes.get(runtime)
+        if spec is None:
+            available = ", ".join(self._runtimes.names()) or "none configured"
             raise ValidationError(
                 f"unsupported runtime '{runtime}'; available runtimes: {available}"
+            )
+        if not spec.builder:
+            raise ValidationError(
+                f"runtime '{runtime}' is not buildable: it maps to no kpack Builder. "
+                "The runtimes ConfigMap is missing or incomplete."
             )
 
     def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
@@ -55,16 +66,10 @@ class FunctionService:
 
         Returns:
             The build plan.
-
-        Raises:
-            ServiceUnavailableError: If no build backend is wired.
         """
         oname = object_name(req.name, req.group)
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
-        try:
-            return self._engine.builder.plan(req, labels)
-        except NotImplementedError as exc:
-            raise ServiceUnavailableError(str(exc)) from exc
+        return self._engine.builder.plan(req, labels)
 
     # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
     # run the build+deploy in the background and return 202 Accepted with a

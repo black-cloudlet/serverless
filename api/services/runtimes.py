@@ -111,7 +111,14 @@ def load_runtimes(path: str) -> RuntimeRegistry:
     try:
         raw = yaml.safe_load(Path(path).read_text()) or {}
     except FileNotFoundError:
-        logger.info("runtimes file %s not found; using built-in defaults", path)
+        # Expected only in local dev and tests. In a deployment the chart always
+        # mounts the ConfigMap, so reaching this means the mount is broken - and
+        # the defaults name no Builder, so every function create will 400.
+        logger.warning(
+            "runtimes file %s not found; falling back to name-only defaults, "
+            "which cannot build - check the runtimes ConfigMap mount",
+            path,
+        )
         raw = {}
     items = raw.get("runtimes") or []
     specs = [RuntimeSpec(**item) for item in items]
