@@ -7,6 +7,53 @@ from pydantic import BaseModel
 from api.models.common import ScalingCapabilities
 
 
+class RuntimeCapability(BaseModel):
+    """One runtime a function may be built with, and the versions it offers.
+
+    Projected from the runtimes ConfigMap the builder reads, so the advertised
+    versions are the ones a build will actually accept.
+
+    Attributes:
+        name: The value to send as ``runtime``.
+        versions: Selectable language versions; empty when the runtime pins one.
+        defaultVersion: Applied when the caller picks none.
+        buildable: False when the runtime maps to no kpack Builder, so a UI can
+            show it without offering a create that is certain to fail.
+    """
+
+    name: str
+    versions: list[str] = []
+    defaultVersion: str | None = None
+    buildable: bool = True
+
+
+class ErrorCode(BaseModel):
+    """One machine-readable error code and the HTTP status carrying it.
+
+    Attributes:
+        code: The ``error.code`` value in the envelope.
+        status: The HTTP status it is returned with.
+    """
+
+    code: str
+    status: int
+
+
+class StatusVocabulary(BaseModel):
+    """The status strings a client can receive, so none has to be hardcoded.
+
+    Attributes:
+        workload: Values of ``overallStatus`` - what a poller switches on.
+        site: Values of a per-site ``status`` inside ``sites[]``.
+        terminal: The subset of ``workload`` that a poller should stop on;
+            anything else is still in flight.
+    """
+
+    workload: list[str]
+    site: list[str]
+    terminal: list[str]
+
+
 class PortCapability(BaseModel):
     """The container port field's rules, so a UI can render/validate it.
 
@@ -36,6 +83,8 @@ class BaseInfo(BaseModel):
         defaultHostTemplate: How the default host is composed from a workload's
             name/group and ``routeDomain`` (e.g. ``{name}-{group}.{routeDomain}``),
             so the UI can preview it without hardcoding the rule.
+        statuses: The status strings a response can carry.
+        errorCodes: Every ``error.code`` an error envelope can carry.
     """
 
     version: str
@@ -44,6 +93,8 @@ class BaseInfo(BaseModel):
     scaling: ScalingCapabilities
     routeDomain: str
     defaultHostTemplate: str
+    statuses: StatusVocabulary
+    errorCodes: list[ErrorCode]
 
 
 class ContainerInfoResponse(BaseInfo):
@@ -60,7 +111,8 @@ class FunctionInfoResponse(BaseInfo):
     """Capabilities for creating a function (build-from-source).
 
     Attributes:
-        runtimes: The runtimes a function may be built with.
+        runtimes: The runtimes a function may be built with, each with its
+            selectable versions.
     """
 
-    runtimes: list[str]
+    runtimes: list[RuntimeCapability]

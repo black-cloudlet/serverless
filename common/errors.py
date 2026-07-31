@@ -79,3 +79,25 @@ class ServiceUnavailableError(APIError):
 
     status_code = 503
     code = "SERVICE_UNAVAILABLE"
+
+
+def error_catalog() -> list[tuple[str, int]]:
+    """Every ``(code, status)`` an error envelope can carry, sorted by status.
+
+    Walked off the subclasses rather than listed, so an error added here is
+    published without a second edit - a hand-kept list is exactly what goes
+    stale. Framework HTTP errors (404 on an unknown route, 405) are not here:
+    they derive their code from the status in :mod:`common.web`.
+
+    Returns:
+        ``(code, status_code)`` pairs, deduplicated.
+    """
+    seen: dict[str, int] = {}
+
+    def walk(cls: type[APIError]) -> None:
+        for sub in cls.__subclasses__():
+            seen[sub.code] = sub.status_code
+            walk(sub)
+
+    walk(APIError)
+    return sorted(seen.items(), key=lambda pair: (pair[1], pair[0]))

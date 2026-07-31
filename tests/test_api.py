@@ -162,7 +162,7 @@ def test_info_is_public_and_static():
 
     # function-only: the available runtimes
     fn = c.get("/api/v1/functions/info").json()
-    assert "python" in fn["runtimes"]
+    assert "python" in [r["name"] for r in fn["runtimes"]]
     assert "port" not in fn
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
@@ -244,6 +244,65 @@ def test_create_container_validation_error(client):
     err = r.json()["error"]
     assert err["code"] == "VALIDATION_ERROR"
     assert err["status"] == 400  # the numeric status is in the envelope too
+
+
+def test_info_publishes_each_runtime_with_the_versions_a_build_accepts():
+    """A version picker cannot be built from names alone.
+
+    The versions come from the same ConfigMap the builder reads, so what is
+    advertised is what a build will accept.
+    """
+    c = TestClient(create_app())
+    runtimes = {r["name"]: r for r in c.get("/api/v1/functions/info").json()["runtimes"]}
+
+    assert runtimes["python"]["versions"] == ["3.11", "3.12"]
+    assert runtimes["python"]["defaultVersion"] == "3.12"
+    assert runtimes["node"]["versions"] == ["18", "20", "22"]
+    # a runtime with no kpack Builder is advertised but flagged, so a UI can stop
+    # a create that is certain to fail
+    assert runtimes["python"]["buildable"] is True
+
+
+def test_info_publishes_the_status_and_error_vocabularies():
+    """Everything a client would otherwise hardcode and let drift."""
+    from typing import get_args
+
+    from api.models.common import SITE_STATUSES, WorkloadStatus
+    from common.errors import ValidationError, error_catalog
+
+    body = TestClient(create_app()).get("/api/v1/containers/info").json()
+
+    # derived from the Literal the responses are typed with, not a second list
+    assert body["statuses"]["workload"] == list(get_args(WorkloadStatus))
+    assert body["statuses"]["site"] == list(SITE_STATUSES)
+    # a poller needs to know which values mean "stop"
+    assert set(body["statuses"]["terminal"]) < set(body["statuses"]["workload"])
+    assert "Building" not in body["statuses"]["terminal"]
+
+    codes = {e["code"]: e["status"] for e in body["errorCodes"]}
+    assert codes[ValidationError.code] == ValidationError.status_code
+    assert len(codes) == len(error_catalog())
+
+
+def test_the_error_catalog_is_walked_off_the_exception_classes():
+    """A hand-kept list is what goes stale, so a new error must publish itself."""
+    import gc
+
+    from common.errors import APIError, error_catalog
+
+    class TeapotError(APIError):
+        status_code = 418
+        code = "TEAPOT"
+
+    try:
+        assert ("TEAPOT", 418) in error_catalog()
+    finally:
+        # __subclasses__ holds weak references, so dropping the class and
+        # collecting keeps this test out of every later catalog.
+        del TeapotError
+        gc.collect()
+
+    assert "TEAPOT" not in dict(error_catalog())
 
 
 def test_framework_http_errors_get_a_meaningful_code_and_status(client):

@@ -608,8 +608,14 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; the **stored** `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); a **different** username with no token is a `400`; **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
-| `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
-| `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes`. Config/code-derived, no cluster calls. |
+| `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
+| `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions`, `defaultVersion` and `buildable`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
+
+`statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
+`overallStatus` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
+sent), `statuses.site` the per-site set, and `statuses.terminal` the subset a poller stops on - anything
+else is still in flight. `errorCodes` is walked off the `APIError` subclasses, so an error added in code
+is published without a second edit.
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
 > Workload secrets and config files are **not** separate endpoints - they are derived

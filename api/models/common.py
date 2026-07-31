@@ -74,6 +74,16 @@ _METRIC_UNITS = {
 # request-only so the workload is never throttled.
 WorkloadSize = Literal["small", "medium", "large"]
 
+# The rollup a client polls on. A Literal, not a comment, so it is enforced on
+# every response and /info can advertise it instead of a portal hardcoding it.
+WorkloadStatus = Literal[
+    "Pending", "Building", "Deploying", "Ready", "Degraded", "Terminating"
+]
+# Per-site values that reach a response. SiteStatus is also the return type of the
+# internal host/absence probes (Available, Absent, ...), so the field itself stays
+# a plain str and only the client-facing set is published.
+SITE_STATUSES = ("Ready", "Deploying", "Failed", "Terminating", "Timeout")
+
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
 _SCALE_DOWN_DELAY_MAX_SECONDS = 3600  # Knative maximum
@@ -319,7 +329,7 @@ class WorkloadBase(BaseModel):
     group: str  # the owning SSO group
     type: Literal["function", "container"]
     hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
-    overallStatus: str  # Pending | Ready | Deploying | Degraded | Terminating
+    overallStatus: WorkloadStatus
     size: str | None = None  # resource t-shirt size (uniform across sites)
     # workload creation time (metadata.creationTimestamp), in Israel local time
     createdAt: datetime | None = None
