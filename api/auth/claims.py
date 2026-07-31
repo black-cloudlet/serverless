@@ -32,8 +32,8 @@ def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
     """Build a Principal from validated OIDC token claims.
 
     Normalizes group names (strips the Keycloak "/" and ``ggd-<digits>`` prefixes,
-    folds "_" to "-") and marks the caller an admin if any group is in the
-    configured admin groups. Request-supplied groups go through the same
+    lowercases, folds "_" to "-") and marks the caller an admin if any group is in
+    the configured admin groups. Request-supplied groups go through the same
     normalization, so membership checks compare canonical forms on both sides.
 
     Args:

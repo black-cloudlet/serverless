@@ -413,7 +413,7 @@ to manage. The offering (`function`/`container`) is tracked as a **label**, not 
 **Object naming.** The OpenShift name of the workload (KSVC) and all its derived resources
 (`{workload}-env` Secret, `{workload}-files` ConfigMap/Secret, pull secret) is
 **`{name}-{group}`** - unique per tenant in the shared namespace. `{group}` here is the
-**normalized** group (§6.2), so a group written `my_team` in SSO appears as `my-team` in both
+**normalized** group (§6.2), so a group written `My_Team` in SSO appears as `my-team` in both
 the object name and the host.
 
 **Custom hostname.** A client may override the host with a `hostname` field. Because the
@@ -553,19 +553,22 @@ hop, another deployment to secure in both clusters, and a failure point. The com
   are limited to groups the caller belongs to.
 - **Group-name normalization.** A group name is canonicalized in **one place**
   (`normalize_group`), applied at both edges - to the `groups` claim from the token and to
-  the `{group}` path segment - so the two are always comparable. It strips the Keycloak path
-  prefix (`/`) and a leading `ggd-<1-4 digits>-`, then folds `_` to `-`. The last rule exists
-  because `_` is legal in a Keycloak group but **not** in the DNS-1123 object names and hosts
-  the group is interpolated into (`{name}-{group}`, `{name}-{group}.{base_domain}`); without
-  it a member of `my_team` authenticates successfully and is then rejected at every request
-  that names their own group. The DNS-1123 check runs on the **normalized** form, so a name
-  normalization can't rescue (a leading/trailing `_`, uppercase, whitespace) is still a `422`.
+  the `{group}` path segment - so the two are always comparable. In order: strip the Keycloak
+  path prefix (`/`), **lowercase**, strip a leading `ggd-<1-4 digits>-`, then fold `_` to `-`.
+  (Lowercasing precedes the prefix strip so an upper-case `GGD-1234-` is still recognized.)
+  The case and `_` rules exist because both are legal in a Keycloak group but **not** in the
+  DNS-1123 object names and hosts the group is interpolated into (`{name}-{group}`,
+  `{name}-{group}.{base_domain}`); without them a member of `My_Team` authenticates
+  successfully and is then rejected at every request that names their own group. The DNS-1123
+  check runs on the **normalized** form, so a name normalization can't rescue (a
+  leading/trailing `_`, whitespace, non-ASCII) is still a `422`.
 
-  > Consequence: `my_team` and `my-team` name the **same** platform group - the API accepts
-  > either spelling in the path, and returns and deploys the hyphenated form. If a realm ever
-  > defines both as *distinct* groups they would collapse into one tenant, so the realm must
-  > not treat `_`/`-` variants as separate groups. Configured **admin groups** are normalized
-  > the same way, so they may be written in either spelling.
+  > Consequence: `My_Team`, `my_team` and `my-team` all name the **same** platform group -
+  > the API accepts any spelling in the path, and returns and deploys the lowercase
+  > hyphenated form. If a realm ever defines two of these as *distinct* groups they would
+  > collapse into one tenant, so the realm must not treat `_`/`-` or case variants as
+  > separate groups (confirmed with the SSO team). Configured **admin groups** are normalized
+  > the same way, so they may be written in any spelling.
 
 > Isolation is enforced **in the API layer** plus label selectors. Because all tenants share
 > a namespace, the cluster RBAC for the API's service identity is namespace-wide (see §6.3);

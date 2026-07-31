@@ -363,9 +363,10 @@ def test_path_group_is_normalized_at_the_edge():
     assert seen["group"] == "platforms"  # normalized at the router boundary
 
 
-def test_path_group_accepts_underscores_and_folds_them():
-    """Either spelling of an underscored SSO group works in the path; both reach the
-    service as the canonical hyphenated form, so the two address one resource."""
+def test_path_group_accepts_underscores_and_case_and_folds_them():
+    """Any spelling of an SSO group works in the path - underscores and mixed case
+    alike reach the service as the canonical lowercase hyphenated form, so they all
+    address one resource."""
     seen = []
 
     class _Capture(FakeFunctions):
@@ -380,10 +381,10 @@ def test_path_group_accepts_underscores_and_folds_them():
     app.dependency_overrides[get_function_service] = lambda: _Capture()
     c = TestClient(app)
 
-    for path_group in ("my_team", "my-team"):
+    for path_group in ("my_team", "my-team", "My_Team", "MY-TEAM"):
         r = c.get(f"/api/v1/groups/{path_group}/functions/foo")
         assert r.status_code == 200
-    assert seen == ["my-team", "my-team"]
+    assert seen == ["my-team"] * 4
 
 
 def test_update_container_accepted(client):

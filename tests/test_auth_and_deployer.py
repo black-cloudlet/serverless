@@ -1836,6 +1836,18 @@ def test_group_underscores_fold_to_hyphens():
     assert validate_group("a_b_c") == "a-b-c"  # every separator, not just the first
 
 
+def test_group_case_is_folded_to_lower():
+    # Mixed case is legal in Keycloak but not in a DNS-1123 name/host, so the group
+    # is lowercased. Lowercasing runs before the other rules, so an upper-case
+    # ggd- prefix is still stripped and "_" in a mixed-case name is still folded.
+    from api.models.common import normalize_group, validate_group
+
+    assert validate_group("Platforms") == "platforms"
+    assert validate_group("My_Team") == "my-team"
+    assert normalize_group("/GGD-1234-My_Team") == "my-team"
+    assert normalize_group("GGD-7-TEAM-A") == "team-a"
+
+
 def test_group_still_rejected_when_normalizing_cannot_save_it():
     # Normalization is not a licence to accept anything: the DNS-1123 check runs on
     # the normalized form, so a name that is still invalid after folding is rejected.
@@ -1843,7 +1855,7 @@ def test_group_still_rejected_when_normalizing_cannot_save_it():
 
     from api.models.common import validate_group
 
-    for bad in ["_team", "team_", "My_Team", "my team", "my_team/x", "a" * 64]:
+    for bad in ["_team", "team_", "my team", "my_team/x", "a" * 64, "-team", "tëam"]:
         with _pytest.raises(ValueError):
             validate_group(bad)
 
@@ -1854,8 +1866,8 @@ def test_principal_normalizes_underscored_groups_and_admin_groups():
     from api.auth.claims import principal_from_claims
     from api.core.config import SSOConfig
 
-    cfg = SSOConfig(groups_claim="groups", admin_groups=["platform_admins"])
-    p = principal_from_claims({"sub": "u", "groups": ["/my_team", "platform_admins"]}, cfg)
+    cfg = SSOConfig(groups_claim="groups", admin_groups=["Platform_Admins"])
+    p = principal_from_claims({"sub": "u", "groups": ["/My_Team", "platform_admins"]}, cfg)
 
     assert p.groups == ["my-team", "platform-admins"]
     assert p.is_admin is True
