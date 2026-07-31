@@ -63,7 +63,7 @@ class RegistryConfig(BaseModel):
 class BuildConfig(BaseModel):
     """kpack build settings (env ``SERVERLESS_BUILD__*``, set by the Helm chart)."""
 
-    registry_secret: str = "serverless-registry-creds"
+    registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
     git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
     resources: dict = Field(default_factory=dict)
 

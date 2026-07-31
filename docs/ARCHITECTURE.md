@@ -1075,16 +1075,23 @@ Standard envelope for all non-2xx responses:
 ```json
 {
   "error": {
-    "status": 207,
-    "code": "SITE_PARTIAL_FAILURE",
-    "message": "Deployment succeeded in central but failed in south.",
+    "status": 502,
+    "code": "SITE_TOTAL_FAILURE",
+    "message": "Deployment failed in all sites.",
     "details": [
+      { "site": "central", "message": "registry auth failed" },
       { "site": "south", "message": "registry auth failed" }
     ],
     "requestId": "b1c2..."
   }
 }
 ```
+
+A **partial** failure is not an error envelope: `207` returns the normal
+workload body with `overallStatus: Degraded` and the failing site's message on
+its per-site object (see *Partial-failure semantics* above). A poller therefore
+parses one shape for `200`/`202`/`207` and only switches to the envelope on a
+genuine non-2xx.
 
 `status` is the numeric HTTP status (also on the response line); `code` is the
 machine-readable string. Framework HTTP errors that aren't domain errors (an
@@ -1107,7 +1114,6 @@ every response (success and error) and bound into the server logs, so a
 | `404` | `NOT_FOUND` | Workload not found in caller's group scope. |
 | `405` | `METHOD_NOT_ALLOWED` | Path exists but not for that HTTP method. |
 | `409` | `CONFLICT` | Name already exists for the group, or the requested `hostname` is already assigned. |
-| `207` | `SITE_PARTIAL_FAILURE` | One site failed (Degraded). |
 | `502` | `SITE_TOTAL_FAILURE` | Both sites failed. |
 | `500` | `INTERNAL` | Unexpected error. |
 

@@ -67,13 +67,6 @@ class ConflictError(APIError):
     code = "CONFLICT"
 
 
-class SitePartialFailure(APIError):
-    """One site failed; the deployment is Degraded."""
-
-    status_code = 207
-    code = "SITE_PARTIAL_FAILURE"
-
-
 class SiteTotalFailure(APIError):
     """All sites failed."""
 

@@ -1,8 +1,6 @@
 global:
-  clusterName: example
   baseDomain: example.com
   site: example
-  env: example
 
 name: serverless-api
 

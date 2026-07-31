@@ -8,7 +8,7 @@ HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable
+from typing import Callable
 
 from api.core.config import Settings
 from api.models.common import SiteStatus
@@ -246,7 +246,3 @@ def status_code_for(overall: str, created: bool) -> int:
     if overall in ("Deploying", "Building"):
         return 202  # accepted, still in flight - a non-terminal poll state
     return 201 if created else 200
-
-
-# Convenience for routers/tests wanting a fanout helper signature.
-FanoutFn = Callable[[list[Cluster], SiteFn], Awaitable[list[SiteStatus]]]
