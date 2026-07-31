@@ -24,6 +24,24 @@ class RuntimeCapability(BaseModel):
     defaultVersion: str | None = None
 
 
+class NamingRule(BaseModel):
+    """The limit on ``name`` and ``group`` *together*.
+
+    No per-field schema can express this: the halves are validated separately
+    and each may be 63 characters, but it is their join that becomes the KSVC
+    name and the first DNS label. ``group`` is a path parameter besides, so it
+    is not even in the body being validated. Published so a form can catch the
+    pair before submitting, instead of the API rejecting it at the edge.
+
+    Attributes:
+        template: How the object name is composed.
+        maxLength: Longest permitted result, in characters.
+    """
+
+    template: str
+    maxLength: int
+
+
 class ErrorCode(BaseModel):
     """One machine-readable error code and the HTTP status carrying it.
 
@@ -82,6 +100,7 @@ class BaseInfo(BaseModel):
             so the UI can preview it without hardcoding the rule.
         statuses: The status strings a response can carry.
         errorCodes: Every ``error.code`` an error envelope can carry.
+        naming: The combined limit on name and group.
     """
 
     version: str
@@ -92,6 +111,7 @@ class BaseInfo(BaseModel):
     defaultHostTemplate: str
     statuses: StatusVocabulary
     errorCodes: list[ErrorCode]
+    naming: NamingRule
 
 
 class ContainerInfoResponse(BaseInfo):

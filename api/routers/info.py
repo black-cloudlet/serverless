@@ -15,6 +15,7 @@ from api.models.info import (
     ContainerInfoResponse,
     ErrorCode,
     FunctionInfoResponse,
+    NamingRule,
     PortCapability,
     RuntimeCapability,
     StatusVocabulary,
@@ -22,6 +23,7 @@ from api.models.info import (
 from api.services import route as route_svc
 from api.services.ksvc import workload_sizes
 from common.errors import error_catalog
+from common.names import MAX_OBJECT_NAME, object_name
 
 router = APIRouter(prefix="/api/v1", tags=["info"])
 
@@ -45,6 +47,9 @@ def _base(settings: Settings) -> dict:
             terminal=list(TERMINAL_STATUSES),
         ),
         errorCodes=[ErrorCode(code=c, status=s) for c, s in error_catalog()],
+        naming=NamingRule(
+            template=object_name("{name}", "{group}"), maxLength=MAX_OBJECT_NAME
+        ),
     )
 
 

@@ -15,7 +15,7 @@ import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator
+from pydantic import AfterValidator, WithJsonSchema
 
 # DNS-1123 label: lowercase alphanumeric and '-', not starting or ending with '-'.
 DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
@@ -298,11 +298,84 @@ def image_tag(branch: str) -> str:
     return tag
 
 
+def _schema(description: str, example: str, **fields) -> WithJsonSchema:
+    """Describe a validated string for OpenAPI, without constraining it.
+
+    ``WithJsonSchema`` documents; it does not validate. That is the point: a real
+    ``pattern`` runs BEFORE the AfterValidator, so it would reject "My_Team"
+    before :func:`normalize_group` could canonicalise it, and "/src" before
+    :func:`validate_source_path` could strip it. The validator stays the only
+    authority; this is what a client generates code from.
+
+    Args:
+        description: What the field means, shown in the generated client.
+        example: A value that passes.
+        **fields: Extra JSON Schema keys (``pattern``, ``maxLength``, ...).
+
+    Returns:
+        The schema annotation to add to an ``Annotated`` chain.
+    """
+    return WithJsonSchema(
+        {"type": "string", "description": description, "examples": [example], **fields}
+    )
+
+
 # Shared by request models, query params and the build contract. The group
-# validator also NORMALIZES, so nothing downstream re-normalizes.
-Name = Annotated[str, AfterValidator(validate_name)]
-Group = Annotated[str, AfterValidator(validate_group)]
-Hostname = Annotated[str, AfterValidator(validate_hostname)]
-Branch = Annotated[str, AfterValidator(validate_branch)]
-GitUrl = Annotated[str, AfterValidator(validate_git_url)]
-SourcePath = Annotated[str, AfterValidator(validate_source_path)]
+# validator also NORMALIZES, so nothing downstream re-normalizes. Each carries a
+# JSON Schema so /openapi.json publishes the rule instead of a bare "string";
+# the patterns come from the same regexes the validators use.
+Name = Annotated[
+    str,
+    AfterValidator(validate_name),
+    _schema(
+        "DNS-1123 label: lowercase alphanumeric and '-'.",
+        "image-resizer",
+        pattern=DNS1123.pattern,
+        maxLength=63,
+    ),
+]
+Group = Annotated[
+    str,
+    AfterValidator(validate_group),
+    _schema(
+        "Owning SSO group. Normalized before validation: a 'ggd-<digits>-' prefix "
+        "is stripped, '_' becomes '-', and the name is lowercased.",
+        "payments",
+        maxLength=63,
+    ),
+]
+Hostname = Annotated[
+    str,
+    AfterValidator(validate_hostname),
+    _schema(
+        "Custom host: one DNS-1123 label, or a lowercase FQDN one label under the "
+        "platform route domain.",
+        "checkout",
+        maxLength=253,
+    ),
+]
+Branch = Annotated[
+    str,
+    AfterValidator(validate_branch),
+    _schema("Git branch or ref to build.", "main", maxLength=255),
+]
+GitUrl = Annotated[
+    str,
+    AfterValidator(validate_git_url),
+    _schema(
+        "Repository URL. http(s) only, with no embedded credentials - the token "
+        "goes in gitToken.",
+        "https://git.internal/payments/hello.git",
+        pattern=r"^https?://",
+    ),
+]
+SourcePath = Annotated[
+    str,
+    AfterValidator(validate_source_path),
+    _schema(
+        "Directory inside the repository holding the application; empty builds "
+        "the repository root. Surrounding '/' are stripped and '..' is rejected.",
+        "services/api",
+        maxLength=255,
+    ),
+]

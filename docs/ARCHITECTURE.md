@@ -615,7 +615,11 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 `overallStatus` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
 sent), `statuses.site` the per-site set, and `statuses.terminal` the subset a poller stops on - anything
 else is still in flight. `errorCodes` is walked off the `APIError` subclasses, so an error added in code
-is published without a second edit.
+is published without a second edit. `naming` carries the one rule no per-field schema can
+express: `name` and `group` are each valid at 63 characters, but it is `{name}-{group}` that
+becomes the KSVC name and the first DNS label, and `group` is a path parameter rather than a
+body field. The per-field rules themselves (pattern, maxLength, description, examples) are on
+`/openapi.json`, so a generated client validates them without a second copy.
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
 > Workload secrets and config files are **not** separate endpoints - they are derived

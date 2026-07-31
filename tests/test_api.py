@@ -281,6 +281,25 @@ def test_info_publishes_the_status_and_error_vocabularies():
     assert len(codes) == len(error_catalog())
 
 
+def test_info_publishes_the_combined_name_and_group_limit():
+    """No per-field schema can carry this, so /info has to.
+
+    Each half may be 63 characters on its own; it is the join that becomes the
+    KSVC name. A form validating the fields separately would accept a pair the
+    API rejects, so the rule is published for the client to apply.
+    """
+    from common.names import MAX_OBJECT_NAME, object_name
+
+    naming = TestClient(create_app()).get("/api/v1/containers/info").json()["naming"]
+
+    # composed by the same function the platform names objects with
+    assert naming["template"] == object_name("{name}", "{group}")
+    assert naming["maxLength"] == MAX_OBJECT_NAME
+    # the pair the rule exists to catch: both halves legal, the join is not
+    assert len("n" * 40) <= 63 and len("g" * 40) <= 63
+    assert len(object_name("n" * 40, "g" * 40)) > naming["maxLength"]
+
+
 def test_the_error_catalog_is_walked_off_the_exception_classes():
     """A hand-kept list is what goes stale, so a new error must publish itself."""
     import gc
