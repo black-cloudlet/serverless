@@ -1075,22 +1075,36 @@ class WorkloadService:
         )
 
     def _build_status(self, name: str, group: str) -> BuildStatusView | None:
-        """The function's build state from the LOCAL site, or None if it has no build.
+        """The function's build state, or None if it has no build anywhere.
 
-        Local-only on purpose: each site builds its own image (§9), so another
-        site's build says nothing about this one, and a cross-site fan-out would
-        add latency to every GET for a value that is per-site anyway.
+        Only one site builds (§9.1), and it is the local one only when the local
+        site is among the function's targets - apply_workload falls back to the
+        first target otherwise. So the local site is where to look FIRST, not the
+        only place: a function deployed to sites that exclude this one keeps its
+        Image elsewhere, and stopping at the local site would report no build at
+        all, making a normal first build read as Degraded.
+
+        The common case still costs one call. The fan-out runs only when the
+        local site has no Image, which is exactly when the answer is not there.
 
         Args:
             name: The workload name.
             group: The owning group.
 
         Returns:
-            The build status, or None when there is no Image here or the build
+            The build status, or None when no site has an Image or the build
             backend cannot be read - never an error, since a function whose
             image already exists must still report its KSVC status.
         """
-        status = self.builder.status(self.deployer.local_cluster(), name, group)
+        local = self.deployer.local_cluster()
+        status = self.builder.status(local, name, group)
+        if status is None:
+            for cluster in self.deployer.resolve_targets(None):
+                if cluster.site == local.site:
+                    continue
+                status = self.builder.status(cluster, name, group)
+                if status is not None:
+                    break
         if status is None:
             return None
         return BuildStatusView(state=status.state, image=status.image, message=status.message)

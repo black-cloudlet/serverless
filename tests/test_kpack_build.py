@@ -388,6 +388,19 @@ class _RecordingBuilder:
         return BuildStatus(state=self._state) if self._state else None
 
 
+class _SiteAwareBuilder(_RecordingBuilder):
+    """Reports a build only on the site that holds the Image, as a cluster does."""
+
+    def __init__(self, built_on: str, state: str):
+        super().__init__(state)
+        self._built_on = built_on
+
+    def status(self, cluster, name, group):
+        from common.contract import BuildStatus
+
+        return BuildStatus(state=self._state) if cluster.site == self._built_on else None
+
+
 def _principal():
     from api.auth.claims import Principal
 
@@ -487,6 +500,53 @@ async def test_a_site_set_excluding_the_local_one_still_builds_somewhere():
     # pointing at a tag that nothing ever builds
     assert _applied_kind(local, "Service") == []
     assert len(_applied_kind(remote, "Image")) == 1
+
+
+def test_build_status_is_read_from_the_site_that_built_not_always_the_local_one():
+    """The read has to look where the write put the Image.
+
+    apply_workload builds on the local site only when it is a target, and falls
+    back to the first target otherwise. A read fixed on the local site therefore
+    finds no Image for such a function and folds in no build state at all - so a
+    normal first build reports Degraded, the exact reading _with_build_status
+    exists to prevent.
+    """
+    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+
+    local = _ApplyCluster("site-a", {})
+    remote = _ApplyCluster("site-b", {})
+    svc = _workload_service(
+        {"site-a": local, "site-b": remote},
+        builder=_SiteAwareBuilder(built_on="site-b", state="Building"),
+        local_site="site-a",
+    )
+
+    view = svc._build_status("hello", "payments")
+    assert view is not None, "no build state found: the read only looked at the local site"
+    assert view.state == "Building"
+
+
+def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
+    """The fallback must not cost every GET an extra cross-site call."""
+    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+
+    seen = []
+
+    class _Counting(_RecordingBuilder):
+        def status(self, cluster, name, group):
+            from common.contract import BuildStatus
+
+            seen.append(cluster.site)
+            return BuildStatus(state="Ready")
+
+    svc = _workload_service(
+        {"site-a": _ApplyCluster("site-a", {}), "site-b": _ApplyCluster("site-b", {})},
+        builder=_Counting(),
+        local_site="site-a",
+    )
+
+    assert svc._build_status("hello", "payments").state == "Ready"
+    assert seen == ["site-a"]
 
 
 async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment():
