@@ -65,6 +65,10 @@ HOSTNAME = re.compile(
 # Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
 # "ggd-1234-platforms" is the group "platforms").
 _GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
+# SSO group names may use "_" as a word separator, which is legal in Keycloak but
+# not in the DNS-1123 names/hosts the group ends up in ({name}-{group} and
+# {name}-{group}.{route_domain}). Folded to "-" so such a group is usable.
+_UNDERSCORE = str.maketrans({"_": "-"})
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -73,11 +77,13 @@ _SCALE_DOWN_DELAY_MAX = "1h"
 
 
 def normalize_group(group: str) -> str:
-    """Normalize a group name to its bare form.
+    """Normalize a group name to its bare, DNS-safe form.
 
     Strips the Keycloak path prefix ("/") and a leading ``ggd-<1-4 digits>-``
-    prefix, so e.g. "/ggd-1234-platforms" and "platforms" name the same group.
-    Applied both to groups from the OIDC token and to a request-supplied group.
+    prefix, then folds "_" to "-", so e.g. "/ggd-1234-platforms" and "platforms",
+    or "my_team" and "my-team", each name the same group. Applied both to groups
+    from the OIDC token and to a request-supplied group, so the two always agree
+    and membership checks compare like with like.
 
     Args:
         group: The raw group name.
@@ -85,7 +91,7 @@ def normalize_group(group: str) -> str:
     Returns:
         The normalized group name.
     """
-    return _GGD_PREFIX.sub("", group.lstrip("/"))
+    return _GGD_PREFIX.sub("", group.lstrip("/")).translate(_UNDERSCORE)
 
 
 def validate_name(name: str) -> str:
@@ -110,19 +116,24 @@ def validate_name(name: str) -> str:
 def validate_group(group: str) -> str:
     """Normalize and validate a group name as a DNS-1123 label.
 
+    Normalization runs first, so a ``ggd-<digits>-`` prefix and "_" separators are
+    accepted on input; the check applies to the normalized form.
+
     Args:
-        group: The candidate group name (a ``ggd-<digits>-`` prefix is stripped).
+        group: The candidate group name.
 
     Returns:
         The normalized group name.
 
     Raises:
-        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
+        ValueError: If the normalized form isn't a DNS-1123 label of at most 63
+            characters.
     """
     group = normalize_group(group)
     if not DNS1123.match(group) or len(group) > 63:
         raise ValueError(
-            "group must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
+            "group must be a DNS-1123 label (lowercase alphanumeric, '-' or '_', "
+            "<=63 chars); '_' is normalized to '-'"
         )
     return group
 
@@ -149,9 +160,9 @@ def validate_hostname(host: str) -> str:
 
 
 # Validated string types shared by request models and query params. The group
-# validator also NORMALIZES ("/ggd-1234-team" -> "team"), so every group entering
-# the app is already in bare, canonical form at the edge - nothing downstream
-# re-normalizes.
+# validator also NORMALIZES ("/ggd-1234-team" -> "team", "my_team" -> "my-team"),
+# so every group entering the app is already in bare, canonical form at the edge -
+# nothing downstream re-normalizes.
 Name = Annotated[str, AfterValidator(validate_name)]
 Group = Annotated[str, AfterValidator(validate_group)]
 Hostname = Annotated[str, AfterValidator(validate_hostname)]

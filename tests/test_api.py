@@ -363,6 +363,29 @@ def test_path_group_is_normalized_at_the_edge():
     assert seen["group"] == "platforms"  # normalized at the router boundary
 
 
+def test_path_group_accepts_underscores_and_folds_them():
+    """Either spelling of an underscored SSO group works in the path; both reach the
+    service as the canonical hyphenated form, so the two address one resource."""
+    seen = []
+
+    class _Capture(FakeFunctions):
+        async def get(self, name, group, user):
+            seen.append(group)
+            return _ready("function", name, runtime="python")
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: Principal(
+        subject="u", username="alice", groups=["my-team"], is_admin=False
+    )
+    app.dependency_overrides[get_function_service] = lambda: _Capture()
+    c = TestClient(app)
+
+    for path_group in ("my_team", "my-team"):
+        r = c.get(f"/api/v1/groups/{path_group}/functions/foo")
+        assert r.status_code == 200
+    assert seen == ["my-team", "my-team"]
+
+
 def test_update_container_accepted(client):
     r = client.put(
         "/api/v1/groups/team/containers/orders-api",
