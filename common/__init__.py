@@ -8,7 +8,7 @@ The modules are layered by what they may depend on, heaviest last.
 ``tests/test_layering.py`` enforces it, so an import that breaks the split fails
 a test rather than being discovered by whoever writes the second service:
 
-    1. domain      names, labels, errors, config, contract
+    1. domain      names, labels, errors, config, contract, kpack
                    plain Python plus pydantic. No FastAPI, no kubernetes.
     2. cluster     cluster
                    adds the kubernetes client. A service that reaches a cluster

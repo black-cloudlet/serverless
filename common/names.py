@@ -143,6 +143,25 @@ def validate_branch(branch: str) -> str:
     return branch
 
 
+def object_name(name: str, group: str) -> str:
+    """The cluster name of a workload and everything derived from it.
+
+    ``{name}-{group}`` is the platform's primary key: the KSVC, its config
+    Secrets, its git Secret and its kpack Image all hang off it, and a service
+    that starts from an Image has to be able to get back to the KSVC. It lives
+    here so the rule is written once - it was previously a helper in the
+    workloads engine plus two inline copies in the builder.
+
+    Args:
+        name: The workload name.
+        group: The owning group.
+
+    Returns:
+        The derived object name.
+    """
+    return f"{name}-{group}"
+
+
 def image_tag(branch: str) -> str:
     """Reduce a branch name to a legal OCI tag.
 

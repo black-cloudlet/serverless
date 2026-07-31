@@ -1149,6 +1149,8 @@ Serverless/
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
 │   ├── contract.py                  # BuildRequest/BuildPlan/BuildStatus/Builder — the API↔builder contract
+│   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the builder)
+│   ├── names.py                     # name/branch rules + object_name — the {name}-{group} primary key
 │   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
 │   ├── labels.py                    # ownership label keys + workload_labels
 │   ├── errors.py                    # error envelope, typed errors, exception handlers

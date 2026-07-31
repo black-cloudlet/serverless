@@ -61,6 +61,7 @@ from common.errors import (
     ValidationError,
 )
 from common.logging import get_logger
+from common.names import object_name
 
 logger = get_logger(__name__)
 
@@ -72,11 +73,6 @@ OFFERING_CONTAINER = "container"
 # winter) is applied automatically; `tzdata` is a dependency so this resolves in
 # slim containers that ship no system zoneinfo.
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
-
-
-def object_name(name: str, group: str) -> str:
-    """The OpenShift name of a workload and its derived resources: {name}-{group}."""
-    return f"{name}-{group}"
 
 
 def _with_build_status(overall: str, build: "BuildStatusView | None") -> str:

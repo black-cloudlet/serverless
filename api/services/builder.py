@@ -19,14 +19,15 @@ through :meth:`KpackBuilder.status` - the reason a just-created function reports
 
 from __future__ import annotations
 
-from api.services import kpack
 from api.services import secrets as secret_svc
 from api.services.runtimes import RuntimeRegistry
+from common import kpack
 from common.cluster import Cluster, ResourceKind
 from common.config import CommonSettings
 from common.contract import BuildPlan, BuildRequest, BuildStatus, image_reference
 from common.errors import NotFoundError, ValidationError
 from common.logging import get_logger
+from common.names import object_name
 
 logger = get_logger(__name__)
 
@@ -128,10 +129,10 @@ class KpackBuilder:
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
-        oname = f"{req.name}-{req.group}"
+        oname = object_name(req.name, req.group)
         builder, env, resources = self._runtime_config(req.runtime)
         tag = self.image_ref(req)
-        object_name = kpack.build_object_name(oname)
+        build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
         return BuildPlan(
             tag=tag,
@@ -142,14 +143,14 @@ class KpackBuilder:
             ],
             local=[
                 kpack.build_service_account(
-                    object_name, labels, git_secret, self._build.registry_secret
+                    build_name, labels, git_secret, self._build.registry_secret
                 ),
                 kpack.build_image(
-                    object_name,
+                    build_name,
                     labels,
                     tag=tag,
                     builder=builder,
-                    service_account=object_name,
+                    service_account=build_name,
                     git_url=req.git_url,
                     revision=req.build_revision,
                     env=env,
@@ -172,13 +173,13 @@ class KpackBuilder:
             it, and must fall through to the KSVC status rather than read as a
             failure (§10).
         """
-        object_name = kpack.build_object_name(f"{name}-{group}")
+        image_name = kpack.build_object_name(object_name(name, group))
         try:
-            image = cluster.get(ResourceKind.KPACK_IMAGE, object_name)
+            image = cluster.get(ResourceKind.KPACK_IMAGE, image_name)
         except NotFoundError:
             return None
         except Exception:  # noqa: BLE001 - kpack absent or unreadable is not fatal
-            logger.warning("could not read kpack Image '%s' on %s", object_name, cluster.site)
+            logger.warning("could not read kpack Image '%s' on %s", image_name, cluster.site)
             return None
         state, latest, message = kpack.build_status(image)
         return BuildStatus(state=state, image=latest, message=message)

@@ -15,7 +15,14 @@ import pytest
 
 # Layer 1: importable by any service, including one that serves no HTTP and
 # never reaches a cluster.
-DOMAIN = ["common.names", "common.labels", "common.errors", "common.config", "common.contract"]
+DOMAIN = [
+    "common.names",
+    "common.labels",
+    "common.errors",
+    "common.config",
+    "common.contract",
+    "common.kpack",
+]
 # Layer 2: adds the kubernetes client, still no web framework.
 CLUSTER = ["common.cluster"]
 

@@ -6,10 +6,10 @@ import base64
 
 import pytest
 
-from api.services import kpack
 from api.services import secrets as secret_svc
 from api.services.builder import KpackBuilder
 from api.services.runtimes import RuntimeRegistry, RuntimeSpec
+from common import kpack
 from common.config import CommonSettings, SiteConfig
 from common.errors import NotFoundError, ValidationError
 
