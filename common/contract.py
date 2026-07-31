@@ -9,12 +9,14 @@ same protocol with no change to callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic.dataclasses import dataclass as validated_dataclass
 
-from common.cluster import Cluster
 from common.names import Branch, Group, Name, image_tag
+
+if TYPE_CHECKING:  # a type hint only - importing it would pull the k8s client
+    from common.cluster import Cluster
 
 
 @validated_dataclass
