@@ -47,8 +47,6 @@ def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
     if isinstance(groups, str):
         groups = [groups]
     groups = [normalize_group(g) for g in groups]
-    # The configured admin groups are normalized too, so an admin group written in
-    # its raw SSO form ("platform_admins") still matches a normalized token group.
     admin_groups = {normalize_group(g) for g in config.admin_groups}
     is_admin = any(g in admin_groups for g in groups)
     return Principal(

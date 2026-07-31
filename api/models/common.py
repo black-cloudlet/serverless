@@ -65,10 +65,6 @@ HOSTNAME = re.compile(
 # Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
 # "ggd-1234-platforms" is the group "platforms").
 _GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
-# SSO group names may use "_" as a word separator and mixed case, both legal in
-# Keycloak but not in the DNS-1123 names/hosts the group ends up in
-# ({name}-{group} and {name}-{group}.{route_domain}). "_" is folded to "-" and the
-# name is lowercased so such a group is usable.
 _UNDERSCORE = str.maketrans({"_": "-"})
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")

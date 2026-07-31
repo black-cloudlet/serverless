@@ -79,8 +79,6 @@ def require_auth(
         return principal
 
     if verify_admin_key(token, settings.admin_api_key):
-        # Normalized like every other group entering the app, so nothing past the
-        # edge ever sees a raw SSO form.
         return Principal(
             subject="admin",
             username="admin",
