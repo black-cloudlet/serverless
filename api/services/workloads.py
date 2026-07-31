@@ -812,11 +812,7 @@ class WorkloadService:
         # rebuild without the client re-supplying it.
         if offering == OFFERING_FUNCTION:
             git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
-            # Falls back to the key used before the Secret became basic-auth, so a
-            # function created earlier is not forced to re-supply its token.
-            state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY) or git.get(
-                secret_svc.LEGACY_GIT_TOKEN_KEY
-            )
+            state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
         return state
 
     def validate_spec(

@@ -99,14 +99,7 @@ def test_one_git_secret_serves_both_the_api_and_kpack():
     assert secret["type"] == "kubernetes.io/basic-auth"
     assert secret["metadata"]["annotations"][secret_svc.GIT_ANNOTATION] == "https://git.internal"
     # ...and the API must still read the token back for a later rebuild
-    assert secret_svc.git_token(secret) == "ghp_tok"
-
-
-def test_git_token_still_reads_secrets_written_before_the_shape_change():
-    from api.services import resources as res
-
-    legacy = res.build_secret("hello-git", {}, {secret_svc.LEGACY_GIT_TOKEN_KEY: "ghp_old"})
-    assert secret_svc.git_token(legacy) == "ghp_old"
+    assert base64.b64decode(secret["data"][secret_svc.GIT_TOKEN_KEY]).decode() == "ghp_tok"
 
 
 def test_service_account_carries_registry_in_both_lists():
@@ -570,34 +563,6 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
     )
     assert builder.calls == 1
     assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
-
-
-async def test_a_pre_upgrade_opaque_token_is_still_usable_for_a_rebuild():
-    """Upgrade path: functions created before the Secret became basic-auth."""
-    from api.models.function import FunctionUpdate
-    from api.services import resources as res
-    from tests.test_auth_and_deployer import _ApplyCluster
-
-    legacy = res.build_secret(
-        "hello-payments-git", {}, {secret_svc.LEGACY_GIT_TOKEN_KEY: "ghp_old"}
-    )
-    cluster = _ApplyCluster(
-        "site-a", {"hello-payments": _ksvc()}, secrets={"hello-payments-git": legacy}
-    )
-    builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
-        "payments",
-        "hello",
-        FunctionUpdate(
-            gitRepo="https://git.internal/payments/hello.git",
-            runtime="python",
-            branch="release",  # a build input changed -> a token is required
-        ),
-        _principal(),
-    )
-    # read back through the old key, so the caller is not asked to re-send it
-    assert builder.calls == 1
-    assert builder.reqs[0].git_token == "ghp_old"
 
 
 # ------------------------------------------------------- request validation

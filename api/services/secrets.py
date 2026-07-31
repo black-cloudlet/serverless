@@ -19,9 +19,6 @@ from api.services import resources as res
 # Data keys of the ``{workload}-git`` basic-auth Secret.
 GIT_USERNAME_KEY = "username"
 GIT_TOKEN_KEY = "password"  # noqa: S105 - a Secret data key name, not a credential
-# The key earlier releases used, when the Secret was Opaque. Still read so a
-# function created before the switch keeps working without a token re-send.
-LEGACY_GIT_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name
 
 # kpack matches a credential to a repository through this annotation.
 GIT_ANNOTATION = "kpack.io/git"
@@ -189,22 +186,3 @@ def git_credential_host(git_url: str) -> str:
     if not parts.scheme or not parts.netloc:
         return git_url
     return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
-
-
-def git_token(secret: dict) -> str | None:
-    """Decode the git token from a ``{workload}-git`` Secret (update path only).
-
-    Args:
-        secret: The git Secret object.
-
-    Returns:
-        The token, or None if it can't be read.
-    """
-    data = secret.get("data") or {}
-    raw = data.get(GIT_TOKEN_KEY) or data.get(LEGACY_GIT_TOKEN_KEY)
-    if not raw:
-        return None
-    try:
-        return base64.b64decode(raw).decode("utf-8", "surrogateescape")
-    except Exception:  # noqa: BLE001 - malformed secret -> treat as unknown
-        return None

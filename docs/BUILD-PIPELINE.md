@@ -423,8 +423,8 @@ workloads namespace, which is what makes one git Secret enough.
 > `kubernetes.io/basic-auth` (`username` + `password`) annotated
 > `kpack.io/git: <scheme>://<host>`. kpack clones with it - it reads no other shape - and
 > the API reads the password back so a later edit rebuilds without the client re-sending
-> the token. Secrets written before this shape change are still read: `git_token` falls
-> back to the old Opaque `token` key, so no function needs its token re-supplied.
+> the token. One shape and one decode path - `load_existing` reads the `password` key
+> through `_secret_data`, the same way it reads a workload's env and files.
 
 ---
 
@@ -985,3 +985,5 @@ Either form is attached per build through `spec.build.services`, alongside the C
   building under the `node` runtime once `npm_config_registry` is set. Safe without a compatibility alias because function
   creation had never succeeded at the time (`builder.build` raised `NotImplementedError`),
   so no deployed function carries `ANNOTATION_RUNTIME: javascript` for §9.3 to reconstruct.
+  The same fact retires the git-Secret compatibility path: no `{workload}-git` Secret was
+  ever written in the earlier Opaque shape, so nothing reads that key any more.
