@@ -74,9 +74,8 @@ class FunctionService:
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
         return self._engine.builder.plan(req, labels)
 
-    # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
-    # run the build+deploy in the background and return 202 Accepted with a
-    # status URL to poll. Deploys (esp. function builds) can be slow.
+    # Validate synchronously for an immediate 400/404/409, then build and deploy
+    # in the background behind a 202 - a function build is slow.
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
@@ -187,10 +186,8 @@ class FunctionService:
             size=spec.size,
             hostname=spec.hostname,
             sites=spec.sites,
-            # The image is on the platform's own registry, so it pulls with the
-            # same credential kpack pushed it with. The Secret is the chart's,
-            # shared by every function, so it is referenced and never applied or
-            # pruned here.
+            # Pulled with the same credential kpack pushed with. The Secret is the
+            # chart's, shared by every function, so it is referenced, never applied.
             pull_secret_name=self._engine.builder.pull_secret,
             pull_secret_manifest=None,
             port=None,
@@ -238,9 +235,8 @@ class FunctionService:
         if existing is None:
             existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
 
-        # Full replace: the build inputs are the request's (gitRepo/runtime required,
-        # branch defaults to "main"). The git token is the redacted keep - the stored
-        # one is reused unless the client sent a new one.
+        # Full replace, so the build inputs are the request's. The token is the
+        # redacted keep: the stored one is reused unless the client sent a new one.
         runtime = spec.runtime
         git_url = spec.gitRepo
         branch = spec.branch
@@ -248,9 +244,8 @@ class FunctionService:
         stored_token = existing.get("git_token")
         token = spec.gitToken or stored_token
 
-        # A build input change (or a rotated token) means the image must be
-        # rebuilt; a config-only edit re-sends the same inputs and must not
-        # disturb the running image.
+        # A changed build input (or a rotated token) rebuilds; a config-only edit
+        # re-sends the same inputs and must not disturb the running image.
         build_inputs_changed = (
             git_url != existing.get("gitUrl")
             or branch != existing.get("branch")
@@ -267,11 +262,8 @@ class FunctionService:
         replicated: list[dict] = []
         local: list[dict] = []
         if token is not None:
-            # Emitted on EVERY update, not only when an input changed. The
-            # manifests are a pure function of the request, so re-applying an
-            # unchanged spec is a no-op that kpack does not rebuild from - but it
-            # recreates the Image on a site that has never had one, which is what
-            # makes an update after a switchover self-healing (docs/BUILDING.md - Active/Active).
+            # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
+            # not rebuild from, but it recreates a missing Image after a switchover.
             plan = self._build(
                 BuildRequest(
                     name=name,
@@ -286,10 +278,8 @@ class FunctionService:
                 user,
             )
             replicated, local = plan.replicated, plan.local
-            # Only move the KSVC when the build inputs actually changed. Otherwise
-            # keep what is deployed: it may be a digest the build service resolved
-            # from a completed build, and rewriting it back to the tag would spawn
-            # a pointless revision.
+            # Keep the deployed image otherwise: it may be a digest a finished build
+            # resolved, and rewriting it back to the tag spawns a pointless revision.
             if build_inputs_changed or token_rotated:
                 image = plan.tag
 

@@ -1872,9 +1872,8 @@ def test_validate_group_strips_ggd_prefix_on_input():
 
 
 def test_group_underscores_fold_to_hyphens():
-    # An SSO group may use "_" as a separator, which is legal in Keycloak but not
-    # in the DNS-1123 object names/hosts the group ends up in. Both spellings
-    # normalize to the same canonical, DNS-safe group.
+    # "_" is legal in Keycloak but not in the DNS-1123 names the group ends up
+    # in, so both spellings normalize to the same group.
     from api.models.common import normalize_group, validate_group
 
     assert validate_group("my_team") == "my-team"
@@ -1884,9 +1883,8 @@ def test_group_underscores_fold_to_hyphens():
 
 
 def test_group_case_is_folded_to_lower():
-    # Mixed case is legal in Keycloak but not in a DNS-1123 name/host, so the group
-    # is lowercased. Lowercasing runs before the other rules, so an upper-case
-    # ggd- prefix is still stripped and "_" in a mixed-case name is still folded.
+    # Lowercased for the same reason, and before the other rules - so an
+    # upper-case ggd- prefix is still stripped and "_" still folded.
     from api.models.common import normalize_group, validate_group
 
     assert validate_group("Platforms") == "platforms"

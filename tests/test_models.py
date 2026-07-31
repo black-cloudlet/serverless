@@ -77,9 +77,8 @@ def test_invalid_name_rejected():
 
 
 def test_runtime_is_a_free_string_on_the_model():
-    # The valid runtime set is data (a mounted ConfigMap), so the model accepts
-    # any string; the service validates it against the live registry (see
-    # test_auth_and_deployer.test_function_accept_rejects_unknown_runtime).
+    # The runtime set is data (a ConfigMap), so the model takes any string; the
+    # service validates it against the live registry.
     fn = FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby")
     assert fn.runtime == "ruby"
 

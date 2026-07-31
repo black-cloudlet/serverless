@@ -68,9 +68,8 @@ def require_auth(
 
     token = _bearer_token(request)
 
-    # A structural JWT -> OIDC user/service token; otherwise an opaque admin API
-    # key. The header always carries the RAW token; the API key is matched with a
-    # constant-time compare (see api.auth.apikey).
+    # A structural JWT is an OIDC token; anything else is the admin API key,
+    # matched with a constant-time compare (see api.auth.apikey).
     if looks_like_jwt(token):
         claims = validator.validate(token)
         principal = principal_from_claims(claims, settings.sso)

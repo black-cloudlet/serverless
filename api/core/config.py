@@ -1,10 +1,8 @@
 """API service settings.
 
-Configuration is environment-driven (12-factor); in production the values are
-projected from Vault via the External Secrets Operator (see docs/ARCHITECTURE.md - Secrets).
-The connection identity (sites, CA bundle, client cert, registry, timeouts) is
-shared and lives in :mod:`common.config`; this module adds the API's own fields.
-Site connection profiles are supplied as a JSON list in ``SERVERLESS_SITES``.
+Environment-driven; in production the values come from Vault via the External
+Secrets Operator. The connection identity is shared and lives in
+:mod:`common.config`; this module adds the API's own fields.
 """
 
 from __future__ import annotations
@@ -30,9 +28,8 @@ class SSOConfig(BaseModel):
     """
 
     issuer: str = "https://sso.internal/realms/serverless"
-    # Expected token audience. When set, the `aud` claim is verified to contain it;
-    # when empty (the default), audience verification is skipped - so tokens work
-    # without a Keycloak audience mapper unless an audience is explicitly configured.
+    # Verified against `aud` when set. Empty (the default) skips the check, so
+    # tokens work without a Keycloak audience mapper.
     audience: str = ""
     # Public Keycloak client Swagger UI uses for its "Authorize" login
     # (Authorization Code + PKCE; no secret). From Helm values, not a secret.
@@ -78,11 +75,8 @@ class Settings(CommonSettings):
     runtimes_file: str = "/etc/serverless/runtimes/runtimes.yaml"
 
     sso: SSOConfig = Field(default_factory=SSOConfig)
-    # Static admin API key for non-OIDC service accounts (opaque bearer token).
-    # The RAW token, sourced from Vault via ESO (env SERVERLESS_ADMIN_API_KEY).
-    # Matched with a constant-time compare (see api/auth/apikey.py). Defaults to
-    # empty, which disables API-key auth (OIDC stays primary); never ship a usable
-    # default credential. Set it to enable key auth for admin automation.
+    # Raw admin key from Vault via ESO. Empty (the default) disables key auth
+    # rather than shipping a usable default credential.
     admin_api_key: str = ""
 
 

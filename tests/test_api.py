@@ -441,9 +441,8 @@ def test_update_container_token_without_username_rejected(client):
 
 
 def test_update_function_build_change_accepted_without_token(client):
-    # The git token is stored, so changing a build input no longer needs the
-    # client to re-send it - the request is accepted and the service rebuilds
-    # using the stored token.
+    # The token is stored, so changing a build input does not need it re-sent:
+    # the request is accepted and the rebuild uses the stored one.
     r = client.put(
         "/api/v1/groups/team/functions/foo",
         json={

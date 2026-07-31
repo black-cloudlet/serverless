@@ -31,11 +31,10 @@ def build_service_account(
 ) -> dict:
     """Build the per-function build ServiceAccount.
 
-    Per function rather than shared because each function's git token comes from
-    its own caller: a shared account would let one tenant's build authenticate
-    as another. The registry credential is platform-wide and appears in both
-    lists - ``secrets`` is what kpack pushes the built image with, and
-    ``imagePullSecrets`` is what the build pod pulls the builder image with.
+    Per function, not shared: each function's git token comes from its own caller, so
+    a shared account would let one tenant's build authenticate as another. The
+    registry credential is platform-wide and appears in both lists - ``secrets`` to
+    push the built image, ``imagePullSecrets`` to pull the builder.
 
     Args:
         name: The ServiceAccount name.
@@ -70,12 +69,10 @@ def build_image(
 ) -> dict:
     """Build the kpack ``Image`` CR for one function.
 
-    Applied with server-side apply on every create and update, which is what
-    makes it safe under active/active: the spec is a pure function of the
-    request, so two instances applying concurrently converge instead of
-    fighting, and a site that has never seen the function reconstructs it on the
-    next write. ``creationTime`` is deliberately never set - it is a nonce and
-    would make every apply look like a change and trigger an endless rebuild.
+    Server-side applied on every create and update, which is what makes it safe under
+    active/active: the spec is a pure function of the request, so concurrent applies
+    converge. ``creationTime`` is never set - it is a nonce that would make every
+    apply look like a change and rebuild forever.
 
     Args:
         name: The Image name (``fn-{workload}``).
@@ -123,12 +120,10 @@ def build_image(
 def build_status(image: dict | None) -> tuple[str, str | None, str | None]:
     """Reduce an ``Image``'s status to ``(state, latest_image, message)``.
 
-    kpack reports progress through the standard ``Ready`` condition on the
-    Image: ``True`` once the latest build succeeded, ``False`` when it failed,
-    and ``Unknown`` while a build is running. ``latestImage`` is the digest of
-    the last *successful* build, so it can be present while a newer build is in
-    flight or has failed - the state, not the presence of an image, is what says
-    whether the function is current.
+    kpack reports progress on the ``Ready`` condition: ``True`` once the latest build
+    succeeded, ``False`` on failure, ``Unknown`` while running. ``latestImage`` is the
+    last *successful* digest, so it can be set while a newer build fails - the state,
+    not the image, says whether the function is current.
 
     Args:
         image: The Image object, or None when there is none.

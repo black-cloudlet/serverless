@@ -59,10 +59,8 @@ async def lifespan(app: FastAPI):
     Args:
         app: The FastAPI application (provided by the framework).
     """
-    # Load the runtimes ConfigMap FIRST and let it raise. Unlike the warmup
-    # below, this is local configuration, not a remote dependency: retrying
-    # cannot fix it, and an API that starts without it would accept functions it
-    # can never build. Failing here keeps the pod out of readiness.
+    # Local config, not a remote dependency: retrying cannot fix it, and an API
+    # without it would accept functions it can never build.
     get_runtimes()
     service = get_workload_service()  # build the service graph (no network)
     await _warmup(get_settings(), service.deployer)  # warm caches, best effort

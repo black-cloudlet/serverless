@@ -16,11 +16,9 @@ from api.core.config import SSOConfig
 def wire_sso_login(app: FastAPI, sso: SSOConfig) -> None:
     """Let Swagger UI's "Authorize" log in via SSO (Auth Code + PKCE).
 
-    Adds an OAuth2 security scheme to the OpenAPI (auth/token endpoints derived
-    from the issuer) and configures Swagger's OAuth with the public client id.
-    This is documentation/UI only - it makes Swagger obtain a token and send it
-    as ``Authorization: Bearer``; ``require_auth`` still enforces at runtime, so
-    the ServiceNow flow and the header are unaffected. PKCE means no secret.
+    Adds an OAuth2 scheme to the OpenAPI and points Swagger's OAuth at the public
+    client id. Documentation only - ``require_auth`` still enforces at runtime, so
+    the ServiceNow flow is unaffected. PKCE means no secret.
 
     Args:
         app: The FastAPI application.

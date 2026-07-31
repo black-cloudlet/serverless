@@ -57,10 +57,9 @@ async def readyz() -> dict:
 def mount_offline_docs(app: FastAPI) -> None:
     """Serve Swagger UI and ReDoc from vendored assets (no CDN, for airgap).
 
-    FastAPI's default ``/docs`` and ``/redoc`` load JS/CSS from the jsdelivr CDN,
-    which is unreachable in an airgapped cluster. Build the app with
-    ``docs_url=None``/``redoc_url=None``; this mounts the vendored ``static``
-    assets at ``/static`` and re-adds the docs routes pointing at them. ReDoc's
+    FastAPI's ``/docs`` and ``/redoc`` load assets from the jsdelivr CDN, unreachable
+    in an airgapped cluster. Build the app with ``docs_url=None``/``redoc_url=None``;
+    this mounts the vendored assets and re-adds the routes pointing at them. ReDoc's
     Google Fonts request is disabled for the same reason.
 
     Args:

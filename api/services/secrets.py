@@ -1,11 +1,9 @@
 """Pure builders/decoders for the credential Secrets a workload owns.
 
 Covers the imagePullSecret built from customer registry credentials and the
-``{workload}-git`` Secret that stores a function's git token so it survives
-edits and can be reused to rebuild without the client re-sending it.
-Secret *values* are never returned on read - only the workload's update path
-reads them back, to preserve a "keep" (redacted) field. The caller supplies the
-labels.
+``{workload}-git`` Secret holding a function's token so a later edit can rebuild
+without it being re-sent. Values are never returned on read - only the update
+path reads them back, to preserve a redacted "keep" field.
 """
 
 from __future__ import annotations
@@ -27,12 +25,9 @@ GIT_ANNOTATION = "kpack.io/git"
 def registry_of(image: str) -> str:
     """The registry host an image reference points at, used to key its pull secret.
 
-    The org runs several registries, so this must come from the client's image,
-    not our platform registry. Falls back to Docker Hub when the reference carries
-    no explicit registry (e.g. ``nginx:latest`` or ``team/app:tag``). The registry
-    is the first path segment only when it looks like a host (has a ``.`` or
-    ``:port``, or is ``localhost``); otherwise it's an implicit Docker Hub
-    namespace.
+    The org runs several registries, so this comes from the client's image, not our
+    platform registry. Falls back to Docker Hub when the reference names no registry.
+    The first path segment counts as a host only if it looks like one.
 
     Args:
         image: The image reference (e.g. ``reg.example.com/team/app:tag``).
@@ -141,11 +136,10 @@ def build_git_secret(
 ) -> dict:
     """Build the ``kubernetes.io/basic-auth`` Secret holding a function's git token.
 
-    One Secret serves both readers. The API reads it back so an edit can rebuild
-    without the client re-supplying the token, and kpack clones with it - which
-    is why it is basic-auth carrying the ``kpack.io/git`` annotation rather than
-    Opaque: kpack ignores a credential in any other shape. Keeping it to one
-    object is only possible because builds run in the workload's own namespace.
+    One Secret serves both readers: the API reads it back to rebuild without the
+    token being re-supplied, and kpack clones with it - which is why it is basic-auth
+    carrying ``kpack.io/git``, the only shape kpack reads. One object is possible
+    only because builds run in the workload's own namespace.
 
     Args:
         name: The Secret name (``{workload}-git``).

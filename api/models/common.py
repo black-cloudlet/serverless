@@ -19,9 +19,8 @@ from common.labels import (  # noqa: F401
     MANAGED_BY_VALUE,
 )
 
-# Name/group/branch rules live in `common` because they bound what can be written
-# to a cluster, and the builder applies the same rules off the HTTP path.
-# Re-exported so request models and query params keep one import site.
+# In `common` because they bound what can be written to a cluster, and the
+# builder applies them off the HTTP path. Re-exported for one import site.
 from common.names import (  # noqa: F401
     DNS1123,
     HOSTNAME,
@@ -46,15 +45,12 @@ ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
 ANNOTATION_GIT_PATH = "serverless.platform/git-path"
-# Comma-separated names of the platform-injected env vars (the CA-trust defaults).
-# Stamped on the KSVC so read-back can hide them from the user's spec - they are
-# transparent defaults, not part of what the user submitted. A var the user set
-# themselves is never injected, so it is never listed here and reads back normally.
+# Names of the injected CA-trust env vars, so read-back can hide them: they
+# are platform defaults, not part of the user's spec.
 ANNOTATION_INJECTED_ENV = "serverless.platform/injected-env"
 
-# Name of the platform-injected CA-bundle volume/mount on every pod (matches the
-# default ConfigMap name). An internal pod-spec handle - owned by the KSVC
-# builder; read-back filters it out as it isn't part of the user's spec.
+# The injected CA-bundle volume/mount name. An internal handle, filtered out
+# of read-back as it is not part of the user's spec.
 CA_BUNDLE_VOLUME = "ca-bundle"
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
@@ -74,9 +70,8 @@ _METRIC_UNITS = {
     "memory": "percent",
 }
 
-# Workload resource size (t-shirt sizing). Maps to container resources in the
-# KSVC (see services.ksvc): memory is request==limit (hard cap), CPU is
-# request-only (no limit -> no throttling).
+# T-shirt sizing (see services.ksvc): memory is request==limit, CPU is
+# request-only so the workload is never throttled.
 WorkloadSize = Literal["small", "medium", "large"]
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
@@ -382,11 +377,9 @@ class BuildStatusView(BaseModel):
 class WorkloadResponse(WorkloadBase):
     """Full single-workload view: identity, live per-site status, and config.
 
-    Identity (WorkloadBase) plus live per-site status plus the desired-state
-    config common to both offerings (secrets redacted). Per-offering responses
-    subclass this - see FunctionResponse (in models.function) / ContainerResponse
-    (in models.container) - so the response mirrors the create body of that
-    offering.
+    Identity, live per-site status, and the desired-state config common to both
+    offerings (secrets redacted). FunctionResponse and ContainerResponse subclass
+    this, so a response mirrors the create body of its offering.
     """
 
     sites: list[SiteStatus] = []

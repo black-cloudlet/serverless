@@ -24,11 +24,9 @@ from api.models.common import (
 class FunctionCreate(BaseModel):
     """Request body to create a function from source (built into an image).
 
-    The owning group comes from the request path (``/api/v1/groups/{group}/...``),
-    not the body. ``runtime`` is a free string here; the set of valid runtimes is
-    data (a mounted ConfigMap, see services.runtimes) so it is validated against
-    the live registry in the service layer, not as a fixed enum. GET
-    /api/v1/functions/info lists the accepted values.
+    The owning group comes from the request path, not the body. ``runtime`` is a
+    free string here: the valid set is data (a ConfigMap), so it is checked against
+    the live registry in the service layer rather than as a fixed enum.
     """
 
     name: Name
@@ -49,14 +47,10 @@ class FunctionCreate(BaseModel):
 class FunctionUpdate(BaseModel):
     """Replace the mutable spec: the body is the full desired state.
 
-    Mirrors ``ContainerUpdate``: non-secret fields are replaced (an omitted one
-    reverts to its default), so the build inputs ``gitRepo`` and ``runtime`` are
-    required just like on create (``branch`` resets to ``main``). The only
-    keep-on-omit is the git token, which - like a redacted secret - can't be read
-    back: it's stored (``{workload}-git`` Secret) and reused unless the client
-    sends a new one (which rotates it). The service rebuilds from source only when
-    a build input actually changes or the token is rotated - a config-only edit
-    that re-sends the same build inputs keeps the current image.
+    Mirrors ``ContainerUpdate``: non-secret fields are replaced, so ``gitRepo`` and
+    ``runtime`` are required as on create. Only the git token is keep-on-omit; it is
+    stored and reused unless the client sends a new one, which rotates it. A rebuild
+    happens only when a build input changes or the token rotates.
     """
 
     gitRepo: GitUrl

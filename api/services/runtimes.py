@@ -8,11 +8,9 @@ Loading only: the cached, request-injectable registry is assembled in
 :mod:`api.dependencies` with the platform's other singletons, so this module
 stays free of FastAPI and can be reused by a service that has no HTTP layer.
 
-The file is **required**. There is no built-in fallback: a default list would be
-indistinguishable from a real one at the API surface while naming no Builder, so
-a broken mount would look like a working platform until the first function
-failed to build. Missing or empty is a startup failure instead - see
-:func:`load_runtimes`.
+The file is **required**, with no fallback: a default list would name no Builder
+while looking real at the API surface, so a broken mount would pass for a working
+platform until the first function failed to build.
 """
 
 from __future__ import annotations
@@ -34,11 +32,9 @@ class RuntimeConfigError(RuntimeError):
 class RuntimeSpec(BaseModel):
     """One available runtime, as the chart renders it into the runtimes ConfigMap.
 
-    Every field below is read by :class:`~api.services.builder.KpackBuilder`, so
-    this is the contract between the ConfigMap and the build path, not a loose
-    bag of strings. ``extra="allow"`` remains for genuine forward-compatibility:
-    a key this version does not know is preserved rather than rejected, so a
-    newer chart can be rolled out ahead of the API.
+    Every field is read by :class:`~api.services.builder.KpackBuilder`, so this is a
+    contract with the ConfigMap, not a bag of strings. ``extra="allow"`` keeps genuine
+    forward-compatibility: an unknown key is preserved, so a newer chart can ship first.
 
     Numbers are coerced to strings because the ConfigMap is hand-editable YAML,
     where an unquoted ``defaultVersion: 3.12`` is a float - rejecting it would
@@ -102,11 +98,9 @@ def load_runtimes(path: str) -> RuntimeRegistry:
     The file shape is ``{"runtimes": [{"name": "python", ...}, ...]}`` - see
     :class:`RuntimeSpec`.
 
-    Required, and loud when it is missing: the chart always mounts it, so a
-    missing or empty file means a broken mount or a bad values override. Raising
-    here makes that a startup failure (:mod:`api.main` loads the registry in its
-    lifespan), so a misconfigured pod never passes readiness - rather than
-    serving an API that accepts functions it can never build.
+    Loud when missing: the chart always mounts it, so absent or empty means a broken
+    mount. Raising makes that a startup failure, so a misconfigured pod never passes
+    readiness instead of accepting functions it can never build.
 
     Args:
         path: Path to the mounted runtimes YAML file.

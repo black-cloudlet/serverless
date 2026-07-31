@@ -1,10 +1,8 @@
 """Shared workload engine: build manifests once, fan out to all sites.
 
-Offering-agnostic. :class:`~api.services.function.FunctionService` and
-:class:`~api.services.container.ContainerService` compose this engine and
+Offering-agnostic. FunctionService and ContainerService compose this engine and
 add only the offering-specific prep (build-from-Git vs image + pull secret);
-everything else - apply, host/absence checks, access control, get/delete - lives
-here. See docs/ARCHITECTURE.md - Multi-Site and Authentication.
+apply, host/absence checks, access control and get/delete all live here.
 """
 
 from __future__ import annotations
@@ -70,21 +68,18 @@ logger = get_logger(__name__)
 OFFERING_FUNCTION = "function"
 OFFERING_CONTAINER = "container"
 
-# Workload timestamps are surfaced in Israel local time. ZoneInfo reads the IANA
-# tz database, so the IDT/IST daylight-saving offset (+03:00 summer, +02:00
-# winter) is applied automatically; `tzdata` is a dependency so this resolves in
-# slim containers that ship no system zoneinfo.
+# Israel local time, DST applied from the IANA database. `tzdata` is a
+# dependency so this resolves in slim containers with no system zoneinfo.
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 
 def _with_build_status(overall: str, build: "BuildStatusView | None") -> str:
     """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md).
 
-    The build is checked FIRST because a function whose image does not exist yet
-    is not broken - its KSVC is failing to pull an image kpack has not pushed,
-    which would otherwise read as ``Degraded`` for the whole of a normal first
-    build. A failed build is the honest cause of that same symptom, so it does
-    report ``Degraded``, with the reason on ``build.message``.
+    The build is checked FIRST: a function whose image does not exist yet is not
+    broken, but its KSVC is failing to pull one, which would read as ``Degraded`` for
+    a whole normal first build. A failed build is the honest cause of that same
+    symptom, so it does report ``Degraded``, with the reason on ``build.message``.
 
     Args:
         overall: The rollup of the per-site KSVC statuses.
@@ -160,10 +155,8 @@ def _ksvc_status(obj: dict) -> tuple[str, str | None]:
     # Terminating so a GET during the delete window doesn't misreport it as Ready.
     if _dig(obj, "metadata", "deletionTimestamp"):
         return "Terminating", revision
-    # Knative condition convention: status True = Ready, False = a terminal
-    # failure (e.g. RevisionFailed, ProgressDeadlineExceeded, image-pull error),
-    # Unknown or absent = still progressing. Distinguishing False from Unknown is
-    # what lets a poller stop on a real failure instead of spinning until timeout.
+    # True = Ready, False = terminal failure, Unknown/absent = progressing.
+    # The False/Unknown split is what lets a poller stop instead of spinning.
     state = (ready or {}).get("status")
     if state == "True":
         return "Ready", revision
@@ -195,13 +188,10 @@ def _revision_replicas(rev: dict | None) -> int | None:
 def _revision_failure_message(rev: dict | None) -> str | None:
     """The most specific failure detail from a Revision's conditions, if failing.
 
-    A Knative Revision reports the aggregate ``Ready`` condition plus the specific
-    sub-conditions that feed it (``ContainerHealthy``, ``ResourcesAvailable``,
-    ``Active``). We prefer a failing *sub*-condition's message - the real cause
-    (image-pull error, container crash, quota) - over the generic aggregate, so
-    the surfaced error names why the rollout failed. Falls back to any failing
-    condition's message, then its reason code. None when nothing is failing (or
-    the Revision couldn't be read).
+    A Revision reports the aggregate ``Ready`` condition plus the sub-conditions
+    feeding it. A failing sub-condition names the real cause (image pull, crash,
+    quota), so it is preferred over the generic aggregate; then any failing
+    condition's message, then its reason code.
     """
     conditions = _dig(rev, "status", "conditions", default=[]) or []
     failing = [c for c in conditions if c.get("status") == "False"]
@@ -323,11 +313,9 @@ class WorkloadService:
     ) -> WorkloadResponse:
         """Run a create's synchronous pre-flight, then schedule the deploy (202).
 
-        Shared by both offering services: validate the spec and verify the host is
-        free and the name unused (so malformed input or a conflict is an immediate
-        400/403/409/503), then queue the offering-specific build+deploy and return
-        the Pending 202 body. Only the offering label, the background callable, and
-        the echoed fields differ between offerings.
+        Shared by both offerings: validate the spec and check the host is free and the
+        name unused, so bad input or a conflict is an immediate 400/403/409/503, then
+        queue the deploy and return the Pending 202.
 
         Args:
             offering: "function" or "container".
@@ -345,9 +333,8 @@ class WorkloadService:
         self.assert_group(user, group)
         targets = self.deployer.resolve_targets(spec.sites)
         host = self.host_for(spec.name, spec.hostname, group)
-        # Surface deploy-time spec validation synchronously (400), before the 202.
-        # No existing state on create, so a "keep" secret has nothing to fall back
-        # on (kept empty) - a secret sent without a value fails here as a 400.
+        # Validate synchronously (400) before the 202, so bad input never reaches the
+        # background deploy.
         self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
         await self.assert_host_available(host, spec.name, group, targets)
         await self.assert_workload_absent(spec.name, group, targets)
@@ -369,11 +356,10 @@ class WorkloadService:
     ) -> WorkloadResponse:
         """Run an update's synchronous pre-flight, then schedule the deploy (202).
 
-        Loads (and authorizes) the existing workload, validates the spec, and -
-        since the host can change on update - verifies the (possibly new) host is
-        free or already this workload's, all synchronously (immediate
-        400/404/409/503). Then queues the offering-specific deploy, passing the
-        loaded state through so the background work needn't re-fetch it.
+        Loads and authorizes the existing workload, validates the spec, and - since the
+        host can change on update - checks the new host is free or already this
+        workload's, all synchronously. The loaded state is passed through so the
+        background work need not re-fetch it.
 
         Args:
             offering: "function" or "container".
@@ -395,9 +381,8 @@ class WorkloadService:
         existing = await self.load_existing(name, offering, user, group)
         if pre_check is not None:
             pre_check(spec, existing)  # offering-specific sync validation (may 4xx)
-        # Surface deploy-time spec validation synchronously (400), before the 202.
-        # Pass the existing secret values so a "keep" (redacted) secret resolves
-        # against what's stored instead of failing.
+        # Validate synchronously (400) before the 202, so bad input never reaches the
+        # background deploy.
         self.validate_spec(
             name,
             group,
@@ -408,10 +393,8 @@ class WorkloadService:
             kept_files=existing.get("files_values"),
         )
         host = self.host_for(name, spec.hostname, group)
-        # The host can change on update; verify it's free (or already ours) now so a
-        # collision is a synchronous 409 instead of a silently-swallowed background
-        # failure. assert_host_available treats the workload's own mapping as
-        # available, so this is a no-op when the host is unchanged.
+        # A host collision must be a synchronous 409, not a lost background failure.
+        # The workload's own mapping counts as available.
         await self.assert_host_available(host, name, group, self.deployer.resolve_targets(None))
         background.add_task(self.run, work, group, name, spec, user, existing)
         return self.accepted(offering, name, group, host, **extra)
@@ -479,14 +462,12 @@ class WorkloadService:
                 without a value keeps its stored value (update only).
             kept_files: Decoded existing files-Secret values, so a secret file sent
                 without content keeps its stored content (update only).
-            extra_secrets: Additional owned Secret manifests to apply (e.g. the
-                function git-token Secret). Owner-stamped and GC'd with the KSVC;
-                not in the managed prune set, so omitting one keeps the stored copy.
-            local_resources: Owned manifests applied to ONE site only - the
-                function's Image and build ServiceAccount. Fanning them out would
-                have every site build the same source and race to push the same
-                tag. The local site is used when it is a target, else the first
-                target.
+            extra_secrets: Owned Secrets applied to every site (the function's
+                git token). Not in the managed prune set, so omitting one keeps
+                the stored copy.
+            local_resources: Owned manifests applied to the local site only (the
+                function's Image and build ServiceAccount). Fanning them out
+                would race two sites to push the same tag.
 
         Returns:
             The response body and HTTP status code.
@@ -528,12 +509,8 @@ class WorkloadService:
             name=oname, group=group, owner=user.username, offering=offering, host=host
         )
 
-        # A workload owns a fixed set of derived backing objects; the resolvers
-        # only emit a manifest for the ones the new spec still needs. On update,
-        # prune the rest so dropping the last secret env var / config file / secret
-        # file removes its now-stale Secret/ConfigMap instead of orphaning it
-        # (which would otherwise leak old secret values until the workload is
-        # deleted). Same name is shared by the files ConfigMap and Secret.
+        # The resolvers emit only what the new spec still needs, so prune the rest:
+        # dropping the last secret env var must delete its Secret, not orphan it.
         applied_derived = {
             (ResourceKind.from_kind(m["kind"]), m["metadata"]["name"]) for m in backing
         }
@@ -542,9 +519,8 @@ class WorkloadService:
             (ResourceKind.CONFIG_MAP, files_name(oname)),
             (ResourceKind.SECRET, files_name(oname)),
         }
-        # The pull secret may be carried forward without re-applying, so key its
-        # keep/prune on whether the KSVC still references it, not on the manifest;
-        # dropping the reference (image made public) prunes it. Containers only.
+        # Keyed on whether the KSVC still references it, not on the manifest: the
+        # secret can be carried forward without being re-applied. Containers only.
         if offering == OFFERING_CONTAINER:
             managed_derived.add((ResourceKind.SECRET, secret_svc.pull_secret_name(oname)))
             if pull_secret_name:
@@ -554,9 +530,8 @@ class WorkloadService:
         # Always built on the LOCAL site, whether or not the function runs here.
         # The registry is shared, so a site that only runs it pulls what we pushed.
         build_site = self.deployer.local_site() if local_resources else None
-        # When the local site is not a target it gets the build objects and
-        # nothing else - no KSVC there to own them, so they are applied unowned
-        # and delete() reclaims them by name.
+        # A non-target local site gets the build objects only. No KSVC there to own
+        # them, so they are applied unowned and delete() reclaims them by name.
         build_only = bool(local_resources) and not any(c.site == build_site for c in targets)
         if build_only:
             await asyncio.to_thread(
@@ -610,11 +585,9 @@ class WorkloadService:
         The build still belongs here, so the git Secret, build ServiceAccount and
         Image are applied on their own.
 
-        They are applied UNOWNED, which is not a choice: an ownerReference has to
-        name an owner in the same cluster, and the KSVC that would be it was never
-        applied here. Nothing garbage-collects them, so :meth:`delete` removes
-        them by name - an Image left behind would keep rebuilding a function that
-        no longer exists.
+        Applied UNOWNED, which is not a choice: an ownerReference must name an owner in
+        the same cluster and the KSVC that would be it was never applied here. Nothing
+        collects them, so :meth:`delete` removes them by name.
 
         Args:
             cluster: The local site's cluster client.
@@ -645,34 +618,18 @@ class WorkloadService:
 
         Order matters for the no-stale-secret guarantee:
 
-        1. **Prune first.** Delete the backing objects the new spec no longer
-           references *before* anything goes live. A 404 means it never existed
-           here (fine); any other error is raised - aborting this site's update
-           (reported as ``Failed`` by the fan-out) rather than letting the new
-           spec go live alongside a stale, now-unreferenced Secret/ConfigMap that
-           would leak old secret values. ``to_prune`` is empty on create.
-        2. **KSVC, then owner-stamped backing, then DomainMapping.** Applying the
-           KSVC first yields its UID for the ownerReferences, so every derived
-           resource is GC'd when the KSVC is deleted (including the DomainMapping,
-           whose name is the host, freeing it for reuse). Stamping the owner ref
-           on backing immediately after keeps them from ever being orphaned (an
-           orphan would itself leak secret data).
-        3. **Roll back a failed create, never a failed update.** If a backing /
-           pull-secret / mapping apply fails *after* the KSVC was applied, the KSVC
-           briefly references a Secret/ConfigMap that isn't there. On a **create**
-           we delete the KSVC (best-effort; cascades to anything already created)
-           so a partial workload isn't left occupying the name + host. On an
-           **update** we must NOT delete: the KSVC is serving live traffic, and
-           Knative keeps routing to the last-good revision (a new revision that
-           can't mount its Secret never becomes Ready), so the failure self-heals
-           on retry without taking the workload down or releasing its host.
-        4. **Retire the old host last (update only).** If the host changed, the
-           new DomainMapping is now live; only then delete the old host's mapping
-           (whose name *is* the old host). Pruning it *last* - not via
-           ``to_prune``, which prunes first - keeps the old host serving until the
-           new one is in place (no custom-host gap) and leaves it intact if an
-           apply above failed. Best-effort: a leftover old mapping only re-claims a
-           host this same workload owns, and is GC'd on delete.
+        1. **Prune first**, before anything goes live, so the new spec never runs
+           beside a stale Secret/ConfigMap leaking old values.
+
+        2. **KSVC, then owner-stamped backing, then DomainMapping.** The KSVC apply
+           returns the UID the ownerReferences need, so nothing is orphaned.
+
+        3. **Roll back a failed create, never a failed update.** A half-applied
+           create is deleted so it does not hold the name and host; an update is
+           left serving its last-good revision and self-heals on retry.
+
+        4. **Retire the old host last** (update only), so it keeps serving until
+           the new mapping is live, and survives a failure above.
 
         Args:
             cluster: The target site's cluster client.
@@ -712,10 +669,8 @@ class WorkloadService:
             # auto-creates the OpenShift Route for it.
             cluster.apply(res.with_owner(mapping, owner))
         except Exception:
-            # Backing/mapping apply failed after the KSVC went live. On a create,
-            # roll the KSVC back (best-effort; cascades to any derived object via
-            # ownerReferences) so no half-built workload lingers on the name/host;
-            # on an update, leave it - Knative keeps serving the last-good revision.
+            # Failed after the KSVC went live. Roll back a create so no half-built
+            # workload holds the name; leave an update, which is still serving.
             if created:
                 try:
                     cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
@@ -723,11 +678,8 @@ class WorkloadService:
                     logger.exception("rollback of %s failed in %s", oname, cluster.site)
             raise
 
-        # The host changed on this update: the new DomainMapping is live now, so
-        # retire the old host's mapping (its name == the old host). Best-effort -
-        # a 404 means it was never here; any other error is logged but not fatal,
-        # since the new host already works and a stale old mapping only re-claims a
-        # host this same workload owns (and is GC'd on delete).
+        # The new mapping is live, so retire the old host's. Best-effort: a leftover
+        # only re-claims a host this same workload owns, and is GC'd on delete.
         new_host = mapping["metadata"]["name"]
         if not created and prev_host and prev_host != new_host:
             try:
@@ -772,9 +724,8 @@ class WorkloadService:
         found: dict = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
-            # Only a genuine 404 means "absent here"; any other error (site down,
-            # 5xx) must propagate so fanout records it as a per-site error rather
-            # than being mistaken for absence.
+            # Only a real 404 means absent; anything else must propagate so a down site
+            # is recorded as an error, not mistaken for absence.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
@@ -861,11 +812,9 @@ class WorkloadService:
     ) -> None:
         """Validate a spec synchronously, before the request is accepted.
 
-        Runs the pure, in-memory resolution that :meth:`apply_workload` will later
-        perform, so malformed input (duplicate file mount paths, invalid base64, a
-        secret sent without a value and none stored to keep) fails as a 400 at
-        accept time instead of being accepted (202) and then dying silently in the
-        background deploy.
+        Runs the in-memory resolution :meth:`apply_workload` will later perform, so bad
+        input fails as a 400 at accept time instead of being accepted (202) and dying
+        silently in the background deploy.
 
         Args:
             name: Workload name.
@@ -997,16 +946,13 @@ class WorkloadService:
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
-        # Each OK site donates its KSVC; the spec is uniform across sites, so we
-        # read the desired-state spec back from one representative site (the local
-        # site if it has the workload, else any) once, after the fan-out.
+        # The spec is uniform across sites, so read it back once from one
+        # representative site (local if it has the workload) after the fan-out.
         reps: dict[str, tuple] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
-            # A clean 404 means the workload isn't deployed on this site -> omit it
-            # from the per-site report (return None) rather than counting it as a
-            # failure. Any other error (site down, 5xx) propagates to fanout and is
-            # recorded as a per-site error, so a down site stays visible/Degraded.
+            # A 404 means not deployed here, so omit the site rather than fail it.
+            # Anything else propagates, keeping a down site visible as Degraded.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
@@ -1024,11 +970,8 @@ class WorkloadService:
                 usage_f = pool.submit(self._site_usage, cluster, oname)
                 rev, usage = rev_f.result(), usage_f.result()
             replicas = _revision_replicas(rev)
-            # A reachable site whose KSVC failed to roll out (Ready=False) carries
-            # the reason in the Revision's conditions (the specific cause - image
-            # pull error, crash, quota) or, failing that, the KSVC's own Ready
-            # condition. Surface it so a GET explains *why* it failed rather than a
-            # bare status="Failed", error=null.
+            # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
+            # a GET explains why it failed instead of a bare status=Failed.
             error = None
             if status == "Failed":
                 error = _revision_failure_message(rev) or _ksvc_failure_message(obj)
@@ -1055,9 +998,8 @@ class WorkloadService:
         # site if it has the workload, else any site that does.
         obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-        # An object_name collision could resolve to another group/offering; hide as
-        # 404 (privacy-preserving - don't leak that it exists). Log the real reason
-        # server-side so denied-vs-absent is still debuggable from the logs.
+        # Hidden as a 404 so the response cannot leak that it exists; the real
+        # reason is logged, so denied-vs-absent stays debuggable.
         if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
             labels.get(LABEL_OFFERING) != offering
         ):
@@ -1134,12 +1076,10 @@ class WorkloadService:
     def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
         """Decoded ``data`` of a Secret (base64 -> str); ``{}`` if it doesn't exist.
 
-        Used by the update path to read a workload's existing secret values so a
-        "keep" (redacted) field the client echoed back can be preserved. A genuine
-        404 means "no such Secret" -> no stored values (``{}``). Any other read
-        error must NOT be swallowed: returning ``{}`` there would make a valid keep
-        look like an unset secret and fail it as a 400. Surface it as a 503 so the
-        update is retried rather than wrongly rejected (or a secret silently lost).
+        Used by the update path so a redacted "keep" field echoed back is preserved. A
+        genuine 404 means no stored values (``{}``). Any other error must NOT be
+        swallowed: ``{}`` would make a valid keep look unset and fail it as a 400, so it
+        surfaces as a 503 and the update is retried rather than losing a secret.
 
         Raises:
             ServiceUnavailableError: If the Secret exists but couldn't be read.
@@ -1237,12 +1177,8 @@ class WorkloadService:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             self._assert_access(obj, user)
             self._assert_offering(obj, offering)
-            # Deleting the KSVC cascades to every derived resource via their
-            # ownerReferences (set at apply time): the {workload}-env /
-            # {workload}-files Secret & ConfigMap, the imagePullSecret, the
-            # DomainMapping (whose name is the host, freeing it for reuse), and a
-            # function's build objects - so no orphaned Image is left rebuilding
-            # a function that no longer exists (docs/BUILDING.md - Lifecycle & Cleanup).
+            # Cascades to every owned resource: the config Secrets/ConfigMap, the
+            # pull secret, the DomainMapping, the build objects.
             cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
             return SiteStatus(site=cluster.site, status="Deleted")
 
@@ -1258,11 +1194,10 @@ class WorkloadService:
     def _delete_build_objects(self, cluster: Cluster, oname: str) -> None:
         """Remove a function's build objects from the local site, by name.
 
-        The build always runs here, and when the function is not deployed here
-        the objects are unowned (see :meth:`_apply_build_objects`) - nothing
-        cascades, so a leftover Image would keep rebuilding a function that no
-        longer exists. When the local site does run the workload, deleting the
-        KSVC has already cascaded to these and each delete is a no-op 404.
+        The build always runs here, and when the function is deployed elsewhere these
+        are unowned, so nothing cascades and a leftover Image would keep rebuilding a
+        deleted function. When the local site does run it, the KSVC delete already
+        cascaded and each call is a no-op 404.
 
         Best-effort: the KSVC is gone by now either way, and failing the delete
         over a build object would report a workload as undeleted when it is.
@@ -1365,12 +1300,10 @@ class WorkloadService:
     ) -> list[WorkloadSummary]:
         """Summarize every workload of this offering owned by ``group``.
 
-        Fans out to **all sites** and merges the results best-effort: each
-        workload's ``sites`` lists only the sites that returned it, and its rollup
-        status is computed over just those sites (so a workload deployed to a
-        single site reads ``Ready``, not ``Degraded``). A site that is unreachable
-        is skipped rather than failing the whole list; only when *every* site is
-        down is the call failed.
+        Fans out to all sites and merges best-effort: a workload's ``sites`` lists only
+        those that returned it, and its rollup covers just those, so a single-site
+        workload reads ``Ready``, not ``Degraded``. An unreachable site is skipped; only
+        an all-down fan-out fails the call.
 
         Args:
             kind: The offering ("function" or "container").
@@ -1393,9 +1326,8 @@ class WorkloadService:
 
         results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
         if all(items is None for _, items in results):
-            # Same details shape as deployer.aggregate's total-failure ({site,
-            # message}); gather_each doesn't retain the per-site error, so message
-            # is None.
+            # Same {site, message} shape as aggregate's total-failure; gather_each
+            # keeps no per-site error, so message is None.
             raise SiteTotalFailure(
                 "Listing failed in all sites.",
                 details=[{"site": site, "message": None} for site, _ in results],

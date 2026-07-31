@@ -164,11 +164,9 @@ class Deployer:
 def aggregate(statuses: list[SiteStatus]) -> str:
     """Overall status for the create/update path.
 
-    Raises SiteTotalFailure if every site failed (nothing deployed anywhere);
-    otherwise delegates the rollup to overall_status, mapping an unreachable site
-    to ``Failed``. This keeps a single definition of "how per-site statuses roll
-    up" shared with the read paths - so a just-applied workload honestly reports
-    ``Deploying`` rather than an optimistic ``Ready``.
+    Raises SiteTotalFailure when every site failed; otherwise delegates the rollup
+    to overall_status, mapping an unreachable site to ``Failed``. One definition of
+    the rollup, shared with the read paths, so the two cannot drift.
 
     Args:
         statuses: The per-site results of the apply fan-out.
@@ -205,14 +203,10 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
 def overall_status(statuses: list[str]) -> str:
     """Collapse per-site KSVC statuses into one overall status (GET / list).
 
-    A site reporting ``Failed`` (or, on GET, an unreachable site mapped to
-    ``Failed``) makes the deployment ``Degraded``. A site being garbage-collected
-    (``Terminating``) makes the deployment ``Terminating`` (delete in progress).
-    Otherwise an all-``Ready`` set is ``Ready`` and anything still in flight is
-    ``Deploying`` - including a mixed ``Ready`` + ``Deploying`` set, which is a
-    normal rollout where one site is ahead, NOT a failure. This is what keeps the
-    create→poll loop from seeing a false ``Degraded`` while the workload is still
-    coming up.
+    A ``Failed`` site makes the deployment ``Degraded``; a ``Terminating`` one makes
+    it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
+    ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
+    site ahead, NOT a failure. That is what stops a false ``Degraded`` while coming up.
 
     Args:
         statuses: The per-site status strings.

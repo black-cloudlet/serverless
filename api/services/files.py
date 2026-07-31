@@ -65,11 +65,9 @@ def resolve_files(
 ) -> ResolvedFiles:
     """Resolve file mounts into volume specs and backing ConfigMap/Secret.
 
-    Non-secret files aggregate into one ConfigMap and secret files into one
-    Secret, both named ``{workload}-files``; each file is mounted via subPath. A
-    secret file sent without content keeps its stored content: it is filled from
-    ``kept`` (the decoded existing files Secret), so a redacted read can be sent
-    straight back on update.
+    Non-secret files aggregate into one ConfigMap and secret files into one Secret,
+    both named ``{workload}-files``, each mounted via subPath. A secret file sent
+    without content is filled from ``kept``, so a redacted read can be sent back.
 
     Args:
         workload: The object name (``{name}-{group}``).
@@ -111,9 +109,8 @@ def resolve_files(
             raw = kept[key]
         elif f.contentBase64 is not None:
             try:
-                # Lenient decode (no validate=) tolerates whitespace/newlines, e.g.
-                # line-wrapped PEM bodies; still raises on bad padding/length.
-                # binascii.Error and UnicodeDecodeError both subclass ValueError.
+                # Lenient decode tolerates line-wrapped PEM bodies but still raises on bad
+                # padding; both errors subclass ValueError.
                 raw = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
             except ValueError as exc:
                 raise ValidationError(f"file '{f.mountPath}' has invalid base64 content") from exc

@@ -5,11 +5,9 @@ function's git Secret, build ServiceAccount and ``Image`` alongside the KSVC's
 other derived resources, and kpack does the rest: clone, detect, build with
 Cloud Native Buildpacks, push to the internal registry.
 
-They are ordinary owned resources of the workload, in the workload's own
-namespace, so the KSVC's ownerReference garbage-collects them - deleting a
-function cannot leave an Image behind that rebuilds it forever. That
-co-location is also why a function needs only ONE git Secret: kpack reads the
-workload's own ``{workload}-git``.
+They are owned resources of the workload, in its own namespace, so the KSVC's
+ownerReference garbage-collects them. That co-location is also why a function
+needs only ONE git Secret: kpack reads the workload's own ``{workload}-git``.
 
 Declaring is not completing, so ``plan`` returns the deterministic tag the
 build will push to. Callers deploy against that tag and read progress back
@@ -96,9 +94,8 @@ class KpackBuilder:
                 "every runtime to a kpack Builder before functions can be built."
             )
         env = [dict(e) for e in spec.buildEnv]
-        # Pin the language version the same way the chart documents it: the
-        # runtime names the env var, so a version bump is a ConfigMap edit. An
-        # explicit buildEnv entry wins - it was set deliberately.
+        # The runtime names the env var, so a version bump is a ConfigMap edit.
+        # An explicit buildEnv entry wins - it was set deliberately.
         if (
             spec.versionEnv
             and spec.defaultVersion
@@ -113,11 +110,9 @@ class KpackBuilder:
         Pure - no cluster call - so the caller can apply them in the same pass as
         the KSVC's other derived resources and have them owner-stamped.
 
-        The git Secret is ``replicated`` while the Image and ServiceAccount are
-        not. Only one site builds, but EVERY site must be able to: after a
-        switchover the new local site rebuilds from the token it already holds,
-        and a token is not something the platform can recover if the only copy
-        was on the site that went away.
+        The git Secret is ``replicated``, the Image and ServiceAccount are not. Only one
+        site builds, but EVERY site must be able to: nothing can recover a token whose
+        only copy was on the site that went away.
 
         Args:
             req: The build request.

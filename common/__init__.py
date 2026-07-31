@@ -8,21 +8,15 @@ The modules are layered by what they may depend on, heaviest last.
 ``tests/test_layering.py`` enforces it, so an import that breaks the split fails
 a test rather than being discovered by whoever writes the second service:
 
-    1. domain      names, labels, errors, config, contract, kpack
-                   plain Python plus pydantic. No FastAPI, no kubernetes.
-    2. cluster     cluster
-                   adds the kubernetes client. A service that reaches a cluster
-                   needs it; one that only builds manifests does not.
-    3. web         web, requestid, logging
-                   adds FastAPI/Starlette, for services that serve HTTP.
+    1. domain   names, labels, errors, config, contract, kpack   (pydantic only)
+    2. cluster  cluster                                          (+ kubernetes)
+    3. web      web, requestid, logging                          (+ FastAPI)
 
-The point is that a service takes only the layers it needs. A build service
-applying kpack manifests imports ``contract`` and ``cluster`` without pulling in
-a web framework; one that merely renders manifests needs neither.
+A service takes only the layers it needs: one applying kpack manifests imports
+``contract`` and ``cluster`` and no web framework.
 
-Two consequences worth knowing, because both were bugs before the split:
-``errors`` holds the exceptions while ``web`` holds the FastAPI handlers that
-render them, and ``contract`` type-hints ``Cluster`` under ``TYPE_CHECKING``.
-``logging`` sits in the web layer only because it reads the request-id context
-var - it imports no framework itself.
+Two consequences, both bugs before the split: ``errors`` holds the exceptions
+while ``web`` holds the FastAPI handlers rendering them, and ``contract``
+type-hints ``Cluster`` under ``TYPE_CHECKING``. ``logging`` is in the web layer
+only because it reads the request-id context var; it imports no framework.
 """

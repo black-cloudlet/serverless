@@ -478,9 +478,8 @@ async def test_only_one_site_builds_but_every_site_gets_the_credential():
     assert len(_applied_kind(local, "Image")) == 1
     assert _applied_kind(remote, "Image") == []
     assert len(_applied_kind(remote, "Service")) == 1  # ...but the KSVC goes everywhere
-    # the token, though, must be everywhere: after a switchover the new local
-    # site rebuilds from the copy it already holds, and nothing can recover a
-    # token whose only copy was on the site that went away (docs/BUILDING.md - Active/Active)
+    # the token, though, must be everywhere: nothing can recover a token whose
+    # only copy was on the site that went away (docs/BUILDING.md - Active/Active)
     assert len(_git_secrets(local)) == 1
     assert len(_git_secrets(remote)) == 1
 

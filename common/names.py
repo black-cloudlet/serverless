@@ -1,10 +1,8 @@
 """Name validation and normalisation shared by every service.
 
-These live in ``common`` rather than in the API's request models because the
-same rules bound what can be written to a cluster: a workload name becomes a
-Kubernetes object name, a group becomes part of an image repository, a branch
-becomes an image tag. Anything constructing those - the API at its HTTP edge,
-the builder from a ``BuildRequest`` - has to agree on them.
+These live in ``common``, not the API's request models, because the same rules
+bound what reaches a cluster: a name becomes an object name, a group part of an
+image repository, a branch an image tag. Everything constructing those must agree.
 
 ``api.models.common`` re-exports the ``Annotated`` types, so request models and
 query params keep importing them from there.
@@ -42,11 +40,10 @@ MAX_OBJECT_NAME = 63
 def normalize_group(group: str) -> str:
     """Normalize a group name to its bare, DNS-safe form.
 
-    Strips the Keycloak path prefix ("/"), lowercases, strips a leading
-    ``ggd-<1-4 digits>-`` prefix, then folds "_" to "-". So "/ggd-1234-platforms",
-    "Platforms" and "platforms" - or "My_Team" and "my-team" - each name the same
-    group. Applied both to groups from the OIDC token and to a request-supplied
-    group, so the two always agree and membership checks compare like with like.
+    Strips the Keycloak "/" prefix, lowercases, strips a leading ``ggd-<1-4 digits>-``
+    prefix, then folds "_" to "-", so "/ggd-1234-platforms", "Platforms" and "My_Team"
+    each land on one canonical group. Applied to both the token's groups and a
+    request-supplied one, so membership compares like with like.
 
     Lowercasing runs *before* the prefix strip so an upper-case prefix
     ("GGD-1234-Team") is still recognized, and before the "_" fold so neither
@@ -129,12 +126,10 @@ def validate_hostname(host: str) -> str:
 def validate_git_url(url: str) -> str:
     """Validate a source repository URL as http(s) with a host and no userinfo.
 
-    The platform authenticates a clone with a basic-auth Secret (a username and
-    the caller's token), which only applies over http(s). An scp-style ref like
-    ``git@host:org/repo.git`` has no scheme, so it silently becomes a
-    ``kpack.io/git`` annotation kpack cannot match the credential against, and
-    the build fails as an auth error nowhere near its cause. An empty URL is
-    accepted by every check downstream and fails the same way.
+    The clone authenticates with a basic-auth Secret, which only applies over
+    http(s). An scp-style ref has no scheme, so it becomes a ``kpack.io/git``
+    annotation kpack cannot match, failing as an auth error nowhere near its cause.
+    An empty URL passes every downstream check and fails the same way.
 
     Embedded credentials are rejected rather than stripped: the URL is written
     verbatim to ``Image.spec.source.git.url``, so a password in it would sit in
@@ -230,11 +225,9 @@ def validate_source_path(path: str) -> str:
 def object_name(name: str, group: str) -> str:
     """The cluster name of a workload and everything derived from it.
 
-    ``{name}-{group}`` is the platform's primary key: the KSVC, its config
-    Secrets, its git Secret and its kpack Image all hang off it, and a service
-    that starts from an Image has to be able to get back to the KSVC. It lives
-    here so the rule is written once - it was previously a helper in the
-    workloads engine plus two inline copies in the builder.
+    ``{name}-{group}`` is the platform's primary key: the KSVC, its config Secrets,
+    its git Secret and its kpack Image all hang off it, and a service starting from
+    an Image has to get back to the KSVC. Written once, here.
 
     Args:
         name: The workload name.
@@ -249,12 +242,10 @@ def object_name(name: str, group: str) -> str:
 def validate_object_name(name: str, group: str) -> str:
     """Check that ``{name}-{group}`` still fits where it has to be written.
 
-    ``name`` and ``group`` are each a legal DNS-1123 label, but the primary key
-    is their concatenation and that is what becomes the KSVC name and the first
-    label of ``{name}-{group}.{route_domain}``. Both are capped at 63: Knative
-    backs a Service with a Kubernetes Service, and a DNS label cannot be longer.
-    Two 63-character halves are individually valid and produce a 127-character
-    name the cluster rejects, so the pair has to be checked as a pair.
+    Each half is a legal DNS-1123 label, but the primary key is their concatenation,
+    and that becomes the KSVC name and the first label of the host. Both are capped
+    at 63, so two 63-character halves are individually valid and produce a
+    127-character name the cluster rejects. The pair has to be checked as a pair.
 
     Args:
         name: The workload name.
@@ -285,17 +276,15 @@ def image_tag(branch: str) -> str:
     branch itself - ``feature/login`` builds from that exact ref but pushes to
     ``feature-login``.
 
-    Two branches differing only in characters that get replaced would collide on
-    one tag (``feature/login`` and ``feature-login``). That is accepted: the
-    alternative is an encoded tag nobody can read in a registry listing, and the
-    pair is unusual in one repository. The git revision is never rewritten, so a
+    Two branches differing only in replaced characters collide on one tag
+    (``feature/login`` and ``feature-login``). Accepted: the alternative is a tag
+    nobody can read in a registry listing. The revision is never rewritten, so a
     build always compiles the branch that was asked for.
 
-    A branch can also project to *nothing*: git refs are UTF-8, so a branch with
-    no ASCII in it at all is legal and every character of it is replaced. An
-    empty tag would silently produce the malformed reference ``repo:`` on both
-    the kpack Image and the KSVC, so those fall back to a digest of the branch -
-    unreadable, but deterministic, which is what active/active convergence needs.
+    A branch can also project to *nothing*: git refs are UTF-8, so one with no ASCII
+    is legal and every character of it is replaced. The empty tag would make the
+    reference ``repo:``, so those fall back to a digest of the branch - unreadable,
+    but deterministic, which is what convergence needs.
 
     Args:
         branch: The branch name (already validated).
@@ -309,10 +298,8 @@ def image_tag(branch: str) -> str:
     return tag
 
 
-# Validated string types shared by request models, query params and the build
-# contract. The group validator also NORMALIZES ("/ggd-1234-team" -> "team",
-# "My_Team" -> "my-team"), so every group entering the app is already in bare,
-# canonical form at the edge - nothing downstream re-normalizes.
+# Shared by request models, query params and the build contract. The group
+# validator also NORMALIZES, so nothing downstream re-normalizes.
 Name = Annotated[str, AfterValidator(validate_name)]
 Group = Annotated[str, AfterValidator(validate_group)]
 Hostname = Annotated[str, AfterValidator(validate_hostname)]
