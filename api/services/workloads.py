@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -699,8 +698,15 @@ class WorkloadService:
                     cluster.site,
                 )
 
-        obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-        status, revision = _ksvc_status(obj)
+        # Status comes from the apply response, not a re-read. Server-side apply
+        # returns the stored object - it is already trusted enough to source the
+        # ownerReference every derived resource hangs off - and Knative has not
+        # reconciled microseconds later, so a second GET reports the same
+        # pre-reconciliation state for an extra cross-site round trip on every
+        # site of every deploy. An empty response falls back to the manifest we
+        # sent, which carries no status and so reads as Deploying: the right
+        # answer for a workload that was just written.
+        status, revision = _ksvc_status(applied[0] if applied else ksvc)
         return SiteStatus(site=cluster.site, status=status, revision=revision)
 
     async def load_existing(self, name: str, offering: str, user: Principal, group: str) -> dict:
@@ -985,12 +991,16 @@ class WorkloadService:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
             status, revision = _ksvc_status(obj)
-            # The Revision (for live scale) and pod usage are independent cluster
-            # reads; fetch them concurrently to cut this site's read latency.
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                rev_f = pool.submit(self._revision, cluster, revision)
-                usage_f = pool.submit(self._site_usage, cluster, oname)
-                rev, usage = rev_f.result(), usage_f.result()
+            # Sequential on purpose. These two reads used to run in a
+            # ThreadPoolExecutor built per site per request, which spawned and tore
+            # down two threads on every poll - and nested that pool inside the
+            # default executor this very function borrowed its worker from, so
+            # enough concurrent polls filled the outer pool with workers doing
+            # nothing but waiting on the inner one. Concurrency belongs at the
+            # fan-out, where sites already run in parallel; both of these go to the
+            # same cluster, so running them in order costs one round trip.
+            rev = self._revision(cluster, revision)
+            usage = self._site_usage(cluster, oname)
             replicas = _revision_replicas(rev)
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
@@ -1039,7 +1049,20 @@ class WorkloadService:
         # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
-        spec = await asyncio.to_thread(self._describe_spec, cluster, obj)
+        # Independent reads of different objects - the spec's ConfigMaps and pull
+        # secret, and the function's kpack Image - so they overlap instead of
+        # chaining two round trips onto the response. Only a function has a build.
+        spec_read = asyncio.to_thread(self._describe_spec, cluster, obj)
+        if kind == OFFERING_FUNCTION:
+            spec, build = await asyncio.gather(
+                spec_read, asyncio.to_thread(self._build_status, name, group)
+            )
+        else:
+            spec, build = await spec_read, None
+        # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
+        # (guarded above) and every entry holds an object, and _describe_spec
+        # always returns a WorkloadSpec. Guarding them would advertise a nullable
+        # that does not exist, which is how a real one stops being noticeable.
         common = dict(
             name=name,
             group=group,
@@ -1047,30 +1070,29 @@ class WorkloadService:
             hostname=host,
             overallStatus=overall,
             size=meta_holder.get("size"),
-            createdAt=_creation_time(obj) if obj else None,
+            createdAt=_creation_time(obj),
             sites=statuses,
-            scaling=spec.scaling if spec else None,
-            env=spec.env if spec else [],
-            files=spec.files if spec else [],
+            scaling=spec.scaling,
+            env=spec.env,
+            files=spec.files,
         )
         if kind == OFFERING_FUNCTION:
             # function-only: runtime (from annotation); no image (built artifact)
-            annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) if obj else {}
-            build = await asyncio.to_thread(self._build_status, name, group)
+            annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
             return FunctionResponse(
                 **{**common, "overallStatus": _with_build_status(overall, build)},
-                runtime=(annotations or {}).get(ANNOTATION_RUNTIME),
-                gitRepo=spec.gitRepo if spec else None,
-                branch=spec.branch if spec else None,
-                path=spec.path if spec else None,
+                runtime=annotations.get(ANNOTATION_RUNTIME),
+                gitRepo=spec.gitRepo,
+                branch=spec.branch,
+                path=spec.path,
                 build=build,
             )
         # container-only: the client-supplied image
         return ContainerResponse(
             **common,
-            image=_extract_image(obj) if obj else None,
-            registryUsername=spec.registryUsername if spec else None,
-            port=spec.port if spec else None,
+            image=_extract_image(obj),
+            registryUsername=spec.registryUsername,
+            port=spec.port,
         )
 
     def _build_status(self, name: str, group: str) -> BuildStatusView | None:

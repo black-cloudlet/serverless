@@ -2,12 +2,12 @@
 
 Review of the application code (`api/`, `common/`, ~7,200 lines).
 
-Findings 1, 2, 3, 4, 8b and 9 have since been **fixed**; each is marked, with the
-fix summarised above its original analysis. The rest stand as findings.
+Findings 1, 2, 3, 4, 8b and 9-13 have since been **fixed**; each is marked, with
+the fix summarised above its original analysis. Findings 5, 6, 7 and 8 stand.
 
 Baseline at the time of the review: `pytest` green (289 passed) and `ruff check .`
 clean — so everything below slipped past the existing gates. After the fixes: 300
-passed, ruff clean.
+passed, ruff clean, coverage 94.3%.
 
 Verification note: findings marked **verified** were reproduced by driving the
 real service objects against fake clusters. `pyproject.toml` requires Python
@@ -463,7 +463,16 @@ either (the apply is still not atomic with the check). One pass, at accept, with
 the result threaded into the background work, matches what the code already does
 for `existing` in `accept_update`.
 
-### 10. A thread pool is constructed per site, per request
+### 10. A thread pool is constructed per site, per request — FIXED
+
+Fixed by deleting the inner pool and running the two reads in order on the
+fan-out worker. Concurrency belongs at the fan-out, where sites already run in
+parallel; both reads go to the same cluster, so serialising them costs one round
+trip and removes the nesting entirely. Pinned by
+`test_get_reads_a_sites_revision_and_usage_on_the_fanout_thread`, which asserts
+all three reads report the same thread name — a spawned thread fails it.
+Original analysis follows.
+
 
 Inside `fetch`, which is *itself* already running on a worker borrowed from the
 event loop's default executor (`deployer.fanout` → `asyncio.to_thread(fn,
@@ -507,7 +516,18 @@ outer fan-out — they are already inside a thread, so `_revision` and
 proceed in parallel. The second is simpler and loses little: the two reads are
 against the same cluster, so serialising them costs one round trip, not two.
 
-### 11. `get()` serializes reads that could overlap
+### 11. `get()` serializes reads that could overlap — FIXED
+
+The spec read and the build read now run under one `asyncio.gather`. Pinned by
+`test_get_overlaps_the_spec_and_build_reads`, which asserts the two intervals
+intersect rather than measuring elapsed time, so it does not depend on machine
+speed: run in sequence the windows cannot overlap, run concurrently they must.
+
+The ConfigMap loop is left sequential — fixing finding 10 removed the
+inconsistency that made it worth flagging, and the loop is at most one iteration
+in practice (`resolve_files` aggregates every non-secret file into a single
+`{workload}-files` ConfigMap). Original analysis follows.
+
 
 Two independent blocking reads run one after the other on the event loop:
 
@@ -540,7 +560,19 @@ demonstrates, twelve lines up, that it knows how to overlap independent reads
 (finding 10). Two adjacent pieces of code disagreeing about whether concurrency
 is worth it is the kind of thing that makes a reader distrust both.
 
-### 12. `_apply_to_site` re-reads the object it just applied
+### 12. `_apply_to_site` re-reads the object it just applied — FIXED
+
+Status now comes from `applied[0]`, with the manifest as the fallback when the
+apply response is empty (it carries no status, so it reads as `Deploying` — the
+right answer for a workload just written). One create across two sites drops
+from 14 cluster reads to 12. Pinned by
+`test_apply_takes_status_from_the_apply_response_not_a_second_read`, which counts
+KSVC reads through a create and asserts exactly one (the pre-flight probe).
+
+The caution recorded below still stood; what changed is that it was addressed
+deliberately, with its own test, rather than as a ride-along on finding 9.
+Original analysis follows.
+
 
 ```python
 applied = cluster.apply(ksvc)
@@ -571,7 +603,19 @@ ride-along on a latency fix. If it goes, the honest replacement is
 `_ksvc_status(applied[0])` plus a comment saying the status is the apply
 response's and is expected to be pre-reconciliation.
 
-### 13. Dead conditionals
+### 13. Dead conditionals — FIXED
+
+**Correction to the original analysis below:** it claimed `spec` "genuinely can
+be `None`". It cannot. `_describe_spec` returns `describe_svc.parse_spec(...)`,
+which returns a `WorkloadSpec` unconditionally — there is no `None` path. So the
+`if spec else` guards were dead too, not just the `obj` ones, and both sets are
+now gone. `path=spec.path if spec else None` — the line finding 1 lived on —
+reads `path=spec.path`.
+
+A comment in place of the guards records why neither value is optional, so the
+invariant is stated once rather than re-implied at each use. Original analysis
+follows.
+
 
 By the time `get()` reaches its response construction, `obj` is provably not
 `None`:
@@ -639,7 +683,7 @@ caught them stubs the service out one layer higher.
 | 8 | Low | `load_existing` `StopIteration` under a fan-out timeout race (latent) |
 | 8b | Low | `image` is the only caller-supplied cluster identifier with no validator (**fixed**) |
 | 9 | Efficiency | Pre-flight ran two fan-outs per moment; merged into one (5 → 3 round trips) (**fixed**) |
-| 10 | Efficiency | `ThreadPoolExecutor` built per site, per request, nested in the default executor |
-| 11 | Efficiency | `get()` serializes spec/build/ConfigMap reads |
-| 12 | Efficiency | `_apply_to_site` re-GETs the object it just applied |
-| 13 | Cleanup | Dead `if obj else` guards in `get()` |
+| 10 | Efficiency | `ThreadPoolExecutor` built per site, per request, nested in the default executor (**fixed**) |
+| 11 | Efficiency | `get()` serializes the spec and build reads (**fixed**) |
+| 12 | Efficiency | `_apply_to_site` re-GETs the object it just applied (**fixed**) |
+| 13 | Cleanup | Dead `if obj else` / `if spec else` guards in `get()` (**fixed**) |

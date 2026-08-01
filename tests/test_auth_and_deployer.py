@@ -2875,3 +2875,152 @@ async def test_function_update_rejects_unknown_runtime():
 
     with pytest.raises(ValidationError):
         await fsvc.accept_update("team", "fn", spec, user, BackgroundTasks())
+
+
+async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
+    """The apply path must not re-read the KSVC it just wrote.
+
+    Server-side apply returns the stored object - already trusted enough to
+    source the ownerReference every derived resource hangs off - and Knative has
+    not reconciled microseconds later, so a follow-up GET buys nothing and costs
+    a cross-site round trip on every site of every deploy.
+    """
+    from api.auth.claims import Principal
+    from api.models.container import ContainerCreate
+    from api.services.container import ContainerService
+    from common.cluster import ResourceKind
+
+    class _CountingApply(_ApplyCluster):
+        ksvc_gets = 0
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                type(self).ksvc_gets += 1
+            return super().get(kind, name, label_selector, namespace)
+
+    _CountingApply.ksvc_gets = 0
+    cluster = _CountingApply("site-a", {})
+    engine = _workload_service({"site-a": cluster})
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    body, _ = await ContainerService(engine).create(
+        "team", ContainerCreate(name="api", image="reg/x:1", port=8080), user
+    )
+
+    # exactly one: the pre-flight absence probe. The post-apply read-back is gone.
+    assert _CountingApply.ksvc_gets == 1
+    # and the status still comes back, sourced from the apply response
+    assert body.sites[0].status == "Deploying"  # just written, not yet reconciled
+
+
+async def test_get_reads_a_sites_revision_and_usage_on_the_fanout_thread():
+    """No per-site, per-request thread pool.
+
+    These two reads used to run in a ThreadPoolExecutor constructed inside the
+    fan-out worker - nesting a pool inside the default executor the worker was
+    itself borrowed from. Running them on the calling thread is what keeps a
+    poll loop from filling the outer pool with threads that only wait.
+    """
+    import threading
+
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+
+    seen: dict[str, str] = {}
+    ksvc = _bare_ksvc()
+    # a revision name is what makes the Revision read happen at all
+    ksvc["status"] = {
+        "conditions": [{"type": "Ready", "status": "True"}],
+        "latestReadyRevisionName": "app-team-00001",
+    }
+
+    class _ThreadRecordingCluster:
+        site = name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            here = threading.current_thread().name
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                seen["ksvc"] = here
+                return ksvc
+            if kind == ResourceKind.KNATIVE_REVISION:
+                seen["revision"] = here
+                return {"status": {"actualReplicas": 2}}
+            if kind == ResourceKind.POD_METRICS:
+                seen["usage"] = here
+                return []
+            raise AssertionError(f"unexpected kind {kind}")
+
+    engine = _workload_service({"site-a": _ThreadRecordingCluster()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    await engine.get("container", "app", user, "team")
+
+    assert {"ksvc", "revision", "usage"} <= seen.keys()
+    assert seen["revision"] == seen["ksvc"], "revision read spawned a thread"
+    assert seen["usage"] == seen["ksvc"], "usage read spawned a thread"
+
+
+async def test_get_overlaps_the_spec_and_build_reads():
+    """The spec read and the build read are independent, so they must overlap.
+
+    Asserted as overlapping intervals rather than elapsed time, so the result
+    does not depend on how fast or loaded the machine is: run in sequence the
+    two windows cannot intersect, run concurrently they must.
+    """
+    import time
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.files import VolumeSpec
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.contract import BuildStatus
+
+    # a function carrying one mounted file, so reading its spec costs a ConfigMap get
+    ksvc = build_ksvc(
+        name="app-team",
+        group="team",
+        owner="alice",
+        image="reg/app:main",
+        offering="function",
+        host="app-team.ex.com",
+        env=[],
+        volumes=[
+            VolumeSpec("files-config", "configmap", "app-team-files", "/etc/a.conf", "etc-a.conf")
+        ],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+    )
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+
+    spans: dict[str, list[float]] = {}
+
+    def _record(key):
+        spans[key] = [time.monotonic()]
+        time.sleep(0.05)
+        spans[key].append(time.monotonic())
+
+    class _SpecCluster:
+        site = name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            if kind == ResourceKind.CONFIG_MAP:
+                _record("spec")
+                return {"data": {}}
+            from common.errors import NotFoundError as _NF
+
+            raise _NF("best-effort")
+
+    class _SlowBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            _record("build")
+            return BuildStatus(state="Ready")
+
+    engine = _workload_service({"site-a": _SpecCluster()}, builder=_SlowBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    await engine.get("function", "app", user, "team")
+
+    (spec_start, spec_end), (build_start, build_end) = spans["spec"], spans["build"]
+    assert spec_start < build_end and build_start < spec_end, "reads did not overlap"
