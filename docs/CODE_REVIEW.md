@@ -226,7 +226,20 @@ but a dockerconfigjson entry for Docker Hub must be keyed
 `https://index.docker.io/v1/`. Moot in an airgapped install pointed at the
 internal mirror; the helper is written as a general-purpose one.
 
-### 8b. `image` is the one request field with no validation rule — LOW
+### 8b. `image` is the one request field with no validation rule — LOW — FIXED
+
+Fixed: `ImageRef` / `validate_image_ref` added to `common/names.py` and applied
+to `ContainerCreate.image` and `ContainerUpdate.image`. It enforces the OCI
+distribution grammar (optional `domain[:port]`, lowercase path components,
+optional `:tag` and/or `@algorithm:hex`), strips surrounding whitespace, and
+rejects internal whitespace. A missing tag is still accepted and still means
+`:latest` — that is a policy question, not a well-formedness one.
+
+A companion test asserts `common.contract.image_reference` (which composes the
+tag a function's KSVC is deployed against) produces references
+`validate_image_ref` accepts, so the platform cannot generate a reference its own
+container endpoint would reject. Original analysis follows.
+
 
 `common/names.py` states the convention: these types live in `common` "because
 the same rules bound what reaches a cluster". Every caller-supplied string that
@@ -261,21 +274,63 @@ Two other request fields are plain `str` **by design**, not by omission:
   one label under the platform base domain is enforced in
   `WorkloadService.host_for`, which is where the base domain is known.
 
-### 8c. Why the response models are plain `str` (they should stay that way)
+### 8c. Should the read path validate at all?
 
-Worth recording, since it looks like the same omission and isn't. `WorkloadSpec`,
-`WorkloadBase`, `WorkloadSummary`, `FunctionResponse` and `ContainerResponse` all
-use plain `str` for fields whose request-side counterparts are validated.
+Worth recording, since the plain `str` on `WorkloadSpec`, `WorkloadBase`,
+`WorkloadSummary`, `FunctionResponse` and `ContainerResponse` looks like the same
+omission as 8b and isn't.
 
-That is correct. The `Annotated` types carry `AfterValidator`s, which *reject*.
-On a request that is the point. On a read-back it inverts the failure mode:
-anything already in the cluster that no longer satisfies a current rule — written
-by an older version, hand-edited, or migrated — would make `GET` raise instead of
-showing the operator what is actually deployed. Worse, `parse_spec` raises
-Pydantic's `ValidationError`, not `common.errors.ValidationError`, so it would
-land as an unenveloped 500 (finding 5) rather than a 400.
+Version skew is *not* the reason. There is no older version deployed and no
+backward-compatibility requirement, so "an older writer stored something the
+current rule rejects" carries no weight here. The conclusion survives anyway, on
+four grounds that do not depend on it:
 
-Requests validate; reads report. The split is deliberate and consistent.
+**Validation is a gate, and a read has no upstream to gate.** The point of an
+`AfterValidator` is to stop bad data entering the system. On the read path the
+data is already in the cluster. Rejecting it prevents nothing — it only decides
+whether the operator is allowed to see it.
+
+**`GET` is the diagnostic.** It is the advertised `statusUrl` and the only way to
+find out what a workload is actually running. Making it fail *because* something
+is wrong removes the tool you reach for precisely when something is wrong. This
+is not hypothetical: the platform is not the only writer to
+`workloads_namespace`. A KSVC is an ordinary object, reachable by `oc edit`, by
+another controller, or by a GitOps reconciler.
+
+**Several of these validators normalize, so running them on read would make the
+response lie.** `validate_group` folds `_` to `-` and lowercases,
+`validate_source_path` strips surrounding `/`, and the new `validate_image_ref`
+strips whitespace. Applied to a read they would report a *cleaned* value while
+the cluster holds the original — the one situation where a read must not be
+helpful.
+
+**Some values are rewritten downstream and were never the caller's to begin
+with.** A function's running image may be a digest kpack resolved, not the tag
+that was submitted — `function.update` reasons about exactly this ("it may be a
+digest a finished build resolved"). A read-side rule tuned for request input
+would be judging a string no client ever sent.
+
+So: **validate what you author, report what you observe.**
+
+That is not the same as "no validation on responses", and the codebase already
+draws the line in the right place. Values the *API itself* produces are enforced
+on the way out, because a violation is our bug and should be loud —
+`overallStatus: WorkloadStatus` is a `Literal`, with the comment at
+`api/models/common.py:78` making the intent explicit:
+
+> A Literal, not a comment, so it is enforced on every response and /info can
+> advertise it instead of a portal hardcoding it.
+
+And `SiteStatus.status` is left a plain `str` for the mirror-image reason, also
+stated in place: it doubles as the return type of the internal host/absence
+probes (`Available`, `Absent`, `Taken`), so only the client-facing subset is
+published rather than enforced.
+
+The one thing that *would* be worth changing is the failure mode, not the rules.
+`parse_spec` raising Pydantic's `ValidationError` — not
+`common.errors.ValidationError` — means any read-side model violation surfaces as
+an unenveloped 500 (finding 5), with no code and no request id. Fixing finding 5
+covers that without putting input rules on the read path.
 
 ### 8. `load_existing` can raise `StopIteration` — LOW, latent (not reproduced)
 
@@ -404,7 +459,7 @@ caught them stubs the service out one layer higher.
 | 6 | Medium | Failed background deploys are unobservable; `status_code_for` is dead |
 | 7 | Low | `container.update` can write `"username": null` into a pull secret |
 | 8 | Low | `load_existing` `StopIteration` under a fan-out timeout race (latent) |
-| 8b | Low | `image` is the only caller-supplied cluster identifier with no validator |
+| 8b | Low | `image` is the only caller-supplied cluster identifier with no validator (**fixed**) |
 | 9 | Efficiency | Create/update run their cross-site pre-flight twice (14 calls for one create) |
 | 10 | Efficiency | `ThreadPoolExecutor` built per site, per request, nested in the default executor |
 | 11 | Efficiency | `get()` serializes spec/build/ConfigMap reads |

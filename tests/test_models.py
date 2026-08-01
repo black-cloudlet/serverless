@@ -282,3 +282,70 @@ def test_the_published_schema_agrees_with_the_validator():
     assert "pattern" not in TypeAdapter(Group).json_schema()
     assert "pattern" not in TypeAdapter(SourcePath).json_schema()
     assert TypeAdapter(Group).validate_python("My_Team") == "my-team"
+
+
+def test_image_must_be_a_well_formed_reference():
+    """The image is written verbatim to containers[0].image.
+
+    Unvalidated, an empty or padded reference is accepted (202) and only fails
+    minutes later as a bare ErrImagePull on a revision, with nothing tying it
+    back to the field that caused it.
+    """
+    from api.models.container import ContainerCreate
+
+    for bad in [
+        "",
+        "   ",
+        "\n",
+        "reg/x:1 --rm",  # trailing junk
+        "reg.internal/team/app:1\nreg/evil:1",  # embedded newline
+        "reg.internal/Team/App:1",  # upper case in the path
+        "reg.internal/team/app:",  # empty tag
+        "reg.internal//app:1",  # empty path component
+        "/team/app:1",  # leading slash
+        "reg.internal/team/app@sha256:zzzz",  # not a hex digest
+        "x" * 513,
+    ]:
+        with pytest.raises(ValidationError):
+            ContainerCreate(name="x", image=bad, port=8080)
+
+    for ok in [
+        "nginx",  # implicit :latest, and implicit Docker Hub
+        "nginx:1.25",
+        "registry.internal/team/app:1.2.3",
+        "registry.internal:5000/team/app:v1",
+        "registry.internal/team/sub/app:main",
+        "registry.internal/team/app@sha256:" + "a" * 64,
+        "registry.internal/team/app:main@sha256:" + "a" * 64,
+    ]:
+        assert ContainerCreate(name="x", image=ok, port=8080).image == ok
+
+    # a reference pasted from a console usually carries surrounding whitespace
+    assert ContainerCreate(name="x", image="  reg/app:1\n", port=8080).image == "reg/app:1"
+
+
+def test_the_platform_builds_function_tags_the_image_validator_accepts():
+    """image_reference() and validate_image_ref must agree on one grammar.
+
+    A function's KSVC is deployed against a tag this codebase composes itself.
+    If the two drifted, the platform could generate a reference its own
+    container endpoint would reject - the same string, two verdicts.
+    """
+    from common.contract import BuildRequest, image_reference
+    from common.names import validate_image_ref
+
+    for registry_base, branch in [
+        ("registry.internal", "main"),
+        ("registry.internal/serverless", "release/2026-01"),
+        ("registry.internal:5000/serverless", "feature/UPPER_Case"),
+    ]:
+        req = BuildRequest(
+            name="image-resizer",
+            group="payments",
+            git_url="https://git.internal/o/r.git",
+            branch=branch,
+            git_token="t",
+            runtime="python",
+        )
+        ref = image_reference(registry_base, req)
+        assert validate_image_ref(ref) == ref, ref

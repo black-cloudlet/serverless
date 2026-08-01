@@ -28,6 +28,7 @@ from common.names import (  # noqa: F401
     GitUrl,
     Group,
     Hostname,
+    ImageRef,
     Name,
     SourcePath,
     normalize_group,
@@ -35,6 +36,7 @@ from common.names import (  # noqa: F401
     validate_git_url,
     validate_group,
     validate_hostname,
+    validate_image_ref,
     validate_name,
     validate_source_path,
 )

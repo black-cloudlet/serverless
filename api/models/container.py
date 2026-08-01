@@ -10,6 +10,7 @@ from api.models.common import (
     EnvVar,
     FileMount,
     Hostname,
+    ImageRef,
     Name,
     Scaling,
     WorkloadResponse,
@@ -30,7 +31,7 @@ class ContainerCreate(BaseModel):
     """
 
     name: Name
-    image: str
+    image: ImageRef
     # Registry credentials are optional: omit both for a public image. When
     # supplied, both are required together (a username alone can't authenticate).
     registryUsername: str | None = None
@@ -64,7 +65,7 @@ class ContainerUpdate(BaseModel):
     so omitting it keeps what is stored.
     """
 
-    image: str
+    image: ImageRef
     # Registry creds: username+token rotates, username-only keeps, neither removes
     # (public); a token needs a username. See docs/ARCHITECTURE.md - Secrets for the full semantics.
     registryUsername: str | None = None

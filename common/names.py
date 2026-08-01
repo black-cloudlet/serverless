@@ -33,6 +33,22 @@ _UNDERSCORE = str.maketrans({"_": "-"})
 _TAG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _TAG_MAX = 128
 
+# An image reference, per the OCI distribution grammar:
+#   [domain[:port]/]path[/path...][:tag][@algorithm:hex]
+# Path components are lowercase - the registry rejects anything else - while a
+# tag may carry upper case. Assembled from the parts so each rule is legible.
+_IMG_DOMAIN_LABEL = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+_IMG_DOMAIN = rf"{_IMG_DOMAIN_LABEL}(?:\.{_IMG_DOMAIN_LABEL})*(?::[0-9]{{1,5}})?"
+_IMG_PATH_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+_IMG_TAG = r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}"
+_IMG_DIGEST = r"[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}"
+IMAGE_REFERENCE = re.compile(
+    rf"^(?:{_IMG_DOMAIN}/)?{_IMG_PATH_COMPONENT}(?:/{_IMG_PATH_COMPONENT})*"
+    rf"(?::{_IMG_TAG})?(?:@{_IMG_DIGEST})?$"
+)
+# The distribution spec caps a repository name at 255; a digest adds ~80 more.
+_IMAGE_MAX = 512
+
 # A KSVC name and a DNS label are both capped here, and {name}-{group} is both.
 MAX_OBJECT_NAME = 63
 
@@ -155,6 +171,49 @@ def validate_git_url(url: str) -> str:
     if "@" in parts.netloc:
         raise ValueError("gitRepo must not embed credentials; send the token as gitToken instead")
     return url.strip()
+
+
+def validate_image_ref(image: str) -> str:
+    """Validate a container image reference the caller wants deployed.
+
+    The value is written verbatim to ``containers[0].image`` and is parsed by
+    :func:`api.services.secrets.registry_of` to key the pull secret, so an
+    unusable reference passes every check here and surfaces minutes later as a
+    bare ``ErrImagePull`` on a revision - the failure mode the other validators
+    in this module exist to prevent.
+
+    Enforces the OCI distribution grammar: an optional ``domain[:port]``, one or
+    more lowercase path components, and an optional ``:tag`` and/or
+    ``@algorithm:hex`` digest. Surrounding whitespace is stripped (a value pasted
+    from a console usually carries some); whitespace *inside* is rejected, since
+    a reference cannot contain any and its presence means the field holds
+    something other than an image.
+
+    A reference with no tag is accepted and means ``:latest``, as it does
+    everywhere else - that it is a poor thing to deploy is a policy question,
+    not a well-formedness one.
+
+    Args:
+        image: The image reference.
+
+    Returns:
+        The reference, stripped of surrounding whitespace.
+
+    Raises:
+        ValueError: If it is empty or not a well-formed reference.
+    """
+    cleaned = image.strip()
+    if not cleaned:
+        raise ValueError("image must not be empty")
+    if len(cleaned) > _IMAGE_MAX:
+        raise ValueError(f"image must be at most {_IMAGE_MAX} characters")
+    if not IMAGE_REFERENCE.match(cleaned):
+        raise ValueError(
+            "image must be a container image reference like "
+            "'registry.internal/team/app:1.2.3' (optional registry and port, "
+            "lowercase path, optional ':tag' and/or '@sha256:...' digest)"
+        )
+    return cleaned
 
 
 def validate_branch(branch: str) -> str:
@@ -364,6 +423,18 @@ GitUrl = Annotated[
         "Repository URL. http(s) only, with no embedded credentials - the token goes in gitToken.",
         "https://git.internal/payments/hello.git",
         pattern=r"^https?://",
+    ),
+]
+ImageRef = Annotated[
+    str,
+    AfterValidator(validate_image_ref),
+    # No `pattern`: the validator strips surrounding whitespace first, so a
+    # pattern running ahead of it would reject what it fixes (as for Group/SourcePath).
+    _schema(
+        "Container image reference: optional 'registry[:port]/', lowercase path, "
+        "optional ':tag' and/or '@sha256:...' digest. No tag means ':latest'.",
+        "registry.internal/payments/checkout:1.2.3",
+        maxLength=_IMAGE_MAX,
     ),
 ]
 SourcePath = Annotated[
