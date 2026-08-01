@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from datetime import datetime
 from typing import Literal, get_args
@@ -140,12 +141,38 @@ class FileMount(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
-        """Validate the content fields (exactly one, or none only for a secret keep)."""
+        """Validate the content fields (exactly one, or none only for a secret keep).
+
+        Whether ``contentBase64`` decodes is a property of the field, so it is
+        settled here rather than in the service layer. It has to be: the accept
+        path echoes the submitted spec back (``describe.redact_files``) as an
+        argument expression, which runs *before* the service-layer validation, so
+        a check further in would be reached too late to answer with a 400.
+        """
         if self.content is not None and self.contentBase64 is not None:
             raise ValueError("file accepts at most one of 'content' or 'contentBase64'")
         if self.keep and not self.secret:
             raise ValueError("file requires exactly one of 'content' or 'contentBase64'")
+        if self.contentBase64 is not None:
+            try:
+                # Lenient: tolerates the line wrapping a PEM body carries, while
+                # still rejecting bad padding or a truncated blob.
+                base64.b64decode(self.contentBase64)
+            except ValueError as exc:
+                raise ValueError(
+                    f"file '{self.mountPath}' has invalid base64 content"
+                ) from exc
         return self
+
+    def decoded(self) -> bytes:
+        """The file's content as raw bytes (``b""`` for a keep).
+
+        Bytes because a file is a byte string: ``contentBase64`` exists so a caller
+        can mount a keystore or a DER certificate, which have no text form.
+        """
+        if self.contentBase64 is not None:
+            return base64.b64decode(self.contentBase64)
+        return (self.content or "").encode("utf-8")
 
 
 class Scaling(BaseModel):

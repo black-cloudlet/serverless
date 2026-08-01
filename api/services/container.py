@@ -138,9 +138,9 @@ class ContainerService:
                 spec.registryToken,
             )
 
-        await self._engine.assert_workload_absent(
-            spec.name, group, self._engine.deployer.resolve_targets(spec.sites)
-        )
+        # No absence probe here: apply_workload runs one combined host+absence pass
+        # over the same targets immediately before it mutates, which is both a
+        # stronger guard (nothing happens in between) and one fewer cross-site trip.
         body, code = await self._engine.apply_workload(
             name=spec.name,
             user=user,

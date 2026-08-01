@@ -1712,6 +1712,122 @@ async def test_delete_missing_workload_is_404():
     assert cluster.deleted == []  # nothing deleted when the workload is absent
 
 
+async def test_delete_fails_closed_when_a_site_cannot_be_reached():
+    """An unreachable site cannot prove the workload is gone.
+
+    Reporting 404 there would read as "already deleted" while the workload is
+    still serving on the site that did not answer - and would do so *after*
+    tearing down the build objects, leaving a running function that can never
+    rebuild. Every other cross-site check in the engine fails closed with 503;
+    delete has to as well.
+    """
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+    from common.errors import ServiceUnavailableError
+
+    up = _DeleteCluster("site-a", _ksvc("function"))
+    down = _DownCluster()
+    down.site = down.name = "site-b"
+    engine = _workload_service({"site-a": up, "site-b": down}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(ServiceUnavailableError):
+        await engine.delete("function", "app", user, "team")
+
+    # the build objects survive: nothing may be torn down on an unconfirmed delete
+    assert not any(kind != ResourceKind.KNATIVE_SERVICE for kind, _ in up.deleted)
+
+
+async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
+    """A conclusive "gone everywhere" is what licenses the build-object cleanup.
+
+    The KSVC being absent does not mean the build objects are: a partial delete
+    can orphan them, and a leftover Image keeps rebuilding a function nothing
+    runs. So the reap happens whenever the fan-out is conclusive, then the 404 is
+    reported for the workload itself.
+    """
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+    from common.errors import NotFoundError
+
+    cluster = _DeleteCluster("site-a", None)  # KSVC absent, build objects orphaned
+    engine = _workload_service({"site-a": cluster}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(NotFoundError):
+        await engine.delete("function", "app", user, "team")
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-app-team") in cluster.deleted
+    assert (ResourceKind.SERVICE_ACCOUNT, "fn-app-team") in cluster.deleted
+    assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
+
+
+async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
+    """An object_name collision resolving to another group must not delete anything.
+
+    The refusal is recorded per site rather than raised inside the fan-out, which
+    would swallow it into a per-site error string and make it indistinguishable
+    from an unreachable site.
+    """
+    from api.auth.claims import Principal
+    from api.models.common import LABEL_GROUP, LABEL_OFFERING
+    from common.errors import NotFoundError
+
+    foreign = _ksvc("function")
+    foreign["metadata"]["labels"] = {LABEL_GROUP: "other", LABEL_OFFERING: "function"}
+    cluster = _DeleteCluster("site-a", foreign)
+    engine = _workload_service({"site-a": cluster}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(NotFoundError):
+        await engine.delete("function", "app", user, "team")
+    assert cluster.deleted == []  # not the KSVC, and not the build objects
+
+
+async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
+    """Host and name are answered in a single visit per site.
+
+    Two separate fan-outs cost two cross-site round trips and described two
+    different instants. Merging them must not weaken either verdict, so both
+    conflicts and the fail-closed behaviour are pinned here.
+    """
+    from api.models.common import LABEL_WORKLOAD
+    from common.errors import ConflictError, ServiceUnavailableError
+
+    host = "app-team.serverless.example.com"
+
+    # host held by someone else -> conflict, even though the name is free
+    taken = {host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}}
+    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=taken)})
+    with pytest.raises(ConflictError, match="hostname"):
+        await svc.assert_deployable(
+            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+        )
+
+    # name already used -> conflict, even though the host is free
+    exists = {"app-team": {"metadata": {"name": "app-team"}}}
+    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=exists)})
+    with pytest.raises(ConflictError, match="already exists"):
+        await svc.assert_deployable(
+            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+        )
+
+    # an update does not require absence: its own KSVC and mapping are expected
+    own = {
+        "app-team": {"metadata": {"name": "app-team"}},
+        host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}},
+    }
+    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=own)})
+    await svc.assert_deployable("app", "team", svc.deployer.resolve_targets(None), host=host)
+
+    # a site that cannot answer proves neither -> 503, not a silent pass
+    svc = _workload_service({"site-a": _DownCluster()})
+    with pytest.raises(ServiceUnavailableError):
+        await svc.assert_deployable(
+            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+        )
+
+
 async def test_apply_sets_owner_references_on_derived():
     """Every resource derived from a workload (env/files Secret & ConfigMap, the
     imagePullSecret, and the DomainMapping) must carry an ownerReference to the

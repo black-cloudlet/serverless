@@ -336,8 +336,11 @@ class WorkloadService:
         # Validate synchronously (400) before the 202, so bad input never reaches the
         # background deploy.
         self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
-        await self.assert_host_available(host, spec.name, group, targets)
-        await self.assert_workload_absent(spec.name, group, targets)
+        # Host and name in one pass: an immediate 409 is the point of doing this
+        # synchronously, and one round trip answers both.
+        await self.assert_deployable(
+            spec.name, group, targets, host=host, require_absent=True
+        )
         background.add_task(self.run, work, group, spec, user)
         return self.accepted(offering, spec.name, group, host, **extra)
 
@@ -423,7 +426,7 @@ class WorkloadService:
         path: str | None = None,
         prev_host: str | None = None,
         kept_env: dict[str, str] | None = None,
-        kept_files: dict[str, str] | None = None,
+        kept_files: dict[str, bytes] | None = None,
         extra_secrets: list[dict] = (),
         local_resources: list[dict] = (),
     ) -> tuple[WorkloadResponse, int]:
@@ -477,9 +480,15 @@ class WorkloadService:
         targets = self.deployer.resolve_targets(sites)
         host = self.host_for(name, hostname, group)
 
-        # The DomainMapping name IS the host, so an idempotent apply would hijack
-        # another workload's mapping. Reject a host already owned by someone else.
-        await self.assert_host_available(host, name, group, targets)
+        # Re-checked here, immediately before the mutation, and not merely trusted
+        # from accept time: this is the guard, and it has to be the last thing that
+        # happens before the apply. The DomainMapping name IS the host, so an
+        # idempotent apply would otherwise hijack another workload's mapping; on a
+        # create the same pass also confirms the name is still unused, which is why
+        # the offering services no longer probe for that separately.
+        await self.assert_deployable(
+            name, group, targets, host=host, require_absent=created
+        )
 
         resolved = resolve_files(oname, group, user.username, files, kept_files)
         resolved_env = resolve_env(oname, group, user.username, env, kept_env)
@@ -780,8 +789,9 @@ class WorkloadService:
             "host": ann.get(ANNOTATION_HOST),
             "pull_secret": ps_name,
             # Existing secret values, so an update can keep a redacted secret the
-            # client sent back without a value (see resolve_env/_files).
-            "env_values": self._secret_data(cluster, env_secret_name(oname)),
+            # client sent back without a value (see resolve_env/_files). Env values
+            # are text; file content is bytes, which is why they read differently.
+            "env_values": self._secret_text(cluster, env_secret_name(oname)),
             "files_values": self._secret_data(cluster, files_name(oname)),
         }
         # Existing registry creds (decoded from the pull secret), so a keep (token
@@ -796,7 +806,7 @@ class WorkloadService:
         # Functions carry a stored git token; read it so a build-input change can
         # rebuild without the client re-supplying it.
         if offering == OFFERING_FUNCTION:
-            git = self._secret_data(cluster, secret_svc.git_secret_name(oname))
+            git = self._secret_text(cluster, secret_svc.git_secret_name(oname))
             state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
         return state
 
@@ -808,7 +818,7 @@ class WorkloadService:
         env,
         files,
         kept_env: dict[str, str] | None = None,
-        kept_files: dict[str, str] | None = None,
+        kept_files: dict[str, bytes] | None = None,
     ) -> None:
         """Validate a spec synchronously, before the request is accepted.
 
@@ -838,70 +848,86 @@ class WorkloadService:
         resolve_files(oname, group, owner, files, kept_files)
         resolve_env(oname, group, owner, env, kept_env)
 
-    async def assert_host_available(
-        self, host: str, name: str, group: str, targets: list[Cluster]
+    async def assert_deployable(
+        self,
+        name: str,
+        group: str,
+        targets: list[Cluster],
+        *,
+        host: str | None = None,
+        require_absent: bool = False,
     ) -> None:
-        """Assert ``host`` is free, failing closed if a site is unreachable.
+        """Assert a workload can be deployed: host free, and optionally name unused.
 
-        Only a real 404 means "free"; an unreachable site can't prove the host is
-        free, so we fail closed (503) rather than treat it as available - otherwise
-        a create against a down peer could hijack its existing DomainMapping.
+        Both questions are answered in ONE visit per site. They used to be two
+        separate fan-outs, which cost two cross-site round trips per deploy and -
+        worse - described two different instants; asking together means a site's
+        two answers cannot disagree about the moment they were taken.
+
+        Only a real 404 means free/absent. An unreachable site can't prove either,
+        so this fails closed (503) rather than treating silence as consent -
+        otherwise a create against a down peer could hijack its DomainMapping or
+        overwrite a workload it is still serving.
+
+        This does not make the deploy atomic, and is not meant to: the apply that
+        follows is a separate operation, so a peer can still claim the host in
+        between. It is the guard that makes that window small and the failure
+        loud, which is why the apply path runs it again immediately before
+        mutating rather than trusting the accept-time result.
 
         Args:
-            host: The external host (== the DomainMapping name) to check.
             name: The workload name claiming the host.
             group: The workload's owning group.
             targets: The clusters to check.
+            host: The external host (== the DomainMapping name); None skips the
+                host check (nothing is claiming a host).
+            require_absent: Also require that no workload of this name exists
+                (create only - an update is expected to find its own).
 
         Raises:
-            ConflictError: If the host is a DomainMapping owned by another workload.
-            ServiceUnavailableError: If any site was unreachable.
-        """
-        oname = object_name(name, group)
-
-        def check(cluster: Cluster) -> SiteStatus:
-            try:
-                existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
-            except NotFoundError:
-                return SiteStatus(site=cluster.site, status="Available")
-            labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
-            owner_workload = labels.get(LABEL_WORKLOAD)
-            status = "Available" if owner_workload == oname else "Taken"
-            return SiteStatus(site=cluster.site, status=status)
-
-        statuses = await self.deployer.fanout(targets, check)
-        if any(s.status == "Taken" for s in statuses):
-            raise ConflictError(f"hostname '{host}' is already assigned")
-        self._assert_all_sites_checked(statuses, f"verify hostname '{host}' is available")
-
-    async def assert_workload_absent(self, name: str, group: str, targets: list[Cluster]) -> None:
-        """Assert no workload named ``{name}-{group}`` exists yet (create only).
-
-        Only a real 404 means "absent"; an unreachable site can't prove absence, so
-        we fail closed (503) rather than risk creating over an existing workload.
-
-        Args:
-            name: The workload name (also used in the error message).
-            group: The workload's owning group.
-            targets: The clusters to check.
-
-        Raises:
-            ConflictError: If a workload named ``{name}-{group}`` already exists.
+            ConflictError: If the host belongs to another workload, or the name is
+                already taken.
             ServiceUnavailableError: If any site was unreachable.
         """
         oname = object_name(name, group)
 
         def probe(cluster: Cluster) -> SiteStatus:
-            try:
-                cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-                return SiteStatus(site=cluster.site, status="Exists")
-            except NotFoundError:
-                return SiteStatus(site=cluster.site, status="Absent")
+            if host is not None:
+                try:
+                    existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
+                except NotFoundError:
+                    existing = None
+                if existing is not None:
+                    labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
+                    # The workload's own mapping counts as available (update path).
+                    if labels.get(LABEL_WORKLOAD) != oname:
+                        return SiteStatus(site=cluster.site, status="Taken")
+            if require_absent:
+                try:
+                    cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+                    return SiteStatus(site=cluster.site, status="Exists")
+                except NotFoundError:
+                    pass
+            return SiteStatus(site=cluster.site, status="Available")
 
         statuses = await self.deployer.fanout(targets, probe)
+        # The host conflict is reported first: it is the one an idempotent apply
+        # would silently resolve by hijacking another workload's mapping.
+        if any(s.status == "Taken" for s in statuses):
+            raise ConflictError(f"hostname '{host}' is already assigned")
         if any(s.status == "Exists" for s in statuses):
             raise ConflictError(f"workload '{name}' already exists")
-        self._assert_all_sites_checked(statuses, f"verify workload '{name}' is absent")
+        self._assert_all_sites_checked(statuses, f"verify workload '{name}' can be deployed")
+
+    async def assert_host_available(
+        self, host: str, name: str, group: str, targets: list[Cluster]
+    ) -> None:
+        """Assert ``host`` is free (see :meth:`assert_deployable`)."""
+        await self.assert_deployable(name, group, targets, host=host)
+
+    async def assert_workload_absent(self, name: str, group: str, targets: list[Cluster]) -> None:
+        """Assert no workload named ``{name}-{group}`` exists (see :meth:`assert_deployable`)."""
+        await self.assert_deployable(name, group, targets, require_absent=True)
 
     @staticmethod
     def _assert_all_sites_checked(statuses: list[SiteStatus], action: str) -> None:
@@ -1073,8 +1099,12 @@ class WorkloadService:
             return None
         return BuildStatusView(state=status.state, message=status.message)
 
-    def _secret_data(self, cluster: Cluster, name: str) -> dict[str, str]:
-        """Decoded ``data`` of a Secret (base64 -> str); ``{}`` if it doesn't exist.
+    def _secret_data(self, cluster: Cluster, name: str) -> dict[str, bytes]:
+        """Raw ``data`` of a Secret (base64 -> bytes); ``{}`` if it doesn't exist.
+
+        Bytes, not text: a secret file may hold a keystore or a DER certificate, and
+        decoding that to ``str`` here would either raise or produce something that
+        cannot be re-encoded when the keep is written back.
 
         Used by the update path so a redacted "keep" field echoed back is preserved. A
         genuine 404 means no stored values (``{}``). Any other error must NOT be
@@ -1092,11 +1122,27 @@ class WorkloadService:
             raise ServiceUnavailableError(
                 f"could not read secret '{name}' to preserve kept values; retry"
             ) from exc
-        out: dict[str, str] = {}
+        out: dict[str, bytes] = {}
         for key, val in (secret.get("data") or {}).items():
             try:
-                out[key] = base64.b64decode(val).decode("utf-8", "surrogateescape")
+                out[key] = base64.b64decode(val)
             except Exception:  # noqa: BLE001, S112 - skip an undecodable key
+                continue
+        return out
+
+    def _secret_text(self, cluster: Cluster, name: str) -> dict[str, str]:
+        """:meth:`_secret_data` as text, for the values that genuinely are text.
+
+        Env values and the git token become a container env var and an HTTP basic-auth
+        password, both of which are strings by definition. A stored value that is not
+        valid UTF-8 could not have been written through this API, so it is skipped
+        rather than guessed at.
+        """
+        out: dict[str, str] = {}
+        for key, raw in self._secret_data(cluster, name).items():
+            try:
+                out[key] = raw.decode("utf-8")
+            except UnicodeDecodeError:  # noqa: S112 - not text, so not an env value
                 continue
         return out
 
@@ -1167,28 +1213,67 @@ class WorkloadService:
             group: Owning group.
 
         Raises:
-            NotFoundError: If the workload exists on no site.
+            NotFoundError: If the workload exists on no site, or the caller may
+                not access it (hidden as 404, matching GET).
+            ServiceUnavailableError: If any site could not be reached, so the
+                delete cannot be confirmed.
         """
         self.assert_group(user, group)
         offering = kind  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
+        denied: list[str] = []
 
         def remove(cluster: Cluster) -> SiteStatus:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            self._assert_access(obj, user)
-            self._assert_offering(obj, offering)
+            # A clean 404 means "not deployed here", which is not a failure and must
+            # not read as one - only a site that cannot answer at all is an error.
+            try:
+                obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            except NotFoundError:
+                return SiteStatus(site=cluster.site, status="Absent")
+            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+            # An object_name collision could resolve to another group's workload or
+            # the other offering. Recorded, not raised: raising here would be caught
+            # by the fan-out and become indistinguishable from an unreachable site.
+            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+                labels.get(LABEL_OFFERING) != offering
+            ):
+                denied.append(cluster.site)
+                return SiteStatus(site=cluster.site, status="Denied")
             # Cascades to every owned resource: the config Secrets/ConfigMap, the
             # pull secret, the DomainMapping, the build objects.
-            cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
+            try:
+                cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
+            except NotFoundError:
+                return SiteStatus(site=cluster.site, status="Absent")  # raced a peer
             return SiteStatus(site=cluster.site, status="Deleted")
 
         targets = self.deployer.resolve_targets(None)
         statuses = await self.deployer.fanout(targets, remove)
+
+        # An unreachable site cannot confirm the workload is gone. Fail closed (503)
+        # so the caller retries, rather than reporting a 404 that reads as "already
+        # deleted" while the workload is still serving somewhere (delete is
+        # idempotent, so a retry over the sites that did succeed is a no-op).
+        self._assert_all_sites_checked(statuses, f"delete {kind} '{name}'")
+        if denied:
+            logger.debug(
+                "delete %s '%s' denied for user %s at %s; hidden as 404",
+                kind,
+                name,
+                user.username,
+                ", ".join(sorted(denied)),
+            )
+            raise NotFoundError(f"{kind} '{name}' not found")
+
+        # Every site answered and none refused, so the workload is gone platform-wide
+        # and the build objects can go too. Reached even when nothing was deleted:
+        # that is the case where an earlier partial delete orphaned them, and a
+        # leftover Image would keep rebuilding a function nothing runs.
         if offering == OFFERING_FUNCTION:
             await asyncio.to_thread(
                 self._delete_build_objects, self.deployer.local_cluster(), oname
             )
-        if all(s.error is not None for s in statuses):
+        if all(s.status == "Absent" for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 
     def _delete_build_objects(self, cluster: Cluster, oname: str) -> None:
@@ -1379,26 +1464,3 @@ class WorkloadService:
             summaries.sort(key=lambda w: w.name)
         return summaries
 
-    def _assert_access(self, obj: dict, user: Principal) -> None:
-        """Ensure the caller may access the object's group.
-
-        Raises:
-            ForbiddenError: If the caller can't access the resource's group.
-        """
-        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-        group = labels.get(LABEL_GROUP, "")
-        if not user.can_access_group(group):
-            raise ForbiddenError("not permitted for this resource's group")
-
-    def _assert_offering(self, obj: dict, offering: str) -> None:
-        """Ensure the object is the expected offering.
-
-        Prevents /functions acting on a container of the same name (and vice
-        versa).
-
-        Raises:
-            NotFoundError: If the object's offering label doesn't match.
-        """
-        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-        if labels.get(LABEL_OFFERING) != offering:
-            raise NotFoundError("workload not found")

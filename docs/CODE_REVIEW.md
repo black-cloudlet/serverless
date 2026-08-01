@@ -1,10 +1,13 @@
 # Code review: error handling, correctness, efficiency
 
-Review of the application code on `claude/code-review-error-analysis-14oe0t`
-(`api/`, `common/`, ~7,200 lines). Findings only — nothing here is fixed.
+Review of the application code (`api/`, `common/`, ~7,200 lines).
 
-Baseline: `pytest` is green (289 passed) and `ruff check .` is clean, so
-everything below slips past the current gates.
+Findings 1, 2, 3, 4, 8b and 9 have since been **fixed**; each is marked, with the
+fix summarised above its original analysis. The rest stand as findings.
+
+Baseline at the time of the review: `pytest` green (289 passed) and `ruff check .`
+clean — so everything below slipped past the existing gates. After the fixes: 300
+passed, ruff clean.
 
 Verification note: findings marked **verified** were reproduced by driving the
 real service objects against fake clusters. `pyproject.toml` requires Python
@@ -63,7 +66,18 @@ and `tests/test_auth_and_deployer.py` only ever calls
 `engine.get("container", ...)` — `engine.get("function", ...)` is never
 exercised anywhere.
 
-### 2. DELETE reports 404 during a total site outage, after destroying build state — HIGH, verified
+### 2. DELETE reports 404 during a total site outage, after destroying build state — HIGH, verified — FIXED
+
+Fixed. `remove` now distinguishes a clean 404 (`Absent`) from a site that cannot
+answer, and refusals are recorded per site rather than raised inside the fan-out
+(where they were swallowed into an error string indistinguishable from an
+outage). The outcome is then ordered: `_assert_all_sites_checked` first (503 if
+any site is unreachable), then the authorization refusal (404, matching `get`),
+and only then the build-object reap — which still runs when every site answered
+`Absent`, since that is exactly the case where an earlier partial delete orphaned
+them. `_assert_access` and `_assert_offering` are gone, folded into `remove`.
+Original analysis follows.
+
 
 `api/services/workloads.py:1186`:
 
@@ -106,7 +120,16 @@ Same swallow also hides authorization: `_assert_access` raises `ForbiddenError`
 than propagating. A cross-group hit therefore reports 404 (acceptable on its
 own) but still ran the build-object deletion first.
 
-### 3. Binary secret files are impossible to upload, and fail as a 500 — HIGH, verified
+### 3. Binary secret files are impossible to upload, and fail as a 500 — HIGH, verified — FIXED
+
+Fixed by carrying file content as `bytes` end to end instead of round-tripping it
+through `str`. `FileMount.decoded()` produces bytes, `resolve_files` keeps them,
+`build_secret` base64s them directly, and `build_configmap` routes a value that
+is not valid UTF-8 to `binaryData` (a ConfigMap's `data` is text only, so writing
+a raw byte there would be rejected by the API server). On the read side
+`_secret_data` returns bytes, with a `_secret_text` wrapper for the two things
+that genuinely are text — env values and the git token. Original analysis follows.
+
 
 `api/services/files.py:114` decodes uploaded content with `surrogateescape`:
 
@@ -137,7 +160,22 @@ binary: `_secret_data` (`workloads.py:1098`) decodes stored values with
 fails identically. The `# skip an undecodable key` guard at line 1099 only
 catches `b64decode` failures, not the surrogate re-encode.
 
-### 4. Malformed `contentBase64` returns 500 instead of 400 — MEDIUM, verified
+### 4. Malformed `contentBase64` returns 500 instead of 400 — MEDIUM, verified — FIXED
+
+Fixed at the layer that can actually answer in time: `FileMount` now validates
+that `contentBase64` decodes, so the rejection happens during request parsing,
+before `_echo` runs. The service-layer guard in `resolve_files` stays for callers
+that build a spec directly, off the HTTP edge. The response is now the documented
+envelope, naming the offending field:
+
+```
+400 {"error":{"status":400,"code":"VALIDATION_ERROR","message":"Request validation failed.",
+     "details":[{"loc":["body","files",0],
+                 "msg":"Value error, file '/etc/a.conf' has invalid base64 content"}], ...}}
+```
+
+Original analysis follows.
+
 
 `api/services/describe.py:56` decodes without a guard:
 
@@ -355,7 +393,46 @@ This is from reading the code; the window is narrow and I did not reproduce it.
 
 ## Inefficiency
 
-### 9. Every create runs its cross-site pre-flight twice
+### 9. Every create runs its cross-site pre-flight twice — FIXED
+
+Fixed **without weakening any guard**, which ruled out the obvious fix.
+
+The tempting move — trust the accept-time result and drop the re-check before the
+apply — would have traded latency for consistency, so it was rejected. The two
+checks are not duplicates of each other; they serve different purposes:
+
+- the accept-time check exists so a conflict is an immediate synchronous 409
+  rather than a background failure the client can never see (finding 6);
+- the apply-time check is the *guard*, and its value comes precisely from being
+  the last thing that happens before the mutation.
+
+What *was* pure waste is that each of those two moments ran **two** fan-outs -
+one for the host, one for the name - describing two different instants. Merging
+them into a single per-site visit (`assert_deployable`) halves the round trips
+and makes each site's two answers describe one moment instead of two, so they
+cannot disagree. `assert_host_available` and `assert_workload_absent` remain as
+thin wrappers over it. The offering services' separate absence probe is gone: the
+combined pass inside `apply_workload` covers it on `created=True`, closer to the
+mutation than the call it replaced.
+
+Measured, two sites, one create — counting *fan-outs* (each one a sequential
+cross-site round trip), which is what the latency actually is:
+
+| | before | after |
+|---|---|---|
+| accept (before the 202) | 2 | 1 |
+| background deploy | 3 | 2 |
+| **total** | **5** | **3** |
+
+The raw read count is unchanged at 14, deliberately: every fact that was checked
+before is still checked. Atomicity is unchanged too — the deploy was never atomic
+(the apply is a separate operation from the check, so a peer can still claim a
+host in the window), and this does not widen that window; it moves the surviving
+check no further from the apply than it already was, and `assert_deployable`'s
+docstring now says so rather than leaving the next reader to infer it.
+
+Original analysis follows.
+
 
 The accept path and the background path each run the same probes. Instrumented
 with two sites, one `POST .../containers`:
@@ -388,43 +465,144 @@ for `existing` in `accept_update`.
 
 ### 10. A thread pool is constructed per site, per request
 
-`api/services/workloads.py:968`, inside `fetch`, which is itself already running
-on a borrowed `asyncio.to_thread` worker:
+Inside `fetch`, which is *itself* already running on a worker borrowed from the
+event loop's default executor (`deployer.fanout` → `asyncio.to_thread(fn,
+cluster)`):
 
 ```python
 with ThreadPoolExecutor(max_workers=2) as pool:
     rev_f = pool.submit(self._revision, cluster, revision)
     usage_f = pool.submit(self._site_usage, cluster, oname)
+    rev, usage = rev_f.result(), usage_f.result()
 ```
 
-Two thread creations and a pool teardown per site on *every* GET — and the GET
-is the documented poll target, so a portal hits it in a loop. It also nests
-pools inside the default executor, which is capped at `min(32, cpu+4)`; enough
-concurrent polls and the outer pool starves. A single shared, process-lifetime
-executor (or making these two reads async) removes both costs.
+**What it costs.** The `with` block constructs the pool, spawns up to two OS
+threads, and tears the pool down again — per site, per request. With two sites
+that is up to four thread creations per GET. Thread creation is not free (stack
+allocation plus a kernel call), and none of it is amortised: the pool is
+discarded before the next site is served, so nothing is ever reused.
+
+**Why it matters more than it looks.** `GET .../{name}` is not an occasional
+call. It is the `statusUrl` advertised on every 202, so a portal polls it in a
+loop for the whole duration of every deploy, for every workload being watched.
+The cost lands exactly where load concentrates.
+
+**The part that is a latent bug, not just waste.** These pools are *nested*
+inside the default executor. `asyncio.to_thread` uses the loop's default
+`ThreadPoolExecutor`, capped at `min(32, os.cpu_count() + 4)` — on a 2-core
+request-limited pod, 6 threads. Each concurrent GET occupies one of those per
+site and then blocks on `.result()` waiting for threads in its *own* pool. The
+inner pool is independent, so this is not a classic deadlock, but the outer pool
+is saturated by workers that are doing nothing but waiting, and every other
+blocking call in the process — every other fan-out, every `to_thread` in
+`load_existing` or `logs` — queues behind them. Throughput collapses well before
+CPU does, and the symptom is latency with an idle CPU graph, which is a horrible
+thing to debug.
+
+**What to do instead.** Either hold one module-level `ThreadPoolExecutor` for the
+lifetime of the process and submit to it (bounded, reused, no per-request
+construction), or drop the inner pool entirely and let the two reads ride the
+outer fan-out — they are already inside a thread, so `_revision` and
+`_site_usage` could simply run in sequence there while a *different* site's reads
+proceed in parallel. The second is simpler and loses little: the two reads are
+against the same cluster, so serialising them costs one round trip, not two.
 
 ### 11. `get()` serializes reads that could overlap
 
-`_describe_spec` (line 1020) and `_build_status` (line 1037) are separate
-sequential `await asyncio.to_thread(...)` calls, and `_describe_spec` itself
-loops `configmap_refs` one blocking read at a time (line 1111). On a function
-with several file mounts that is a chain of round trips where the module already
-demonstrates (line 968) it knows how to overlap them.
+Two independent blocking reads run one after the other on the event loop:
+
+```python
+spec = await asyncio.to_thread(self._describe_spec, cluster, obj)   # ~1-2 round trips
+...
+build = await asyncio.to_thread(self._build_status, name, group)    # 1 round trip
+```
+
+Nothing connects them — `_describe_spec` reads the file ConfigMaps and the pull
+secret, `_build_status` reads the kpack Image — so the second could start with
+the first. `asyncio.gather` over the two would cost one round trip instead of
+two.
+
+`_describe_spec` compounds it internally:
+
+```python
+for cm_name in describe_svc.configmap_refs(obj):
+    cm = cluster.get(ResourceKind.CONFIG_MAP, cm_name)
+```
+
+one blocking call per ConfigMap, in sequence. In practice `resolve_files`
+aggregates every non-secret file into a *single* `{workload}-files` ConfigMap, so
+this loop is almost always one iteration and the cost is theoretical today — but
+the loop is written as though many are expected, and if that ever becomes true
+the reads are serial by construction.
+
+This is worth fixing mainly for consistency: the same function already
+demonstrates, twelve lines up, that it knows how to overlap independent reads
+(finding 10). Two adjacent pieces of code disagreeing about whether concurrency
+is worth it is the kind of thing that makes a reader distrust both.
 
 ### 12. `_apply_to_site` re-reads the object it just applied
 
-Line 697: `obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)` — but
-`cluster.apply(ksvc)` returned the applied object at line 661, and `applied[0]`
-is already used for `owner_reference`. If the intent is to observe status
-written after the apply, that's worth a comment; the KSVC won't have reconciled
-in that window anyway, which is why the response is `Deploying`.
+```python
+applied = cluster.apply(ksvc)
+owner = res.owner_reference(applied[0]) if applied else None
+...                                    # backing, pull secret, DomainMapping
+obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+status, revision = _ksvc_status(obj)
+```
+
+`cluster.apply` already returned the applied object — `applied[0]` is right
+there, and is already trusted enough to source the `ownerReference` (its `uid`)
+that every derived resource hangs off. So the trailing `get` is an extra round
+trip per site on the critical path of every deploy.
+
+**The one argument for keeping it** is freshness: it observes the KSVC *after*
+the DomainMapping and backing resources were applied, so in principle it could
+catch status the apply response predates. In practice it cannot catch anything
+useful — Knative has not reconciled a KSVC microseconds after it was written, so
+both reads return the same thing, which is why a fresh create correctly reports
+`Deploying` either way.
+
+**Why I did not remove it as part of finding 9.** It is a behaviour change to the
+reported per-site status, however marginal, and it sits inside the one function
+in the engine whose ordering is load-bearing for the no-stale-secret and
+rollback guarantees (`_apply_to_site`'s docstring enumerates four ordering rules).
+Touching it deserves its own change with its own justification, not a quiet
+ride-along on a latency fix. If it goes, the honest replacement is
+`_ksvc_status(applied[0])` plus a comment saying the status is the apply
+response's and is expected to be pre-reconciliation.
 
 ### 13. Dead conditionals
 
-Past line 999 in `get()`, `obj` cannot be `None` (`reps` is non-empty and every
-entry holds one), yet lines 1028, 1036 and 1049 all guard `... if obj else ...`.
-Harmless, but it implies a nullable that isn't, which is how a reader ends up
-adding a fourth guard instead of noticing the invariant.
+By the time `get()` reaches its response construction, `obj` is provably not
+`None`:
+
+```python
+if not reps:
+    self._assert_all_sites_checked(...)
+    raise NotFoundError(...)
+obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
+```
+
+`reps` is non-empty (guarded above), every value is a `(obj, cluster)` tuple
+populated from a successful `get`, and `obj` is unpacked from it. Yet three later
+lines still guard it:
+
+```python
+createdAt=_creation_time(obj) if obj else None,
+annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) if obj else {}
+image=_extract_image(obj) if obj else None,
+```
+
+Harmless at runtime. The cost is in what it tells a reader: it advertises `obj`
+as nullable, so the next person to add a line touching `obj` adds a fourth guard
+rather than noticing the invariant — and, worse, anyone auditing the *real*
+nullable in that function (`spec`, which genuinely can be `None`) has to work out
+which of the two patterns is meaningful. Finding 1 lived on one of these lines:
+`path=spec.path if spec else None`, where the guard drew the eye to the wrong
+risk while the actual bug sat in the attribute name.
+
+Deleting the three `obj` guards would leave the `spec` guards as the only ones,
+which is then a real signal.
 
 ---
 
@@ -452,15 +630,15 @@ caught them stubs the service out one layer higher.
 | # | Severity | Finding |
 |---|---|---|
 | 1 | Critical | `GET .../functions/{name}` always 500s — `WorkloadSpec` has no `path` field (**fixed**) |
-| 2 | High | DELETE reports 404 on total outage, after deleting the build objects |
-| 3 | High | Binary secret file content fails with a 500 (surrogate re-encode) |
-| 4 | Medium | Malformed `contentBase64` → 500 instead of 400 (`_echo` runs before validation) |
+| 2 | High | DELETE reports 404 on total outage, after deleting the build objects (**fixed**) |
+| 3 | High | Binary secret file content fails with a 500 (surrogate re-encode) (**fixed**) |
+| 4 | Medium | Malformed `contentBase64` → 500 instead of 400 (`_echo` runs before validation) (**fixed**) |
 | 5 | Medium | No catch-all handler: unhandled errors skip the envelope and the request id |
 | 6 | Medium | Failed background deploys are unobservable; `status_code_for` is dead |
 | 7 | Low | `container.update` can write `"username": null` into a pull secret |
 | 8 | Low | `load_existing` `StopIteration` under a fan-out timeout race (latent) |
 | 8b | Low | `image` is the only caller-supplied cluster identifier with no validator (**fixed**) |
-| 9 | Efficiency | Create/update run their cross-site pre-flight twice (14 calls for one create) |
+| 9 | Efficiency | Pre-flight ran two fan-outs per moment; merged into one (5 → 3 round trips) (**fixed**) |
 | 10 | Efficiency | `ThreadPoolExecutor` built per site, per request, nested in the default executor |
 | 11 | Efficiency | `get()` serializes spec/build/ConfigMap reads |
 | 12 | Efficiency | `_apply_to_site` re-GETs the object it just applied |

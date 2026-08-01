@@ -8,8 +8,6 @@ contents, registry creds - is deliberately never reconstructed.
 
 from __future__ import annotations
 
-import base64
-
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_PATH,
@@ -42,20 +40,25 @@ def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
 def redact_files(files: list[FileMount]) -> list[FileView]:
     """Convert submitted files to response views, dropping secret contents.
 
+    ``content`` is a JSON string, so a non-secret file whose bytes are not UTF-8 (a
+    keystore, a DER certificate) reads back as None - the same as a secret file.
+    Returning it re-encoded would be inventing a text form the file does not have,
+    and the caller already holds what they sent.
+
     Args:
         files: The submitted file mounts.
 
     Returns:
-        Views with secret file contents set to None.
+        Views with secret and non-text file contents set to None.
     """
     out: list[FileView] = []
     for f in files:
-        if f.secret:
-            content = None
-        elif f.contentBase64 is not None:
-            content = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
-        else:
-            content = f.content
+        content: str | None = None
+        if not f.secret:
+            try:
+                content = f.decoded().decode("utf-8")
+            except UnicodeDecodeError:
+                content = None  # binary: no text form to echo
         out.append(
             FileView(mountPath=f.mountPath, readOnly=f.readOnly, secret=f.secret, content=content)
         )

@@ -285,16 +285,31 @@ def test_resolve_files_duplicate_key_rejected():
         resolve_files("app", "team", "alice", files)
 
 
-def test_resolve_files_invalid_base64_rejected():
+def test_invalid_base64_is_rejected_by_the_model_not_only_the_resolver():
+    """Undecodable content must fail at the edge, where it is still a 400.
+
+    The accept path echoes the submitted spec back (describe.redact_files) as an
+    argument expression, so it runs before the service-layer validation. A check
+    that lived only in resolve_files would therefore be reached after the echo had
+    already raised, turning a bad request into a 500.
+    """
     import pytest
+    from pydantic import ValidationError as PydanticValidationError
 
     from common.errors import ValidationError
 
     # "abc" has incorrect padding -> binascii.Error (a ValueError) even on a
-    # lenient decode, so it surfaces as a 400.
-    files = [FileMount(mountPath="/a/conf", contentBase64="abc")]
+    # lenient decode, so it surfaces as a 400 at the model.
+    with pytest.raises(PydanticValidationError, match="invalid base64 content"):
+        FileMount(mountPath="/a/conf", contentBase64="abc")
+
+    # resolve_files keeps its own guard for callers that build a spec directly,
+    # off the HTTP edge, where the request model never ran.
+    class _Raw:
+        mountPath, content, contentBase64, secret, readOnly, keep = "/a/conf", None, "abc", False, True, False
+
     with pytest.raises(ValidationError):
-        resolve_files("app", "team", "alice", files)
+        resolve_files("app", "team", "alice", [_Raw()])
 
 
 def test_resolve_files_accepts_linewrapped_base64():
@@ -431,3 +446,80 @@ def test_resolve_env_secret_creates_secret_and_rewrites_ref():
     assert by_name["LOG"].secret_ref is None
     assert by_name["DB_PASSWORD"].value is None
     assert by_name["DB_PASSWORD"].secret_ref == (env_secret_name("app"), "DB_PASSWORD")
+
+
+def test_binary_secret_file_survives_create_and_keep_on_update():
+    """contentBase64 exists so a caller can mount a keystore or a DER certificate.
+
+    Those have no text form, so carrying content as str could not round-trip: the
+    decode needs surrogateescape and the re-encode then raises on the first
+    non-UTF-8 byte, failing the create with a 500. Content is bytes throughout.
+    """
+    import base64
+
+    from api.services.files import resolve_files
+
+    blob = bytes([0x30, 0x82, 0x04, 0xA2, 0xFF, 0xFE, 0x00, 0x01])  # PKCS#12-ish
+    mount = FileMount(
+        mountPath="/etc/certs/keystore.p12",
+        contentBase64=base64.b64encode(blob).decode(),
+        secret=True,
+    )
+
+    resolved = resolve_files("app-team", "team", "alice", [mount])
+    secret = next(m for m in resolved.backing if m["kind"] == "Secret")
+    stored = secret["data"]["etc-certs-keystore.p12"]
+    assert base64.b64decode(stored) == blob  # byte-exact, not mangled through str
+
+    # ... and the keep path: the client sends the file back with no content, and
+    # the stored bytes (as read back by _secret_data) are written out unchanged.
+    kept = {k: base64.b64decode(v) for k, v in secret["data"].items()}
+    keep = FileMount(mountPath="/etc/certs/keystore.p12", secret=True)
+    again = resolve_files("app-team", "team", "alice", [keep], kept=kept)
+    kept_secret = next(m for m in again.backing if m["kind"] == "Secret")
+    assert base64.b64decode(kept_secret["data"]["etc-certs-keystore.p12"]) == blob
+
+
+def test_binary_non_secret_file_goes_to_binary_data():
+    """A ConfigMap's `data` is UTF-8 text only; anything else belongs in binaryData.
+
+    Writing a non-UTF-8 byte into `data` is rejected by the API server, so the
+    split is made where the manifest is built rather than left to the caller.
+    """
+    import base64
+
+    from api.services.files import resolve_files
+
+    blob = bytes([0xFF, 0xFE, 0x00])
+    files = [
+        FileMount(mountPath="/etc/app.conf", content="level=debug"),
+        FileMount(mountPath="/etc/logo.ico", contentBase64=base64.b64encode(blob).decode()),
+    ]
+    cm = next(
+        m for m in resolve_files("a-t", "team", "alice", files).backing if m["kind"] == "ConfigMap"
+    )
+    assert cm["data"] == {"etc-app.conf": "level=debug"}  # text stays text
+    assert base64.b64decode(cm["binaryData"]["etc-logo.ico"]) == blob
+
+
+def test_redact_files_reports_no_text_form_for_binary_content():
+    """`content` is a JSON string, so binary reads back as null - like a secret.
+
+    Echoing it re-encoded would invent a text form the file does not have.
+    """
+    import base64
+
+    from api.services.describe import redact_files
+
+    views = redact_files(
+        [
+            FileMount(mountPath="/etc/app.conf", content="level=debug"),
+            FileMount(
+                mountPath="/etc/logo.ico",
+                contentBase64=base64.b64encode(bytes([0xFF, 0xFE])).decode(),
+            ),
+        ]
+    )
+    by_path = {v.mountPath: v for v in views}
+    assert by_path["/etc/app.conf"].content == "level=debug"
+    assert by_path["/etc/logo.ico"].content is None

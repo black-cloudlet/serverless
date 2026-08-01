@@ -9,32 +9,59 @@ from __future__ import annotations
 import base64
 
 
-def build_configmap(name: str, labels: dict[str, str], data: dict[str, str]) -> dict:
-    """Build a ConfigMap manifest.
+def _as_bytes(value: str | bytes) -> bytes:
+    """The value as raw bytes; text is encoded UTF-8, bytes pass through."""
+    return value if isinstance(value, bytes) else value.encode("utf-8")
+
+
+def build_configmap(name: str, labels: dict[str, str], data: dict[str, str | bytes]) -> dict:
+    """Build a ConfigMap manifest, routing non-text values to ``binaryData``.
+
+    A ConfigMap's ``data`` holds UTF-8 text only; anything else belongs in
+    ``binaryData`` as base64. Both mount identically, so the caller need not care
+    which a given file lands in - but writing a non-UTF-8 byte into ``data`` would
+    be rejected by the API server (or corrupt the file), so the split is made here
+    rather than left to the caller.
 
     Args:
         name: The ConfigMap name.
         labels: Labels to stamp on it.
-        data: The (plaintext) key/value data.
+        data: The key/value data; ``bytes`` (or text that is not valid UTF-8)
+            goes to ``binaryData``.
 
     Returns:
         The ConfigMap manifest dict.
     """
-    return {
+    text: dict[str, str] = {}
+    binary: dict[str, str] = {}
+    for key, value in data.items():
+        raw = _as_bytes(value)
+        try:
+            text[key] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            binary[key] = base64.b64encode(raw).decode("ascii")
+    manifest: dict = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {"name": name, "labels": dict(labels)},
-        "data": dict(data),
+        "data": text,
     }
+    if binary:
+        manifest["binaryData"] = binary
+    return manifest
 
 
 def build_secret(
     name: str,
     labels: dict[str, str],
-    data: dict[str, str],
+    data: dict[str, str | bytes],
     secret_type: str = "Opaque",  # noqa: S107 - the k8s Secret `type` field, not a password
 ) -> dict:
     """Build a Secret manifest, base64-encoding the data values.
+
+    Values may be ``bytes``: a Secret's ``data`` is base64 either way, so binary
+    material (a keystore, a DER certificate) needs no separate field the way a
+    ConfigMap does. Text is encoded UTF-8 first.
 
     Args:
         name: The Secret name.
@@ -45,7 +72,7 @@ def build_secret(
     Returns:
         The Secret manifest dict.
     """
-    encoded = {k: base64.b64encode(v.encode("utf-8")).decode("ascii") for k, v in data.items()}
+    encoded = {k: base64.b64encode(_as_bytes(v)).decode("ascii") for k, v in data.items()}
     return {
         "apiVersion": "v1",
         "kind": "Secret",
