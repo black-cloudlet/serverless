@@ -41,7 +41,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ needs.version.outputs.python }}
-      - run: pip install ruff==0.15.20
+      # Derived from pyproject, not pinned again here: a second copy of the
+      # version is a second thing to forget, and a formatter that gates the PR
+      # while disagreeing with the one `pip install -e ".[dev]"` gives a
+      # contributor is worse than either version alone. Same single-source rule
+      # the `version` job above applies to Python.
+      - run: pip install "$(grep -oP 'ruff==[0-9.]+' pyproject.toml)"
       - run: ruff check .
       - run: ruff format --check .
 

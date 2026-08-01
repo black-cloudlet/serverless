@@ -1,0 +1,81 @@
+{{- if and .Values.build.enabled .Values.build.caInjection.enabled }}
+{{- $ca := .Values.caBundle }}
+{{- $inj := .Values.build.caInjection }}
+{{- $certPath := printf "%s/%s" $inj.mountPath $ca.key }}
+# Mounts the internal CA bundle into build containers so git, pip, npm and go
+# trust internal TLS. Verification stays on. (§5)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: {{ .Values.name }}-build-ca-bundle
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+  annotations:
+    policies.kyverno.io/title: Inject internal CA into kpack build pods
+    policies.kyverno.io/category: Build
+    policies.kyverno.io/subject: Pod
+spec:
+  background: false
+  rules:
+    - name: mount-ca-bundle
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - {{ .Values.namespaces.workloads }}
+              selector:
+                matchExpressions:
+                  # Set by kpack on build pods, and on nothing else - this
+                  # namespace is full of tenant pods that must not be touched.
+                  - key: kpack.io/build
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          spec:
+            volumes:
+              - name: internal-ca
+                configMap:
+                  name: {{ $ca.name }}
+            # `(name): "*"` = every entry in the list. initContainers is the
+            # important one: kpack runs the whole lifecycle there, including
+            # the git clone and the package managers.
+            initContainers:
+              - (name): "*"
+                volumeMounts:
+                  - name: internal-ca
+                    mountPath: {{ $inj.mountPath | quote }}
+                    readOnly: true
+                env:
+                  - name: SSL_CERT_FILE
+                    value: {{ $certPath | quote }}
+                  - name: GIT_SSL_CAINFO
+                    value: {{ $certPath | quote }}
+                  - name: PIP_CERT
+                    value: {{ $certPath | quote }}
+                  - name: REQUESTS_CA_BUNDLE
+                    value: {{ $certPath | quote }}
+                  - name: NODE_EXTRA_CA_CERTS
+                    value: {{ $certPath | quote }}
+            containers:
+              - (name): "*"
+                volumeMounts:
+                  - name: internal-ca
+                    mountPath: {{ $inj.mountPath | quote }}
+                    readOnly: true
+                env:
+                  - name: SSL_CERT_FILE
+                    value: {{ $certPath | quote }}
+                  - name: GIT_SSL_CAINFO
+                    value: {{ $certPath | quote }}
+                  - name: PIP_CERT
+                    value: {{ $certPath | quote }}
+                  - name: REQUESTS_CA_BUNDLE
+                    value: {{ $certPath | quote }}
+                  - name: NODE_EXTRA_CA_CERTS
+                    value: {{ $certPath | quote }}
+  {{- with $inj.failurePolicy }}
+  failurePolicy: {{ . }}
+  {{- end }}
+{{- end }}

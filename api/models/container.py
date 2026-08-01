@@ -10,6 +10,7 @@ from api.models.common import (
     EnvVar,
     FileMount,
     Hostname,
+    ImageRef,
     Name,
     Scaling,
     WorkloadResponse,
@@ -30,7 +31,7 @@ class ContainerCreate(BaseModel):
     """
 
     name: Name
-    image: str
+    image: ImageRef
     # Registry credentials are optional: omit both for a public image. When
     # supplied, both are required together (a username alone can't authenticate).
     registryUsername: str | None = None
@@ -59,16 +60,14 @@ class ContainerCreate(BaseModel):
 class ContainerUpdate(BaseModel):
     """Replace the mutable spec: the body is the full desired state.
 
-    Non-secret fields are replaced (an omitted one reverts to its default), so
-    ``image`` and ``port`` are required just like on create. The only keep-on-omit
-    is redacted secret material - the registry token, secret env values, and
-    secret file contents - which can't be read back, so omitting it keeps what's
-    stored (see the registry-creds semantics below and docs §7.2).
+    Non-secret fields are replaced, so ``image`` and ``port`` are required as on
+    create. Only redacted secret material is keep-on-omit - it cannot be read back,
+    so omitting it keeps what is stored.
     """
 
-    image: str
+    image: ImageRef
     # Registry creds: username+token rotates, username-only keeps, neither removes
-    # (public); a token needs a username. See docs §7.2 for the full semantics.
+    # (public); a token needs a username. See docs/ARCHITECTURE.md - Secrets for the full semantics.
     registryUsername: str | None = None
     registryToken: str | None = None
     env: list[EnvVar] = Field(default_factory=list)

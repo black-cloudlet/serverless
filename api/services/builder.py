@@ -1,38 +1,62 @@
-"""Function build via Knative Functions (func) + Cloud Native Buildpacks.
+"""Function builds, driven by kpack ``Image`` CRs (docs/BUILDING.md - Ownership).
 
-In the airgapped cluster, the build uses the mirrored buildpack builder/run
-images for Python/Go/JS (docs §3.1, §9). The source is cloned with the
-caller-supplied git token (used transiently, never persisted - §7.2) and the
-resulting image is pushed to the internal registry.
+The API does not run builds; it declares them. Each create/update emits the
+function's git Secret, build ServiceAccount and ``Image`` alongside the KSVC's
+other derived resources, and kpack does the rest: clone, detect, build with
+Cloud Native Buildpacks, push to the internal registry.
 
-This is the API-side ``Builder`` (see :mod:`common.contract`). The concrete
-in-cluster build invocation (a ``func`` build or a Tekton pipeline) is wired at
-deploy time; when the build moves to its own microservice, a ``RemoteBuilder``
-implementing the same contract replaces this one with no change to callers.
+They are owned resources of the workload, in its own namespace, so the KSVC's
+ownerReference garbage-collects them. That co-location is also why a function
+needs only ONE git Secret: kpack reads the workload's own ``{workload}-git``.
+
+Declaring is not completing, so ``plan`` returns the deterministic tag the
+build will push to. Callers deploy against that tag and read progress back
+through :meth:`KpackBuilder.status` - the reason a just-created function reports
+``Building`` rather than ``Ready`` (docs/FUNCTIONS.md - Function Status Resolution).
 """
 
 from __future__ import annotations
 
-from common.config import RegistryConfig
-from common.contract import BuildRequest, BuildResult, image_reference
+from api.services import secrets as secret_svc
+from api.services.runtimes import RuntimeRegistry
+from common import kpack
+from common.cluster import Cluster, ResourceKind
+from common.config import CommonSettings
+from common.contract import BuildPlan, BuildRequest, BuildStatus, image_reference
+from common.errors import NotFoundError, ValidationError
 from common.logging import get_logger
+from common.names import object_name
 
 logger = get_logger(__name__)
 
 
-class FuncBuilder:
-    """Default builder targeting `func`/buildpacks against the internal registry."""
+class KpackBuilder:
+    """Emits the kpack manifests for a function build and reads their state."""
 
-    def __init__(self, registry: RegistryConfig):
+    def __init__(self, settings: CommonSettings, runtimes: RuntimeRegistry):
         """Initialize the builder.
 
         Args:
-            registry: The internal registry images are pushed to.
+            settings: Shared settings (registry, build credentials).
+            runtimes: Resolves a runtime to its Builder and build environment.
         """
-        self._registry = registry
+        self._registry = settings.registry
+        self._build = settings.build
+        self._runtimes = runtimes
+
+    @property
+    def pull_secret(self) -> str | None:
+        """The registry Secret a built function's KSVC pulls its image with.
+
+        The same credential kpack pushes with - one image, one registry, one
+        credential - so a function never needs registry details from the caller.
+        None when unset, so the KSVC does not reference a Secret that the chart
+        never created.
+        """
+        return self._build.registry_secret or None
 
     def image_ref(self, req: BuildRequest) -> str:
-        """The image reference for a build (see ``common.contract.image_reference``).
+        """The image reference a build pushes to (deterministic, no cluster call).
 
         Args:
             req: The build request.
@@ -40,35 +64,118 @@ class FuncBuilder:
         Returns:
             The fully-qualified image reference.
         """
-        return image_reference(self._registry.url, req)
+        return image_reference(self._registry.base, req)
 
-    def build(self, req: BuildRequest) -> BuildResult:
-        """Build the function image and push it to the internal registry.
+    def _runtime_config(self, runtime: str) -> tuple[str, list[dict]]:
+        """Resolve a runtime to ``(builder, build_env)``.
 
-        The build runs once and the resulting digest is deployed to every site to
-        guarantee parity (docs §4). The backend invocation (func/Tekton) is
-        configured per environment.
+        The runtimes file is rendered by the chart with each entry's build
+        environment already merged (shared env, dependency mirror, per-runtime
+        overrides), so nothing is composed here beyond adding the version.
+
+        Args:
+            runtime: The requested runtime name.
+
+        Returns:
+            The Builder name and the build env list.
+
+        Raises:
+            ValidationError: If the runtime is unknown or names no Builder.
+        """
+        spec = self._runtimes.get(runtime)
+        if spec is None:
+            available = ", ".join(self._runtimes.names())
+            raise ValidationError(
+                f"unsupported runtime '{runtime}'; available runtimes: {available}"
+            )
+        if not spec.builder:
+            raise ValidationError(
+                f"runtime '{runtime}' has no `builder`; the runtimes ConfigMap must map "
+                "every runtime to a kpack Builder before functions can be built."
+            )
+        env = [dict(e) for e in spec.buildEnv]
+        # The runtime names the env var, so a version bump is a ConfigMap edit.
+        # An explicit buildEnv entry wins - it was set deliberately.
+        if (
+            spec.versionEnv
+            and spec.defaultVersion
+            and not any(e.get("name") == spec.versionEnv for e in env)
+        ):
+            env.append({"name": spec.versionEnv, "value": spec.defaultVersion})
+        return spec.builder, env
+
+    def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
+        """The build manifests for one function, split by replication scope.
+
+        Pure - no cluster call - so the caller can apply them in the same pass as
+        the KSVC's other derived resources and have them owner-stamped.
+
+        The git Secret is ``replicated``, the Image and ServiceAccount are not. Only one
+        site builds, but EVERY site must be able to: nothing can recover a token whose
+        only copy was on the site that went away.
 
         Args:
             req: The build request.
+            labels: Ownership labels to stamp on each manifest.
 
         Returns:
-            The build result (image and digest).
+            The build plan; ``local`` is in dependency order.
 
         Raises:
-            NotImplementedError: When no build backend is wired in this
-                environment.
+            ValidationError: If the runtime is unknown or maps to no Builder.
         """
-        image = self.image_ref(req)
-        logger.info(
-            "function build requested: name=%s runtime=%s git=%s@%s -> %s",
-            req.name,
-            req.runtime,
-            req.git_url,
-            req.branch,
-            image,
+        oname = object_name(req.name, req.group)
+        builder, env = self._runtime_config(req.runtime)
+        tag = self.image_ref(req)
+        build_name = kpack.build_object_name(oname)
+        git_secret = secret_svc.git_secret_name(oname)
+        return BuildPlan(
+            tag=tag,
+            replicated=[
+                secret_svc.build_git_secret(
+                    git_secret, labels, req.git_token, req.git_url, self._build.git_username
+                )
+            ],
+            local=[
+                kpack.build_service_account(
+                    build_name, labels, git_secret, self._build.registry_secret
+                ),
+                kpack.build_image(
+                    build_name,
+                    labels,
+                    tag=tag,
+                    builder=builder,
+                    service_account=build_name,
+                    git_url=req.git_url,
+                    revision=req.build_revision,
+                    sub_path=req.path,
+                    env=env,
+                    resources=self._build.resources,
+                ),
+            ],
         )
-        raise NotImplementedError(
-            "Build backend (func/Tekton) is not configured in this environment. "
-            "Wire FuncBuilder.build to the in-cluster build pipeline."
-        )
+
+    def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
+        """Read a function's build state from one cluster.
+
+        Args:
+            cluster: The cluster to read (normally the local site).
+            name: The workload name.
+            group: The owning group.
+
+        Returns:
+            The build status, or None when the function has no Image on this
+            cluster - which is the normal case for a site that has never built
+            it, and must fall through to the KSVC status rather than read as a
+            failure (docs/FUNCTIONS.md - Function Status Resolution).
+        """
+        image_name = kpack.build_object_name(object_name(name, group))
+        try:
+            image = cluster.get(ResourceKind.KPACK_IMAGE, image_name)
+        except NotFoundError:
+            return None
+        except Exception:  # noqa: BLE001 - kpack absent or unreadable is not fatal
+            logger.warning("could not read kpack Image '%s' on %s", image_name, cluster.site)
+            return None
+        state, latest, message = kpack.build_status(image)
+        return BuildStatus(state=state, image=latest, message=message)

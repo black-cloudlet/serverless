@@ -7,6 +7,68 @@ from pydantic import BaseModel
 from api.models.common import ScalingCapabilities
 
 
+class RuntimeCapability(BaseModel):
+    """One runtime a function may be built with, and the versions it offers.
+
+    Projected from the runtimes ConfigMap the builder reads, so the advertised
+    versions are the ones a build will actually accept.
+
+    Attributes:
+        name: The value to send as ``runtime``.
+        versions: Selectable language versions; empty when the runtime pins one.
+        defaultVersion: Applied when the caller picks none.
+    """
+
+    name: str
+    versions: list[str] = []
+    defaultVersion: str | None = None
+
+
+class NamingRule(BaseModel):
+    """The limit on ``name`` and ``group`` *together*.
+
+    No per-field schema can express this: the halves are validated separately
+    and each may be 63 characters, but it is their join that becomes the KSVC
+    name and the first DNS label. ``group`` is a path parameter besides, so it
+    is not even in the body being validated. Published so a form can catch the
+    pair before submitting, instead of the API rejecting it at the edge.
+
+    Attributes:
+        template: How the object name is composed.
+        maxLength: Longest permitted result, in characters.
+    """
+
+    template: str
+    maxLength: int
+
+
+class ErrorCode(BaseModel):
+    """One machine-readable error code and the HTTP status carrying it.
+
+    Attributes:
+        code: The ``error.code`` value in the envelope.
+        status: The HTTP status it is returned with.
+    """
+
+    code: str
+    status: int
+
+
+class StatusVocabulary(BaseModel):
+    """The status strings a client can receive, so none has to be hardcoded.
+
+    Attributes:
+        workload: Values of ``overallStatus`` - what a poller switches on.
+        site: Values of a per-site ``status`` inside ``sites[]``.
+        terminal: The subset of ``workload`` that a poller should stop on;
+            anything else is still in flight.
+    """
+
+    workload: list[str]
+    site: list[str]
+    terminal: list[str]
+
+
 class PortCapability(BaseModel):
     """The container port field's rules, so a UI can render/validate it.
 
@@ -36,6 +98,9 @@ class BaseInfo(BaseModel):
         defaultHostTemplate: How the default host is composed from a workload's
             name/group and ``routeDomain`` (e.g. ``{name}-{group}.{routeDomain}``),
             so the UI can preview it without hardcoding the rule.
+        statuses: The status strings a response can carry.
+        errorCodes: Every ``error.code`` an error envelope can carry.
+        naming: The combined limit on name and group.
     """
 
     version: str
@@ -44,6 +109,9 @@ class BaseInfo(BaseModel):
     scaling: ScalingCapabilities
     routeDomain: str
     defaultHostTemplate: str
+    statuses: StatusVocabulary
+    errorCodes: list[ErrorCode]
+    naming: NamingRule
 
 
 class ContainerInfoResponse(BaseInfo):
@@ -60,7 +128,8 @@ class FunctionInfoResponse(BaseInfo):
     """Capabilities for creating a function (build-from-source).
 
     Attributes:
-        runtimes: The runtimes a function may be built with.
+        runtimes: The runtimes a function may be built with, each with its
+            selectable versions.
     """
 
-    runtimes: list[str]
+    runtimes: list[RuntimeCapability]

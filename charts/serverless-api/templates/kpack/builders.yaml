@@ -1,0 +1,24 @@
+{{- if .Values.build.enabled }}
+# A Builder must be Ready before any Image using it will build. (§3)
+{{- range .Values.build.builders }}
+---
+apiVersion: kpack.io/v1alpha2
+kind: Builder
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" $ | nindent 4 }}
+spec:
+  serviceAccountName: {{ $.Values.build.serviceAccount.name }}
+  tag: {{ include "serverless-api.builderImage" (dict "root" $ "name" .name) | quote }}
+  stack:
+    name: {{ $.Values.build.stack.name }}
+    kind: ClusterStack
+  store:
+    name: {{ $.Values.build.store.name }}
+    kind: ClusterStore
+  order:
+    {{- include "serverless-api.builderOrder" .order | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -162,7 +162,7 @@ def test_info_is_public_and_static():
 
     # function-only: the available runtimes
     fn = c.get("/api/v1/functions/info").json()
-    assert "python" in fn["runtimes"]
+    assert "python" in [r["name"] for r in fn["runtimes"]]
     assert "port" not in fn
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
@@ -244,6 +244,81 @@ def test_create_container_validation_error(client):
     err = r.json()["error"]
     assert err["code"] == "VALIDATION_ERROR"
     assert err["status"] == 400  # the numeric status is in the envelope too
+
+
+def test_info_publishes_each_runtime_with_the_versions_a_build_accepts():
+    """A version picker cannot be built from names alone.
+
+    The versions come from the same ConfigMap the builder reads, so what is
+    advertised is what a build will accept.
+    """
+    c = TestClient(create_app())
+    runtimes = {r["name"]: r for r in c.get("/api/v1/functions/info").json()["runtimes"]}
+
+    assert runtimes["python"]["versions"] == ["3.11", "3.12"]
+    assert runtimes["python"]["defaultVersion"] == "3.12"
+    assert runtimes["node"]["versions"] == ["18", "20", "22"]
+
+
+def test_info_publishes_the_status_and_error_vocabularies():
+    """Everything a client would otherwise hardcode and let drift."""
+    from typing import get_args
+
+    from api.models.common import SITE_STATUSES, WorkloadStatus
+    from common.errors import ValidationError, error_catalog
+
+    body = TestClient(create_app()).get("/api/v1/containers/info").json()
+
+    # derived from the Literal the responses are typed with, not a second list
+    assert body["statuses"]["workload"] == list(get_args(WorkloadStatus))
+    assert body["statuses"]["site"] == list(SITE_STATUSES)
+    # a poller needs to know which values mean "stop"
+    assert set(body["statuses"]["terminal"]) < set(body["statuses"]["workload"])
+    assert "Building" not in body["statuses"]["terminal"]
+
+    codes = {e["code"]: e["status"] for e in body["errorCodes"]}
+    assert codes[ValidationError.code] == ValidationError.status_code
+    assert len(codes) == len(error_catalog())
+
+
+def test_info_publishes_the_combined_name_and_group_limit():
+    """No per-field schema can carry this, so /info has to.
+
+    Each half may be 63 characters on its own; it is the join that becomes the
+    KSVC name. A form validating the fields separately would accept a pair the
+    API rejects, so the rule is published for the client to apply.
+    """
+    from common.names import MAX_OBJECT_NAME, object_name
+
+    naming = TestClient(create_app()).get("/api/v1/containers/info").json()["naming"]
+
+    # composed by the same function the platform names objects with
+    assert naming["template"] == object_name("{name}", "{group}")
+    assert naming["maxLength"] == MAX_OBJECT_NAME
+    # the pair the rule exists to catch: both halves legal, the join is not
+    assert len("n" * 40) <= 63 and len("g" * 40) <= 63
+    assert len(object_name("n" * 40, "g" * 40)) > naming["maxLength"]
+
+
+def test_the_error_catalog_is_walked_off_the_exception_classes():
+    """A hand-kept list is what goes stale, so a new error must publish itself."""
+    import gc
+
+    from common.errors import APIError, error_catalog
+
+    class TeapotError(APIError):
+        status_code = 418
+        code = "TEAPOT"
+
+    try:
+        assert ("TEAPOT", 418) in error_catalog()
+    finally:
+        # __subclasses__ holds weak references, so dropping the class and
+        # collecting keeps this test out of every later catalog.
+        del TeapotError
+        gc.collect()
+
+    assert "TEAPOT" not in dict(error_catalog())
 
 
 def test_framework_http_errors_get_a_meaningful_code_and_status(client):
@@ -441,9 +516,8 @@ def test_update_container_token_without_username_rejected(client):
 
 
 def test_update_function_build_change_accepted_without_token(client):
-    # The git token is stored, so changing a build input no longer needs the
-    # client to re-send it - the request is accepted and the service rebuilds
-    # using the stored token.
+    # The token is stored, so changing a build input does not need it re-sent:
+    # the request is accepted and the rebuild uses the stored one.
     r = client.put(
         "/api/v1/groups/team/functions/foo",
         json={
@@ -517,3 +591,95 @@ def test_swagger_docs_html_delivers_oauth_init():
     assert "initOAuth" in docs.text
     assert "serverless-api-swagger" in docs.text  # client id pre-filled
     assert "usePkceWithAuthorizationCodeGrant" in docs.text  # PKCE, no secret
+
+
+def _client_raising(exc: Exception) -> TestClient:
+    """A client whose container service raises ``exc``, with 500s returned not re-raised."""
+    from api.dependencies import get_container_service
+
+    class _Boom:
+        async def get(self, name, group, user):
+            raise exc
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: Principal(
+        subject="u", username="alice", groups=["team"], is_admin=False
+    )
+    app.dependency_overrides[get_container_service] = lambda: _Boom()
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_an_unanticipated_error_still_returns_the_documented_envelope():
+    """A 500 is the response a caller most needs to be able to report.
+
+    Served by Starlette's default it is plain text with no `error` object, so a
+    client parsing the envelope /info advertises breaks inside its own error
+    path, and there is no id to tie the report to the traceback.
+    """
+    client = _client_raising(RuntimeError("connection to db-master.internal failed"))
+    r = client.get("/api/v1/groups/team/containers/app", headers={"X-Request-ID": "trace-me-123"})
+
+    assert r.status_code == 500
+    assert r.headers["content-type"].startswith("application/json")
+    err = r.json()["error"]
+    assert err["status"] == 500
+    assert err["code"] == "INTERNAL"
+    # the correlation id survives in the body AND the header - the 500 used to be
+    # the one response carrying it nowhere, because ServerErrorMiddleware sits
+    # outside the middleware that stamps it
+    assert err["requestId"] == "trace-me-123"
+    assert r.headers["x-request-id"] == "trace-me-123"
+
+
+def test_an_unanticipated_error_does_not_leak_the_exception_text():
+    """Exception text routinely carries internal hostnames or secret material."""
+    client = _client_raising(RuntimeError("connection to db-master.internal failed"))
+    body = client.get("/api/v1/groups/team/containers/app").text
+
+    assert "db-master.internal" not in body
+    assert "RuntimeError" not in body
+    assert body.count("Internal server error.") == 1
+
+
+def test_the_unhandled_error_is_logged_with_the_id_the_client_was_given():
+    """The detail belongs in the log - which is only useful if it carries the id.
+
+    The handler runs after the request has unwound and the context var the log
+    filter normally reads is back to "-", so the id has to be stamped explicitly.
+
+    Captured on the module logger rather than with caplog: configure_logging()
+    replaces the root handlers wholesale, which drops caplog's.
+    """
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    client = _client_raising(RuntimeError("boom"))  # calls configure_logging()
+    web_logger = logging.getLogger("common.web")
+    handler = _Collect()
+    web_logger.addHandler(handler)
+    try:
+        client.get("/api/v1/groups/team/containers/app", headers={"X-Request-ID": "abc123"})
+    finally:
+        web_logger.removeHandler(handler)
+
+    record = next(r for r in records if r.levelno == logging.ERROR)
+    assert record.request_id == "abc123"
+    assert record.exc_info is not None  # the traceback is kept, just not returned
+
+
+def test_info_publishes_the_internal_code_the_catch_all_can_return():
+    """A code a client can receive must be in the advertised vocabulary.
+
+    error_catalog walks subclasses, so the base APIError's INTERNAL/500 - which
+    is exactly what the catch-all renders - would otherwise go unpublished.
+    """
+    codes = dict(
+        c["code"] and (c["code"], c["status"])
+        for c in TestClient(create_app()).get("/api/v1/containers/info").json()["errorCodes"]
+    )
+    assert codes["INTERNAL"] == 500

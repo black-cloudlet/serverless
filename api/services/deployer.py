@@ -1,4 +1,4 @@
-"""Multi-site fan-out and status aggregation (docs §4).
+"""Multi-site fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Site).
 
 Every deploy is applied to all target sites concurrently; results are aggregated
 into a single response. Partial failure -> Degraded (HTTP 207); total failure ->
@@ -8,7 +8,7 @@ HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable
+from typing import Callable
 
 from api.core.config import Settings
 from api.models.common import SiteStatus
@@ -34,9 +34,7 @@ class Deployer:
         """
         self._op_timeout = settings.site_op_timeout
         self._local_site = settings.local_site
-        # One Cluster per configured site, built once up front (not per request).
-        # The k8s connection stays lazy (on first use), so startup doesn't fail
-        # if a site is down.
+
         self._clusters: dict[str, Cluster] = {
             site.name: Cluster(site, settings) for site in settings.sites
         }
@@ -166,11 +164,9 @@ class Deployer:
 def aggregate(statuses: list[SiteStatus]) -> str:
     """Overall status for the create/update path.
 
-    Raises SiteTotalFailure if every site failed (nothing deployed anywhere);
-    otherwise delegates the rollup to overall_status, mapping an unreachable site
-    to ``Failed``. This keeps a single definition of "how per-site statuses roll
-    up" shared with the read paths - so a just-applied workload honestly reports
-    ``Deploying`` rather than an optimistic ``Ready``.
+    Raises SiteTotalFailure when every site failed; otherwise delegates the rollup
+    to overall_status, mapping an unreachable site to ``Failed``. One definition of
+    the rollup, shared with the read paths, so the two cannot drift.
 
     Args:
         statuses: The per-site results of the apply fan-out.
@@ -207,14 +203,10 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
 def overall_status(statuses: list[str]) -> str:
     """Collapse per-site KSVC statuses into one overall status (GET / list).
 
-    A site reporting ``Failed`` (or, on GET, an unreachable site mapped to
-    ``Failed``) makes the deployment ``Degraded``. A site being garbage-collected
-    (``Terminating``) makes the deployment ``Terminating`` (delete in progress).
-    Otherwise an all-``Ready`` set is ``Ready`` and anything still in flight is
-    ``Deploying`` - including a mixed ``Ready`` + ``Deploying`` set, which is a
-    normal rollout where one site is ahead, NOT a failure. This is what keeps the
-    create→poll loop from seeing a false ``Degraded`` while the workload is still
-    coming up.
+    A ``Failed`` site makes the deployment ``Degraded``; a ``Terminating`` one makes
+    it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
+    ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
+    site ahead, NOT a failure. That is what stops a false ``Degraded`` while coming up.
 
     Args:
         statuses: The per-site status strings.
@@ -241,14 +233,10 @@ def status_code_for(overall: str, created: bool) -> int:
         created: Whether the call created a new workload (vs updated one).
 
     Returns:
-        207 for Degraded, 202 for Deploying, 201 for a create, else 200.
+        207 for Degraded, 202 for Deploying/Building, 201 for a create, else 200.
     """
     if overall == "Degraded":
         return 207
-    if overall == "Deploying":
-        return 202  # accepted, still rolling out - a non-terminal poll state
+    if overall in ("Deploying", "Building"):
+        return 202  # accepted, still in flight - a non-terminal poll state
     return 201 if created else 200
-
-
-# Convenience for routers/tests wanting a fanout helper signature.
-FanoutFn = Callable[[list[Cluster], SiteFn], Awaitable[list[SiteStatus]]]

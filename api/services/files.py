@@ -61,22 +61,26 @@ def resolve_files(
     group: str,
     owner: str,
     files: list[FileMount],
-    kept: dict[str, str] | None = None,
+    kept: dict[str, bytes] | None = None,
 ) -> ResolvedFiles:
     """Resolve file mounts into volume specs and backing ConfigMap/Secret.
 
-    Non-secret files aggregate into one ConfigMap and secret files into one
-    Secret, both named ``{workload}-files``; each file is mounted via subPath. A
-    secret file sent without content keeps its stored content: it is filled from
-    ``kept`` (the decoded existing files Secret), so a redacted read can be sent
-    straight back on update.
+    Non-secret files aggregate into one ConfigMap and secret files into one Secret,
+    both named ``{workload}-files``, each mounted via subPath. A secret file sent
+    without content is filled from ``kept``, so a redacted read can be sent back.
+
+    Content is carried as **bytes** throughout. A file is a byte string, not text:
+    ``contentBase64`` exists so a caller can mount a keystore or a DER certificate,
+    and decoding those to ``str`` on the way in only to re-encode on the way out
+    cannot round-trip (it raises on the first non-UTF-8 byte). The backing builders
+    take bytes and choose the right Kubernetes field.
 
     Args:
         workload: The object name (``{name}-{group}``).
         group: Owning group (for labels).
         owner: Username (for labels).
         files: The submitted file mounts.
-        kept: Decoded existing files-Secret values (key -> content) to fall back on
+        kept: Existing files-Secret content (key -> raw bytes) to fall back on
             for a secret file sent without content. Empty on create.
 
     Returns:
@@ -89,8 +93,8 @@ def resolve_files(
     kept = kept or {}
     name = files_name(workload)
     labels = workload_labels(group, owner, workload)
-    config_data: dict[str, str] = {}
-    secret_data: dict[str, str] = {}
+    config_data: dict[str, bytes] = {}
+    secret_data: dict[str, bytes] = {}
     volumes: list[VolumeSpec] = []
     seen: set[str] = set()
 
@@ -111,14 +115,14 @@ def resolve_files(
             raw = kept[key]
         elif f.contentBase64 is not None:
             try:
-                # Lenient decode (no validate=) tolerates whitespace/newlines, e.g.
-                # line-wrapped PEM bodies; still raises on bad padding/length.
-                # binascii.Error and UnicodeDecodeError both subclass ValueError.
-                raw = base64.b64decode(f.contentBase64).decode("utf-8", "surrogateescape")
+                # Lenient decode tolerates line-wrapped PEM bodies but still raises on bad
+                # padding; both errors subclass ValueError. FileMount already rejected
+                # undecodable input at the edge; this keeps non-HTTP callers honest.
+                raw = base64.b64decode(f.contentBase64)
             except ValueError as exc:
                 raise ValidationError(f"file '{f.mountPath}' has invalid base64 content") from exc
         else:
-            raw = f.content or ""
+            raw = (f.content or "").encode("utf-8")
 
         if f.secret:
             secret_data[key] = raw

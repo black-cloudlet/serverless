@@ -25,8 +25,11 @@ class ResourceKind(Enum):
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
     CONFIG_MAP = ("v1", "ConfigMap")
     SECRET = ("v1", "Secret")
+    SERVICE_ACCOUNT = ("v1", "ServiceAccount")
     POD = ("v1", "Pod")
     POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
+    KPACK_IMAGE = ("kpack.io/v1alpha2", "Image")
+    KPACK_BUILD = ("kpack.io/v1alpha2", "Build")
 
     @property
     def api_version(self) -> str:
@@ -196,7 +199,7 @@ class Cluster:
     ) -> str:
         """Read a snapshot of one pod container's current log.
 
-        Uses CoreV1Api directly — the dynamic client can't read the ``log``
+        Uses CoreV1Api directly - the dynamic client can't read the ``log``
         subresource. The returned text is whatever the node currently holds for
         the container (Kubernetes keeps no ring buffer beyond the node's rotated
         log file); it is not a live stream.

@@ -3,7 +3,7 @@ name: Release
 # One-click release (manual). Enter a version - X.Y.Z or a pre-release
 # X.Y.Z-{alpha|beta|rc}.N (e.g. 1.2.0-beta.1) - and this workflow:
 #   1. bumps the version in pyproject.toml + Chart.yaml and commits it onto the
-#      vX.Y.Z tag ONLY — the branch it runs from is left unchanged;
+#      vX.Y.Z tag ONLY - the branch it runs from is left unchanged;
 #   2. runs the full check suite;
 #   3. builds/scans/signs and publishes the image and chart from the tag, then
 #      cuts a GitHub Release. A pre-release does NOT move the :latest image tag
@@ -13,7 +13,7 @@ name: Release
 # version normalizes to PEP 440 (1.2.0b1), so __version__ reports 1.2.0b1.
 #
 # Self-contained on purpose: a tag pushed by GITHUB_TOKEN does NOT re-trigger a
-# tag-listening workflow, so we do the whole release in this one run — no PAT.
+# tag-listening workflow, so we do the whole release in this one run - no PAT.
 # The stamped version lives only on the tag (the release snapshot); the branch
 # stays at its development baseline.
 on:

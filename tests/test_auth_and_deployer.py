@@ -5,6 +5,7 @@ from api.core.config import Settings, SiteConfig, SSOConfig
 from api.models.common import SiteStatus
 from api.services.deployer import Deployer, aggregate, status_code_for
 from common.errors import SiteTotalFailure, ValidationError
+from tests.conftest import runtime_registry
 
 
 def test_principal_from_claims_strips_and_detects_admin():
@@ -285,15 +286,31 @@ class _FakeCluster:
         raise _NF(f"{name} not found")
 
 
+class _NullBuilder:
+    """Builder that declares nothing; for the non-function paths."""
+
+    pull_secret = "reg-creds"
+
+    def image_ref(self, req):
+        return "reg/built:1"
+
+    def plan(self, req, labels):
+        from common.contract import BuildPlan
+
+        return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
+
+    def status(self, cluster, name, group):
+        return None
+
+
 def _workload_service(clusters, builder=None, local_site=None):
-    from api.services.builder import FuncBuilder
     from api.services.workloads import WorkloadService
 
     settings = _settings_with_sites()
     d = Deployer(settings)
     d._clusters = clusters  # inject fakes (name -> _FakeCluster)
     d._local_site = local_site
-    return WorkloadService(settings, d, builder or FuncBuilder(settings.registry))
+    return WorkloadService(settings, d, builder or _NullBuilder())
 
 
 def test_host_for_resolution_and_validation():
@@ -315,6 +332,25 @@ def test_host_for_resolution_and_validation():
     # more than one level under the base domain -> rejected
     with pytest.raises(ValidationError):
         svc.host_for("app", "a.b.serverless.example.com", "team")
+
+
+def test_a_name_and_group_each_legal_alone_are_rejected_when_too_long_together():
+    """{name}-{group} is the KSVC name and the first label of the host: max 63.
+
+    Each half passes its own <=63 check, so without a combined one the request is
+    accepted (202) and the API server rejects the KSVC later, in the background
+    deploy - after the config Secrets for it have already been written.
+    """
+    from common.errors import ValidationError
+
+    svc = _workload_service({})
+    name, group = "n" * 40, "g" * 40
+
+    with pytest.raises(ValidationError, match="too long together"):
+        svc.validate_spec(name, group, "alice", [], [])
+
+    # 63 exactly is the boundary and must still pass.
+    svc.validate_spec("n" * 31, "g" * 31, "alice", [], [])
 
 
 async def test_host_available_when_unused():
@@ -598,6 +634,117 @@ def _bare_ksvc(name="app-team"):
         scaling=Scaling(),
         size="small",
     )
+
+
+async def test_get_function_returns_build_inputs_and_build_state():
+    """GET on a function reads the whole function-only branch of the response.
+
+    The container variant is covered several times over; this drives the branch
+    that only a function reaches - the build-input annotations projected through
+    WorkloadSpec, and the kpack build status folded into overallStatus.
+    """
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.contract import BuildStatus
+
+    ksvc = build_ksvc(
+        name="fn-team",
+        group="team",
+        owner="alice",
+        image="reg/team/fn:main",
+        offering="function",
+        host="fn-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+        git_url="https://git.example.com/team/monorepo.git",
+        branch="main",
+        path="services/api",
+    )
+    ksvc["status"] = {
+        "conditions": [{"type": "Ready", "status": "True"}],
+        "latestReadyRevisionName": "fn-team-00001",
+    }
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("revision/metrics/configmaps are best-effort here")
+
+    class _ReadyBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            return BuildStatus(state="Ready", image="reg/team/fn@sha256:abc")
+
+    engine = _workload_service({"site-a": _C()}, builder=_ReadyBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("function", "fn", user, "team")
+
+    assert body.runtime == "python"
+    assert body.gitRepo == "https://git.example.com/team/monorepo.git"
+    assert body.branch == "main"
+    # The sub-directory a monorepo function builds from, round-tripped through
+    # the annotation and WorkloadSpec rather than dropped on the floor.
+    assert body.path == "services/api"
+    assert body.build.state == "Ready"
+    assert body.overallStatus == "Ready"
+    # the built image stays internal - a function's client deals in source
+    assert not hasattr(body, "image")
+
+
+async def test_get_function_building_image_reports_building():
+    """A function whose image is still building is Building, not Degraded."""
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.contract import BuildStatus
+
+    ksvc = build_ksvc(
+        name="fn-team",
+        group="team",
+        owner="alice",
+        image="reg/team/fn:main",
+        offering="function",
+        host="fn-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+        git_url="https://git.example.com/team/fn.git",
+        branch="main",
+    )
+    # KSVC can't pull an image that does not exist yet -> Ready=False
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("best-effort reads")
+
+    class _BuildingBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            return BuildStatus(state="Building")
+
+    engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("function", "fn", user, "team")
+
+    assert body.build.state == "Building"
+    assert body.overallStatus == "Building"
+    assert body.path is None  # no sub-directory -> built from the repository root
 
 
 async def test_get_overall_status_reflects_rollout_state():
@@ -931,19 +1078,23 @@ async def test_function_update_rebuilds_when_token_given():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.builder import BuildResult
     from api.services.function import FunctionService
     from api.services.ksvc import build_ksvc
     from api.services.workloads import _extract_image
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def __init__(self):
             self.calls = 0
 
-        def build(self, req):
+        def image_ref(self, req):
+            return "reg/built:rel"
+
+        def plan(self, req, labels):
+            from common.contract import BuildPlan
+
             self.calls += 1
             self.req = req
-            return BuildResult(image="reg/built:rel", digest="sha256:abc")
+            return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
 
     existing = build_ksvc(
         name="fn-team",
@@ -963,7 +1114,7 @@ async def test_function_update_rebuilds_when_token_given():
     cluster = _ApplyCluster("site-a", {"fn-team": existing})
     builder = _StubBuilder()
     engine = _workload_service({"site-a": cluster}, builder=builder)
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # rebuild from a new branch; gitRepo/runtime re-sent unchanged (full replace)
@@ -980,7 +1131,7 @@ async def test_function_update_rebuilds_when_token_given():
     assert builder.req.git_url == "https://git/old.git"
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert _extract_image(ksvc) == "sha256:abc"  # rebuilt digest deployed
+    assert _extract_image(ksvc) == "reg/built:rel"  # deployed at the rebuilt tag
 
 
 async def test_function_update_without_token_keeps_image():
@@ -991,13 +1142,13 @@ async def test_function_update_without_token_keeps_image():
     from api.services.ksvc import build_ksvc
     from api.services.workloads import _extract_image
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def __init__(self):
             self.calls = 0
 
-        def build(self, req):
+        def plan(self, req, labels):
             self.calls += 1
-            raise AssertionError("must not rebuild for a config-only update")
+            raise AssertionError("no token stored -> nothing to declare a build with")
 
     existing = build_ksvc(
         name="fn-team",
@@ -1017,7 +1168,7 @@ async def test_function_update_without_token_keeps_image():
     cluster = _ApplyCluster("site-a", {"fn-team": existing})
     builder = _StubBuilder()
     engine = _workload_service({"site-a": cluster}, builder=builder)
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # config-only edit re-sends the same build inputs -> no rebuild
@@ -1041,17 +1192,23 @@ async def test_function_create_persists_git_secret():
 
     from api.auth.claims import Principal
     from api.models.function import FunctionCreate
-    from api.services.builder import BuildResult
     from api.services.function import FunctionService
-    from api.services.secrets import GIT_TOKEN_KEY
+    from api.services.secrets import GIT_TOKEN_KEY, build_git_secret
 
-    class _StubBuilder:
-        def build(self, req):
-            return BuildResult(image="reg/built:1", digest="sha256:abc")
+    class _StubBuilder(_NullBuilder):
+        def plan(self, req, labels):
+            from common.contract import BuildPlan
+
+            # the git Secret is now part of what the builder declares
+            return BuildPlan(
+                tag=self.image_ref(req),
+                replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
+                local=[],
+            )
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
     engine = _workload_service({"site-a": cluster}, builder=_StubBuilder())
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await fsvc.create(
@@ -1070,19 +1227,20 @@ async def test_function_update_reuses_stored_git_token():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.builder import BuildResult
     from api.services.function import FunctionService
     from api.services.ksvc import build_ksvc
     from api.services.secrets import build_git_secret, git_secret_name
 
-    class _StubBuilder:
+    class _StubBuilder(_NullBuilder):
         def __init__(self):
             self.calls = 0
 
-        def build(self, req):
+        def plan(self, req, labels):
+            from common.contract import BuildPlan
+
             self.calls += 1
             self.req = req
-            return BuildResult(image="reg/built:rel", digest="sha256:def")
+            return BuildPlan(tag="reg/built:rel", replicated=[], local=[])
 
     existing = build_ksvc(
         name="fn-team",
@@ -1103,7 +1261,7 @@ async def test_function_update_reuses_stored_git_token():
     cluster = _ApplyCluster("site-a", {"fn-team": existing}, secrets={"fn-team-git": stored})
     builder = _StubBuilder()
     engine = _workload_service({"site-a": cluster}, builder=builder)
-    fsvc = FunctionService(engine)
+    fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # change the branch WITHOUT re-supplying a token -> rebuild uses the stored one
@@ -1554,6 +1712,122 @@ async def test_delete_missing_workload_is_404():
     assert cluster.deleted == []  # nothing deleted when the workload is absent
 
 
+async def test_delete_fails_closed_when_a_site_cannot_be_reached():
+    """An unreachable site cannot prove the workload is gone.
+
+    Reporting 404 there would read as "already deleted" while the workload is
+    still serving on the site that did not answer - and would do so *after*
+    tearing down the build objects, leaving a running function that can never
+    rebuild. Every other cross-site check in the engine fails closed with 503;
+    delete has to as well.
+    """
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+    from common.errors import ServiceUnavailableError
+
+    up = _DeleteCluster("site-a", _ksvc("function"))
+    down = _DownCluster()
+    down.site = down.name = "site-b"
+    engine = _workload_service({"site-a": up, "site-b": down}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(ServiceUnavailableError):
+        await engine.delete("function", "app", user, "team")
+
+    # the build objects survive: nothing may be torn down on an unconfirmed delete
+    assert not any(kind != ResourceKind.KNATIVE_SERVICE for kind, _ in up.deleted)
+
+
+async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
+    """A conclusive "gone everywhere" is what licenses the build-object cleanup.
+
+    The KSVC being absent does not mean the build objects are: a partial delete
+    can orphan them, and a leftover Image keeps rebuilding a function nothing
+    runs. So the reap happens whenever the fan-out is conclusive, then the 404 is
+    reported for the workload itself.
+    """
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+    from common.errors import NotFoundError
+
+    cluster = _DeleteCluster("site-a", None)  # KSVC absent, build objects orphaned
+    engine = _workload_service({"site-a": cluster}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(NotFoundError):
+        await engine.delete("function", "app", user, "team")
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-app-team") in cluster.deleted
+    assert (ResourceKind.SERVICE_ACCOUNT, "fn-app-team") in cluster.deleted
+    assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
+
+
+async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
+    """An object_name collision resolving to another group must not delete anything.
+
+    The refusal is recorded per site rather than raised inside the fan-out, which
+    would swallow it into a per-site error string and make it indistinguishable
+    from an unreachable site.
+    """
+    from api.auth.claims import Principal
+    from api.models.common import LABEL_GROUP, LABEL_OFFERING
+    from common.errors import NotFoundError
+
+    foreign = _ksvc("function")
+    foreign["metadata"]["labels"] = {LABEL_GROUP: "other", LABEL_OFFERING: "function"}
+    cluster = _DeleteCluster("site-a", foreign)
+    engine = _workload_service({"site-a": cluster}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(NotFoundError):
+        await engine.delete("function", "app", user, "team")
+    assert cluster.deleted == []  # not the KSVC, and not the build objects
+
+
+async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
+    """Host and name are answered in a single visit per site.
+
+    Two separate fan-outs cost two cross-site round trips and described two
+    different instants. Merging them must not weaken either verdict, so both
+    conflicts and the fail-closed behaviour are pinned here.
+    """
+    from api.models.common import LABEL_WORKLOAD
+    from common.errors import ConflictError, ServiceUnavailableError
+
+    host = "app-team.serverless.example.com"
+
+    # host held by someone else -> conflict, even though the name is free
+    taken = {host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}}
+    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=taken)})
+    with pytest.raises(ConflictError, match="hostname"):
+        await svc.assert_deployable(
+            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+        )
+
+    # name already used -> conflict, even though the host is free
+    exists = {"app-team": {"metadata": {"name": "app-team"}}}
+    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=exists)})
+    with pytest.raises(ConflictError, match="already exists"):
+        await svc.assert_deployable(
+            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+        )
+
+    # an update does not require absence: its own KSVC and mapping are expected
+    own = {
+        "app-team": {"metadata": {"name": "app-team"}},
+        host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}},
+    }
+    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=own)})
+    await svc.assert_deployable("app", "team", svc.deployer.resolve_targets(None), host=host)
+
+    # a site that cannot answer proves neither -> 503, not a silent pass
+    svc = _workload_service({"site-a": _DownCluster()})
+    with pytest.raises(ServiceUnavailableError):
+        await svc.assert_deployable(
+            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+        )
+
+
 async def test_apply_sets_owner_references_on_derived():
     """Every resource derived from a workload (env/files Secret & ConfigMap, the
     imagePullSecret, and the DomainMapping) must carry an ownerReference to the
@@ -1825,9 +2099,8 @@ def test_validate_group_strips_ggd_prefix_on_input():
 
 
 def test_group_underscores_fold_to_hyphens():
-    # An SSO group may use "_" as a separator, which is legal in Keycloak but not
-    # in the DNS-1123 object names/hosts the group ends up in. Both spellings
-    # normalize to the same canonical, DNS-safe group.
+    # "_" is legal in Keycloak but not in the DNS-1123 names the group ends up
+    # in, so both spellings normalize to the same group.
     from api.models.common import normalize_group, validate_group
 
     assert validate_group("my_team") == "my-team"
@@ -1837,9 +2110,8 @@ def test_group_underscores_fold_to_hyphens():
 
 
 def test_group_case_is_folded_to_lower():
-    # Mixed case is legal in Keycloak but not in a DNS-1123 name/host, so the group
-    # is lowercased. Lowercasing runs before the other rules, so an upper-case
-    # ggd- prefix is still stripped and "_" in a mixed-case name is still folded.
+    # Lowercased for the same reason, and before the other rules - so an
+    # upper-case ggd- prefix is still stripped and "_" still folded.
     from api.models.common import normalize_group, validate_group
 
     assert validate_group("Platforms") == "platforms"
@@ -2494,7 +2766,7 @@ async def test_function_service_logs_delegates_to_engine():
         pods=[_pod("app-team-00001-a")],
         logs={"app-team-00001-a": "fn-log"},
     )
-    fsvc = FunctionService(_workload_service({"site-a": cluster}))
+    fsvc = FunctionService(_workload_service({"site-a": cluster}), runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     resp = await fsvc.logs(
@@ -2527,13 +2799,33 @@ async def test_container_service_logs_delegates_to_engine():
 # --- runtime validation against the registry (config-driven) ---------------
 
 
-def _function_service_with_runtimes(names):
+def _function_service_with_runtimes(names, builder="python"):
     from api.services.function import FunctionService
     from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
-    registry = RuntimeRegistry([RuntimeSpec(name=n) for n in names])
+    # `builder` is what makes a runtime buildable; pass None for one that is
+    # advertised but unusable (the shape of an unmounted runtimes ConfigMap).
+    registry = RuntimeRegistry([RuntimeSpec(name=n, builder=builder) for n in names])
     return FunctionService(engine, registry)
+
+
+async def test_function_accept_rejects_a_runtime_with_no_builder():
+    """An unmounted runtimes ConfigMap must 400 now, not fail the deploy later."""
+    from starlette.background import BackgroundTasks
+
+    from api.auth.claims import Principal
+    from api.models.function import FunctionCreate
+    from common.errors import ValidationError
+
+    fsvc = _function_service_with_runtimes(["python"], builder=None)
+    user = Principal(subject="u", username="alice", groups=["team"])
+    spec = FunctionCreate(
+        name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python"
+    )
+
+    with pytest.raises(ValidationError, match="not buildable"):
+        await fsvc.accept("team", spec, user, BackgroundTasks())
 
 
 async def test_function_accept_rejects_unknown_runtime():
@@ -2545,7 +2837,9 @@ async def test_function_accept_rejects_unknown_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="ruby")
+    spec = FunctionCreate(
+        name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby"
+    )
 
     with pytest.raises(ValidationError):
         await fsvc.accept("team", spec, user, BackgroundTasks())
@@ -2559,7 +2853,9 @@ async def test_function_accept_allows_known_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="g", gitToken="t", runtime="go")
+    spec = FunctionCreate(
+        name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go"
+    )
 
     resp = await fsvc.accept("team", spec, user, BackgroundTasks())
     assert resp.overallStatus == "Pending" and resp.runtime == "go"
@@ -2579,3 +2875,152 @@ async def test_function_update_rejects_unknown_runtime():
 
     with pytest.raises(ValidationError):
         await fsvc.accept_update("team", "fn", spec, user, BackgroundTasks())
+
+
+async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
+    """The apply path must not re-read the KSVC it just wrote.
+
+    Server-side apply returns the stored object - already trusted enough to
+    source the ownerReference every derived resource hangs off - and Knative has
+    not reconciled microseconds later, so a follow-up GET buys nothing and costs
+    a cross-site round trip on every site of every deploy.
+    """
+    from api.auth.claims import Principal
+    from api.models.container import ContainerCreate
+    from api.services.container import ContainerService
+    from common.cluster import ResourceKind
+
+    class _CountingApply(_ApplyCluster):
+        ksvc_gets = 0
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                type(self).ksvc_gets += 1
+            return super().get(kind, name, label_selector, namespace)
+
+    _CountingApply.ksvc_gets = 0
+    cluster = _CountingApply("site-a", {})
+    engine = _workload_service({"site-a": cluster})
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    body, _ = await ContainerService(engine).create(
+        "team", ContainerCreate(name="api", image="reg/x:1", port=8080), user
+    )
+
+    # exactly one: the pre-flight absence probe. The post-apply read-back is gone.
+    assert _CountingApply.ksvc_gets == 1
+    # and the status still comes back, sourced from the apply response
+    assert body.sites[0].status == "Deploying"  # just written, not yet reconciled
+
+
+async def test_get_reads_a_sites_revision_and_usage_on_the_fanout_thread():
+    """No per-site, per-request thread pool.
+
+    These two reads used to run in a ThreadPoolExecutor constructed inside the
+    fan-out worker - nesting a pool inside the default executor the worker was
+    itself borrowed from. Running them on the calling thread is what keeps a
+    poll loop from filling the outer pool with threads that only wait.
+    """
+    import threading
+
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+
+    seen: dict[str, str] = {}
+    ksvc = _bare_ksvc()
+    # a revision name is what makes the Revision read happen at all
+    ksvc["status"] = {
+        "conditions": [{"type": "Ready", "status": "True"}],
+        "latestReadyRevisionName": "app-team-00001",
+    }
+
+    class _ThreadRecordingCluster:
+        site = name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            here = threading.current_thread().name
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                seen["ksvc"] = here
+                return ksvc
+            if kind == ResourceKind.KNATIVE_REVISION:
+                seen["revision"] = here
+                return {"status": {"actualReplicas": 2}}
+            if kind == ResourceKind.POD_METRICS:
+                seen["usage"] = here
+                return []
+            raise AssertionError(f"unexpected kind {kind}")
+
+    engine = _workload_service({"site-a": _ThreadRecordingCluster()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    await engine.get("container", "app", user, "team")
+
+    assert {"ksvc", "revision", "usage"} <= seen.keys()
+    assert seen["revision"] == seen["ksvc"], "revision read spawned a thread"
+    assert seen["usage"] == seen["ksvc"], "usage read spawned a thread"
+
+
+async def test_get_overlaps_the_spec_and_build_reads():
+    """The spec read and the build read are independent, so they must overlap.
+
+    Asserted as overlapping intervals rather than elapsed time, so the result
+    does not depend on how fast or loaded the machine is: run in sequence the
+    two windows cannot intersect, run concurrently they must.
+    """
+    import time
+
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.files import VolumeSpec
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.contract import BuildStatus
+
+    # a function carrying one mounted file, so reading its spec costs a ConfigMap get
+    ksvc = build_ksvc(
+        name="app-team",
+        group="team",
+        owner="alice",
+        image="reg/app:main",
+        offering="function",
+        host="app-team.ex.com",
+        env=[],
+        volumes=[
+            VolumeSpec("files-config", "configmap", "app-team-files", "/etc/a.conf", "etc-a.conf")
+        ],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+    )
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+
+    spans: dict[str, list[float]] = {}
+
+    def _record(key):
+        spans[key] = [time.monotonic()]
+        time.sleep(0.05)
+        spans[key].append(time.monotonic())
+
+    class _SpecCluster:
+        site = name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            if kind == ResourceKind.CONFIG_MAP:
+                _record("spec")
+                return {"data": {}}
+            from common.errors import NotFoundError as _NF
+
+            raise _NF("best-effort")
+
+    class _SlowBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            _record("build")
+            return BuildStatus(state="Ready")
+
+    engine = _workload_service({"site-a": _SpecCluster()}, builder=_SlowBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    await engine.get("function", "app", user, "team")
+
+    (spec_start, spec_end), (build_start, build_end) = spans["spec"], spans["build"]
+    assert spec_start < build_end and build_start < spec_end, "reads did not overlap"

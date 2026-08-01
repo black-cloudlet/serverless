@@ -1,33 +1,33 @@
 """Pure builders/decoders for the credential Secrets a workload owns.
 
 Covers the imagePullSecret built from customer registry credentials and the
-Opaque ``{workload}-git`` Secret that stores a function's git token so it
-survives edits and can be reused to rebuild without the client re-sending it.
-Secret *values* are never returned on read - only the workload's update path
-reads them back, to preserve a "keep" (redacted) field. The caller supplies the
-labels.
+``{workload}-git`` Secret holding a function's token so a later edit can rebuild
+without it being re-sent. Values are never returned on read - only the update
+path reads them back, to preserve a redacted "keep" field.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+from urllib.parse import urlsplit
 
 from api.services import resources as res
 
-# Data key of the git token inside the ``{workload}-git`` Secret.
-GIT_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name, not a credential
+# Data keys of the ``{workload}-git`` basic-auth Secret.
+GIT_USERNAME_KEY = "username"
+GIT_TOKEN_KEY = "password"  # noqa: S105 - a Secret data key name, not a credential
+
+# kpack matches a credential to a repository through this annotation.
+GIT_ANNOTATION = "kpack.io/git"
 
 
 def registry_of(image: str) -> str:
     """The registry host an image reference points at, used to key its pull secret.
 
-    The org runs several registries, so this must come from the client's image,
-    not our platform registry. Falls back to Docker Hub when the reference carries
-    no explicit registry (e.g. ``nginx:latest`` or ``team/app:tag``). The registry
-    is the first path segment only when it looks like a host (has a ``.`` or
-    ``:port``, or is ``localhost``); otherwise it's an implicit Docker Hub
-    namespace.
+    The org runs several registries, so this comes from the client's image, not our
+    platform registry. Falls back to Docker Hub when the reference names no registry.
+    The first path segment counts as a host only if it looks like one.
 
     Args:
         image: The image reference (e.g. ``reg.example.com/team/app:tag``).
@@ -127,36 +127,56 @@ def git_secret_name(workload: str) -> str:
     return f"{workload}-git"
 
 
-def build_git_secret(name: str, labels: dict[str, str], token: str) -> dict:
-    """Build an Opaque Secret holding a function's git token.
+def build_git_secret(
+    name: str,
+    labels: dict[str, str],
+    token: str,
+    git_url: str = "",
+    username: str = "x-access-token",
+) -> dict:
+    """Build the ``kubernetes.io/basic-auth`` Secret holding a function's git token.
 
-    Stored so the token survives edits and can be reused to rebuild without the
-    client re-supplying it. The value is never returned on read.
+    One Secret serves both readers: the API reads it back to rebuild without the
+    token being re-supplied, and kpack clones with it - which is why it is basic-auth
+    carrying ``kpack.io/git``, the only shape kpack reads. One object is possible
+    only because builds run in the workload's own namespace.
 
     Args:
         name: The Secret name (``{workload}-git``).
         labels: Labels to stamp on it.
-        token: The git token to store.
+        token: The git token to store, as the basic-auth password.
+        git_url: Source repository, reduced to scheme+host for the annotation.
+            Omitted for a token stored outside a build context.
+        username: Username paired with the token. GitHub and GitLab PATs accept
+            any value; providers that check it need the real one.
 
     Returns:
         The Secret manifest dict.
     """
-    return res.build_secret(name, labels, {GIT_TOKEN_KEY: token})
+    secret = res.build_secret(
+        name,
+        labels,
+        {GIT_USERNAME_KEY: username, GIT_TOKEN_KEY: token},
+        "kubernetes.io/basic-auth",
+    )
+    if git_url:
+        secret["metadata"]["annotations"] = {GIT_ANNOTATION: git_credential_host(git_url)}
+    return secret
 
 
-def git_token(secret: dict) -> str | None:
-    """Decode the git token from a ``{workload}-git`` Secret (update path only).
+def git_credential_host(git_url: str) -> str:
+    """The ``kpack.io/git`` annotation value for a repository URL.
+
+    kpack compares this annotation against the repository URL to pick a
+    credential, so it must be scheme and host only - no path, no userinfo.
 
     Args:
-        secret: The Opaque git Secret object.
+        git_url: The repository URL.
 
     Returns:
-        The token, or None if it can't be read.
+        ``{scheme}://{host}``; the input unchanged if it has no scheme to split.
     """
-    raw = (secret.get("data") or {}).get(GIT_TOKEN_KEY)
-    if not raw:
-        return None
-    try:
-        return base64.b64decode(raw).decode("utf-8", "surrogateescape")
-    except Exception:  # noqa: BLE001 - malformed secret -> treat as unknown
-        return None
+    parts = urlsplit(git_url)
+    if not parts.scheme or not parts.netloc:
+        return git_url
+    return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"

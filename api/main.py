@@ -11,14 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import __version__
 from api.auth.deps import get_validator
 from api.core.config import Settings, get_settings
-from api.dependencies import get_workload_service
+from api.dependencies import get_runtimes, get_workload_service
 from api.docs import wire_sso_login
 from api.routers import containers, functions, info
 from api.services.deployer import Deployer
-from common.errors import register_exception_handlers
 from common.logging import configure_logging, get_logger
 from common.requestid import RequestIDMiddleware
-from common.web import health_router, mount_offline_docs
+from common.web import health_router, mount_offline_docs, register_exception_handlers
 
 logger = get_logger(__name__)
 
@@ -60,6 +59,9 @@ async def lifespan(app: FastAPI):
     Args:
         app: The FastAPI application (provided by the framework).
     """
+    # Local config, not a remote dependency: retrying cannot fix it, and an API
+    # without it would accept functions it can never build.
+    get_runtimes()
     service = get_workload_service()  # build the service graph (no network)
     await _warmup(get_settings(), service.deployer)  # warm caches, best effort
 

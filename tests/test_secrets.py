@@ -6,7 +6,6 @@ from api.services.secrets import (
     build_git_secret,
     build_pull_secret,
     git_secret_name,
-    git_token,
     registry_of,
     registry_token,
     registry_username,
@@ -44,13 +43,8 @@ def test_git_secret_roundtrips_token():
     name = git_secret_name("app-team")
     assert name == "app-team-git"
     s = build_git_secret(name, {"app": "x"}, "ghp_secret")
-    assert s["kind"] == "Secret" and s["type"] == "Opaque"
+    # basic-auth, not Opaque: kpack clones with this same Secret
+    assert s["kind"] == "Secret" and s["type"] == "kubernetes.io/basic-auth"
     assert s["metadata"]["name"] == name and s["metadata"]["labels"] == {"app": "x"}
-    # stored base64-encoded under the token key; the update path decodes it back
+    # stored base64-encoded; load_existing decodes it back to reuse on rebuild
     assert base64.b64decode(s["data"][GIT_TOKEN_KEY]).decode() == "ghp_secret"
-    assert git_token(s) == "ghp_secret"
-
-
-def test_git_token_decode_handles_missing_secret():
-    assert git_token({}) is None
-    assert git_token({"data": {}}) is None

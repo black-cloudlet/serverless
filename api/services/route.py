@@ -1,11 +1,9 @@
 """Workload external exposure via a Knative DomainMapping.
 
-On OpenShift Serverless we do NOT create OpenShift Routes by hand: the Serverless
-Operator's ingress controller automatically creates the OpenShift Route for each
-Knative ingress. To expose a workload at a custom, cluster-independent host we
-create a ``DomainMapping`` for that host (identical in both clusters); the
-operator then provisions the corresponding Route. A ``*.serverless.{base_domain}``
-DNS record forwards to the active site (docs §5).
+We never create OpenShift Routes by hand - the Serverless Operator creates one
+per Knative ingress. To expose a custom, cluster-independent host we create a
+``DomainMapping`` (identical in both clusters) and the operator provisions the
+Route. A wildcard DNS record forwards to the active site.
 """
 
 from __future__ import annotations

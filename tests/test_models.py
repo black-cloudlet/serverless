@@ -73,26 +73,39 @@ def test_valid_function():
 
 def test_invalid_name_rejected():
     with pytest.raises(ValidationError):
-        FunctionCreate(name="Bad_Name", gitRepo="g", gitToken="t", runtime="python")
+        FunctionCreate(
+            name="Bad_Name", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python"
+        )
 
 
 def test_runtime_is_a_free_string_on_the_model():
-    # The valid runtime set is data (a mounted ConfigMap), so the model accepts
-    # any string; the service validates it against the live registry (see
-    # test_auth_and_deployer.test_function_accept_rejects_unknown_runtime).
-    fn = FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="ruby")
+    # The runtime set is data (a ConfigMap), so the model takes any string; the
+    # service validates it against the live registry.
+    fn = FunctionCreate(
+        name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby"
+    )
     assert fn.runtime == "ruby"
 
 
 def test_size_default_and_choices():
-    fn = FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go")
+    fn = FunctionCreate(
+        name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go"
+    )
     assert fn.size == "small"  # default
     assert (
-        FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="large").size
+        FunctionCreate(
+            name="x",
+            gitRepo="https://git.internal/o/r.git",
+            gitToken="t",
+            runtime="go",
+            size="large",
+        ).size
         == "large"
     )
     with pytest.raises(ValidationError):  # unknown size
-        FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", size="xl")
+        FunctionCreate(
+            name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", size="xl"
+        )
 
 
 def test_envvar_value_required_unless_secret_keep():
@@ -178,15 +191,161 @@ def test_scaling_hpa_metric_cannot_scale_to_zero():
 def test_optional_hostname_validated():
     fn = FunctionCreate(
         name="my-fn",
-        gitRepo="g",
+        gitRepo="https://git.internal/o/r.git",
         gitToken="t",
         runtime="python",
         hostname="app.example.com",
     )
     assert fn.hostname == "app.example.com"
     # default (no hostname) is allowed
-    assert FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go").hostname is None
+    assert (
+        FunctionCreate(
+            name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go"
+        ).hostname
+        is None
+    )
     # invalid hostnames rejected
     for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
         with pytest.raises(ValidationError):
-            FunctionCreate(name="x", gitRepo="g", gitToken="t", runtime="go", hostname=bad)
+            FunctionCreate(
+                name="x",
+                gitRepo="https://git.internal/o/r.git",
+                gitToken="t",
+                runtime="go",
+                hostname=bad,
+            )
+
+
+def test_git_repo_must_be_an_http_url_the_build_can_authenticate_to():
+    """The clone authenticates with a basic-auth Secret, which needs http(s).
+
+    Unvalidated, an empty or scp-style URL is accepted (202) and only fails in
+    the background build - and an scp-style ref yields a kpack.io/git annotation
+    kpack cannot match, so it surfaces as an auth error nowhere near its cause.
+    """
+    for bad in [
+        "",
+        "   ",
+        "g",
+        "not a url",
+        "git@github.com:o/r.git",
+        "ssh://git@host/r.git",
+        "file:///etc/passwd",
+        "https://",
+    ]:
+        with pytest.raises(ValidationError):
+            FunctionCreate(name="x", gitRepo=bad, gitToken="t", runtime="go")
+
+    for ok in ["https://git.internal/o/r.git", "http://git.internal:8080/o/r.git"]:
+        assert FunctionCreate(name="x", gitRepo=ok, gitToken="t", runtime="go").gitRepo == ok
+
+
+def test_git_repo_rejects_embedded_credentials_rather_than_stripping_them():
+    """The URL is written verbatim to Image.spec.source.git.url.
+
+    That object is readable by anyone with get on kpack Images, which is far
+    wider than the Secret the token belongs in.
+    """
+    with pytest.raises(ValidationError, match="must not embed credentials"):
+        FunctionCreate(
+            name="x", gitRepo="https://user:pw@git.internal/o/r.git", gitToken="t", runtime="go"
+        )
+
+
+def test_the_published_schema_agrees_with_the_validator():
+    """The schema is documentation, so it must describe what the validator does.
+
+    Name is checked as an equivalence: a client applying the advertised pattern
+    and maxLength must reach the same verdict the API will. Group and path
+    publish no pattern on purpose - they normalize first, so no pattern could
+    describe their input.
+    """
+    import re
+
+    from pydantic import TypeAdapter
+
+    from api.models.common import Group, Name, SourcePath
+
+    schema = TypeAdapter(Name).json_schema()
+    pattern, max_len = re.compile(schema["pattern"]), schema["maxLength"]
+
+    for candidate in ["ok", "a-b-c", "x" * 63, "x" * 64, "Bad", "bad_name", "-lead", ""]:
+        by_schema = bool(pattern.match(candidate)) and len(candidate) <= max_len
+        try:
+            TypeAdapter(Name).validate_python(candidate)
+            by_api = True
+        except Exception:
+            by_api = False
+        assert by_schema == by_api, f"{candidate!r}: schema says {by_schema}, API says {by_api}"
+
+    # a pattern on these would run before the validator and reject what it fixes
+    assert "pattern" not in TypeAdapter(Group).json_schema()
+    assert "pattern" not in TypeAdapter(SourcePath).json_schema()
+    assert TypeAdapter(Group).validate_python("My_Team") == "my-team"
+
+
+def test_image_must_be_a_well_formed_reference():
+    """The image is written verbatim to containers[0].image.
+
+    Unvalidated, an empty or padded reference is accepted (202) and only fails
+    minutes later as a bare ErrImagePull on a revision, with nothing tying it
+    back to the field that caused it.
+    """
+    from api.models.container import ContainerCreate
+
+    for bad in [
+        "",
+        "   ",
+        "\n",
+        "reg/x:1 --rm",  # trailing junk
+        "reg.internal/team/app:1\nreg/evil:1",  # embedded newline
+        "reg.internal/Team/App:1",  # upper case in the path
+        "reg.internal/team/app:",  # empty tag
+        "reg.internal//app:1",  # empty path component
+        "/team/app:1",  # leading slash
+        "reg.internal/team/app@sha256:zzzz",  # not a hex digest
+        "x" * 513,
+    ]:
+        with pytest.raises(ValidationError):
+            ContainerCreate(name="x", image=bad, port=8080)
+
+    for ok in [
+        "nginx",  # implicit :latest, and implicit Docker Hub
+        "nginx:1.25",
+        "registry.internal/team/app:1.2.3",
+        "registry.internal:5000/team/app:v1",
+        "registry.internal/team/sub/app:main",
+        "registry.internal/team/app@sha256:" + "a" * 64,
+        "registry.internal/team/app:main@sha256:" + "a" * 64,
+    ]:
+        assert ContainerCreate(name="x", image=ok, port=8080).image == ok
+
+    # a reference pasted from a console usually carries surrounding whitespace
+    assert ContainerCreate(name="x", image="  reg/app:1\n", port=8080).image == "reg/app:1"
+
+
+def test_the_platform_builds_function_tags_the_image_validator_accepts():
+    """image_reference() and validate_image_ref must agree on one grammar.
+
+    A function's KSVC is deployed against a tag this codebase composes itself.
+    If the two drifted, the platform could generate a reference its own
+    container endpoint would reject - the same string, two verdicts.
+    """
+    from common.contract import BuildRequest, image_reference
+    from common.names import validate_image_ref
+
+    for registry_base, branch in [
+        ("registry.internal", "main"),
+        ("registry.internal/serverless", "release/2026-01"),
+        ("registry.internal:5000/serverless", "feature/UPPER_Case"),
+    ]:
+        req = BuildRequest(
+            name="image-resizer",
+            group="payments",
+            git_url="https://git.internal/o/r.git",
+            branch=branch,
+            git_token="t",
+            runtime="python",
+        )
+        ref = image_reference(registry_base, req)
+        assert validate_image_ref(ref) == ref, ref

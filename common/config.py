@@ -1,10 +1,8 @@
 """Settings shared by every service (api, builder, …).
 
-The connection identity — sites, the client cert, the trusted CA bundle, the
-internal registry, and per-cluster timeouts — is the same for any service that
-talks to the clusters, so it lives here as :class:`CommonSettings`. Each service
-subclasses it and adds its own fields (the API adds SSO, CORS, the route domain,
-…). All settings load from the ``SERVERLESS_`` env prefix.
+The connection identity - sites, client cert, CA bundle, registry, timeouts - is
+the same for any service that talks to the clusters, so it lives here. Each
+service subclasses it and adds its own fields.
 """
 
 from __future__ import annotations
@@ -22,8 +20,8 @@ class SiteConfig(BaseModel):
     bundle, and workloads namespace are global (the same in every cluster).
     """
 
-    name: str  # site/region, e.g. "central"
-    cluster: str  # cluster instance name, e.g. "central-0"
+    name: str
+    cluster: str
 
 
 class CABundleConfig(BaseModel):
@@ -31,9 +29,8 @@ class CABundleConfig(BaseModel):
 
     OpenShift populates a ConfigMap labelled
     ``config.openshift.io/inject-trusted-cabundle: "true"`` with the cluster's
-    trusted CAs. We mount it into the service and every workload; it is the same
-    for every cluster, so the Kubernetes client also uses it to verify the API
-    servers.
+    trusted CAs. It is mounted into the service and every workload, and is the same
+    everywhere, so the Kubernetes client verifies API servers with it too.
     """
 
     config_map: str = "ca-bundle"
@@ -50,6 +47,22 @@ class RegistryConfig(BaseModel):
     """Internal (mirrored) container registry."""
 
     url: str = "registry.internal"
+    organization: str = ""
+
+    @property
+    def base(self) -> str:
+        """Registry host plus organization, the prefix every image ref hangs off."""
+        url = self.url.strip("/")
+        org = self.organization.strip("/")
+        return f"{url}/{org}" if org else url
+
+
+class BuildConfig(BaseModel):
+    """kpack build settings (env ``SERVERLESS_BUILD__*``, set by the Helm chart)."""
+
+    registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
+    git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
+    resources: dict = Field(default_factory=dict)
 
 
 class CommonSettings(BaseSettings):
@@ -67,24 +80,18 @@ class CommonSettings(BaseSettings):
     )
 
     base_domain: str = "example.com"
-    # Namespace (same in every cluster) where workloads live.
     workloads_namespace: str = "serverless-workloads"
 
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
+    build: BuildConfig = Field(default_factory=BuildConfig)
 
-    # Per-call timeouts to a cluster's API server (seconds). Without these a down
-    # cluster would block a worker thread until the OS socket timeout.
     cluster_connect_timeout: float = 2.0
     cluster_read_timeout: float = 5.0
-    # Backstop for a whole per-site operation (covers several sequential calls).
     site_op_timeout: float = 60.0
 
     sites: list[SiteConfig] = Field(default_factory=list)
-    # The site this instance runs in (active/active). Injected per-cluster from
-    # the Helm `global.site` value (env SERVERLESS_LOCAL_SITE); reads of data that
-    # is uniform across sites prefer it, defaulting to the first site when unset.
     local_site: str | None = None
 
     @property

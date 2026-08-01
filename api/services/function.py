@@ -6,55 +6,76 @@ from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
-from api.services import secrets as secret_svc
-from api.services.runtimes import RuntimeRegistry, get_runtimes
+from api.services.runtimes import RuntimeRegistry
 from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
-from common.contract import BuildRequest
-from common.errors import ServiceUnavailableError, ValidationError
+from common.contract import BuildPlan, BuildRequest
+from common.errors import ValidationError
 from common.labels import workload_labels
 
 
 class FunctionService:
     """Function-specific orchestration; delegates the shared work to WorkloadService."""
 
-    def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry | None = None):
+    def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry):
         """Initialize the service.
 
         Args:
             engine: The shared workload engine doing the cross-site work.
-            runtimes: The available-runtimes registry; defaults to the process
-                registry loaded from the mounted config file.
+            runtimes: The available-runtimes registry. Required rather than
+                defaulted: reaching for the process-wide registry here would
+                make the service depend on module state that only the DI layer
+                should own, and would put api.dependencies and this module in an
+                import cycle.
         """
         self._engine = engine
-        self._runtimes = runtimes or get_runtimes()
+        self._runtimes = runtimes
 
     def _assert_runtime(self, runtime: str) -> None:
-        """Reject a runtime not in the registry (synchronous 400, before accept).
+        """Reject a runtime that is unknown or unbuildable (400, before the 202).
+
+        Checking that it maps to a Builder - not just that it exists - is what
+        turns a mounted-ConfigMap problem into an immediate, accurate 400. Left
+        to the build path it would surface minutes later as a failed background
+        deploy, which reads like a broken build rather than broken configuration.
 
         Args:
             runtime: The requested runtime.
 
         Raises:
-            ValidationError: If ``runtime`` isn't an available runtime.
+            ValidationError: If ``runtime`` isn't available, or names no Builder.
         """
-        if not self._runtimes.has(runtime):
-            available = ", ".join(self._runtimes.names())
+        spec = self._runtimes.get(runtime)
+        if spec is None:
+            available = ", ".join(self._runtimes.names()) or "none configured"
             raise ValidationError(
                 f"unsupported runtime '{runtime}'; available runtimes: {available}"
             )
+        if not spec.builder:
+            raise ValidationError(
+                f"runtime '{runtime}' is not buildable: it maps to no kpack Builder. "
+                "The runtimes ConfigMap is missing or incomplete."
+            )
 
-    def _git_secret(self, name: str, group: str, user: Principal, token: str) -> dict:
-        """Build the ``{workload}-git`` Secret holding the git token."""
-        oname = object_name(name, group)
-        return secret_svc.build_git_secret(
-            secret_svc.git_secret_name(oname),
-            workload_labels(group, user.username, oname, OFFERING_FUNCTION),
-            token,
-        )
+    def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
+        """The owned manifests that declare the build, and the tag they push to.
 
-    # Validate synchronously (so ServiceNow gets immediate 400/404/409), then
-    # run the build+deploy in the background and return 202 Accepted with a
-    # status URL to poll. Deploys (esp. function builds) can be slow.
+        Includes the workload's ``{workload}-git`` Secret: one Secret serves both
+        the API (reading the token back on a later edit) and kpack (cloning with
+        it), because the build runs in the workload's own namespace.
+
+        Args:
+            req: The build request.
+            user: The authenticated caller, for the ownership labels.
+
+        Returns:
+            The build plan.
+        """
+        oname = object_name(req.name, req.group)
+        labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
+        return self._engine.builder.plan(req, labels)
+
+    # Validate synchronously for an immediate 400/404/409, then build and deploy
+    # in the background behind a 202 - a function build is slow.
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
@@ -65,6 +86,7 @@ class FunctionService:
             runtime=spec.runtime,
             gitRepo=spec.gitRepo,
             branch=spec.branch,
+            path=spec.path,
         )
 
     async def accept(
@@ -135,28 +157,28 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        try:
-            build = self._engine.builder.build(
-                BuildRequest(
-                    name=spec.name,
-                    group=group,
-                    git_url=spec.gitRepo,
-                    branch=spec.branch,
-                    git_token=spec.gitToken,
-                    runtime=spec.runtime,
-                )
-            )
-        except NotImplementedError as exc:
-            raise ServiceUnavailableError(str(exc)) from exc
-
-        await self._engine.assert_workload_absent(
-            spec.name, group, self._engine.deployer.resolve_targets(spec.sites)
+        plan = self._build(
+            BuildRequest(
+                name=spec.name,
+                group=group,
+                git_url=spec.gitRepo,
+                branch=spec.branch,
+                path=spec.path,
+                git_token=spec.gitToken,
+                runtime=spec.runtime,
+                owner=user.username,
+            ),
+            user,
         )
+
+        # No absence probe here: apply_workload runs one combined host+absence pass
+        # over the same targets immediately before it mutates, which is both a
+        # stronger guard (nothing happens in between) and one fewer cross-site trip.
         body, code = await self._engine.apply_workload(
             name=spec.name,
             user=user,
             group=group,
-            image=build.digest or build.image,
+            image=plan.tag,
             offering=OFFERING_FUNCTION,
             env=spec.env,
             files=spec.files,
@@ -164,15 +186,20 @@ class FunctionService:
             size=spec.size,
             hostname=spec.hostname,
             sites=spec.sites,
-            pull_secret_name=None,
+            # Pulled with the same credential kpack pushed with. The Secret is the
+            # chart's, shared by every function, so it is referenced, never applied.
+            pull_secret_name=self._engine.builder.pull_secret,
             pull_secret_manifest=None,
             port=None,
             created=True,
             runtime=spec.runtime,
             git_url=spec.gitRepo,
             branch=spec.branch,
-            # Persist the git token so a later edit can rebuild without re-sending it.
-            extra_secrets=[self._git_secret(spec.name, group, user, spec.gitToken)],
+            path=spec.path,
+            # The git credential goes to every site so any of them can rebuild
+            # after a switchover; only one site gets the Image (docs/BUILDING.md - Active/Active).
+            extra_secrets=plan.replicated,
+            local_resources=plan.local,
         )
         return body, code
 
@@ -208,53 +235,54 @@ class FunctionService:
         if existing is None:
             existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
 
-        # Full replace: the build inputs are the request's (gitRepo/runtime required,
-        # branch defaults to "main"). The git token is the redacted keep - the stored
-        # one is reused unless the client sent a new one.
+        # Full replace, so the build inputs are the request's. The token is the
+        # redacted keep: the stored one is reused unless the client sent a new one.
         runtime = spec.runtime
         git_url = spec.gitRepo
         branch = spec.branch
+        path = spec.path
         stored_token = existing.get("git_token")
         token = spec.gitToken or stored_token
 
-        # Rebuild only when a build input actually changes, or when the token is
-        # rotated (a config-only edit re-sends the same build inputs and does not
-        # rebuild). Otherwise keep the current image.
+        # A changed build input (or a rotated token) rebuilds; a config-only edit
+        # re-sends the same inputs and must not disturb the running image.
         build_inputs_changed = (
             git_url != existing.get("gitUrl")
             or branch != existing.get("branch")
+            or path != (existing.get("path") or "")
             or runtime != existing.get("runtime")
         )
         token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
-        if build_inputs_changed or token_rotated:
-            if token is None:
-                raise ValidationError(
-                    "a git token is required to rebuild; none was supplied and none is stored"
-                )
-            try:
-                build = self._engine.builder.build(
-                    BuildRequest(
-                        name=name,
-                        group=group,
-                        git_url=git_url,
-                        branch=branch,
-                        git_token=token,
-                        runtime=runtime,
-                    )
-                )
-            except NotImplementedError as exc:
-                raise ServiceUnavailableError(str(exc)) from exc
-            image = build.digest or build.image
-        else:
-            image = existing["image"]
+        if build_inputs_changed and token is None:
+            raise ValidationError(
+                "a git token is required to rebuild; none was supplied and none is stored"
+            )
 
-        # Re-store the token only when the client supplied one (rotation); omitting
-        # it leaves the stored copy in place (extra_secrets empty -> not pruned).
-        extra_secrets = (
-            [self._git_secret(name, group, user, spec.gitToken)]
-            if spec.gitToken is not None
-            else []
-        )
+        image = existing["image"]
+        replicated: list[dict] = []
+        local: list[dict] = []
+        if token is not None:
+            # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
+            # not rebuild from, but it recreates a missing Image after a switchover.
+            plan = self._build(
+                BuildRequest(
+                    name=name,
+                    group=group,
+                    git_url=git_url,
+                    branch=branch,
+                    path=path,
+                    git_token=token,
+                    runtime=runtime,
+                    owner=user.username,
+                ),
+                user,
+            )
+            replicated, local = plan.replicated, plan.local
+            # Keep the deployed image otherwise: it may be a digest a finished build
+            # resolved, and rewriting it back to the tag spawns a pointless revision.
+            if build_inputs_changed or token_rotated:
+                image = plan.tag
+
         body, code = await self._engine.apply_workload(
             name=name,
             user=user,
@@ -267,7 +295,7 @@ class FunctionService:
             size=spec.size,
             hostname=spec.hostname,
             sites=None,
-            pull_secret_name=None,
+            pull_secret_name=self._engine.builder.pull_secret,
             pull_secret_manifest=None,
             port=None,
             created=False,
@@ -275,10 +303,12 @@ class FunctionService:
             runtime=runtime,
             git_url=git_url,
             branch=branch,
+            path=path,
             prev_host=existing.get("host"),
             kept_env=existing.get("env_values"),
             kept_files=existing.get("files_values"),
-            extra_secrets=extra_secrets,
+            extra_secrets=replicated,
+            local_resources=local,
         )
         return body, code
 

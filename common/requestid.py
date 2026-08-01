@@ -20,9 +20,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 REQUEST_ID_HEADER = "x-request-id"
 
-# Bound an adopted inbound id to a sane charset/length so a hostile upstream
-# header can't inject control chars into logs/headers or bloat them. Anything
-# outside this is dropped and a fresh id is minted instead.
+# Bounds an adopted inbound id so a hostile upstream header cannot inject
+# control characters into logs. Anything outside it gets a fresh id.
 _VALID_ID = re.compile(r"^[A-Za-z0-9._~+/=@-]{1,128}$")
 
 # "-" reads clearly in a log line for work with no request scope (startup, etc.).

@@ -138,9 +138,9 @@ class ContainerService:
                 spec.registryToken,
             )
 
-        await self._engine.assert_workload_absent(
-            spec.name, group, self._engine.deployer.resolve_targets(spec.sites)
-        )
+        # No absence probe here: apply_workload runs one combined host+absence pass
+        # over the same targets immediately before it mutates, which is both a
+        # stronger guard (nothing happens in between) and one fewer cross-site trip.
         body, code = await self._engine.apply_workload(
             name=spec.name,
             user=user,
@@ -190,9 +190,8 @@ class ContainerService:
         image = spec.image
         port = spec.port
 
-        # Resolve the pull secret from the registry creds (docs §7.2): token ->
-        # rotate; username only -> keep (re-key stored creds to the image's
-        # registry); neither -> remove (public).
+        # token -> rotate; username only -> keep, re-keyed to the image's registry;
+        # neither -> remove (docs/ARCHITECTURE.md - Secrets).
         labels = workload_labels(group, user.username, oname, OFFERING_CONTAINER)
         pull_name = secret_svc.pull_secret_name(oname)
         pull: dict | None = None

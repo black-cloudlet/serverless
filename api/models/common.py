@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from datetime import datetime
-from typing import Annotated, Literal, get_args
+from typing import Literal, get_args
 
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 # Ownership label keys are shared platform identity (common.labels); re-exported
 # here for the api models/services that read and stamp them.
@@ -19,20 +20,40 @@ from common.labels import (  # noqa: F401
     MANAGED_BY_VALUE,
 )
 
+# In `common` because they bound what can be written to a cluster, and the
+# builder applies them off the HTTP path. Re-exported for one import site.
+from common.names import (  # noqa: F401
+    DNS1123,
+    HOSTNAME,
+    Branch,
+    GitUrl,
+    Group,
+    Hostname,
+    ImageRef,
+    Name,
+    SourcePath,
+    normalize_group,
+    validate_branch,
+    validate_git_url,
+    validate_group,
+    validate_hostname,
+    validate_image_ref,
+    validate_name,
+    validate_source_path,
+)
+
 ANNOTATION_HOST = "serverless.platform/host"
 ANNOTATION_SIZE = "serverless.platform/size"
 ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
-# Comma-separated names of the platform-injected env vars (the CA-trust defaults).
-# Stamped on the KSVC so read-back can hide them from the user's spec - they are
-# transparent defaults, not part of what the user submitted. A var the user set
-# themselves is never injected, so it is never listed here and reads back normally.
+ANNOTATION_GIT_PATH = "serverless.platform/git-path"
+# Names of the injected CA-trust env vars, so read-back can hide them: they
+# are platform defaults, not part of the user's spec.
 ANNOTATION_INJECTED_ENV = "serverless.platform/injected-env"
 
-# Name of the platform-injected CA-bundle volume/mount on every pod (matches the
-# default ConfigMap name). An internal pod-spec handle - owned by the KSVC
-# builder; read-back filters it out as it isn't part of the user's spec.
+# The injected CA-bundle volume/mount name. An internal handle, filtered out
+# of read-back as it is not part of the user's spec.
 CA_BUNDLE_VOLUME = "ca-bundle"
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
@@ -52,121 +73,22 @@ _METRIC_UNITS = {
     "memory": "percent",
 }
 
-# Workload resource size (t-shirt sizing). Maps to container resources in the
-# KSVC (see services.ksvc): memory is request==limit (hard cap), CPU is
-# request-only (no limit -> no throttling).
+# T-shirt sizing (see services.ksvc): memory is request==limit, CPU is
+# request-only so the workload is never throttled.
 WorkloadSize = Literal["small", "medium", "large"]
 
-DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
-# RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
-HOSTNAME = re.compile(
-    r"^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
-)
-# Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
-# "ggd-1234-platforms" is the group "platforms").
-_GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
-_UNDERSCORE = str.maketrans({"_": "-"})
+# The rollup a client polls on. A Literal, not a comment, so it is enforced on
+# every response and /info can advertise it instead of a portal hardcoding it.
+WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded", "Terminating"]
+# Per-site values that reach a response. SiteStatus is also the return type of the
+# internal host/absence probes (Available, Absent, ...), so the field itself stays
+# a plain str and only the client-facing set is published.
+SITE_STATUSES = ("Ready", "Deploying", "Failed", "Terminating", "Timeout")
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
 _SCALE_DOWN_DELAY_MAX_SECONDS = 3600  # Knative maximum
 _SCALE_DOWN_DELAY_MAX = "1h"
-
-
-def normalize_group(group: str) -> str:
-    """Normalize a group name to its bare, DNS-safe form.
-
-    Strips the Keycloak path prefix ("/"), lowercases, strips a leading
-    ``ggd-<1-4 digits>-`` prefix, then folds "_" to "-". So "/ggd-1234-platforms",
-    "Platforms" and "platforms" - or "My_Team" and "my-team" - each name the same
-    group. Applied both to groups from the OIDC token and to a request-supplied
-    group, so the two always agree and membership checks compare like with like.
-
-    Lowercasing runs *before* the prefix strip so an upper-case prefix
-    ("GGD-1234-Team") is still recognized, and before the "_" fold so neither
-    rule can mask the other.
-
-    Args:
-        group: The raw group name.
-
-    Returns:
-        The normalized group name.
-    """
-    return _GGD_PREFIX.sub("", group.lstrip("/").lower()).translate(_UNDERSCORE)
-
-
-def validate_name(name: str) -> str:
-    """Validate a workload name as a DNS-1123 label.
-
-    Args:
-        name: The candidate workload name.
-
-    Returns:
-        The name unchanged.
-
-    Raises:
-        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
-    """
-    if not DNS1123.match(name) or len(name) > 63:
-        raise ValueError(
-            "name must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
-        )
-    return name
-
-
-def validate_group(group: str) -> str:
-    """Normalize and validate a group name as a DNS-1123 label.
-
-    Normalization runs first, so a ``ggd-<digits>-`` prefix, "_" separators and
-    upper case are accepted on input; the check applies to the normalized form.
-
-    Args:
-        group: The candidate group name.
-
-    Returns:
-        The normalized group name.
-
-    Raises:
-        ValueError: If the normalized form isn't a DNS-1123 label of at most 63
-            characters.
-    """
-    group = normalize_group(group)
-    if not DNS1123.match(group) or len(group) > 63:
-        raise ValueError(
-            "group must be a DNS-1123 label (alphanumeric, '-' or '_', <=63 chars); "
-            "'_' is normalized to '-' and the name is lowercased"
-        )
-    return group
-
-
-def validate_hostname(host: str) -> str:
-    """Validate a custom hostname as a DNS-1123 label or a lowercase FQDN.
-
-    Either a single DNS-1123 label (the platform base domain is appended by the
-    API) or a full lowercase FQDN. That the FQDN sits under the platform base
-    domain is enforced in the service layer, where the base domain is known.
-
-    Args:
-        host: The candidate hostname.
-
-    Returns:
-        The host unchanged.
-
-    Raises:
-        ValueError: If it is neither a DNS-1123 label nor a valid lowercase FQDN.
-    """
-    if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
-        return host
-    raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
-
-
-# Validated string types shared by request models and query params. The group
-# validator also NORMALIZES ("/ggd-1234-team" -> "team", "My_Team" -> "my-team"),
-# so every group entering the app is already in bare, canonical form at the edge -
-# nothing downstream re-normalizes.
-Name = Annotated[str, AfterValidator(validate_name)]
-Group = Annotated[str, AfterValidator(validate_group)]
-Hostname = Annotated[str, AfterValidator(validate_hostname)]
 
 
 class EnvVar(BaseModel):
@@ -219,12 +141,36 @@ class FileMount(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
-        """Validate the content fields (exactly one, or none only for a secret keep)."""
+        """Validate the content fields (exactly one, or none only for a secret keep).
+
+        Whether ``contentBase64`` decodes is a property of the field, so it is
+        settled here rather than in the service layer. It has to be: the accept
+        path echoes the submitted spec back (``describe.redact_files``) as an
+        argument expression, which runs *before* the service-layer validation, so
+        a check further in would be reached too late to answer with a 400.
+        """
         if self.content is not None and self.contentBase64 is not None:
             raise ValueError("file accepts at most one of 'content' or 'contentBase64'")
         if self.keep and not self.secret:
             raise ValueError("file requires exactly one of 'content' or 'contentBase64'")
+        if self.contentBase64 is not None:
+            try:
+                # Lenient: tolerates the line wrapping a PEM body carries, while
+                # still rejecting bad padding or a truncated blob.
+                base64.b64decode(self.contentBase64)
+            except ValueError as exc:
+                raise ValueError(f"file '{self.mountPath}' has invalid base64 content") from exc
         return self
+
+    def decoded(self) -> bytes:
+        """The file's content as raw bytes (``b""`` for a keep).
+
+        Bytes because a file is a byte string: ``contentBase64`` exists so a caller
+        can mount a keystore or a DER certificate, which have no text form.
+        """
+        if self.contentBase64 is not None:
+            return base64.b64decode(self.contentBase64)
+        return (self.content or "").encode("utf-8")
 
 
 class Scaling(BaseModel):
@@ -408,7 +354,7 @@ class WorkloadBase(BaseModel):
     group: str  # the owning SSO group
     type: Literal["function", "container"]
     hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
-    overallStatus: str  # Pending | Ready | Deploying | Degraded | Terminating
+    overallStatus: WorkloadStatus
     size: str | None = None  # resource t-shirt size (uniform across sites)
     # workload creation time (metadata.creationTimestamp), in Israel local time
     createdAt: datetime | None = None
@@ -448,14 +394,28 @@ class FileView(BaseModel):
     content: str | None = None
 
 
+class BuildStatusView(BaseModel):
+    """A function's image build state, read from the local site's kpack Image.
+
+    State and reason only. The built image stays internal - a function's client
+    deals in source, not images - so it is on :class:`common.contract.BuildStatus`,
+    which the build service reads, and never on the response.
+
+    Attributes:
+        state: Building / Ready / Failed / Unknown.
+        message: Why the build failed, when it did.
+    """
+
+    state: str
+    message: str | None = None
+
+
 class WorkloadResponse(WorkloadBase):
     """Full single-workload view: identity, live per-site status, and config.
 
-    Identity (WorkloadBase) plus live per-site status plus the desired-state
-    config common to both offerings (secrets redacted). Per-offering responses
-    subclass this - see FunctionResponse (in models.function) / ContainerResponse
-    (in models.container) - so the response mirrors the create body of that
-    offering.
+    Identity, live per-site status, and the desired-state config common to both
+    offerings (secrets redacted). FunctionResponse and ContainerResponse subclass
+    this, so a response mirrors the create body of its offering.
     """
 
     sites: list[SiteStatus] = []
@@ -515,3 +475,5 @@ class WorkloadSpec(BaseModel):
     # Function source: what the build was run from. The git token is never stored.
     gitRepo: str | None = None
     branch: str | None = None
+    # Sub-directory inside the repository; None (or absent) means the root.
+    path: str | None = None

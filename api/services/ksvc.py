@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_PATH,
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
     ANNOTATION_INJECTED_ENV,
@@ -19,14 +20,8 @@ from common.labels import workload_labels
 
 KSVC_API = "serving.knative.dev/v1"
 
-# CA-trust env vars pointed at the mounted CA bundle so tooling across ecosystems
-# trusts internal TLS out of the box. Injected only when the caller hasn't set the
-# name themselves (their value always wins), and hidden from GET (see describe).
-#   SSL_CERT_FILE       - OpenSSL, Python (ssl/httpx), Go, Ruby, PHP
-#   REQUESTS_CA_BUNDLE  - Python requests / botocore / awscli
-#   CURL_CA_BUNDLE      - curl / libcurl
-#   NODE_EXTRA_CA_CERTS - Node.js
-#   GIT_SSL_CAINFO      - git
+# Point every ecosystem's CA-trust variable at the mounted bundle. Injected
+# only for a name the caller did not set, and hidden from GET (see describe).
 CA_ENV_VARS = (
     "SSL_CERT_FILE",
     "REQUESTS_CA_BUNDLE",
@@ -35,9 +30,8 @@ CA_ENV_VARS = (
     "GIT_SSL_CAINFO",
 )
 
-# T-shirt sizes -> (cpu request, memory). Memory is set as request==limit (a
-# hard, predictable OOM boundary); CPU is request-only (no limit, so the
-# workload is never CPU-throttled). The request also lets cpu/memory HPA work.
+# Memory is request==limit, a predictable OOM boundary; CPU is request-only so
+# it is never throttled, and the request is what cpu/memory HPA reads.
 _SIZES: dict[str, tuple[str, str]] = {
     "small": ("100m", "256Mi"),
     "medium": ("250m", "512Mi"),
@@ -129,6 +123,7 @@ def build_ksvc(
     runtime: str | None = None,
     git_url: str | None = None,
     branch: str | None = None,
+    path: str | None = None,
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
     ca_file: str | None = None,
@@ -154,6 +149,7 @@ def build_ksvc(
         runtime: Function runtime annotation, if any.
         git_url: Function source repo annotation, if any.
         branch: Function source branch annotation, if any.
+        path: Function source sub-directory annotation, if any.
         ca_config_map: Trusted-CA ConfigMap to mount, if configured.
         ca_mount_path: Mount path for the trusted CA, if configured.
         ca_file: Absolute path to the CA file inside the pod; when the CA is
@@ -184,9 +180,8 @@ def build_ksvc(
         vols.append({"name": CA_BUNDLE_VOLUME, "configMap": {"name": ca_config_map}})
         mounts.append({"name": CA_BUNDLE_VOLUME, "mountPath": ca_mount_path, "readOnly": True})
 
-    # Point the CA-trust env vars at the mounted bundle for any name the caller
-    # didn't set (their value always wins). Recorded in an annotation so read-back
-    # hides these transparent defaults from the user's spec (see services.describe).
+    # Only for a name the caller did not set. Recorded in an annotation so
+    # read-back hides these defaults from the spec (see services.describe).
     env_out = list(env)
     injected: list[str] = []
     if ca_config_map and ca_mount_path and ca_file:
@@ -221,6 +216,8 @@ def build_ksvc(
         meta_annotations[ANNOTATION_GIT_URL] = git_url
     if branch:
         meta_annotations[ANNOTATION_GIT_BRANCH] = branch
+    if path:
+        meta_annotations[ANNOTATION_GIT_PATH] = path
     if injected:
         meta_annotations[ANNOTATION_INJECTED_ENV] = ",".join(injected)
 

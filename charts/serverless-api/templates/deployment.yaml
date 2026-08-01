@@ -38,6 +38,8 @@ spec:
               value: {{ toJson .Values.corsAllowOrigins | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
+            - name: SERVERLESS_REGISTRY__ORGANIZATION
+              value: {{ .Values.registry.organization | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
@@ -58,6 +60,14 @@ spec:
               value: {{ .Values.caBundle.mountPath | quote }}
             - name: SERVERLESS_RUNTIMES_FILE
               value: {{ printf "%s/runtimes.yaml" .Values.runtimesMountPath | quote }}
+            {{- if .Values.build.enabled }}
+            - name: SERVERLESS_BUILD__REGISTRY_SECRET
+              value: {{ .Values.build.serviceAccount.registrySecret.name | quote }}
+            - name: SERVERLESS_BUILD__GIT_USERNAME
+              value: {{ .Values.build.gitUsername | quote }}
+            - name: SERVERLESS_BUILD__RESOURCES
+              value: {{ .Values.build.resources | toJson | quote }}
+            {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
             - name: REQUESTS_CA_BUNDLE

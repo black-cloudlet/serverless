@@ -96,4 +96,50 @@ spec:
             except:
               {{- toYaml . | nindent 14 }}
             {{- end }}
+{{- $build := .Values.networkPolicy.build }}
+{{- if and .Values.build.enabled $build.enabled }}
+---
+# Build pods only (`kpack.io/build`), not tenant pods. Additive: the default-deny
+# and the tenant allowlist above are unchanged. docs/BUILD-PIPELINE.md §12.6.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-build-pods
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: kpack.io/build
+        operator: Exists
+  policyTypes: [Ingress, Egress]
+  {{- with $build.ingressNamespaces }}
+  ingress:
+    - from:
+        {{- range . }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+  {{- end }}
+  {{- if or $build.egressNamespaces $build.egressCIDRs }}
+  egress:
+    {{- with $build.egressNamespaces }}
+    - to:
+        {{- range . }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- with $build.egressCIDRs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
 {{- end }}
