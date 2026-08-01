@@ -9,6 +9,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Functions can select a language version: `version` on create and update,
+  validated against the runtime's advertised `versions` (the same list
+  `GET /api/v1/functions/info` publishes) and reported back on GET. The list was
+  published and mirrored but never consumable - every build used
+  `defaultVersion`, so an airgapped install carried toolchains for versions
+  nothing could ask for. A runtime that offers no choice (empty `versions`, or no
+  `versionEnv`) rejects a supplied version rather than ignoring it.
 - Container `image` is validated at the edge against the OCI distribution
   grammar (optional `registry[:port]/`, lowercase path components, optional
   `:tag` and/or `@sha256:...` digest). It was the one caller-supplied string that
@@ -104,6 +111,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- The `BP_*_VERSION` build variable is now always written, including when the
+  caller omits `version` - it gets the platform `defaultVersion`. Leaving it
+  unset handed the choice to the buildpack's own default, which moves with the
+  buildpackage: an untouched function could silently rebuild on a different
+  language version, and airgapped it could ask for a toolchain that was never
+  mirrored. Precedence is caller, then an operator `buildEnv` pin, then the
+  platform default.
+- `version` is replaced on update like `branch` and `runtime`, not kept like
+  `gitToken`: omitting it on a PUT returns the function to the platform default,
+  and - like any build-input change - rebuilds.
 - `DELETE` no longer reports 404 when every site is unreachable. A missing answer
   is not evidence of absence, so an unconfirmed delete is now a 503 and the
   caller retries (delete is idempotent). A partial delete - some sites removed,

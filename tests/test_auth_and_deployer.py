@@ -661,6 +661,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
         scaling=Scaling(),
         size="small",
         runtime="python",
+        version="3.13",
         git_url="https://git.example.com/team/monorepo.git",
         branch="main",
         path="services/api",
@@ -693,6 +694,8 @@ async def test_get_function_returns_build_inputs_and_build_state():
     # The sub-directory a monorepo function builds from, round-tripped through
     # the annotation and WorkloadSpec rather than dropped on the floor.
     assert body.path == "services/api"
+    # the version the caller pinned, round-tripped through the annotation
+    assert body.version == "3.13"
     assert body.build.state == "Ready"
     assert body.overallStatus == "Ready"
     # the built image stays internal - a function's client deals in source
@@ -745,6 +748,7 @@ async def test_get_function_building_image_reports_building():
     assert body.build.state == "Building"
     assert body.overallStatus == "Building"
     assert body.path is None  # no sub-directory -> built from the repository root
+    assert body.version is None  # took the platform default; /info says what that is
 
 
 async def test_get_overall_status_reflects_rollout_state():

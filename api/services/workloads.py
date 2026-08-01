@@ -20,6 +20,7 @@ from api.models.common import (
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
     ANNOTATION_RUNTIME,
+    ANNOTATION_RUNTIME_VERSION,
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
@@ -418,6 +419,7 @@ class WorkloadService:
         port: int | None,
         created: bool,
         runtime: str | None = None,
+        version: str | None = None,
         git_url: str | None = None,
         branch: str | None = None,
         path: str | None = None,
@@ -452,6 +454,8 @@ class WorkloadService:
                 (functions pass None). See :func:`api.services.ksvc.build_ksvc`.
             created: True for a create (affects the success status code).
             runtime: Function runtime, stamped as an annotation.
+            version: Requested language version, stamped as an annotation. None
+                means the caller took the platform default.
             git_url: Function source repo, stamped as an annotation.
             branch: Function source branch, stamped as an annotation.
             path: Function source sub-directory, stamped as an annotation.
@@ -502,6 +506,7 @@ class WorkloadService:
             port=port,
             pull_secret=pull_secret_name,
             runtime=runtime,
+            version=version,
             git_url=git_url,
             branch=branch,
             path=path,
@@ -576,7 +581,12 @@ class WorkloadService:
         )
         if offering == OFFERING_FUNCTION:
             body: WorkloadResponse = FunctionResponse(
-                **common, runtime=runtime, gitRepo=git_url, branch=branch, path=path
+                **common,
+                runtime=runtime,
+                version=version,
+                gitRepo=git_url,
+                branch=branch,
+                path=path,
             )
         else:
             body = ContainerResponse(**common, image=image, port=port)
@@ -785,6 +795,7 @@ class WorkloadService:
         state = {
             "image": _extract_image(obj),
             "runtime": ann.get(ANNOTATION_RUNTIME),
+            "version": ann.get(ANNOTATION_RUNTIME_VERSION),
             "gitUrl": ann.get(ANNOTATION_GIT_URL),
             "branch": ann.get(ANNOTATION_GIT_BRANCH),
             "path": ann.get(ANNOTATION_GIT_PATH),
@@ -1082,6 +1093,7 @@ class WorkloadService:
             return FunctionResponse(
                 **{**common, "overallStatus": _with_build_status(overall, build)},
                 runtime=annotations.get(ANNOTATION_RUNTIME),
+                version=annotations.get(ANNOTATION_RUNTIME_VERSION),
                 gitRepo=spec.gitRepo,
                 branch=spec.branch,
                 path=spec.path,

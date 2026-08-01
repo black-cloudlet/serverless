@@ -109,3 +109,74 @@ def test_capabilities_track_a_default_change():
         assert Scaling.capabilities().defaultMetric == "cpu"
     finally:
         Scaling.model_fields["metric"].default = original
+
+
+def _fn_service(**over):
+    """A FunctionService over a registry whose go runtime offers three versions."""
+    from api.services.function import FunctionService
+    from api.services.runtimes import RuntimeRegistry, RuntimeSpec
+
+    kwargs = dict(
+        name="go",
+        builder="go",
+        versionEnv="BP_GO_VERSION",
+        defaultVersion="1.24",
+        versions=["1.23", "1.24", "1.25"],
+    )
+    kwargs.update(over)
+    return FunctionService(object(), RuntimeRegistry([RuntimeSpec(**kwargs)]))
+
+
+def test_a_version_must_be_one_the_runtime_advertises():
+    """The list /info offers and the list a create accepts are the same list.
+
+    Airgapped this is not a formality: only the advertised versions are
+    mirrored, so an unlisted one has no toolchain to download and would fail
+    deep inside the build instead of at the edge.
+    """
+    import pytest
+
+    from common.errors import ValidationError
+
+    svc = _fn_service()
+    svc._assert_runtime("go", "1.25")  # advertised -> accepted
+    svc._assert_runtime("go", None)  # omitted -> the default
+
+    with pytest.raises(ValidationError, match="unsupported version '1.19'"):
+        svc._assert_runtime("go", "1.19")
+
+
+def test_the_rejection_names_the_versions_that_would_work():
+    import pytest
+
+    from common.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="available versions: 1.23, 1.24, 1.25"):
+        _fn_service()._assert_runtime("go", "1.19")
+
+
+def test_a_runtime_that_offers_no_choice_rejects_a_version():
+    """Empty `versions` means the runtime pins its own (see RuntimeCapability).
+
+    Accepting a version there would silently ignore it, which is the failure
+    mode this whole change exists to remove.
+    """
+    import pytest
+
+    from common.errors import ValidationError
+
+    for pins in (_fn_service(versions=[]), _fn_service(versionEnv=None)):
+        with pytest.raises(ValidationError, match="does not offer a choice of version"):
+            pins._assert_runtime("go", "1.25")
+        pins._assert_runtime("go", None)  # omitting is always fine
+
+
+def test_info_advertises_the_versions_a_create_will_now_accept():
+    """The list was published long before anything consumed it."""
+    from fastapi.testclient import TestClient
+
+    from api.main import create_app
+
+    body = TestClient(create_app()).get("/api/v1/functions/info").json()
+    go = next(r for r in body["runtimes"] if r["name"] == "go")
+    assert go["versions"] and go["defaultVersion"] in go["versions"]
