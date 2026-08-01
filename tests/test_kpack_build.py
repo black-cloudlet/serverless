@@ -351,7 +351,7 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-def _ksvc(image="reg/fn:old", branch="main", path=""):
+def _ksvc(image="reg/fn:old", branch="main", path="", version=None):
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
 
@@ -370,6 +370,7 @@ def _ksvc(image="reg/fn:old", branch="main", path=""):
         git_url="https://git.internal/payments/hello.git",
         branch=branch,
         path=path,
+        version=version,
     )
 
 
@@ -858,3 +859,150 @@ def test_an_explicit_version_in_build_env_is_not_overridden():
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
     assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"
+
+
+def _version_runtimes(**over):
+    kwargs = dict(
+        name="go",
+        builder="go",
+        versionEnv="BP_GO_VERSION",
+        defaultVersion="1.24",
+        versions=["1.23", "1.24", "1.25"],
+    )
+    kwargs.update(over)
+    return RuntimeRegistry([RuntimeSpec(**kwargs)])
+
+
+def _version_env(runtimes, **req):
+    plan = KpackBuilder(_settings(), runtimes).plan(_request(runtime="go", **req), {})
+    env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
+    return [e["value"] for e in env if e["name"] == "BP_GO_VERSION"]
+
+
+def test_the_version_env_is_always_written_even_when_the_caller_omits_one():
+    """An omitted version must still pin OUR default, never fall through.
+
+    Leaving BP_*_VERSION unset hands the choice to the buildpack's own default,
+    which moves when the buildpackage is upgraded - so an untouched function
+    could silently rebuild on a different language version. Airgapped it is
+    worse: only the advertised versions are mirrored, so the buildpack's default
+    may have no toolchain to download at all.
+    """
+    assert _version_env(_version_runtimes()) == ["1.24"]
+
+
+def test_a_requested_version_is_what_gets_built():
+    assert _version_env(_version_runtimes(), version="1.25") == ["1.25"]
+
+
+def test_a_caller_version_overrides_an_operator_build_env_pin():
+    """The pin is the default, not a veto.
+
+    An operator who wants no choice at all leaves `versions` empty, and the
+    request is rejected before it reaches here (see FunctionService).
+    """
+    pinned = _version_runtimes(buildEnv=[{"name": "BP_GO_VERSION", "value": "1.23"}])
+    assert _version_env(pinned) == ["1.23"], "omitted -> the operator's pin"
+    assert _version_env(pinned, version="1.25") == ["1.25"], "asked for -> the caller's"
+
+
+def test_exactly_one_version_entry_is_emitted():
+    """Two entries for the same name would leave the build ambiguous."""
+    pinned = _version_runtimes(buildEnv=[{"name": "BP_GO_VERSION", "value": "1.23"}])
+    plan = KpackBuilder(_settings(), pinned).plan(_request(runtime="go", version="1.25"), {})
+    env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
+    assert [e["name"] for e in env].count("BP_GO_VERSION") == 1
+
+
+def test_a_runtime_naming_no_version_env_gets_none_invented():
+    runtimes = RuntimeRegistry([RuntimeSpec(name="go", builder="go")])
+    plan = KpackBuilder(_settings(), runtimes).plan(_request(runtime="go"), {})
+    image = _by_kind(plan.local, "Image")
+    env = (image["spec"].get("build") or {}).get("env") or []
+    assert not [e for e in env if e["name"].startswith("BP_")]
+
+
+async def test_changing_the_version_rebuilds_and_moves_the_image():
+    """The language version is a build input like branch or path."""
+    from api.models.function import FunctionUpdate
+    from api.services.workloads import _extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(version="3.11")},
+        secrets={"hello-payments-git": stored},
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            version="3.12",
+        ),
+        _principal(),
+    )
+
+    assert builder.reqs[0].version == "3.12"
+    # a config-only update keeps the running image; a version change must not
+    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+
+
+async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuilds():
+    """`version` is replaced, not kept - like branch and runtime, unlike gitToken.
+
+    So a PUT that drops it is a deliberate "give me the platform default", and
+    that is a different build from the pinned one it replaces.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.workloads import _extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(version="3.11")},
+        secrets={"hello-payments-git": stored},
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert builder.reqs[0].version is None  # -> the builder pins defaultVersion
+    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+
+
+async def test_resending_the_same_version_is_not_a_rebuild():
+    """A config-only edit that echoes the stored version must not disturb it."""
+    from api.models.common import Scaling
+    from api.models.function import FunctionUpdate
+    from api.services.workloads import _extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(version="3.11")},
+        secrets={"hello-payments-git": stored},
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            version="3.11",
+            scaling=Scaling(minScale=2, maxScale=2),
+        ),
+        _principal(),
+    )
+
+    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"

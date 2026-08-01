@@ -35,6 +35,10 @@ class FunctionCreate(BaseModel):
     path: SourcePath = ""
     gitToken: str
     runtime: str
+    # One of the runtime's advertised `versions` (GET /api/v1/functions/info).
+    # Omitted means the platform default for that runtime - never the
+    # buildpack's own default, which drifts with the buildpackage.
+    version: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
@@ -58,6 +62,9 @@ class FunctionUpdate(BaseModel):
     path: SourcePath = ""
     gitToken: str | None = None  # keep-on-omit: reuses the stored token
     runtime: str
+    # Replaced like every other non-secret field, NOT keep-on-omit: omitting it
+    # returns the function to the platform default for its runtime, and rebuilds.
+    version: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
@@ -74,6 +81,10 @@ class FunctionResponse(WorkloadResponse):
 
     type: Literal["function", "container"] = "function"
     runtime: str | None = None
+    # The version the caller asked for, or None when they took the default. The
+    # default itself is on GET /api/v1/functions/info, so a client can resolve
+    # what None means without this echoing a value nobody submitted.
+    version: str | None = None
     gitRepo: str | None = None
     branch: str | None = None
     path: str | None = None

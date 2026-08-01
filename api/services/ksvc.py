@@ -11,6 +11,7 @@ from api.models.common import (
     ANNOTATION_HOST,
     ANNOTATION_INJECTED_ENV,
     ANNOTATION_RUNTIME,
+    ANNOTATION_RUNTIME_VERSION,
     ANNOTATION_SIZE,
     CA_BUNDLE_VOLUME,
     Scaling,
@@ -121,6 +122,7 @@ def build_ksvc(
     port: int | None = None,
     pull_secret: str | None = None,
     runtime: str | None = None,
+    version: str | None = None,
     git_url: str | None = None,
     branch: str | None = None,
     path: str | None = None,
@@ -147,6 +149,8 @@ def build_ksvc(
         port: Container port to stamp; None uses Knative's default (8080).
         pull_secret: Image pull secret name, if any.
         runtime: Function runtime annotation, if any.
+        version: Requested language version annotation, if any. Absent means the
+            caller took the platform default (see services.builder).
         git_url: Function source repo annotation, if any.
         branch: Function source branch annotation, if any.
         path: Function source sub-directory annotation, if any.
@@ -212,6 +216,8 @@ def build_ksvc(
     # Function build inputs (stamped so reads can report them; never the token).
     if runtime:
         meta_annotations[ANNOTATION_RUNTIME] = runtime
+    if version:
+        meta_annotations[ANNOTATION_RUNTIME_VERSION] = version
     if git_url:
         meta_annotations[ANNOTATION_GIT_URL] = git_url
     if branch:

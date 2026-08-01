@@ -37,6 +37,10 @@ class BuildRequest:
             builds from the repository root.
         git_token: The caller's git token, stored for kpack to clone with.
         runtime: Function runtime (python/go/node).
+        version: Language version to build with, from the runtime's advertised
+            list. None means the platform default for that runtime - which is
+            still written explicitly into the build env, never left to the
+            buildpack.
         owner: Creating username, stamped on the build objects' labels.
         revision: Exact commit to build. None means build the branch head,
             which is what create/update do; the webhook path will pin the
@@ -49,6 +53,7 @@ class BuildRequest:
     branch: Branch
     git_token: str
     runtime: str
+    version: str | None = None
     path: SourcePath = ""
     owner: str = ""
     revision: str | None = None

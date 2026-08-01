@@ -45,6 +45,8 @@ from common.names import (  # noqa: F401
 ANNOTATION_HOST = "serverless.platform/host"
 ANNOTATION_SIZE = "serverless.platform/size"
 ANNOTATION_RUNTIME = "serverless.platform/runtime"
+# The version the caller asked for; absent when they took the platform default.
+ANNOTATION_RUNTIME_VERSION = "serverless.platform/runtime-version"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
 ANNOTATION_GIT_PATH = "serverless.platform/git-path"

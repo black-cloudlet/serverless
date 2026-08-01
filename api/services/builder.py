@@ -66,15 +66,26 @@ class KpackBuilder:
         """
         return image_reference(self._registry.base, req)
 
-    def _runtime_config(self, runtime: str) -> tuple[str, list[dict]]:
-        """Resolve a runtime to ``(builder, build_env)``.
+    def _runtime_config(self, runtime: str, version: str | None = None) -> tuple[str, list[dict]]:
+        """Resolve a runtime (and optional version) to ``(builder, build_env)``.
 
         The runtimes file is rendered by the chart with each entry's build
         environment already merged (shared env, dependency mirror, per-runtime
-        overrides), so nothing is composed here beyond adding the version.
+        overrides), so nothing is composed here beyond pinning the version.
+
+        The version variable is **always** written when the runtime names one,
+        including when the caller asked for nothing. Leaving it unset would hand
+        the choice to the buildpack's own default, which moves when the
+        buildpackage is upgraded - so an untouched function could silently
+        rebuild on a different language version, and airgapped it could ask for a
+        toolchain that was never mirrored. Precedence is caller, then an explicit
+        ``buildEnv`` pin, then the platform default: a caller can only choose from
+        the list the operator advertised, so an operator who wants no choice
+        leaves ``versions`` empty and the request is rejected before here.
 
         Args:
             runtime: The requested runtime name.
+            version: The requested language version, or None for the default.
 
         Returns:
             The Builder name and the build env list.
@@ -94,14 +105,12 @@ class KpackBuilder:
                 "every runtime to a kpack Builder before functions can be built."
             )
         env = [dict(e) for e in spec.buildEnv]
-        # The runtime names the env var, so a version bump is a ConfigMap edit.
-        # An explicit buildEnv entry wins - it was set deliberately.
-        if (
-            spec.versionEnv
-            and spec.defaultVersion
-            and not any(e.get("name") == spec.versionEnv for e in env)
-        ):
-            env.append({"name": spec.versionEnv, "value": spec.defaultVersion})
+        if spec.versionEnv:
+            pinned = next((e.get("value") for e in env if e.get("name") == spec.versionEnv), None)
+            chosen = version or pinned or spec.defaultVersion
+            if chosen:
+                env = [e for e in env if e.get("name") != spec.versionEnv]
+                env.append({"name": spec.versionEnv, "value": chosen})
         return spec.builder, env
 
     def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
@@ -125,7 +134,7 @@ class KpackBuilder:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
         oname = object_name(req.name, req.group)
-        builder, env = self._runtime_config(req.runtime)
+        builder, env = self._runtime_config(req.runtime, req.version)
         tag = self.image_ref(req)
         build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)

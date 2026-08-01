@@ -30,19 +30,27 @@ class FunctionService:
         self._engine = engine
         self._runtimes = runtimes
 
-    def _assert_runtime(self, runtime: str) -> None:
-        """Reject a runtime that is unknown or unbuildable (400, before the 202).
+    def _assert_runtime(self, runtime: str, version: str | None = None) -> None:
+        """Reject an unknown/unbuildable runtime or version (400, before the 202).
 
         Checking that it maps to a Builder - not just that it exists - is what
         turns a mounted-ConfigMap problem into an immediate, accurate 400. Left
         to the build path it would surface minutes later as a failed background
         deploy, which reads like a broken build rather than broken configuration.
 
+        The version is checked against the same ``versions`` list ``/info``
+        advertises, so what a client is offered and what a create accepts cannot
+        disagree. Airgapped that is not a formality: only the advertised versions
+        are mirrored, so an unlisted one has no toolchain to download and would
+        fail deep inside the build.
+
         Args:
             runtime: The requested runtime.
+            version: The requested language version, or None for the default.
 
         Raises:
-            ValidationError: If ``runtime`` isn't available, or names no Builder.
+            ValidationError: If ``runtime`` isn't available, names no Builder, or
+                ``version`` isn't one the runtime offers.
         """
         spec = self._runtimes.get(runtime)
         if spec is None:
@@ -54,6 +62,20 @@ class FunctionService:
             raise ValidationError(
                 f"runtime '{runtime}' is not buildable: it maps to no kpack Builder. "
                 "The runtimes ConfigMap is missing or incomplete."
+            )
+        if version is None:
+            return
+        # No versionEnv means there is no build variable to set, and an empty
+        # `versions` means the runtime pins its own - both are "not selectable",
+        # so accepting a version would silently ignore it.
+        if not spec.versionEnv or not spec.versions:
+            raise ValidationError(
+                f"runtime '{runtime}' does not offer a choice of version; omit 'version'"
+            )
+        if version not in spec.versions:
+            raise ValidationError(
+                f"unsupported version '{version}' for runtime '{runtime}'; "
+                f"available versions: {', '.join(spec.versions)}"
             )
 
     def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
@@ -84,6 +106,7 @@ class FunctionService:
             env=describe_svc.redact_env(spec.env),
             files=describe_svc.redact_files(spec.files),
             runtime=spec.runtime,
+            version=spec.version,
             gitRepo=spec.gitRepo,
             branch=spec.branch,
             path=spec.path,
@@ -103,7 +126,7 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        self._assert_runtime(spec.runtime)
+        self._assert_runtime(spec.runtime, spec.version)
         return await self._engine.accept_create(
             offering=OFFERING_FUNCTION,
             group=group,
@@ -129,7 +152,7 @@ class FunctionService:
         Returns:
             A Pending response with a ``statusUrl`` to poll.
         """
-        self._assert_runtime(spec.runtime)
+        self._assert_runtime(spec.runtime, spec.version)
         return await self._engine.accept_update(
             offering=OFFERING_FUNCTION,
             group=group,
@@ -166,6 +189,7 @@ class FunctionService:
                 path=spec.path,
                 git_token=spec.gitToken,
                 runtime=spec.runtime,
+                version=spec.version,
                 owner=user.username,
             ),
             user,
@@ -193,6 +217,7 @@ class FunctionService:
             port=None,
             created=True,
             runtime=spec.runtime,
+            version=spec.version,
             git_url=spec.gitRepo,
             branch=spec.branch,
             path=spec.path,
@@ -238,6 +263,7 @@ class FunctionService:
         # Full replace, so the build inputs are the request's. The token is the
         # redacted keep: the stored one is reused unless the client sent a new one.
         runtime = spec.runtime
+        version = spec.version
         git_url = spec.gitRepo
         branch = spec.branch
         path = spec.path
@@ -251,6 +277,10 @@ class FunctionService:
             or branch != existing.get("branch")
             or path != (existing.get("path") or "")
             or runtime != existing.get("runtime")
+            # A version change is a build input like any other. Omitting it returns
+            # the function to the platform default, which is also a rebuild - the
+            # field is replaced, not kept, like branch and runtime.
+            or version != existing.get("version")
         )
         token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
         if build_inputs_changed and token is None:
@@ -273,6 +303,7 @@ class FunctionService:
                     path=path,
                     git_token=token,
                     runtime=runtime,
+                    version=version,
                     owner=user.username,
                 ),
                 user,
@@ -301,6 +332,7 @@ class FunctionService:
             created=False,
             # stamp the (possibly updated) build metadata; never the token
             runtime=runtime,
+            version=version,
             git_url=git_url,
             branch=branch,
             path=path,
