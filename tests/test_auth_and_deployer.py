@@ -636,6 +636,117 @@ def _bare_ksvc(name="app-team"):
     )
 
 
+async def test_get_function_returns_build_inputs_and_build_state():
+    """GET on a function reads the whole function-only branch of the response.
+
+    The container variant is covered several times over; this drives the branch
+    that only a function reaches - the build-input annotations projected through
+    WorkloadSpec, and the kpack build status folded into overallStatus.
+    """
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.contract import BuildStatus
+
+    ksvc = build_ksvc(
+        name="fn-team",
+        group="team",
+        owner="alice",
+        image="reg/team/fn:main",
+        offering="function",
+        host="fn-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+        git_url="https://git.example.com/team/monorepo.git",
+        branch="main",
+        path="services/api",
+    )
+    ksvc["status"] = {
+        "conditions": [{"type": "Ready", "status": "True"}],
+        "latestReadyRevisionName": "fn-team-00001",
+    }
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("revision/metrics/configmaps are best-effort here")
+
+    class _ReadyBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            return BuildStatus(state="Ready", image="reg/team/fn@sha256:abc")
+
+    engine = _workload_service({"site-a": _C()}, builder=_ReadyBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("function", "fn", user, "team")
+
+    assert body.runtime == "python"
+    assert body.gitRepo == "https://git.example.com/team/monorepo.git"
+    assert body.branch == "main"
+    # The sub-directory a monorepo function builds from, round-tripped through
+    # the annotation and WorkloadSpec rather than dropped on the floor.
+    assert body.path == "services/api"
+    assert body.build.state == "Ready"
+    assert body.overallStatus == "Ready"
+    # the built image stays internal - a function's client deals in source
+    assert not hasattr(body, "image")
+
+
+async def test_get_function_building_image_reports_building():
+    """A function whose image is still building is Building, not Degraded."""
+    from api.auth.claims import Principal
+    from api.models.common import Scaling
+    from api.services.ksvc import build_ksvc
+    from common.cluster import ResourceKind
+    from common.contract import BuildStatus
+
+    ksvc = build_ksvc(
+        name="fn-team",
+        group="team",
+        owner="alice",
+        image="reg/team/fn:main",
+        offering="function",
+        host="fn-team.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        runtime="python",
+        git_url="https://git.example.com/team/fn.git",
+        branch="main",
+    )
+    # KSVC can't pull an image that does not exist yet -> Ready=False
+    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return ksvc
+            raise RuntimeError("best-effort reads")
+
+    class _BuildingBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            return BuildStatus(state="Building")
+
+    engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.get("function", "fn", user, "team")
+
+    assert body.build.state == "Building"
+    assert body.overallStatus == "Building"
+    assert body.path is None  # no sub-directory -> built from the repository root
+
+
 async def test_get_overall_status_reflects_rollout_state():
     from api.auth.claims import Principal
     from common.cluster import ResourceKind

@@ -448,3 +448,5 @@ class WorkloadSpec(BaseModel):
     # Function source: what the build was run from. The git token is never stored.
     gitRepo: str | None = None
     branch: str | None = None
+    # Sub-directory inside the repository; None (or absent) means the root.
+    path: str | None = None

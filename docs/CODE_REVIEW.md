@@ -16,7 +16,13 @@ interpreter version.
 
 ## Bugs
 
-### 1. `GET .../functions/{name}` always returns 500 — CRITICAL, verified
+### 1. `GET .../functions/{name}` always returns 500 — CRITICAL, verified — FIXED
+
+Fixed: `WorkloadSpec` gained the missing `path` field, with regression coverage
+(`test_get_function_returns_build_inputs_and_build_state`,
+`test_get_function_building_image_reports_building`, and a `spec.path` assertion
+in `test_parse_spec_reports_function_build_inputs`). Original analysis follows.
+
 
 `api/services/workloads.py:1043` reads `spec.path`:
 
@@ -220,6 +226,57 @@ but a dockerconfigjson entry for Docker Hub must be keyed
 `https://index.docker.io/v1/`. Moot in an airgapped install pointed at the
 internal mirror; the helper is written as a general-purpose one.
 
+### 8b. `image` is the one request field with no validation rule — LOW
+
+`common/names.py` states the convention: these types live in `common` "because
+the same rules bound what reaches a cluster". Every caller-supplied string that
+becomes a cluster identifier has an `Annotated` type with an `AfterValidator` —
+`Name`, `Group`, `Hostname`, `Branch`, `GitUrl`, `SourcePath` — except
+`ContainerCreate.image` / `ContainerUpdate.image`, which are bare `str`:
+
+```
+--- ContainerCreate ---
+  name    'Not A Label!'          rejected
+  image   empty string            ACCEPTED  <-- no rule
+  image   whitespace + newline    ACCEPTED  <-- no rule
+  image   shell-ish junk          ACCEPTED  <-- no rule
+```
+
+`image` is written verbatim into `KSVC.spec.template.spec.containers[0].image`
+and parsed by `secrets.registry_of` to key the pull secret. An empty or
+whitespace-padded reference passes every check here and fails later as an opaque
+`ErrImagePull` on the revision — the same "passes validation, fails in the
+background" shape that `c7164d4` set out to eliminate for the other fields.
+
+An `ImageRef` type in `common/names.py` (non-empty, no whitespace or control
+characters, parseable host/repo/tag-or-digest) would close it. Note this is a
+behaviour change: references that are accepted today would start returning 400.
+
+Two other request fields are plain `str` **by design**, not by omission:
+
+- `runtime` — the valid set is data (the runtimes ConfigMap), so it is checked
+  against the live registry in `FunctionService._assert_runtime`, as
+  `FunctionCreate`'s docstring says.
+- `hostname` — `validate_hostname` accepts a label *or* any FQDN; that it sits
+  one label under the platform base domain is enforced in
+  `WorkloadService.host_for`, which is where the base domain is known.
+
+### 8c. Why the response models are plain `str` (they should stay that way)
+
+Worth recording, since it looks like the same omission and isn't. `WorkloadSpec`,
+`WorkloadBase`, `WorkloadSummary`, `FunctionResponse` and `ContainerResponse` all
+use plain `str` for fields whose request-side counterparts are validated.
+
+That is correct. The `Annotated` types carry `AfterValidator`s, which *reject*.
+On a request that is the point. On a read-back it inverts the failure mode:
+anything already in the cluster that no longer satisfies a current rule — written
+by an older version, hand-edited, or migrated — would make `GET` raise instead of
+showing the operator what is actually deployed. Worse, `parse_spec` raises
+Pydantic's `ValidationError`, not `common.errors.ValidationError`, so it would
+land as an unenveloped 500 (finding 5) rather than a 400.
+
+Requests validate; reads report. The split is deliberate and consistent.
+
 ### 8. `load_existing` can raise `StopIteration` — LOW, latent (not reproduced)
 
 `api/services/workloads.py:751`:
@@ -339,7 +396,7 @@ caught them stubs the service out one layer higher.
 
 | # | Severity | Finding |
 |---|---|---|
-| 1 | Critical | `GET .../functions/{name}` always 500s — `WorkloadSpec` has no `path` field |
+| 1 | Critical | `GET .../functions/{name}` always 500s — `WorkloadSpec` has no `path` field (**fixed**) |
 | 2 | High | DELETE reports 404 on total outage, after deleting the build objects |
 | 3 | High | Binary secret file content fails with a 500 (surrogate re-encode) |
 | 4 | Medium | Malformed `contentBase64` → 500 instead of 400 (`_echo` runs before validation) |
@@ -347,6 +404,7 @@ caught them stubs the service out one layer higher.
 | 6 | Medium | Failed background deploys are unobservable; `status_code_for` is dead |
 | 7 | Low | `container.update` can write `"username": null` into a pull secret |
 | 8 | Low | `load_existing` `StopIteration` under a fan-out timeout race (latent) |
+| 8b | Low | `image` is the only caller-supplied cluster identifier with no validator |
 | 9 | Efficiency | Create/update run their cross-site pre-flight twice (14 calls for one create) |
 | 10 | Efficiency | `ThreadPoolExecutor` built per site, per request, nested in the default executor |
 | 11 | Efficiency | `get()` serializes spec/build/ConfigMap reads |
