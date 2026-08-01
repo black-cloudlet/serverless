@@ -153,9 +153,7 @@ def validate_git_url(url: str) -> str:
             "with a token over https"
         )
     if "@" in parts.netloc:
-        raise ValueError(
-            "gitRepo must not embed credentials; send the token as gitToken instead"
-        )
+        raise ValueError("gitRepo must not embed credentials; send the token as gitToken instead")
     return url.strip()
 
 
@@ -363,8 +361,7 @@ GitUrl = Annotated[
     str,
     AfterValidator(validate_git_url),
     _schema(
-        "Repository URL. http(s) only, with no embedded credentials - the token "
-        "goes in gitToken.",
+        "Repository URL. http(s) only, with no embedded credentials - the token goes in gitToken.",
         "https://git.internal/payments/hello.git",
         pattern=r"^https?://",
     ),

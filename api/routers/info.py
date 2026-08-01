@@ -47,9 +47,7 @@ def _base(settings: Settings) -> dict:
             terminal=list(TERMINAL_STATUSES),
         ),
         errorCodes=[ErrorCode(code=c, status=s) for c, s in error_catalog()],
-        naming=NamingRule(
-            template=object_name("{name}", "{group}"), maxLength=MAX_OBJECT_NAME
-        ),
+        naming=NamingRule(template=object_name("{name}", "{group}"), maxLength=MAX_OBJECT_NAME),
     )
 
 

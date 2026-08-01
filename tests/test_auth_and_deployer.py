@@ -2593,7 +2593,9 @@ async def test_function_accept_rejects_a_runtime_with_no_builder():
 
     fsvc = _function_service_with_runtimes(["python"], builder=None)
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python")
+    spec = FunctionCreate(
+        name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python"
+    )
 
     with pytest.raises(ValidationError, match="not buildable"):
         await fsvc.accept("team", spec, user, BackgroundTasks())
@@ -2608,7 +2610,9 @@ async def test_function_accept_rejects_unknown_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby")
+    spec = FunctionCreate(
+        name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby"
+    )
 
     with pytest.raises(ValidationError):
         await fsvc.accept("team", spec, user, BackgroundTasks())
@@ -2622,7 +2626,9 @@ async def test_function_accept_allows_known_runtime():
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
-    spec = FunctionCreate(name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go")
+    spec = FunctionCreate(
+        name="fn", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go"
+    )
 
     resp = await fsvc.accept("team", spec, user, BackgroundTasks())
     assert resp.overallStatus == "Pending" and resp.runtime == "go"

@@ -73,25 +73,39 @@ def test_valid_function():
 
 def test_invalid_name_rejected():
     with pytest.raises(ValidationError):
-        FunctionCreate(name="Bad_Name", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python")
+        FunctionCreate(
+            name="Bad_Name", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="python"
+        )
 
 
 def test_runtime_is_a_free_string_on_the_model():
     # The runtime set is data (a ConfigMap), so the model takes any string; the
     # service validates it against the live registry.
-    fn = FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby")
+    fn = FunctionCreate(
+        name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="ruby"
+    )
     assert fn.runtime == "ruby"
 
 
 def test_size_default_and_choices():
-    fn = FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go")
+    fn = FunctionCreate(
+        name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go"
+    )
     assert fn.size == "small"  # default
     assert (
-        FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", size="large").size
+        FunctionCreate(
+            name="x",
+            gitRepo="https://git.internal/o/r.git",
+            gitToken="t",
+            runtime="go",
+            size="large",
+        ).size
         == "large"
     )
     with pytest.raises(ValidationError):  # unknown size
-        FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", size="xl")
+        FunctionCreate(
+            name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", size="xl"
+        )
 
 
 def test_envvar_value_required_unless_secret_keep():
@@ -184,11 +198,22 @@ def test_optional_hostname_validated():
     )
     assert fn.hostname == "app.example.com"
     # default (no hostname) is allowed
-    assert FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go").hostname is None
+    assert (
+        FunctionCreate(
+            name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go"
+        ).hostname
+        is None
+    )
     # invalid hostnames rejected
     for bad in ["NoDots", "UPPER.example.com", "bad_host.example.com"]:
         with pytest.raises(ValidationError):
-            FunctionCreate(name="x", gitRepo="https://git.internal/o/r.git", gitToken="t", runtime="go", hostname=bad)
+            FunctionCreate(
+                name="x",
+                gitRepo="https://git.internal/o/r.git",
+                gitToken="t",
+                runtime="go",
+                hostname=bad,
+            )
 
 
 def test_git_repo_must_be_an_http_url_the_build_can_authenticate_to():
@@ -198,8 +223,16 @@ def test_git_repo_must_be_an_http_url_the_build_can_authenticate_to():
     the background build - and an scp-style ref yields a kpack.io/git annotation
     kpack cannot match, so it surfaces as an auth error nowhere near its cause.
     """
-    for bad in ["", "   ", "g", "not a url", "git@github.com:o/r.git",
-                "ssh://git@host/r.git", "file:///etc/passwd", "https://"]:
+    for bad in [
+        "",
+        "   ",
+        "g",
+        "not a url",
+        "git@github.com:o/r.git",
+        "ssh://git@host/r.git",
+        "file:///etc/passwd",
+        "https://",
+    ]:
         with pytest.raises(ValidationError):
             FunctionCreate(name="x", gitRepo=bad, gitToken="t", runtime="go")
 

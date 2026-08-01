@@ -76,9 +76,7 @@ WorkloadSize = Literal["small", "medium", "large"]
 
 # The rollup a client polls on. A Literal, not a comment, so it is enforced on
 # every response and /info can advertise it instead of a portal hardcoding it.
-WorkloadStatus = Literal[
-    "Pending", "Building", "Deploying", "Ready", "Degraded", "Terminating"
-]
+WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded", "Terminating"]
 # Per-site values that reach a response. SiteStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
