@@ -20,8 +20,8 @@ runtimes:
   - name: go
     builder: go
     versionEnv: BP_GO_VERSION
-    defaultVersion: "1.22"
-    versions: ["1.21", "1.22"]
+    defaultVersion: "1.24"
+    versions: ["1.23", "1.24", "1.25"]
   - name: node
     builder: node
     versionEnv: BP_NODE_VERSION

@@ -7,7 +7,7 @@ most setups miss because it is not registry content:
 |--------|----------|----------|
 | `pull-images.sh` | `images.tar.gz` | kpack platform images + the stack and every ClusterStore buildpackage |
 | `pull-runtimes.sh` | `runtime-python.tar.gz`, `runtime-node.tar.gz`, `runtime-go.tar.gz` | the interpreter/toolchain tarballs the buildpacks download at build time |
-| `push-airgapped.sh` | - | loads the above into the internal registry and artifact server |
+| `push-airgapped.sh` | - | loads `images.tar.gz` into the internal **registry** |
 
 Run the first two on a connected host, carry the tars in, run the third inside.
 
@@ -34,13 +34,33 @@ By default it keeps the newest patch of each advertised minor (`3.12` ->
 
 ## Airgapped side
 
+### Images -> the registry
+
 ```bash
-./push-airgapped.sh -r registry.internal -o acme \
-    -m https://artifactory.internal/artifactory/paketo \
-    -t runtime-python.tar.gz,runtime-node.tar.gz,runtime-go.tar.gz
+./push-airgapped.sh -r registry.internal -o acme
 ```
 
 `-n` prints what would happen and changes nothing.
+
+### Runtime files -> the artifact server
+
+`push-airgapped.sh` does **not** upload these. They are artifact server content,
+not registry content: a different system, different credentials, and a partial
+upload of one should not read as a failure of the other. Publish them with
+whatever already owns that repository - most Artifactory/Nexus setups have an
+ingest path, and a generic repository accepts a plain `PUT` per file:
+
+```bash
+tar xzf runtime-python.tar.gz -C stage/
+rm -f stage/manifest.tsv          # a record of what was mirrored, not an artefact
+cd stage && find . -type f -printf '%P\n' | while IFS= read -r f; do
+    curl -fsS --retry 3 -T "$f" "https://artifactory.internal/artifactory/paketo/$f"
+done
+```
+
+The `<host>/<path>` layout inside the tar has to be preserved on upload - that
+is what `{originalHost}` resolves against (see below). `manifest.tsv` records
+what was mirrored and is not itself an artefact.
 
 Then point the chart at the internal copies:
 

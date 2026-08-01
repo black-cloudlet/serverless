@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Load the mirrored artefacts into the airgapped environment.
+# Load the mirrored images into the airgapped registry.
 #
-# Run INSIDE the airgapped network, with the tars produced by pull-images.sh and
-# pull-runtimes.sh. Nothing here reaches the internet.
+# Run INSIDE the airgapped network, with the tar produced by pull-images.sh.
+# Nothing here reaches the internet.
 #
 # Images keep their upstream repository path under the target organization, so
 # ghcr.io/buildpacks-community/kpack/controller becomes
 # <registry>/<org>/buildpacks-community/kpack/controller. Keeping the path makes
 # the internal copy traceable to its origin, and matches what the charts expect.
 #
-# Runtime files are uploaded preserving their <host>/<path> layout, which is what
-# BP_DEPENDENCY_MIRROR resolves against when set with {originalHost}.
+# Registry content only. The runtime tarballs from pull-runtimes.sh are artifact
+# server content, not registry content, and are published separately - see
+# README.md ("Runtime files"). Uploading them is deliberately not this script's
+# job: the two halves land in different systems, with different credentials, and
+# a partial run of one should not look like a failure of the other.
 #
 # Usage:
-#   ./push-airgapped.sh -r registry.internal [-o org] [-m https://artifactory/.../mirror]
-#                       [-i images.tar.gz] [-t runtime-python.tar.gz,...] [-n]
+#   ./push-airgapped.sh -r registry.internal [-o org] [-i images.tar.gz] [-n]
 #
 #   -n  dry run: print what would be pushed and change nothing.
 
@@ -24,27 +26,22 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 REGISTRY=
 ORG=
-MIRROR=
 IMAGES_TAR=images.tar.gz
-RUNTIME_TARS=
 DRY=0
 
-while getopts ':r:o:m:i:t:nh' opt; do
+while getopts ':r:o:i:nh' opt; do
     case $opt in
         r) REGISTRY=$OPTARG ;;
         o) ORG=$OPTARG ;;
-        m) MIRROR=$OPTARG ;;
         i) IMAGES_TAR=$OPTARG ;;
-        t) RUNTIME_TARS=$OPTARG ;;
         n) DRY=1 ;;
-        h) sed -n '2,20p' "$0"; exit 0 ;;
+        h) sed -n '2,22p' "$0"; exit 0 ;;
         *) die "unknown option: -$OPTARG" ;;
     esac
 done
 
 [ -n "$REGISTRY" ] || die "-r <registry> is required"
 need skopeo tar
-[ -n "$MIRROR" ] && need curl
 
 run() {
     if [ "$DRY" = 1 ]; then
@@ -62,43 +59,25 @@ target_ref() {
     printf '%s/%s' "$REGISTRY" "$path"
 }
 
-if [ -f "$IMAGES_TAR" ]; then
-    step "Images from ${IMAGES_TAR}"
-    work=$(mktemp -d)
-    tar xzf "$IMAGES_TAR" -C "$work"
-    [ -f "${work}/images.list" ] || die "images.list missing from ${IMAGES_TAR}"
+# Pushing images is the whole job now, so a missing tar is a failure, not a
+# shrug: skipping it would leave the script reporting success having done nothing.
+[ -f "$IMAGES_TAR" ] || die "not found: ${IMAGES_TAR} (produced by pull-images.sh; override with -i)"
 
-    while read -r name ref; do
-        [ -n "$name" ] || continue
-        dest=$(target_ref "$ref")
-        log "${ref}  ->  ${dest}"
-        run skopeo copy --all --quiet \
-            "oci:${work}/images:${name}" "docker://${dest}"
-    done < "${work}/images.list"
-    rm -rf "$work"
-else
-    log "no ${IMAGES_TAR}; skipping images"
-fi
+step "Images from ${IMAGES_TAR}"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+tar xzf "$IMAGES_TAR" -C "$work"
+[ -f "${work}/images.list" ] || die "images.list missing from ${IMAGES_TAR}"
 
-if [ -n "$RUNTIME_TARS" ]; then
-    [ -n "$MIRROR" ] || die "-m <mirror base url> is required to upload runtime files"
-    step "Runtime files -> ${MIRROR}"
-    for tarball in ${RUNTIME_TARS//,/ }; do
-        [ -f "$tarball" ] || die "not found: ${tarball}"
-        work=$(mktemp -d)
-        tar xzf "$tarball" -C "$work"
-        # manifest.tsv records what was mirrored; it is not itself an artefact.
-        rm -f "${work}/manifest.tsv"
-        while IFS= read -r file; do
-            rel=${file#"${work}/"}
-            log "${rel}"
-            run curl -fsS --retry 3 -T "$file" "${MIRROR%/}/${rel}"
-        done < <(find "$work" -type f | sort)
-        rm -rf "$work"
-    done
-fi
+while read -r name ref; do
+    [ -n "$name" ] || continue
+    dest=$(target_ref "$ref")
+    log "${ref}  ->  ${dest}"
+    run skopeo copy --all --quiet \
+        "oci:${work}/images:${name}" "docker://${dest}"
+done < "${work}/images.list"
 
 step "Done"
 log "point the chart at the internal copies:"
 log "  registry.url=${REGISTRY}${ORG:+  registry.organization=${ORG}}"
-[ -n "$MIRROR" ] && log "  BP_DEPENDENCY_MIRROR=${MIRROR%/}/{originalHost}"
+log "runtime tarballs are published to the artifact server separately - see README.md"
