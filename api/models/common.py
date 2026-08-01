@@ -159,9 +159,7 @@ class FileMount(BaseModel):
                 # still rejecting bad padding or a truncated blob.
                 base64.b64decode(self.contentBase64)
             except ValueError as exc:
-                raise ValueError(
-                    f"file '{self.mountPath}' has invalid base64 content"
-                ) from exc
+                raise ValueError(f"file '{self.mountPath}' has invalid base64 content") from exc
         return self
 
     def decoded(self) -> bytes:

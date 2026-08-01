@@ -338,9 +338,7 @@ class WorkloadService:
         self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
         # Host and name in one pass: an immediate 409 is the point of doing this
         # synchronously, and one round trip answers both.
-        await self.assert_deployable(
-            spec.name, group, targets, host=host, require_absent=True
-        )
+        await self.assert_deployable(spec.name, group, targets, host=host, require_absent=True)
         background.add_task(self.run, work, group, spec, user)
         return self.accepted(offering, spec.name, group, host, **extra)
 
@@ -486,9 +484,7 @@ class WorkloadService:
         # idempotent apply would otherwise hijack another workload's mapping; on a
         # create the same pass also confirms the name is still unused, which is why
         # the offering services no longer probe for that separately.
-        await self.assert_deployable(
-            name, group, targets, host=host, require_absent=created
-        )
+        await self.assert_deployable(name, group, targets, host=host, require_absent=created)
 
         resolved = resolve_files(oname, group, user.username, files, kept_files)
         resolved_env = resolve_env(oname, group, user.username, env, kept_env)
@@ -1463,4 +1459,3 @@ class WorkloadService:
         else:
             summaries.sort(key=lambda w: w.name)
         return summaries
-

@@ -293,6 +293,8 @@ def test_invalid_base64_is_rejected_by_the_model_not_only_the_resolver():
     that lived only in resolve_files would therefore be reached after the echo had
     already raised, turning a bad request into a 500.
     """
+    from types import SimpleNamespace
+
     import pytest
     from pydantic import ValidationError as PydanticValidationError
 
@@ -305,11 +307,16 @@ def test_invalid_base64_is_rejected_by_the_model_not_only_the_resolver():
 
     # resolve_files keeps its own guard for callers that build a spec directly,
     # off the HTTP edge, where the request model never ran.
-    class _Raw:
-        mountPath, content, contentBase64, secret, readOnly, keep = "/a/conf", None, "abc", False, True, False
-
+    raw = SimpleNamespace(
+        mountPath="/a/conf",
+        content=None,
+        contentBase64="abc",
+        secret=False,
+        readOnly=True,
+        keep=False,
+    )
     with pytest.raises(ValidationError):
-        resolve_files("app", "team", "alice", [_Raw()])
+        resolve_files("app", "team", "alice", [raw])
 
 
 def test_resolve_files_accepts_linewrapped_base64():
