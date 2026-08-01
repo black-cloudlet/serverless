@@ -47,13 +47,18 @@ done
 need skopeo jq tar curl python3 sha256sum
 [ -f "$VALUES" ] || die "chart values not found: ${VALUES}"
 
-PAKETO_REGISTRY=${PAKETO_REGISTRY:-docker.io/paketobuildpacks}
+PAKETO_HOST=${PAKETO_HOST:-docker.io}
+PAKETO_ORG=${PAKETO_ORG:-paketobuildpacks}
 
-# language -> buildpackage image, the dependency id carrying the runtime, and the
-# tool ids that ship alongside it (always newest, they are not version-selectable).
-image_for()   { case $1 in python) echo python ;; node) echo nodejs ;; go) echo go ;; esac; }
-runtime_id()  { case $1 in python) echo python ;; node) echo node   ;; go) echo go ;; esac; }
-tool_ids()    { case $1 in python) echo "pip poetry watchexec" ;; *) echo "" ;; esac; }
+# The dependency id that carries the language runtime itself, so it can be
+# filtered against the advertised versions. Every other id is a tool and takes
+# its newest entry.
+runtime_id() { case $1 in python) echo python ;; node) echo node ;; go) echo go ;; esac; }
+
+# Version pinned in the chart for a store source, or empty to resolve newest.
+pinned_version() {
+    chart_images "$VALUES" | awk -F'\t' -v r="${PAKETO_ORG}/$1" '$1 == r { print $2; exit }'
+}
 
 # Extract every buildpack.toml from a buildpackage image into $2.
 extract_tomls() {
@@ -74,14 +79,15 @@ extract_tomls() {
 }
 
 # Select the dependencies to mirror: TSV of uri, checksum, destination path.
+#
+# $4 empty means the id is not version-selectable (a tool): take its newest.
 select_deps() {
     python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import pathlib, sys, tomllib
 from urllib.parse import urlsplit
 
-root, arch, runtime_id, versions, all_patches = sys.argv[1:6]
+root, arch, dep_id, versions, all_patches = sys.argv[1:6]
 wanted = [v for v in versions.split() if v]
-tools = {t for t in (sys.argv[6].split() if len(sys.argv) > 6 else [])}
 found = {}
 
 for toml in pathlib.Path(root).rglob("buildpack.toml"):
@@ -91,45 +97,41 @@ for toml in pathlib.Path(root).rglob("buildpack.toml"):
         continue
     for dep in (data.get("metadata") or {}).get("dependencies") or []:
         uri = dep.get("uri")
-        if not uri:
+        if not uri or (dep.get("arch") not in (None, arch)):
             continue
-        if dep.get("arch") not in (None, arch):
-            continue
-        dep_id = (dep.get("id") or "").split("/")[-1]
-        if dep_id != runtime_id and dep_id not in tools:
+        if (dep.get("id") or "").split("/")[-1] != dep_id:
             continue
         version = str(dep.get("version") or "")
-        if dep_id == runtime_id and wanted:
+        if wanted:
             # "3.11" must match 3.11.9 but never 3.1
             if not any(version == w or version.startswith(w + ".") for w in wanted):
                 continue
         checksum = dep.get("checksum") or (
             "sha256:" + dep["sha256"] if dep.get("sha256") else ""
         )
-        found.setdefault((dep_id, version), (uri, checksum))
+        found[version] = (uri, checksum)
 
 def sortkey(v):
     return [int(p) if p.isdigit() else 0 for p in v.split(".")]
 
-# Newest patch per advertised minor, unless every patch was asked for.
+# Newest patch per advertised minor; newest overall when nothing was advertised.
 keep = {}
-for (dep_id, version), value in found.items():
-    if dep_id == runtime_id and wanted and all_patches != "1":
+for version, value in found.items():
+    if not wanted:
+        bucket = dep_id
+    elif all_patches == "1":
+        bucket = version
+    else:
         bucket = next(
             (w for w in wanted if version == w or version.startswith(w + ".")), version
         )
-    elif dep_id in tools:
-        bucket = dep_id
-    else:
-        bucket = version
-    key = (dep_id, bucket)
-    if key not in keep or sortkey(version) > sortkey(keep[key][0]):
-        keep[key] = (version, value)
+    if bucket not in keep or sortkey(version) > sortkey(keep[bucket][0]):
+        keep[bucket] = (version, value)
 
 if not keep:
-    sys.exit(f"no dependencies matched id={runtime_id!r} versions={wanted} arch={arch!r}")
+    sys.exit(f"no dependencies matched id={dep_id!r} versions={wanted} arch={arch!r}")
 
-for (dep_id, _), (version, (uri, checksum)) in sorted(keep.items()):
+for _, (version, (uri, checksum)) in sorted(keep.items()):
     parts = urlsplit(uri)
     print("\t".join([uri, checksum, parts.netloc + parts.path, dep_id, version]))
 PY
@@ -137,20 +139,35 @@ PY
 
 for lang in ${LANGS//,/ }; do
     step "${lang}"
-    image="${PAKETO_REGISTRY}/$(image_for "$lang")"
-    tag=$(newest_tag "$image")
-    log "buildpackage ${image}:${tag}"
-
-    work=$(mktemp -d)
-    extract_tomls "${image}:${tag}" "${work}/toml"
-
     versions=$(advertised_versions "$lang" "$VALUES")
     log "advertised versions: ${versions}"
 
-    deps=$(select_deps "${work}/toml" "$ARCH" "$(runtime_id "$lang")" \
-        "$versions" "$ALL_PATCHES" "$(tool_ids "$lang")")
-
+    work=$(mktemp -d)
     out="${work}/files"
+    deps=
+
+    # One buildpackage per download, taken from the ClusterStore's own sources -
+    # the composites (paketobuildpacks/python and friends) are not what the store
+    # references, so reading them would describe a mirror we do not build.
+    while read -r repository dep_id; do
+        [ -n "$repository" ] || continue
+        image="${PAKETO_HOST}/${PAKETO_ORG}/${repository}"
+        tag=$(pinned_version "$repository")
+        [ -n "$tag" ] || tag=$(newest_tag "$image")
+        log "${repository}:${tag}"
+
+        rm -rf "${work}/toml"
+        extract_tomls "${image}:${tag}" "${work}/toml"
+
+        if [ "$dep_id" = "$(runtime_id "$lang")" ]; then
+            found=$(select_deps "${work}/toml" "$ARCH" "$dep_id" "$versions" "$ALL_PATCHES")
+        else
+            # A tool is not version-selectable by the caller; take its newest.
+            found=$(select_deps "${work}/toml" "$ARCH" "$dep_id" "" 0)
+        fi
+        deps=${deps:+${deps}$'\n'}${found}
+    done < <(runtime_sources "$lang")
+
     while IFS=$'\t' read -r uri checksum path dep_id version; do
         [ -n "$uri" ] || continue
         log "${dep_id} ${version}"

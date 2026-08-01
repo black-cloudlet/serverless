@@ -34,6 +34,44 @@ newest_tag() {
     printf '%s' "$tag"
 }
 
+# The Paketo images the chart actually references: the stack's build and run
+# images, and every ClusterStore source.
+#
+# Read from the chart rather than listed here because the ClusterStore names
+# individual component buildpackages, not the language composites - a missing id
+# leaves its Builder permanently not-Ready, and mirroring a composite instead
+# would satisfy nothing.
+#
+# Emits "repository<TAB>version", where an empty version means the chart floats
+# it and the caller should resolve the newest.
+#
+# $1: path to the serverless-api values.yaml
+chart_images() {
+    python3 -c '
+import sys, yaml
+build = (yaml.safe_load(open(sys.argv[1])) or {}).get("build") or {}
+stack = build.get("stack") or {}
+entries = [stack.get("buildImage"), stack.get("runImage")]
+entries += (build.get("store") or {}).get("sources") or []
+for e in entries:
+    if e and e.get("repository"):
+        print("\t".join([e["repository"], e.get("version") or ""]))
+' "$1"
+}
+
+# The store repositories whose buildpacks download a runtime, per language, as
+# "<repository> <dependency id>". Only buildpacks that *provide* a tool download
+# anything; the ones that consume it (pip-install, npm-install, go-build, the
+# *-start buildpacks) are pure logic and fetch nothing.
+runtime_sources() {
+    case $1 in
+        python) printf 'cpython python\npip pip\npoetry poetry\nwatchexec watchexec\n' ;;
+        node)   printf 'node-engine node\n' ;;
+        go)     printf 'go-dist go\n' ;;
+        *)      die "unknown language: $1" ;;
+    esac
+}
+
 # Advertised runtime versions for one language, read from the chart so the
 # mirror can never offer a version the API does not, or miss one it does.
 #

@@ -27,26 +27,28 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT=images.tar.gz
 KPACK_VERSION=
 WORKDIR=
+VALUES="${here}/../../charts/serverless-api/values.yaml"
 
-while getopts ':o:k:w:h' opt; do
+while getopts ':o:k:w:v:h' opt; do
     case $opt in
         o) OUT=$OPTARG ;;
         k) KPACK_VERSION=$OPTARG ;;
         w) WORKDIR=$OPTARG ;;
-        h) sed -n '2,20p' "$0"; exit 0 ;;
+        v) VALUES=$OPTARG ;;
+        h) sed -n '2,24p' "$0"; exit 0 ;;
         *) die "unknown option: -$OPTARG" ;;
     esac
 done
 
-need skopeo jq tar
+need skopeo jq tar python3
+[ -f "$VALUES" ] || die "chart values not found: ${VALUES}"
 
 KPACK_REGISTRY=${KPACK_REGISTRY:-ghcr.io/buildpacks-community/kpack}
-PAKETO_REGISTRY=${PAKETO_REGISTRY:-docker.io/paketobuildpacks}
+PAKETO_HOST=${PAKETO_HOST:-docker.io}
 
 # Every image kpack itself runs (docs/BUILDING.md - Airgapped Mirror Inventory).
+# Hardcoded because they belong to the kpack chart, not this one.
 KPACK_IMAGES=(controller webhook build-init build-waiter rebase completion lifecycle)
-# The stack and the buildpackages the ClusterStore serves.
-PAKETO_IMAGES=(build-jammy-base run-jammy-base go nodejs python)
 
 WORKDIR=${WORKDIR:-$(mktemp -d)}
 LAYOUT="${WORKDIR}/images"
@@ -77,13 +79,29 @@ for image in "${KPACK_IMAGES[@]}"; do
     copy_in "${KPACK_REGISTRY}/${image}:${KPACK_VERSION}"
 done
 
-step "Paketo stack and buildpackages"
-for image in "${PAKETO_IMAGES[@]}"; do
-    copy_in "${PAKETO_REGISTRY}/${image}:$(newest_tag "${PAKETO_REGISTRY}/${image}")"
-done
+step "Paketo stack and buildpackages (from ${VALUES##*/})"
+# The ClusterStore names component buildpackages, not the language composites,
+# so the list comes from the chart: mirroring paketobuildpacks/python instead of
+# cpython, pip, poetry and the rest satisfies no id the orders reference, and
+# every Builder stays not-Ready.
+RESOLVED=()
+while IFS=$'\t' read -r repository version; do
+    [ -n "$repository" ] || continue
+    if [ -z "$version" ]; then
+        version=$(newest_tag "${PAKETO_HOST}/${repository}")
+        RESOLVED+=("${repository}: \"${version}\"")
+    fi
+    copy_in "${PAKETO_HOST}/${repository}:${version}"
+done < <(chart_images "$VALUES")
 
 step "Packing ${OUT}"
 tar czf "$OUT" -C "$WORKDIR" images images.list
 log "$(wc -l < "$LIST") images, $(du -h "$OUT" | cut -f1)"
-log "mirrored versions:"
-sed 's/^/    /' "$LIST" >&2
+
+if [ ${#RESOLVED[@]} -gt 0 ]; then
+    step "Pin these in ${VALUES##*/}"
+    # The chart floats these with version: "". Airgapped that is a trap - a
+    # floating tag can later resolve to a buildpackage whose dependencies were
+    # never mirrored, and the build fails with no obvious cause.
+    printf '  %s\n' "${RESOLVED[@]}" >&2
+fi

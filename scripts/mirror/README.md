@@ -5,7 +5,7 @@ most setups miss because it is not registry content:
 
 | Script | Produces | Contents |
 |--------|----------|----------|
-| `pull-images.sh` | `images.tar.gz` | kpack platform images + the Paketo stack and buildpackages |
+| `pull-images.sh` | `images.tar.gz` | kpack platform images + the stack and every ClusterStore buildpackage |
 | `pull-runtimes.sh` | `runtime-python.tar.gz`, `runtime-node.tar.gz`, `runtime-go.tar.gz` | the interpreter/toolchain tarballs the buildpacks download at build time |
 | `push-airgapped.sh` | - | loads the above into the internal registry and artifact server |
 
@@ -18,9 +18,16 @@ Run the first two on a connected host, carry the tars in, run the third inside.
 ./pull-runtimes.sh                     # versions come from the chart
 ```
 
-`pull-runtimes.sh` reads `runtimes[].versions` from
-`charts/serverless-api/values.yaml`, so the mirror cannot offer a version the API
-does not advertise, or miss one it does. Add a version there and re-run.
+Both read the chart, so neither can drift from what is deployed.
+`pull-images.sh` takes the stack images and the ClusterStore sources from
+`build.stack` and `build.store.sources`; `pull-runtimes.sh` takes the versions
+from `runtimes[].versions`. Add a buildpackage or a version there and re-run.
+
+The store names **individual component buildpackages** (`cpython`, `pip`,
+`node-engine`, `go-dist`, ...), not the language composites
+(`paketobuildpacks/python`). Mirroring a composite instead satisfies no id the
+builder orders reference, and every `Builder` stays permanently not-Ready - so
+the list has to come from the chart rather than be written out here.
 
 By default it keeps the newest patch of each advertised minor (`3.12` ->
 `3.12.4`); `-A` keeps every patch.
@@ -55,7 +62,13 @@ different upstream hosts (`www.python.org`, `nodejs.org`, `go.dev`,
 `files.pythonhosted.org`, `artifacts.paketo.io`), so a flat prefix cannot address
 them. The tars store files as `<host>/<path>` to match.
 
-## Two things worth knowing
+## Three things worth knowing
+
+**Unpinned sources are reported.** The chart ships `version: ""` on the stack
+and store sources, which floats them. Airgapped that is a trap: a floating tag
+can later resolve to a buildpackage whose dependencies were never mirrored.
+`pull-images.sh` prints the versions it resolved, ready to paste back into
+`values.yaml` as pins.
 
 **Tags are resolved, never floating.** Every image is mirrored at its newest
 release tag; `latest` and floating pointers like `2` or `2.56` are skipped in
