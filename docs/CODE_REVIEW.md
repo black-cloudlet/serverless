@@ -2,8 +2,8 @@
 
 Review of the application code (`api/`, `common/`, ~7,200 lines).
 
-Findings 1, 2, 3, 4, 8b and 9-13 have since been **fixed**; each is marked, with
-the fix summarised above its original analysis. Findings 5, 6, 7 and 8 stand.
+Findings 1-5, 8b and 9-13 have since been **fixed**; each is marked, with the
+fix summarised above its original analysis. Findings 6, 7 and 8 stand.
 
 Baseline at the time of the review: `pytest` green (289 passed) and `ruff check .`
 clean — so everything below slipped past the existing gates. After the fixes: 300
@@ -200,7 +200,41 @@ POST /api/v1/groups/dev/containers -> 500 Internal Server Error
 
 where the ordering-correct answer is the 400 the code clearly intends.
 
-### 5. Unhandled exceptions bypass the error envelope — MEDIUM
+### 5. Unhandled exceptions bypass the error envelope — MEDIUM — FIXED
+
+Fixed with a fourth handler in `register_exception_handlers`, catching `Exception`
+and rendering `500 INTERNAL` in the standard envelope. Three details mattered
+beyond registering it:
+
+- **The message is a fixed string.** An exception's own text routinely carries
+  internal hostnames or object names, and this is the one response returned to a
+  caller seeing something the service did not anticipate. The detail goes to the
+  log.
+- **The id is read from `request.state`, not the context var.** Starlette puts
+  `ServerErrorMiddleware` outermost, so the handler runs *after* the request has
+  unwound and `RequestIDMiddleware` has reset the var — reading it there returns
+  `"-"`. The scope survives, which is why the middleware also exposes it there.
+- **The `X-Request-ID` header is set explicitly**, for the same reason: the
+  outermost middleware sends its response without ever reaching the wrapper that
+  stamps it. Before this, a 500 was the one response carrying the id *nowhere* —
+  not in the body, not in the header.
+
+`_RequestIdFilter` now lets a caller pass `extra={"request_id": ...}`, so the log
+line carrying the traceback carries the id the client was handed. And
+`error_catalog()` seeds itself with the base class, so `INTERNAL`/500 is published
+on `/info` like every other code a client can actually receive.
+
+Before and after, same endpoint:
+
+```
+before:  500  text/plain   X-Request-ID: None    Internal Server Error
+after :  500  application/json  X-Request-ID: trace-me-123
+         {"error":{"status":500,"code":"INTERNAL","message":"Internal server error.",
+          "details":[],"requestId":"trace-me-123"}}
+```
+
+Original analysis follows.
+
 
 `common/web.py:146` registers handlers for `APIError`, `RequestValidationError`
 and `StarletteHTTPException` — and nothing else. Every 500 above therefore
@@ -677,7 +711,7 @@ caught them stubs the service out one layer higher.
 | 2 | High | DELETE reports 404 on total outage, after deleting the build objects (**fixed**) |
 | 3 | High | Binary secret file content fails with a 500 (surrogate re-encode) (**fixed**) |
 | 4 | Medium | Malformed `contentBase64` → 500 instead of 400 (`_echo` runs before validation) (**fixed**) |
-| 5 | Medium | No catch-all handler: unhandled errors skip the envelope and the request id |
+| 5 | Medium | No catch-all handler: unhandled errors skip the envelope and the request id (**fixed**) |
 | 6 | Medium | Failed background deploys are unobservable; `status_code_for` is dead |
 | 7 | Low | `container.update` can write `"username": null` into a pull secret |
 | 8 | Low | `load_existing` `StopIteration` under a fan-out timeout race (latent) |

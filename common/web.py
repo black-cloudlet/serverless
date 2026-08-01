@@ -27,7 +27,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from common.errors import APIError
-from common.requestid import get_request_id
+from common.logging import get_logger
+from common.requestid import REQUEST_ID_HEADER, get_request_id
+
+logger = get_logger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -143,6 +146,24 @@ def _code_for_status(status: int) -> str:
         return "HTTP_ERROR"
 
 
+def _request_id_of(request: Request) -> str:
+    """The request's correlation id, preferring the copy stamped on the scope.
+
+    The context var is reset as the request unwinds, and the catch-all handler
+    runs *outside* the middleware that sets it - Starlette puts
+    ``ServerErrorMiddleware`` outermost, so by the time it is reached the var is
+    already back to ``"-"``. The scope's state survives that unwinding, which is
+    why :class:`~common.requestid.RequestIDMiddleware` also exposes the id there.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The correlation id, or ``"-"`` if there is none.
+    """
+    return getattr(request.state, "request_id", None) or get_request_id()
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register handlers rendering domain/HTTP errors as the standard envelope.
 
@@ -184,4 +205,41 @@ def register_exception_handlers(app: FastAPI) -> None:
                 str(exc.detail),
                 request_id=get_request_id(),
             ),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        """Render anything unanticipated as the same envelope as everything else.
+
+        Without this, Starlette serves an unhandled exception as plain-text
+        "Internal Server Error": no ``error`` object, so a client parsing the
+        envelope this API publishes on ``/info`` breaks inside its own error
+        path, and no correlation id, so the report cannot be tied back to the
+        traceback. A 500 is precisely the response a caller most needs to be able
+        to report.
+
+        The message is a fixed string. An exception's own text routinely carries
+        internal hostnames, object names or secret material, and the caller here
+        is by definition seeing something the service did not anticipate - the
+        detail belongs in the log, which carries the same id.
+        """
+        request_id = _request_id_of(request)
+        # Stamped explicitly: by now the request has unwound and the context var
+        # the log filter normally reads is back to "-", so without this the one
+        # line carrying the traceback is the one line the returned id can't find.
+        logger.error(
+            "unhandled error serving %s %s",
+            request.method,
+            request.url.path,
+            exc_info=exc,
+            extra={"request_id": request_id},
+        )
+        return JSONResponse(
+            status_code=500,
+            content=_envelope(500, APIError.code, "Internal server error.", request_id=request_id),
+            # Served from ServerErrorMiddleware, which sits outside
+            # RequestIDMiddleware and so never reaches the wrapper that stamps
+            # this header - set it here, or a 500 is the one response with no id
+            # anywhere on it.
+            headers={REQUEST_ID_HEADER: request_id},
         )

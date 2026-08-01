@@ -89,10 +89,15 @@ def error_catalog() -> list[tuple[str, int]]:
     stale. Framework HTTP errors (404 on an unknown route, 405) are not here:
     they derive their code from the status in :mod:`common.web`.
 
+    The base class is included, not just its subclasses: nothing raises a bare
+    ``APIError``, but :mod:`common.web`'s catch-all handler renders any
+    unanticipated exception with its ``INTERNAL``/500, so that pair is a real
+    thing a client can receive and has to be published like the rest.
+
     Returns:
         ``(code, status_code)`` pairs, deduplicated.
     """
-    seen: dict[str, int] = {}
+    seen: dict[str, int] = {APIError.code: APIError.status_code}
 
     def walk(cls: type[APIError]) -> None:
         for sub in cls.__subclasses__():

@@ -13,11 +13,17 @@ class _RequestIdFilter(logging.Filter):
 
     So a ``requestId`` returned in an error envelope can be grepped straight out
     of the logs. Records outside a request scope (startup, background) carry "-".
+
+    A caller may pass its own via ``extra={"request_id": ...}``, which wins. That
+    is not a nicety: the catch-all error handler runs after the request has
+    unwound and the context var has been reset, so the one log line that most
+    needs the id is the one that can no longer read it from the context.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Set ``record.request_id`` and keep the record."""
-        record.request_id = get_request_id()
+        """Set ``record.request_id`` unless the caller supplied one; keep the record."""
+        if not getattr(record, "request_id", None):
+            record.request_id = get_request_id()
         return True
 
 

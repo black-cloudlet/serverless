@@ -591,3 +591,95 @@ def test_swagger_docs_html_delivers_oauth_init():
     assert "initOAuth" in docs.text
     assert "serverless-api-swagger" in docs.text  # client id pre-filled
     assert "usePkceWithAuthorizationCodeGrant" in docs.text  # PKCE, no secret
+
+
+def _client_raising(exc: Exception) -> TestClient:
+    """A client whose container service raises ``exc``, with 500s returned not re-raised."""
+    from api.dependencies import get_container_service
+
+    class _Boom:
+        async def get(self, name, group, user):
+            raise exc
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: Principal(
+        subject="u", username="alice", groups=["team"], is_admin=False
+    )
+    app.dependency_overrides[get_container_service] = lambda: _Boom()
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_an_unanticipated_error_still_returns_the_documented_envelope():
+    """A 500 is the response a caller most needs to be able to report.
+
+    Served by Starlette's default it is plain text with no `error` object, so a
+    client parsing the envelope /info advertises breaks inside its own error
+    path, and there is no id to tie the report to the traceback.
+    """
+    client = _client_raising(RuntimeError("connection to db-master.internal failed"))
+    r = client.get("/api/v1/groups/team/containers/app", headers={"X-Request-ID": "trace-me-123"})
+
+    assert r.status_code == 500
+    assert r.headers["content-type"].startswith("application/json")
+    err = r.json()["error"]
+    assert err["status"] == 500
+    assert err["code"] == "INTERNAL"
+    # the correlation id survives in the body AND the header - the 500 used to be
+    # the one response carrying it nowhere, because ServerErrorMiddleware sits
+    # outside the middleware that stamps it
+    assert err["requestId"] == "trace-me-123"
+    assert r.headers["x-request-id"] == "trace-me-123"
+
+
+def test_an_unanticipated_error_does_not_leak_the_exception_text():
+    """Exception text routinely carries internal hostnames or secret material."""
+    client = _client_raising(RuntimeError("connection to db-master.internal failed"))
+    body = client.get("/api/v1/groups/team/containers/app").text
+
+    assert "db-master.internal" not in body
+    assert "RuntimeError" not in body
+    assert body.count("Internal server error.") == 1
+
+
+def test_the_unhandled_error_is_logged_with_the_id_the_client_was_given():
+    """The detail belongs in the log - which is only useful if it carries the id.
+
+    The handler runs after the request has unwound and the context var the log
+    filter normally reads is back to "-", so the id has to be stamped explicitly.
+
+    Captured on the module logger rather than with caplog: configure_logging()
+    replaces the root handlers wholesale, which drops caplog's.
+    """
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    client = _client_raising(RuntimeError("boom"))  # calls configure_logging()
+    web_logger = logging.getLogger("common.web")
+    handler = _Collect()
+    web_logger.addHandler(handler)
+    try:
+        client.get("/api/v1/groups/team/containers/app", headers={"X-Request-ID": "abc123"})
+    finally:
+        web_logger.removeHandler(handler)
+
+    record = next(r for r in records if r.levelno == logging.ERROR)
+    assert record.request_id == "abc123"
+    assert record.exc_info is not None  # the traceback is kept, just not returned
+
+
+def test_info_publishes_the_internal_code_the_catch_all_can_return():
+    """A code a client can receive must be in the advertised vocabulary.
+
+    error_catalog walks subclasses, so the base APIError's INTERNAL/500 - which
+    is exactly what the catch-all renders - would otherwise go unpublished.
+    """
+    codes = dict(
+        c["code"] and (c["code"], c["status"])
+        for c in TestClient(create_app()).get("/api/v1/containers/info").json()["errorCodes"]
+    )
+    assert codes["INTERNAL"] == 500
