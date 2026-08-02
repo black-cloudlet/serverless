@@ -690,15 +690,19 @@ the most common airgapped failure, and it fails late - at the `build` phase of t
 real build, not at install time.
 
 The scripts that mirror them live in the **kpack chart repository**
-(`scripts/mirror/`), because every image below is named by that chart's values.
-Point them at the values the kpack release is deployed with, and at this chart's
-values for the advertised runtime versions:
+(`scripts/mirror/`), because everything below is named by that chart's values.
+Point them at the values the kpack release is deployed with:
 
 ```bash
 ./pull-images.sh   -v /path/to/kpack-clusterbuild-values.yaml
-./pull-runtimes.sh -v /path/to/kpack-clusterbuild-values.yaml \
-                   -r charts/serverless-api/values.yaml
+./pull-runtimes.sh -v /path/to/kpack-clusterbuild-values.yaml
 ```
+
+The second reads every buildpack.toml in the store's buildpackages and mirrors
+what they download, so it follows the store rather than the runtimes this chart
+advertises. That means it can carry versions no runtime offers - the store's
+buildpackages support them, so a build could ask for them. Narrowing
+`runtimes[].versions` shrinks what callers may select, not what is mirrored.
 
 ### Container images - kpack platform
 

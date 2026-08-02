@@ -129,11 +129,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `charts/kpack-clusterbuild-values.yaml`, the overlay the kpack release is
   deployed with - they stay in this repo because the store and the builder
   orders are one contract.
-- `scripts/mirror/` moved to the kpack chart repository. Every image it carries
+- `scripts/mirror/` moved to the kpack chart repository. Everything it carries
   across an airgap is named by that chart's values now, so the tooling follows
-  the values it reads. Run it from a kpack checkout, pointing `-v` at the
-  overlay above and `-r` at this chart's values for the advertised runtime
-  versions (docs/BUILDING.md - Airgapped Mirror Inventory).
+  the values it reads: run it from a kpack checkout with `-v` pointed at the
+  overlay above (docs/BUILDING.md - Airgapped Mirror Inventory). The dependency
+  pull no longer reads `runtimes[].versions` at all - it mirrors what the
+  store's buildpackages declare, keeping the newest z-stream of each `X.Y`. It
+  can therefore carry a version no runtime advertises, which is the safe
+  direction: advertising narrows what a caller may select, not what exists.
 - The `BP_*_VERSION` build variable is now always written, including when the
   caller omits `version` - it gets the platform `defaultVersion`. Leaving it
   unset handed the choice to the buildpack's own default, which moves with the
