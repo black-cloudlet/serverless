@@ -90,57 +90,19 @@ build:
   # False where kpack is not installed; the API and its workloads still deploy.
   enabled: true
 
-  # stack and store are cluster-scoped singletons, safe only because one
-  # serverless-api release runs per cluster. Set `create: false` on all but one
-  # if that changes - two releases would fight over the same object.
+  # The cluster-scoped content the Builders below are composed from. Both are
+  # created by the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`),
+  # which owns everything cluster-wide; these are references only, so the names
+  # must match what that release created.
+  #
+  # The store must provide every buildpack id used in the orders below or the
+  # Builder never becomes Ready. That contract now spans two releases, so a
+  # mismatch surfaces as a not-Ready Builder rather than as a chart error.
   stack:
     name: serverless-base
-    create: true
-    # Must match both images' io.buildpacks.stack.id, and they must be the same
-    # variant. Check before switching to full/tiny - the ids differ:
-    #   docker inspect <image> --format '{{ index .Config.Labels "io.buildpacks.stack.id" }}'
-    id: io.buildpacks.stacks.jammy
-    # `full` only adds OS libraries, not language runtimes (§14.3).
-    buildImage:
-      repository: paketobuildpacks/build-jammy-base
-      version: ""
-    runImage:
-      repository: paketobuildpacks/run-jammy-base
-      version: ""
 
   store:
     name: serverless-store
-    create: true
-    # Must provide every id used in the orders below. Individual components
-    # rather than the language composites, so the mirror carries only the
-    # supported paths. Empty `version` means latest - pin these when airgapped,
-    # a floating tag can pull in a buildpack whose deps were never mirrored.
-    sources:
-      # shared utilities
-      - { repository: paketobuildpacks/ca-certificates, version: "" }
-      - { repository: paketobuildpacks/watchexec, version: "" }
-      - { repository: paketobuildpacks/git, version: "" }
-      - { repository: paketobuildpacks/procfile, version: "" }
-      - { repository: paketobuildpacks/environment-variables, version: "" }
-      - { repository: paketobuildpacks/image-labels, version: "" }
-      # go
-      - { repository: paketobuildpacks/go-dist, version: "" }
-      - { repository: paketobuildpacks/go-mod-vendor, version: "" }
-      - { repository: paketobuildpacks/go-build, version: "" }
-      # python
-      - { repository: paketobuildpacks/cpython, version: "" }
-      - { repository: paketobuildpacks/pip, version: "" }
-      - { repository: paketobuildpacks/pip-install, version: "" }
-      - { repository: paketobuildpacks/poetry, version: "" }
-      - { repository: paketobuildpacks/poetry-install, version: "" }
-      - { repository: paketobuildpacks/poetry-run, version: "" }
-      - { repository: paketobuildpacks/python-start, version: "" }
-      # node
-      - { repository: paketobuildpacks/node-engine, version: "" }
-      - { repository: paketobuildpacks/npm-install, version: "" }
-      - { repository: paketobuildpacks/node-run-script, version: "" }
-      - { repository: paketobuildpacks/node-start, version: "" }
-      - { repository: paketobuildpacks/npm-start, version: "" }
 
   # Builder images land in `{registry base}/{builderRepository}/{name}`; the
   # repo must exist and be writable by the build ServiceAccount.

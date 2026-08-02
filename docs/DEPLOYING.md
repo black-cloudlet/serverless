@@ -67,6 +67,7 @@ This repo's chart **consumes** cluster capabilities that are installed and manag
 | **cert-manager** | issues the API's ACME client certificate (ARCHITECTURE.md: Authentication & Authorization) | OLM (mirrored) |
 | **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (ARCHITECTURE.md: Secrets Management) | OLM (mirrored) |
 | **RHBK** | OIDC identity provider (ARCHITECTURE.md: Authentication & Authorization) | platform-managed |
+| **kpack** + its cluster build content | the build engine, plus the `ClusterStack` and `ClusterStore` the `Builder`s here reference by name | the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`), in the platform chart |
 
 On OpenShift you must use the **OpenShift Serverless Operator** - not an upstream/community
 or Helm-based Knative install. The chart assumes the operator's conventions (kourier in
@@ -81,10 +82,11 @@ Three tiers, split by **cardinality** and **rate of change**:
 ```
 Platform chart                                          once per cluster
 └── kpack chart (subchart)  ...... CRDs, controller, webhook, ClusterLifecycle
+    ├── ClusterStack        ...... jammy build + run base images   [cluster-scoped]
+    ├── ClusterStore        ...... the 21 buildpackages the orders use  [cluster-scoped]
+    └── build SA + ExternalSecret  the credential those two pull with
 
 serverless-api chart                            one release per cluster/site
-├── ClusterStack            ...... jammy build + run base images   [cluster-scoped]
-├── ClusterStore            ...... the 21 buildpackages the orders use  [cluster-scoped]
 ├── Builder x3              ...... go | python | node   (workloads namespace)
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
@@ -93,6 +95,13 @@ serverless-api chart                            one release per cluster/site
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
 ```
+
+The kpack release's buildpack content is described by its own `clusterBuild` values, not
+by the kpack chart's defaults, which create no stacks or stores. Seed them from the kpack
+repo's `examples/clusterbuild-values.yaml`, keeping the stack and store **names** in step
+with `build.stack.name` / `build.store.name` here, and every buildpack id the orders below
+name present as a store source. Nothing checks either link at install time - kpack reports
+a broken one on the Builder's status.
 
 ### Builds run beside the workloads
 
@@ -120,22 +129,27 @@ That boundary is `networkPolicy` and quota, so the two are worth stating plainly
   same namespace quota. `build.resources` bounds it (BUILDING.md: Runtime Versions & Dependencies); size the namespace quota for
   concurrent builds plus the running functions, not just the latter.
 
-**Why the split.** The kpack chart is a generic, upstream-modelled *engine* installer;
-baking Paketo content into it would make it un-reusable and would couple buildpack version
-bumps to control-plane upgrades. Everything above the engine - stack, store and builders -
-is buildpack *content* that changes on its own cadence, so it lives together in the
-application chart where the `Builder` -> `ClusterStore` id contract is checked by one set
-of values.
+**Why the split is by scope.** `ClusterStack` and `ClusterStore` are **cluster-scoped
+singletons**: one object per name per cluster, shared by every consumer. A per-site
+application release cannot own something cluster-wide without two releases eventually
+fighting over the same object, so they sit in the kpack chart
+(`clusterBuild.stacks` / `clusterBuild.stores`) alongside the controller that reconciles
+them and the ServiceAccount they pull with. The kpack chart stays generic: it creates
+whatever stacks and stores its values describe and knows nothing about Paketo or this
+platform.
 
-`ClusterStack` and `ClusterStore` are **cluster-scoped singletons**, which is safe only
-because exactly one `serverless-api` release runs per cluster. If a second release is ever
-added to a cluster, set `build.stack.create` / `build.store.create` to false on all but one,
-or promote them back to the platform chart.
+`Builder`s are namespaced and per-site, so they stay here, referencing the stack and store
+by name (`build.stack.name` / `build.store.name`). The cost of the split is that the
+`Builder` -> `ClusterStore` id contract now spans two releases: a buildpack id in an order
+with no matching source in the store shows up as a permanently not-Ready `Builder`, not as
+a chart error. Check `kubectl get clusterstore <name> -o yaml` first when a Builder will
+not become Ready.
 
 **Ordering.** kpack's CRDs are templated (not in a `crds/` directory) so the conversion
 webhook can target the release namespace. A `ClusterStack`/`ClusterStore` therefore cannot
-be applied until the CRDs are Established *and* the kpack webhook is admitting - enforce
-with ArgoCD sync waves: engine -> cluster content -> serverless-api.
+be applied until the CRDs are Established *and* the kpack webhook is admitting. A single
+`helm install` of the kpack chart handles that itself (Helm applies CRDs first); with
+ArgoCD, keep the engine in an earlier sync wave than serverless-api.
 
 ---
 
@@ -165,8 +179,8 @@ An off-cluster git/registry/mirror is already covered by the namespace's externa
 rule. `egressNamespaces` / `egressCIDRs` are for in-cluster ones, which that rule excludes
 along with the rest of the pod and service networks.
 
-`Builder`, `ClusterStack` and `ClusterStore` are managed by Helm/ArgoCD, not by the
-services - no runtime write permission on them.
+`Builder` (this chart) and `ClusterStack`/`ClusterStore` (the kpack chart) are managed by
+Helm/ArgoCD, not by the services - no runtime write permission on them.
 
 ---
 

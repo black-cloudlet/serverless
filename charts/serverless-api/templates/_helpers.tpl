@@ -59,15 +59,6 @@ The image a Builder composes and pushes.
 {{- end -}}
 
 {{/*
-A buildpack or stack image. Takes {repository, version}; empty version = latest.
-
-  {{ include "serverless-api.buildpackImage" (dict "root" $ "img" .buildImage) }}
-*/}}
-{{- define "serverless-api.buildpackImage" -}}
-{{- printf "%s/%s:%s" (include "serverless-api.registryBase" .root) .img.repository (.img.version | default "latest") -}}
-{{- end -}}
-
-{{/*
 A Builder's detection order, normalised to kpack's `spec.order`. Three forms, so
 a real Paketo order can be pasted in verbatim:
 
@@ -138,16 +129,9 @@ no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 {{- if not .Values.registry.url -}}
 {{- fail "serverless-api: registry.url is required when build.enabled - builder and function images are pushed there." -}}
 {{- end -}}
-{{- if .Values.build.stack.create -}}
-{{- if not .Values.build.stack.id -}}
-{{- fail "serverless-api: build.stack.id is required; it must match the base images' io.buildpacks.stack.id label." -}}
-{{- end -}}
-{{- if not (and .Values.build.stack.buildImage.repository .Values.build.stack.runImage.repository) -}}
-{{- fail "serverless-api: build.stack.buildImage.repository and build.stack.runImage.repository are both required when build.stack.create." -}}
-{{- end -}}
-{{- end -}}
-{{- if and .Values.build.store.create (not .Values.build.store.sources) -}}
-{{- fail "serverless-api: build.store.sources is empty; the store must provide every buildpack id used in build.builders or no Builder becomes Ready." -}}
-{{- end -}}
+{{/* The stack and store references are deliberately not checked here. They name
+objects in another release, and kpack already reports a wrong or missing one on
+the Builder's own status - a chart-side check could only repeat that, from a
+chart that cannot see the cluster. */}}
 {{- end -}}
 {{- end -}}

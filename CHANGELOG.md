@@ -111,6 +111,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- `ClusterStack` and `ClusterStore` moved out of this chart into the kpack
+  chart (`clusterBuild.stacks` / `clusterBuild.stores`), along with the
+  ServiceAccount and `ExternalSecret` they pull the base images and
+  buildpackages with. Both objects are cluster-scoped singletons, and a per-site
+  application release cannot own something cluster-wide without two releases
+  eventually fighting over the same object. This chart keeps everything
+  namespaced or per-site - the `Builder`s, the `kpack-builder` ServiceAccount
+  and its registry `ExternalSecret`, and the Kyverno CA-injection policy - and
+  now references the stack and store by name through `build.stack.name` /
+  `build.store.name`. `build.stack.{create,id,buildImage,runImage}` and
+  `build.store.{create,sources}` are gone; move those settings to the kpack
+  release. The `Builder` -> `ClusterStore` id contract now spans two releases,
+  so a missing buildpack id surfaces as a permanently not-Ready `Builder`
+  instead of a chart error.
+- The stack and the 21 buildpackages moved to the kpack chart repository, where
+  `examples/clusterbuild-values.yaml` carries them as a worked example to seed
+  your kpack release values from. Keep the stack and store names in step with
+  `build.stack.name` / `build.store.name`, and every buildpack id the orders
+  here name present as a store source.
+- `scripts/mirror/` moved to the kpack chart repository. Everything it carries
+  across an airgap is named by that chart's values now, so the tooling follows
+  the values it reads: run it from a kpack checkout with `-v` pointed at the
+  overlay above (docs/BUILDING.md - Airgapped Mirror Inventory). The dependency
+  pull no longer reads `runtimes[].versions` at all - it mirrors what the
+  store's buildpackages declare, keeping the newest z-stream of each `X.Y`. It
+  can therefore carry a version no runtime advertises, which is the safe
+  direction: advertising narrows what a caller may select, not what exists.
 - The `BP_*_VERSION` build variable is now always written, including when the
   caller omits `version` - it gets the platform `defaultVersion`. Leaving it
   unset handed the choice to the buildpack's own default, which moves with the
@@ -141,8 +168,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Go runtimes are now 1.23/1.24/1.25 (default 1.24), replacing 1.21/1.22.
 - `push-airgapped.sh` pushes images only. The runtime tarballs are artifact
   server content, not registry content - a different system with different
-  credentials - and are published separately; see `scripts/mirror/README.md`.
-  A missing `images.tar.gz` is now an error rather than a silent no-op.
+  credentials - and are published separately; see the mirror README in the kpack
+  chart repository. A missing `images.tar.gz` is now an error rather than a
+  silent no-op.
 - The lint workflow derives its ruff version from `pyproject.toml` instead of
   pinning it a second time, so the formatter that gates a PR cannot disagree with
   the one `pip install -e ".[dev]"` provides.
