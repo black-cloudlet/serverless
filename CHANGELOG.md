@@ -125,10 +125,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   release. The `Builder` -> `ClusterStore` id contract now spans two releases,
   so a missing buildpack id surfaces as a permanently not-Ready `Builder`
   instead of a chart error.
-- The stack and the 21 buildpackages now live in
-  `charts/kpack-clusterbuild-values.yaml`, the overlay the kpack release is
-  deployed with - they stay in this repo because the store and the builder
-  orders are one contract.
+- The stack and the 21 buildpackages moved to the kpack chart repository, where
+  `examples/clusterbuild-values.yaml` carries them as a worked example to seed
+  your kpack release values from. Keep the stack and store names in step with
+  `build.stack.name` / `build.store.name`, and every buildpack id the orders
+  here name present as a store source.
 - `scripts/mirror/` moved to the kpack chart repository. Everything it carries
   across an airgap is named by that chart's values now, so the tooling follows
   the values it reads: run it from a kpack checkout with `-v` pointed at the

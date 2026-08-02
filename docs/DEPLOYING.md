@@ -96,10 +96,12 @@ serverless-api chart                            one release per cluster/site
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
 ```
 
-The kpack release's buildpack content is described by
-`charts/kpack-clusterbuild-values.yaml` in this repo, not by the kpack chart's own
-defaults: the store and the builder orders below are one contract, so the two lists are
-kept side by side and reviewed together.
+The kpack release's buildpack content is described by its own `clusterBuild` values, not
+by the kpack chart's defaults, which create no stacks or stores. Seed them from the kpack
+repo's `examples/clusterbuild-values.yaml`, keeping the stack and store **names** in step
+with `build.stack.name` / `build.store.name` here, and every buildpack id the orders below
+name present as a store source. Nothing checks either link at install time - kpack reports
+a broken one on the Builder's status.
 
 ### Builds run beside the workloads
 

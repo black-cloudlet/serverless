@@ -593,7 +593,8 @@ spec:
 
 ### ClusterStack + ClusterStore (kpack chart, cluster-scoped)
 
-Rendered by the kpack release from `charts/kpack-clusterbuild-values.yaml`:
+Rendered by the kpack release from its `clusterBuild` values (the kpack repo's
+`examples/clusterbuild-values.yaml` is a working starting point):
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -694,8 +695,8 @@ The scripts that mirror them live in the **kpack chart repository**
 Point them at the values the kpack release is deployed with:
 
 ```bash
-./pull-images.sh   -v /path/to/kpack-clusterbuild-values.yaml
-./pull-runtimes.sh -v /path/to/kpack-clusterbuild-values.yaml
+./pull-images.sh   -v /path/to/your-kpack-values.yaml
+./pull-runtimes.sh -v /path/to/your-kpack-values.yaml
 ```
 
 The second reads every buildpack.toml in the store's buildpackages and mirrors
