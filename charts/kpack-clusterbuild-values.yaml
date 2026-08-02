@@ -12,7 +12,8 @@
 #     -n kpack --create-namespace \
 #     -f charts/kpack-clusterbuild-values.yaml
 #
-# The airgap mirror scripts read this file by default (scripts/mirror/README.md).
+# The airgap mirror scripts live in the kpack repository and take this file as
+# their `-v` (docs/BUILDING.md - Airgapped Mirror Inventory).
 
 clusterBuild:
   # Must equal `{registry.url}/{registry.organization}` from the serverless-api
@@ -63,7 +64,8 @@ clusterBuild:
     # Individual components rather than the language composites, so the mirror
     # carries only the supported paths. An empty tag means latest - pin these
     # when airgapped, a floating tag can pull in a buildpack whose dependencies
-    # were never mirrored (scripts/mirror/README.md prints the resolved tags).
+    # were never mirrored - the mirror's pull-images.sh prints the tags it
+    # resolved, ready to paste back here.
     - name: serverless-store
       sources:
         # shared utilities
