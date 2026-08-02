@@ -299,6 +299,41 @@ splitting the credential would mean maintaining two secrets with identical conte
 | `secrets:` | Registry auth for **push** (`spec.tag`) and pulling stack/store images |
 | `imagePullSecrets:` | The build **pod** pulling the composed builder image |
 
+### The `ClusterLifecycle` is the one object this chart does not credential
+
+Every kpack object the serverless-api chart owns carries a `serviceAccountRef` to the
+`kpack-builder` SA, so it resolves its images with the registry secret above. The
+`ClusterLifecycle` is created by the **kpack chart**, and `spec.serviceAccountRef` is
+optional there: left unset, the controller resolves the lifecycle image with an anonymous
+keychain. Against a mirror that requires auth the object never goes Ready and every build
+stalls before it starts, with a status message from the controller - not from a build pod:
+
+```
+GET https://{registry}/v2/{org}/buildpacks-community/kpack/lifecycle/manifests/{version}:
+UNAUTHORIZED: access to the requested resource is not authorized; map[]
+```
+
+Point it at the same credential (any namespace - the ref is explicit, and the controller
+reads secrets cluster-wide):
+
+```yaml
+apiVersion: kpack.io/v1alpha2
+kind: ClusterLifecycle
+metadata:
+  name: default-lifecycle
+spec:
+  image: "{registry base}/buildpacks-community/kpack/lifecycle:{kpack version}"
+  serviceAccountRef:
+    name: kpack-builder            # build.serviceAccount.name
+    namespace: serverless-workloads # namespaces.workloads
+```
+
+The same message with a *correct* `serviceAccountRef` means the registry, not the
+keychain: Harbor, Quay and Artifactory all answer `UNAUTHORIZED` rather than `404` for a
+repository that does not exist, so an unmirrored or differently-tagged lifecycle image
+fails identically. `docker://` the manifest with the same credentials to tell the two
+apart before touching the cluster.
+
 ### Git credential - per function, never shared
 
 Unlike the registry, **the git token belongs to the function, not the platform**: the caller
@@ -688,7 +723,7 @@ Pulled by the platform chart. Registry `ghcr.io`, repository prefix
 | `build-waiter` | every build pod |
 | `rebase` | rebase builds (CVE patches) |
 | `completion` | every build pod |
-| `lifecycle` | referenced by the `ClusterLifecycle` |
+| `lifecycle` | the kpack **controller**, resolving the `ClusterLifecycle` (BUILDING.md: Registry & Git Credentials - it needs a `serviceAccountRef`) |
 
 ### Container images - Paketo content
 
