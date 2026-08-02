@@ -129,11 +129,9 @@ no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 {{- if not .Values.registry.url -}}
 {{- fail "serverless-api: registry.url is required when build.enabled - builder and function images are pushed there." -}}
 {{- end -}}
-{{- if not .Values.build.stack.name -}}
-{{- fail "serverless-api: build.stack.name is required; it must name a ClusterStack created by the kpack chart (clusterBuild.stacks)." -}}
-{{- end -}}
-{{- if not .Values.build.store.name -}}
-{{- fail "serverless-api: build.store.name is required; it must name a ClusterStore created by the kpack chart (clusterBuild.stores), providing every buildpack id used in build.builders." -}}
-{{- end -}}
+{{/* The stack and store references are deliberately not checked here. They name
+objects in another release, and kpack already reports a wrong or missing one on
+the Builder's own status - a chart-side check could only repeat that, from a
+chart that cannot see the cluster. */}}
 {{- end -}}
 {{- end -}}

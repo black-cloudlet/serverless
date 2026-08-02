@@ -128,10 +128,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - The stack and the 21 buildpackages now live in
   `charts/kpack-clusterbuild-values.yaml`, the overlay the kpack release is
   deployed with - they stay in this repo because the store and the builder
-  orders are one contract. The airgap mirror scripts read that file by default:
-  `pull-images.sh -v` and `pull-runtimes.sh -s` (or `KPACK_VALUES`) point them
-  at a different overlay, and `pull-runtimes.sh -v` still selects this chart's
-  advertised runtime versions.
+  orders are one contract.
+- `scripts/mirror/` moved to the kpack chart repository. Every image it carries
+  across an airgap is named by that chart's values now, so the tooling follows
+  the values it reads. Run it from a kpack checkout, pointing `-v` at the
+  overlay above and `-r` at this chart's values for the advertised runtime
+  versions (docs/BUILDING.md - Airgapped Mirror Inventory).
 - The `BP_*_VERSION` build variable is now always written, including when the
   caller omits `version` - it gets the platform `defaultVersion`. Leaving it
   unset handed the choice to the buildpack's own default, which moves with the
@@ -162,8 +164,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Go runtimes are now 1.23/1.24/1.25 (default 1.24), replacing 1.21/1.22.
 - `push-airgapped.sh` pushes images only. The runtime tarballs are artifact
   server content, not registry content - a different system with different
-  credentials - and are published separately; see `scripts/mirror/README.md`.
-  A missing `images.tar.gz` is now an error rather than a silent no-op.
+  credentials - and are published separately; see the mirror README in the kpack
+  chart repository. A missing `images.tar.gz` is now an error rather than a
+  silent no-op.
 - The lint workflow derives its ruff version from `pyproject.toml` instead of
   pinning it a second time, so the formatter that gates a PR cannot disagree with
   the one `pip install -e ".[dev]"` provides.

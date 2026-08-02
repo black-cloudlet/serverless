@@ -689,6 +689,17 @@ Three **distinct** classes of artefact must be mirrored. Mirroring only the firs
 the most common airgapped failure, and it fails late - at the `build` phase of the first
 real build, not at install time.
 
+The scripts that mirror them live in the **kpack chart repository**
+(`scripts/mirror/`), because every image below is named by that chart's values.
+Point them at the values the kpack release is deployed with, and at this chart's
+values for the advertised runtime versions:
+
+```bash
+./pull-images.sh   -v /path/to/kpack-clusterbuild-values.yaml
+./pull-runtimes.sh -v /path/to/kpack-clusterbuild-values.yaml \
+                   -r charts/serverless-api/values.yaml
+```
+
 ### Container images - kpack platform
 
 Pulled by the platform chart. Registry `ghcr.io`, repository prefix
