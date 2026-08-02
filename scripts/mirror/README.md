@@ -5,7 +5,7 @@ most setups miss because it is not registry content:
 
 | Script | Produces | Contents |
 |--------|----------|----------|
-| `pull-images.sh` | `images.tar.gz` | kpack platform images + the stack and every ClusterStore buildpackage |
+| `pull-images.sh` | `images.tar.gz` | kpack platform images + every ClusterStack base image and ClusterStore buildpackage |
 | `pull-runtimes.sh` | `runtime-python.tar.gz`, `runtime-node.tar.gz`, `runtime-go.tar.gz` | the interpreter/toolchain tarballs the buildpacks download at build time |
 | `push-airgapped.sh` | - | loads `images.tar.gz` into the internal **registry** |
 
@@ -15,19 +15,27 @@ Run the first two on a connected host, carry the tars in, run the third inside.
 
 ```bash
 ./pull-images.sh                       # newest release tag of each image
-./pull-runtimes.sh                     # versions come from the chart
+./pull-runtimes.sh                     # versions come from the values
 ```
 
-Both read the chart, so neither can drift from what is deployed.
-`pull-images.sh` takes the stack images and the ClusterStore sources from
-`build.stack` and `build.store.sources`; `pull-runtimes.sh` takes the versions
-from `runtimes[].versions`. Add a buildpackage or a version there and re-run.
+Both read chart values, so neither can drift from what is deployed. The two
+sources are split the way the objects are:
 
-The store names **individual component buildpackages** (`cpython`, `pip`,
+| What | Where it comes from | Override |
+|------|---------------------|----------|
+| Stack base images, ClusterStore buildpackages | `charts/kpack-clusterbuild-values.yaml`, the overlay the **kpack** release is deployed with, since those objects are cluster-scoped | `-v` on `pull-images.sh`, `-s` on `pull-runtimes.sh`, or `KPACK_VALUES` |
+| Advertised runtime versions | `charts/serverless-api/values.yaml`, `runtimes[].versions` | `-v` on `pull-runtimes.sh` |
+
+Add a buildpackage or a version in the matching file and re-run. Point the
+overrides at your own platform overlay if the kpack release is deployed with a
+different one - mirroring one set of values and deploying another is exactly the
+drift these defaults exist to prevent.
+
+A store names **individual component buildpackages** (`cpython`, `pip`,
 `node-engine`, `go-dist`, ...), not the language composites
 (`paketobuildpacks/python`). Mirroring a composite instead satisfies no id the
 builder orders reference, and every `Builder` stays permanently not-Ready - so
-the list has to come from the chart rather than be written out here.
+the list has to come from the values rather than be written out here.
 
 By default it keeps the newest patch of each advertised minor (`3.12` ->
 `3.12.4`); `-A` keeps every patch.
@@ -84,11 +92,11 @@ them. The tars store files as `<host>/<path>` to match.
 
 ## Three things worth knowing
 
-**Unpinned sources are reported.** The chart ships `version: ""` on the stack
-and store sources, which floats them. Airgapped that is a trap: a floating tag
-can later resolve to a buildpackage whose dependencies were never mirrored.
-`pull-images.sh` prints the versions it resolved, ready to paste back into
-`values.yaml` as pins.
+**Unpinned sources are reported.** A stack or store image with an empty `tag`
+floats. Airgapped that is a trap: a floating tag can later resolve to a
+buildpackage whose dependencies were never mirrored. `pull-images.sh` prints
+the versions it resolved, ready to paste back into the kpack chart's values as
+pins.
 
 **Tags are resolved, never floating.** Every image is mirrored at its newest
 release tag; `latest` and floating pointers like `2` or `2.56` are skipped in

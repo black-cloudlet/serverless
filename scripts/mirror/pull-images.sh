@@ -16,7 +16,13 @@
 #
 # Usage:
 #   ./pull-images.sh [-o out.tar.gz] [-k kpack-version] [-w workdir]
+#                    [-v kpack-clusterbuild-values.yaml]
 #
+#   -v  values defining the kpack chart's `clusterBuild.stacks` /
+#       `clusterBuild.stores` - the stack and buildpackage images to mirror.
+#       Those objects are cluster-scoped and live in the kpack release, so this
+#       defaults to charts/kpack-clusterbuild-values.yaml, the overlay that
+#       release is deployed with. KPACK_VALUES sets the same thing.
 #   -k  pin the kpack version instead of resolving the newest (match the
 #       kpack chart's appVersion when it pins one).
 
@@ -27,7 +33,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT=images.tar.gz
 KPACK_VERSION=
 WORKDIR=
-VALUES="${here}/../../charts/serverless-api/values.yaml"
+VALUES=${KPACK_VALUES:-"${here}/../../charts/kpack-clusterbuild-values.yaml"}
 
 while getopts ':o:k:w:v:h' opt; do
     case $opt in
@@ -35,13 +41,13 @@ while getopts ':o:k:w:v:h' opt; do
         k) KPACK_VERSION=$OPTARG ;;
         w) WORKDIR=$OPTARG ;;
         v) VALUES=$OPTARG ;;
-        h) sed -n '2,24p' "$0"; exit 0 ;;
+        h) sed -n '2,27p' "$0"; exit 0 ;;
         *) die "unknown option: -$OPTARG" ;;
     esac
 done
 
 need skopeo jq tar python3
-[ -f "$VALUES" ] || die "chart values not found: ${VALUES}"
+[ -f "$VALUES" ] || die "kpack cluster-build values not found: ${VALUES}"
 
 KPACK_REGISTRY=${KPACK_REGISTRY:-ghcr.io/buildpacks-community/kpack}
 PAKETO_HOST=${PAKETO_HOST:-docker.io}
@@ -79,20 +85,20 @@ for image in "${KPACK_IMAGES[@]}"; do
     copy_in "${KPACK_REGISTRY}/${image}:${KPACK_VERSION}"
 done
 
-step "Paketo stack and buildpackages (from ${VALUES##*/})"
-# The ClusterStore names component buildpackages, not the language composites,
-# so the list comes from the chart: mirroring paketobuildpacks/python instead of
-# cpython, pip, poetry and the rest satisfies no id the orders reference, and
-# every Builder stays not-Ready.
+step "Stack and buildpackages (from ${VALUES##*/})"
+# A ClusterStore names component buildpackages, not the language composites, so
+# the list comes from the kpack chart values: mirroring paketobuildpacks/python
+# instead of cpython, pip, poetry and the rest satisfies no id the orders
+# reference, and every Builder stays not-Ready.
 RESOLVED=()
 while IFS=$'\t' read -r repository version; do
     [ -n "$repository" ] || continue
     if [ -z "$version" ]; then
-        version=$(newest_tag "${PAKETO_HOST}/${repository}")
+        version=$(newest_tag "$(qualify "$repository")")
         RESOLVED+=("${repository}: \"${version}\"")
     fi
-    copy_in "${PAKETO_HOST}/${repository}:${version}"
-done < <(chart_images "$VALUES")
+    copy_in "$(image_ref "$repository" "$version")"
+done < <(buildpack_images "$VALUES")
 
 step "Packing ${OUT}"
 tar czf "$OUT" -C "$WORKDIR" images images.list
@@ -100,7 +106,7 @@ log "$(wc -l < "$LIST") images, $(du -h "$OUT" | cut -f1)"
 
 if [ ${#RESOLVED[@]} -gt 0 ]; then
     step "Pin these in ${VALUES##*/}"
-    # The chart floats these with version: "". Airgapped that is a trap - a
+    # The values float these with an empty tag. Airgapped that is a trap - a
     # floating tag can later resolve to a buildpackage whose dependencies were
     # never mirrored, and the build fails with no obvious cause.
     printf '  %s\n' "${RESOLVED[@]}" >&2

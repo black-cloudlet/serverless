@@ -20,8 +20,14 @@
 # different upstream hosts, so a flat prefix cannot address them.
 #
 # Usage:
-#   ./pull-runtimes.sh [-l python,node,go] [-v values.yaml] [-a amd64] [-A]
+#   ./pull-runtimes.sh [-l python,node,go] [-v values.yaml] [-s kpack-values.yaml]
+#                      [-a amd64] [-A]
 #
+#   -v  serverless-api values, for the advertised runtime versions.
+#   -s  values defining the kpack chart's `clusterBuild.stores`, for the
+#       buildpackage tags those versions are read out of. The stores are
+#       cluster-scoped and live in the kpack release, so this defaults to
+#       charts/kpack-clusterbuild-values.yaml. KPACK_VALUES sets the same thing.
 #   -A  every patch of an advertised minor, instead of only the newest.
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -30,22 +36,25 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 LANGS=python,node,go
 VALUES="${here}/../../charts/serverless-api/values.yaml"
+KPACK_VALUES=${KPACK_VALUES:-"${here}/../../charts/kpack-clusterbuild-values.yaml"}
 ARCH=amd64
 ALL_PATCHES=0
 
-while getopts ':l:v:a:Ah' opt; do
+while getopts ':l:v:s:a:Ah' opt; do
     case $opt in
         l) LANGS=$OPTARG ;;
         v) VALUES=$OPTARG ;;
+        s) KPACK_VALUES=$OPTARG ;;
         a) ARCH=$OPTARG ;;
         A) ALL_PATCHES=1 ;;
-        h) sed -n '2,25p' "$0"; exit 0 ;;
+        h) sed -n '2,31p' "$0"; exit 0 ;;
         *) die "unknown option: -$OPTARG" ;;
     esac
 done
 
 need skopeo jq tar curl python3 sha256sum
 [ -f "$VALUES" ] || die "chart values not found: ${VALUES}"
+[ -f "$KPACK_VALUES" ] || die "kpack cluster-build values not found: ${KPACK_VALUES}"
 
 PAKETO_HOST=${PAKETO_HOST:-docker.io}
 PAKETO_ORG=${PAKETO_ORG:-paketobuildpacks}
@@ -55,9 +64,10 @@ PAKETO_ORG=${PAKETO_ORG:-paketobuildpacks}
 # its newest entry.
 runtime_id() { case $1 in python) echo python ;; node) echo node ;; go) echo go ;; esac; }
 
-# Version pinned in the chart for a store source, or empty to resolve newest.
+# Version pinned for a store source in the kpack cluster-build values, or empty
+# when they float it and the caller should resolve the newest.
 pinned_version() {
-    chart_images "$VALUES" | awk -F'\t' -v r="${PAKETO_ORG}/$1" '$1 == r { print $2; exit }'
+    buildpack_images "$KPACK_VALUES" | awk -F'\t' -v r="${PAKETO_ORG}/$1" '$1 == r { print $2; exit }'
 }
 
 # Extract every buildpack.toml from a buildpackage image into $2.
@@ -154,10 +164,11 @@ for lang in ${LANGS//,/ }; do
         image="${PAKETO_HOST}/${PAKETO_ORG}/${repository}"
         tag=$(pinned_version "$repository")
         [ -n "$tag" ] || tag=$(newest_tag "$image")
-        log "${repository}:${tag}"
+        ref=$(image_ref "${PAKETO_ORG}/${repository}" "$tag")
+        log "$ref"
 
         rm -rf "${work}/toml"
-        extract_tomls "${image}:${tag}" "${work}/toml"
+        extract_tomls "$ref" "${work}/toml"
 
         if [ "$dep_id" = "$(runtime_id "$lang")" ]; then
             found=$(select_deps "${work}/toml" "$ARCH" "$dep_id" "$versions" "$ALL_PATCHES")

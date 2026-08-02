@@ -25,8 +25,8 @@ the build flow, and what the API owns versus the build service.
 |-------|----------|
 | Build engine | **kpack** (Kubernetes-native Cloud Native Buildpacks), not `func`/Tekton |
 | kpack install | The `kpack` Helm chart is a **subchart** of the platform chart |
-| Buildpack content | `ClusterStack`, `ClusterStore` **and** `Builder` all ship in the **serverless-api chart** |
-| Cluster singletons | Safe because one `serverless-api` release runs per cluster; `create: false` if that changes |
+| Buildpack content | `ClusterStack` and `ClusterStore` ship in the **kpack chart** (cluster-scoped); the `Builder`s ship in the **serverless-api chart** |
+| Cluster singletons | Stack and store are cluster-wide, so the engine release owns them; the serverless-api chart references them by name |
 | Languages | `go`, `python`, `node` |
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
@@ -112,7 +112,7 @@ Three independent axes. Conflating them is the most common source of confusion:
 
 | Axis | What it pins | Where it is set |
 |------|--------------|-----------------|
-| 1. Buildpack content | The mirrored Paketo image tags | `build.stack.*.version`, `build.store.sources[].version` |
+| 1. Buildpack content | The mirrored Paketo image tags | kpack chart: `clusterBuild.stacks[].{build,run}Image.tag`, `clusterBuild.stores[].sources[].tag` |
 | 2. Language runtime | CPython / Node / Go version | `BP_*_VERSION` build env |
 | 3. App dependencies | pip / npm / go modules | package-manager env pointing at the on-prem artifact server |
 
@@ -186,7 +186,7 @@ than minutes later as a failed background deploy that reads like a broken build.
 
 **Coupling warning.** Axis 2 is bounded by axis 1: a pinned buildpackage only *contains*
 certain interpreter versions, and in an airgapped cluster there is no fallback download.
-Whenever `build.store.sources[].version` is bumped, re-check that every advertised
+Whenever a `clusterBuild.stores[].sources[].tag` is bumped, re-check that every advertised
 `runtimes[].versions` entry is still available, or builds will fail at `detect`/`build`.
 
 ### Registry layout
@@ -199,14 +199,23 @@ pair:
 ```
 {registry.url}/{registry.organization}/...          <- the "registry base"
 
-  base/paketobuildpacks/build-jammy-base:<tag>      ClusterStack
-  base/paketobuildpacks/<component>:<tag>           ClusterStore sources
   base/{build.builderRepository}/{name}             Builder tags
   base/{group}/{name}:{branch}                      function images (the API)
 ```
 
 Empty organization collapses this to the flat `{host}/{repository}` layout, so existing
 installs are unaffected.
+
+The stack and store images sit under the same base, but the kpack chart prefixes them
+with its own `clusterBuild.registry` - set that to the identical
+`{registry.url}/{registry.organization}` string:
+
+```
+{clusterBuild.registry}/...                         <- the kpack chart's prefix
+
+  base/paketobuildpacks/build-jammy-base:<tag>      ClusterStack
+  base/paketobuildpacks/<component>:<tag>           ClusterStore sources
+```
 
 One deliberate exception: the pull/push Secret's `auths` key stays `registry.url` with
 **no** organization. Docker credentials are keyed by registry *host*; adding the path
@@ -582,7 +591,9 @@ spec:
         - id: paketo-buildpacks/python
 ```
 
-### ClusterStack + ClusterStore (serverless-api chart, cluster-scoped)
+### ClusterStack + ClusterStore (kpack chart, cluster-scoped)
+
+Rendered by the kpack release from `charts/kpack-clusterbuild-values.yaml`:
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -606,7 +617,10 @@ spec:
 ```
 
 Both need `spec.serviceAccountRef` pointing at a ServiceAccount holding the mirror pull
-credential when the internal registry requires auth.
+credential when the internal registry requires auth. That account and its ExternalSecret
+are created by the kpack chart too (`clusterBuild.serviceAccount` /
+`clusterBuild.registrySecret`), so the objects and the credential they pull with stay in
+one release.
 
 ### Build ServiceAccount (registry push/pull + git)
 

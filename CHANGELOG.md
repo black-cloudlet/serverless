@@ -111,6 +111,27 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- `ClusterStack` and `ClusterStore` moved out of this chart into the kpack
+  chart (`clusterBuild.stacks` / `clusterBuild.stores`), along with the
+  ServiceAccount and `ExternalSecret` they pull the base images and
+  buildpackages with. Both objects are cluster-scoped singletons, and a per-site
+  application release cannot own something cluster-wide without two releases
+  eventually fighting over the same object. This chart keeps everything
+  namespaced or per-site - the `Builder`s, the `kpack-builder` ServiceAccount
+  and its registry `ExternalSecret`, and the Kyverno CA-injection policy - and
+  now references the stack and store by name through `build.stack.name` /
+  `build.store.name`. `build.stack.{create,id,buildImage,runImage}` and
+  `build.store.{create,sources}` are gone; move those settings to the kpack
+  release. The `Builder` -> `ClusterStore` id contract now spans two releases,
+  so a missing buildpack id surfaces as a permanently not-Ready `Builder`
+  instead of a chart error.
+- The stack and the 21 buildpackages now live in
+  `charts/kpack-clusterbuild-values.yaml`, the overlay the kpack release is
+  deployed with - they stay in this repo because the store and the builder
+  orders are one contract. The airgap mirror scripts read that file by default:
+  `pull-images.sh -v` and `pull-runtimes.sh -s` (or `KPACK_VALUES`) point them
+  at a different overlay, and `pull-runtimes.sh -v` still selects this chart's
+  advertised runtime versions.
 - The `BP_*_VERSION` build variable is now always written, including when the
   caller omits `version` - it gets the platform `defaultVersion`. Leaving it
   unset handed the choice to the buildpack's own default, which moves with the

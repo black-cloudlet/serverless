@@ -34,28 +34,69 @@ newest_tag() {
     printf '%s' "$tag"
 }
 
-# The Paketo images the chart actually references: the stack's build and run
-# images, and every ClusterStore source.
+# Host-qualify a repository: chart entries are written relative to the registry
+# the chart prefixes at deploy time, so an unqualified one is upstream Paketo. A
+# reference that already carries a host (a dot or a port in its first segment)
+# is left alone.
 #
-# Read from the chart rather than listed here because the ClusterStore names
-# individual component buildpackages, not the language composites - a missing id
-# leaves its Builder permanently not-Ready, and mirroring a composite instead
-# would satisfy nothing.
+# $1: repository, e.g. paketobuildpacks/cpython
+qualify() {
+    case ${1%%/*} in
+        *.*|*:*|localhost) printf '%s' "$1" ;;
+        *) printf '%s/%s' "${PAKETO_HOST:-docker.io}" "$1" ;;
+    esac
+}
+
+# A pull reference from a "repository<TAB>version" pair, host-qualified and
+# joined with "@" for a digest, ":" for a tag.
 #
-# Emits "repository<TAB>version", where an empty version means the chart floats
-# it and the caller should resolve the newest.
+# $1: repository  $2: version (tag or sha256:... digest)
+image_ref() {
+    case $2 in
+        sha256:*) printf '%s@%s' "$(qualify "$1")" "$2" ;;
+        *) printf '%s:%s' "$(qualify "$1")" "$2" ;;
+    esac
+}
+
+# The buildpack-content images the cluster actually references: every
+# ClusterStack's build and run image, and every ClusterStore source.
 #
-# $1: path to the serverless-api values.yaml
-chart_images() {
+# These live in the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`),
+# which owns everything cluster-scoped. Read from those values rather than
+# listed here because a store names individual component buildpackages, not the
+# language composites - a missing id leaves its Builder permanently not-Ready,
+# and mirroring a composite instead would satisfy nothing.
+#
+# Emits "repository<TAB>version", where an empty version means the values float
+# it and the caller should resolve the newest. A digest-pinned entry emits the
+# digest as its version, and a source written as a plain reference string is
+# split on its last tag separator.
+#
+# $1: path to the kpack chart values (or the platform overlay setting
+#     clusterBuild) that defines the stacks and stores
+buildpack_images() {
     python3 -c '
 import sys, yaml
-build = (yaml.safe_load(open(sys.argv[1])) or {}).get("build") or {}
-stack = build.get("stack") or {}
-entries = [stack.get("buildImage"), stack.get("runImage")]
-entries += (build.get("store") or {}).get("sources") or []
+cb = (yaml.safe_load(open(sys.argv[1])) or {}).get("clusterBuild") or {}
+entries = []
+for stack in cb.get("stacks") or []:
+    entries += [stack.get("buildImage"), stack.get("runImage")]
+for store in cb.get("stores") or []:
+    entries += store.get("sources") or []
 for e in entries:
-    if e and e.get("repository"):
-        print("\t".join([e["repository"], e.get("version") or ""]))
+    if isinstance(e, str):
+        # A verbatim reference. Split off the digest, or the tag - only when the
+        # ":" is in the last path segment, so a registry port is not mistaken
+        # for one.
+        if "@" in e:
+            repo, version = e.split("@", 1)
+        elif ":" in e.rsplit("/", 1)[-1]:
+            repo, version = e.rsplit(":", 1)
+        else:
+            repo, version = e, ""
+        print("\t".join([repo, version]))
+    elif e and e.get("repository"):
+        print("\t".join([e["repository"], e.get("digest") or e.get("tag") or ""]))
 ' "$1"
 }
 
