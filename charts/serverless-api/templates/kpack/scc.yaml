@@ -1,0 +1,51 @@
+{{- if and .Values.build.enabled .Values.build.scc.enabled }}
+{{- $scc := .Values.build.scc }}
+# Lets build pods run as the builder image's uid, which restricted-v2 rejects.
+# docs/DEPLOYING.md - OpenShift SCC for builds.
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: {{ $scc.name }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/description: >-
+      Least-privilege SCC for kpack build pods: the builder image's CNB uid/gid,
+      and nothing a restricted pod does not already get.
+# Unset, so it is chosen only for pods restricted-v2 cannot admit.
+priority: null
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+readOnlyRootFilesystem: false
+defaultAddCapabilities: []
+allowedCapabilities: []
+requiredDropCapabilities:
+  - ALL
+runAsUser:
+  type: MustRunAsRange
+  uidRangeMin: {{ $scc.runAsUser }}
+  uidRangeMax: {{ $scc.runAsUser }}
+fsGroup:
+  type: MustRunAs
+  ranges:
+    - min: {{ $scc.fsGroup }}
+      max: {{ $scc.fsGroup }}
+supplementalGroups:
+  type: MustRunAs
+  ranges:
+    - min: {{ $scc.fsGroup }}
+      max: {{ $scc.fsGroup }}
+seLinuxContext:
+  type: MustRunAs
+seccompProfiles:
+  - runtime/default
+volumes:
+  {{- toYaml $scc.volumes | nindent 2 }}
+users: []
+groups: []
+{{- end }}
