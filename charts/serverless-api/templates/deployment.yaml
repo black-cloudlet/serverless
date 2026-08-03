@@ -38,6 +38,8 @@ spec:
               value: {{ toJson .Values.corsAllowOrigins | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
+            - name: SERVERLESS_REGISTRY__DELETE_ON_FUNCTION_DELETE
+              value: {{ .Values.registry.deleteOnFunctionDelete | quote }}
             - name: SERVERLESS_REGISTRY__ORGANIZATION
               value: {{ .Values.registry.organization | quote }}
             - name: SERVERLESS_SSO__ISSUER

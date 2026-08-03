@@ -39,6 +39,7 @@ the build flow, and what the API owns versus the build service.
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
 | Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
+| Registry cleanup | Function delete **deletes both repositories** through Quay's management API, with a Quay OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
 | Registry layout | `registry.url` + optional `registry.organization`, prefixing every image the chart and the API reference (BUILDING.md: Runtime Versions & Dependencies) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
@@ -582,12 +583,71 @@ creates **one** build - no lease or leader election is required.
 | Event | Action |
 |-------|--------|
 | Function delete | Nothing to do *in the cluster*: the `Image` and build `ServiceAccount` are owned by the KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
-| Function delete (registry) | The function's image repository and its `{name}_cache` repository (BUILDING.md: Build cache) both outlive the KSVC - nothing in the cluster owns registry content. Both are named deterministically from `{group}/{name}`, so registry retention can select them together. |
+| Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{group}/{name}` and `{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
 | Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
 
 Build history is bounded per `Image` by `spec.successBuildHistoryLimit` /
 `spec.failedBuildHistoryLimit`; kpack garbage-collects older `Build` objects and their pods.
+
+### Registry cleanup on delete
+
+Deleting a function deletes its image repository and its cache repository outright:
+
+```
+DELETE /api/v1/repository/{group}/{name}
+DELETE /api/v1/repository/{group}/{name}_cache
+```
+
+This is **Quay's management API**, not the distribution API. The distribution API can only
+delete manifests (`DELETE /v2/{repo}/manifests/{digest}`), which reclaims the same bytes but
+leaves the repository itself in the registry's listing. Deleting the repository is what
+matches the request: a deleted function leaves nothing behind.
+
+**It needs a Quay OAuth token, not the push robot.** Robot accounts are registry
+credentials - they authenticate `docker push`/`pull` and the `/v2` endpoints, and cannot
+call `/api/v1` at all. The token is generated from an Application under a Quay organization
+(Organization → Applications) and must carry `repo:admin`.
+
+Two consequences of how Quay scopes that token, both worth checking before enabling:
+
+- The token acts as **the user who authorized it**, so that user needs admin on every
+  namespace the platform pushes to. If that user is deactivated the token stops working.
+- With `registry.organization` empty - the chart default - **each group is its own Quay
+  namespace** (`payments/hello`), so one token only reaches the groups its user administers.
+  Setting `registry.organization` collapses everything into one namespace and one grant, at
+  the cost of needing `FEATURE_EXTENDED_REPOSITORY_NAMES` for the nested path.
+
+The token reaches the API pod through its own `ExternalSecret`
+(`SERVERLESS_REGISTRY__API_TOKEN`). **Wiring that secret is what enables cleanup** - without
+it the step is skipped, so an install that never adds it is unaffected by the upgrade.
+`registry.deleteOnFunctionDelete: false` switches it off with the token still mounted.
+
+Both repository paths come from `common.names.image_repository` / `cache_repository` - the
+same two functions the build pushes through, so what cleanup deletes cannot drift from what
+was pushed. They sit beside `image_tag` because they are the same kind of rule: the
+repository half of an image reference, where `image_tag` is the tag half. They take only
+the validated `{group}`/`{name}` labels, never request input, and the call runs only for
+the function offering - a container's image was built elsewhere and is not the platform's
+to delete.
+
+#### Accepted consequences
+
+- **A crash leaks a repository.** Cleanup is best-effort and fired once, after every site
+  confirms the delete; it is not reconciled. If the pod dies between the two, the
+  repository survives and nothing will notice. Deliberate: the alternative is a
+  reconcile pass that derives "unowned" from a cluster read, which deletes everything the
+  moment that read wrongly returns empty.
+- **A container pinned to a function's image breaks.** `image` on the container offering is
+  grammar-validated only, not scoped to the caller's group, so a container may reference a
+  function's image. Deleting the function removes it regardless.
+- **A switchover orphan re-pushes.** An `Image` left in a previously-active cluster keeps
+  rebuilding (BUILDING.md: Active/Active Behaviour) and will re-create the repository after cleanup ran.
+- **Reclamation is not immediate.** Deleting the repository removes it from the listing at
+  once, but the underlying blobs come back when Quay garbage-collects, after its
+  time-machine window has passed.
+- **Quay-specific.** `/api/v1` is Quay's own API; moving to another registry means
+  reimplementing this against that registry's equivalent.
 
 ---
 

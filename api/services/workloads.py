@@ -52,7 +52,7 @@ from api.services.deployer import (
 from api.services.env import env_secret_name, resolve_env
 from api.services.files import files_name, resolve_files
 from api.services.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
-from api.services.offering import Offering
+from api.services.offering import DeleteContext, Offering
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
@@ -747,7 +747,16 @@ class WorkloadService:
         # even when nothing was deleted: that is the case where an earlier partial
         # delete orphaned them, and a leftover Image would keep rebuilding a
         # function nothing runs.
-        await asyncio.to_thread(offering.after_delete, self.deployer.local_cluster(), oname)
+        await asyncio.to_thread(
+            offering.after_delete,
+            DeleteContext(
+                cluster=self.deployer.local_cluster(),
+                oname=oname,
+                name=name,
+                group=group,
+                registry=self.settings.registry,
+            ),
+        )
         if all(s.status == "Absent" for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 
