@@ -67,6 +67,8 @@ spec:
               value: {{ .Values.build.gitUsername | quote }}
             - name: SERVERLESS_BUILD__RESOURCES
               value: {{ .Values.build.resources | toJson | quote }}
+            - name: SERVERLESS_BUILD__CACHE
+              value: {{ .Values.build.cache | quote }}
             {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}

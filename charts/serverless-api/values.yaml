@@ -139,6 +139,11 @@ build:
   #     value: https://git.internal
   commonEnv: []
 
+  # Build layer cache: `registry` (at `{base}/{group}/{name}_cache`) or
+  # `inherit`, taking kpack's default of a PVC per function.
+  # docs/BUILDING.md - Build cache.
+  cache: registry
+
   # Build pod requests/limits. A build is far heavier than the function it
   # produces; without these it is BestEffort and evicted first under pressure.
   resources:

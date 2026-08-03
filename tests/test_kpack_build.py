@@ -215,6 +215,39 @@ def test_build_resources_come_from_settings():
     }
 
 
+def test_build_cache_defaults_to_the_registry_not_a_volume():
+    _, manifests = _manifests()
+    # the volume form is a PVC per Image, so it scales with the function count
+    assert _by_kind(manifests, "Image")["spec"]["cache"] == {
+        "registry": {"tag": "registry.internal/acme/payments/hello_cache:latest"}
+    }
+
+
+def test_cache_repository_can_never_collide_with_a_function_image():
+    tag, manifests = _manifests(branch="cache")
+    cache = _by_kind(manifests, "Image")["spec"]["cache"]["registry"]["tag"]
+    # a branch named "cache" projects to the tag "cache", so a reserved tag in
+    # the function's own repository would collide; the extra segment rules it out
+    assert tag == "registry.internal/acme/payments/hello:cache"
+    assert cache.rsplit(":", 1)[0] != tag.rsplit(":", 1)[0]
+
+
+def test_cache_repository_does_not_move_with_the_branch():
+    builder = _builder()
+    # one Image per function, so one cache: keying it by branch would start cold
+    # on every branch change
+    assert builder.cache_ref(_request(branch="main")) == builder.cache_ref(
+        _request(branch="feature/login")
+    )
+
+
+def test_cache_can_be_left_to_the_kpack_install():
+    settings = _settings(build={"registry_secret": "reg-creds", "cache": "inherit"})
+    _, manifests = _manifests(_builder(settings))
+    # "write nothing" is not "no cache" - it hands the choice back to kpack
+    assert "cache" not in _by_kind(manifests, "Image")["spec"]
+
+
 def test_manifests_reject_a_runtime_with_no_builder():
     with pytest.raises(ValidationError, match="no `builder`"):
         _manifests(runtime="broken")

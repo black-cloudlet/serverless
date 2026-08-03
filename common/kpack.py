@@ -66,6 +66,7 @@ def build_image(
     sub_path: str = "",
     env: list[dict[str, str]] | None = None,
     resources: dict | None = None,
+    cache_tag: str | None = None,
 ) -> dict:
     """Build the kpack ``Image`` CR for one function.
 
@@ -86,6 +87,9 @@ def build_image(
         env: Build-time environment (runtime version, package index URLs, the
             dependency mirror).
         resources: Requests/limits for the build pod.
+        cache_tag: Registry reference to cache build layers in. None omits
+            ``spec.cache``, which is not "no cache" - it takes the kpack
+            install's default, a PVC per Image.
 
     Returns:
         The Image manifest dict.
@@ -102,6 +106,10 @@ def build_image(
     # buildpacks detect and build in, not the ref that is cloned.
     if sub_path:
         spec["source"]["subPath"] = sub_path
+    # The build ServiceAccount already pushes to this registry, so the cache
+    # needs no credential of its own.
+    if cache_tag:
+        spec["cache"] = {"registry": {"tag": cache_tag}}
     build: dict = {}
     if env:
         build["env"] = [dict(e) for e in env]

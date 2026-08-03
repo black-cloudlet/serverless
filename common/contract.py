@@ -153,3 +153,29 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
     """
     base = registry_base.rstrip("/")
     return f"{base}/{req.group}/{req.name}:{image_tag(req.branch)}"
+
+
+def cache_reference(registry_base: str, req: BuildRequest) -> str:
+    """Where a build's layer cache lives: ``{base}/{group}/{name}_cache:latest``.
+
+    The registry form of kpack's cache, preferred over the volume form because
+    that one is a PVC per function (docs/BUILDING.md - Build cache).
+
+    The ``_`` is what makes a collision with a function image impossible rather
+    than unlikely: a name is a DNS-1123 label, which admits only ``[a-z0-9-]``,
+    so no function can ever be named ``{name}_cache``. A reserved *tag* in the
+    function's own repository would not be safe the same way - a branch named
+    ``cache`` projects to exactly that tag (:func:`common.names.image_tag`) - and
+    neither would a nested ``{name}/cache`` path, which adds a repository level
+    that Quay only accepts with extended repository names enabled.
+
+    Args:
+        registry_base: Registry host, plus organization when the registry has
+            one (``RegistryConfig.base``).
+        req: The build request.
+
+    Returns:
+        The fully-qualified cache reference.
+    """
+    base = registry_base.rstrip("/")
+    return f"{base}/{req.group}/{req.name}_cache:latest"
