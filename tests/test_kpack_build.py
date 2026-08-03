@@ -1188,3 +1188,41 @@ def test_both_offerings_match_the_offering_protocol():
             assert inspect.signature(getattr(impl, name)) == unbound, (
                 f"{type(impl).__name__}.{name} does not match Offering.{name}"
             )
+
+
+async def test_changing_only_the_port_does_not_rebuild():
+    """The port is a runtime field, not a build input - it never reaches kpack.
+
+    `BuildRequest` has no port, so nothing about the image depends on it: a
+    buildpack image serves whatever `$PORT` Knative injects, and the port is
+    decided when the KSVC is applied, not when the image is compiled. So a
+    port-only edit must behave like any other config-only edit - keep the
+    running image, spawn one new revision - rather than making the caller wait
+    out a build to move a port.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc()},  # deployed at reg/fn:old
+        secrets={"hello-payments-git": stored},
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        # every build input identical to what is stored; only the port moves
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            port=9000,
+        ),
+        _principal(),
+    )
+
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert extract_image(ksvc) == "reg/fn:old"  # NOT moved to the build tag
+    assert _pod_ports(cluster) == [{"containerPort": 9000}]
