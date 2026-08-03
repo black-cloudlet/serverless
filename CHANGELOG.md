@@ -9,6 +9,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Function builds cache their layers in the registry rather than in a
+  PersistentVolumeClaim. Every kpack `Image` now carries an explicit
+  `spec.cache.registry.tag` pointing at `{base}/{group}/{name}/cache`; nothing set
+  `spec.cache` before, which left the choice to the kpack install's own defaulting
+  - a PVC per `Image`, provisioned in full whether or not a build ever filled it,
+  so cache storage grew with the function count instead of with what was cached.
+  The cache repository sits one path segment below the function image, which is
+  what makes a collision impossible: `group` and `name` are DNS-1123 labels, so a
+  function repository is always exactly two segments below the base. New chart
+  value `build.cache` (`registry`, the default, or `inherit` to write no cache
+  spec and take kpack's behaviour). No migration: existing `Image` objects pick
+  the new spec up on their next apply, and the first build after the switch is a
+  cold one.
 - Functions can select a language version: `version` on create and update,
   validated against the runtime's advertised `versions` (the same list
   `GET /api/v1/functions/info` publishes) and reported back on GET. The list was

@@ -139,6 +139,12 @@ build:
   #     value: https://git.internal
   commonEnv: []
 
+  # Where kpack caches build layers. `registry` uses the registry it already
+  # pushes to, at `{base}/{group}/{name}/cache`. `inherit` writes no cache spec
+  # and takes the kpack install's default - a PVC per function, which is storage
+  # that grows with the function count. docs/BUILDING.md - Build cache.
+  cache: registry
+
   # Build pod requests/limits. A build is far heavier than the function it
   # produces; without these it is BestEffort and evicted first under pressure.
   resources:

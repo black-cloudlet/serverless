@@ -22,7 +22,13 @@ from api.services.runtimes import RuntimeRegistry
 from common import kpack
 from common.cluster import Cluster, ResourceKind
 from common.config import CommonSettings
-from common.contract import BuildPlan, BuildRequest, BuildStatus, image_reference
+from common.contract import (
+    BuildPlan,
+    BuildRequest,
+    BuildStatus,
+    cache_reference,
+    image_reference,
+)
 from common.errors import NotFoundError, ValidationError
 from common.logging import get_logger
 from common.names import object_name
@@ -65,6 +71,20 @@ class KpackBuilder:
             The fully-qualified image reference.
         """
         return image_reference(self._registry.base, req)
+
+    def cache_ref(self, req: BuildRequest) -> str | None:
+        """Where this build caches its layers, or None to leave it to kpack.
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The registry cache reference, or None when ``build.cache`` is
+            ``inherit`` and the Image should carry no ``spec.cache``.
+        """
+        if self._build.cache != "registry":
+            return None
+        return cache_reference(self._registry.base, req)
 
     def _runtime_config(self, runtime: str, version: str | None = None) -> tuple[str, list[dict]]:
         """Resolve a runtime (and optional version) to ``(builder, build_env)``.
@@ -160,6 +180,7 @@ class KpackBuilder:
                     sub_path=req.path,
                     env=env,
                     resources=self._build.resources,
+                    cache_tag=self.cache_ref(req),
                 ),
             ],
         )
