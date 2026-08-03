@@ -88,7 +88,8 @@ class ApplyRequest:
         size: Resource t-shirt size.
         hostname: Optional custom host; None takes the default.
         sites: Target site names, or None for all.
-        port: Explicit container port, or None for Knative's default (8080).
+        port: The container port to stamp. Always set - both offerings default
+            it to 8080 rather than leaving it implicit.
         created: True for a create - enables the absence check and the
             rollback of a half-applied workload, and picks the success status.
         pull_secret_name: Name of the image-pull Secret the KSVC references.
@@ -125,7 +126,7 @@ class ApplyRequest:
     size: str
     hostname: str | None
     sites: list[str] | None
-    port: int | None
+    port: int
     created: bool
     pull_secret_name: str | None = None
     pull_secret_manifest: dict | None = None

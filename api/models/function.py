@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from api.models.common import (
+    DEFAULT_PORT,
     PORT_MAX,
     PORT_MIN,
     Branch,
@@ -48,11 +49,11 @@ class FunctionCreate(BaseModel):
     sites: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
-    # Optional, unlike a container's: the platform builds this image, so it knows
-    # the default. Knative injects $PORT, which the buildpack launcher listens on,
-    # so omitting this is correct for any app that reads it. Send one only for an
-    # app with a hardcoded port.
-    port: int | None = Field(default=None, ge=PORT_MIN, le=PORT_MAX)
+    # Identical to a container's, deliberately: an app either serves on 8080 or
+    # it does not, and which offering built it changes nothing. A buildpack app
+    # that reads $PORT gets 8080 either way; one that hardcodes another port can
+    # say so instead of never becoming ready.
+    port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
 class FunctionUpdate(BaseModel):
@@ -78,10 +79,9 @@ class FunctionUpdate(BaseModel):
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
     # Replaced, NOT keep-on-omit - the same rule `version` follows: omitting it
-    # returns the function to Knative's default port rather than keeping the one
-    # deployed. Only secret material is keep-on-omit, because only it cannot be
-    # read back.
-    port: int | None = Field(default=None, ge=PORT_MIN, le=PORT_MAX)
+    # returns the function to 8080 rather than keeping the port deployed. Only
+    # secret material is keep-on-omit, because only it cannot be read back.
+    port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
 class FunctionResponse(WorkloadResponse):

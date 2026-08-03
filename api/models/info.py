@@ -74,11 +74,15 @@ class PortCapability(BaseModel):
 
     Attributes:
         required: Whether a port must be supplied on create/update.
+        default: Applied when the caller sends none - the port Knative injects
+            as ``$PORT``. Published so a form can pre-fill it instead of
+            hardcoding the number.
         min: The smallest accepted port.
         max: The largest accepted port.
     """
 
     required: bool
+    default: int
     min: int
     max: int
 
@@ -118,7 +122,7 @@ class ContainerInfoResponse(BaseInfo):
     """Capabilities for creating a container (bring-your-own image).
 
     Attributes:
-        port: The container port rules (required + bounds).
+        port: The container port rules (bounds + the applied default).
     """
 
     port: PortCapability
@@ -130,9 +134,7 @@ class FunctionInfoResponse(BaseInfo):
     Attributes:
         runtimes: The runtimes a function may be built with, each with its
             selectable versions.
-        port: The container port rules. Unlike a container's, ``required`` is
-            false: the platform builds the image, so omitting the port leaves
-            Knative's injected default.
+        port: The container port rules - identical to the container document's.
     """
 
     runtimes: list[RuntimeCapability]

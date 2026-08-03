@@ -14,6 +14,7 @@ from api.models.common import (
     ANNOTATION_GIT_URL,
     ANNOTATION_INJECTED_ENV,
     CA_BUNDLE_VOLUME,
+    DEFAULT_PORT,
     EnvVar,
     EnvVarView,
     FileMount,
@@ -243,7 +244,12 @@ def parse_spec(
         scaling=_scaling(ksvc),
         env=_env(ksvc),
         files=_files(ksvc, configmaps),
-        port=container_port(ksvc),
+        # Coalesced, not passed through: every workload this version writes stamps
+        # a port, so a missing one means the workload predates that - and 8080 is
+        # genuinely the port it serves on, since that is what Knative injects when
+        # none is declared. Reporting null would describe the manifest instead of
+        # the workload.
+        port=container_port(ksvc) or DEFAULT_PORT,
         registryUsername=registry_username,
         gitRepo=meta.get(ANNOTATION_GIT_URL),
         branch=meta.get(ANNOTATION_GIT_BRANCH),

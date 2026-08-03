@@ -213,8 +213,6 @@ class FunctionService:
                 size=spec.size,
                 hostname=spec.hostname,
                 sites=spec.sites,
-                # None leaves Knative its default (8080), which is what the
-                # buildpack launcher listens on via the injected $PORT.
                 port=spec.port,
                 # Pulled with the same credential kpack pushed with. The Secret is the
                 # chart's, shared by every function, so it is referenced, never applied.
@@ -334,8 +332,8 @@ class FunctionService:
                 hostname=spec.hostname,
                 sites=None,
                 # Replaced like every other non-secret field: omitting it returns
-                # the function to Knative's default port, as omitting `version`
-                # returns it to the platform's default runtime version.
+                # the function to 8080, as omitting `version` returns it to the
+                # platform's default runtime version.
                 port=spec.port,
                 pull_secret_name=self._engine.builder.pull_secret,
                 created=False,

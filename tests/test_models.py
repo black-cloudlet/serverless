@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from api.models.common import EnvVar, FileMount, Scaling
+from api.models.common import DEFAULT_PORT, EnvVar, FileMount, Scaling
 from api.models.container import ContainerCreate, ContainerUpdate
 from api.models.function import FunctionCreate, FunctionUpdate
 
@@ -46,10 +46,10 @@ def test_container_registry_creds_optional_but_paired():
         ContainerCreate(name="api", image="reg/api:1", port=8080, registryToken="t")
 
 
-def test_container_port_required_and_range_checked():
-    # required on create: omitting it is a validation error
-    with pytest.raises(ValidationError):
-        ContainerCreate(name="api", image="reg/api:1")
+def test_container_port_defaults_to_8080_and_range_checked():
+    # omitting it takes the platform default rather than failing: 8080 is what
+    # Knative injects anyway, so requiring it only made callers restate it
+    assert ContainerCreate(name="api", image="reg/api:1").port == DEFAULT_PORT == 8080
     # a valid port is accepted
     assert ContainerCreate(name="api", image="reg/api:1", port=9000).port == 9000
     # out-of-range ports are rejected (1..65535)
@@ -57,12 +57,32 @@ def test_container_port_required_and_range_checked():
         ContainerCreate(name="api", image="reg/api:1", port=0)
     with pytest.raises(ValidationError):
         ContainerCreate(name="api", image="reg/api:1", port=70000)
-    # update is a full replace too: port (and image) are required, same bounds
-    with pytest.raises(ValidationError):
-        ContainerUpdate(image="reg/api:1")  # missing port
+    # update is a full replace: omitting the port returns it to the default
+    # rather than keeping the deployed one
+    assert ContainerUpdate(image="reg/api:1").port == DEFAULT_PORT
     assert ContainerUpdate(image="reg/api:1", port=8081).port == 8081
     with pytest.raises(ValidationError):
         ContainerUpdate(image="reg/api:1", port=0)
+
+
+def test_both_offerings_agree_on_the_port_field():
+    """The rules are identical, so neither offering can drift from the other."""
+    from api.models.function import FunctionCreate, FunctionUpdate
+
+    def _fn(**over):
+        return FunctionCreate(
+            name="f", gitRepo="https://git.internal/t/a.git", gitToken="t", runtime="python", **over
+        )
+
+    assert _fn().port == ContainerCreate(name="api", image="reg/api:1").port
+    assert _fn(port=9000).port == ContainerCreate(name="api", image="reg/api:1", port=9000).port
+    for bad in (0, 70000):
+        with pytest.raises(ValidationError):
+            _fn(port=bad)
+    assert (
+        FunctionUpdate(gitRepo="https://git.internal/t/a.git", runtime="python").port
+        == ContainerUpdate(image="reg/api:1").port
+    )
 
 
 def test_valid_function():

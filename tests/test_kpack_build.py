@@ -1094,19 +1094,21 @@ def _pod_ports(cluster):
     return container.get("ports")
 
 
-async def test_a_function_omitting_a_port_leaves_knative_its_default():
-    """The normal case: a buildpack app listens on the injected $PORT (8080).
+async def test_a_function_omitting_a_port_is_stamped_with_the_default():
+    """The normal case: 8080, written explicitly rather than left to convention.
 
-    Nothing must be stamped, because stamping 8080 explicitly would be a
-    different KSVC spec than the one Knative defaults to - a needless revision.
+    Stamping it is the point - it is the same port Knative would have injected,
+    but now it is a value in the manifest that a read can report, instead of a
+    default a client has to already know.
     """
     from tests.test_auth_and_deployer import _ApplyCluster
 
     cluster = _ApplyCluster("site-a", {})
     svc = _function_service({"site-a": cluster}, _RecordingBuilder())
-    await svc.create("payments", _create_spec(), _principal())
+    body, _ = await svc.create("payments", _create_spec(), _principal())
 
-    assert _pod_ports(cluster) is None
+    assert _pod_ports(cluster) == [{"containerPort": 8080}]
+    assert body.port == 8080
 
 
 async def test_a_function_can_pin_a_port_for_an_app_that_hardcodes_one():
@@ -1121,11 +1123,12 @@ async def test_a_function_can_pin_a_port_for_an_app_that_hardcodes_one():
 
 
 async def test_a_function_port_is_replaced_on_update_not_kept():
-    """Omitting it returns the function to the default, as omitting `version` does.
+    """Omitting it returns the function to 8080, as omitting `version` does.
 
-    The rule is the container's: only secret material is keep-on-omit, because
-    only secret material cannot be read back. A port can (GET reports it), so a
-    PUT that leaves it out is asking for the default, not for no change.
+    The rule is the container's - the offerings share one port contract: only
+    secret material is keep-on-omit, because only secret material cannot be read
+    back. A port can (GET reports it), so a PUT that leaves it out is asking for
+    the default, not for no change.
     """
     from api.models.function import FunctionUpdate
     from tests.test_auth_and_deployer import _ApplyCluster
@@ -1146,7 +1149,7 @@ async def test_a_function_port_is_replaced_on_update_not_kept():
         _principal(),
     )
 
-    assert _pod_ports(cluster) is None
+    assert _pod_ports(cluster) == [{"containerPort": 8080}]  # back to the default, not 9000
 
 
 async def test_a_function_port_is_reported_on_read():

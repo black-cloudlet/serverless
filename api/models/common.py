@@ -62,6 +62,11 @@ CA_BUNDLE_VOLUME = "ca-bundle"
 # both offerings and the /info capabilities projection read, so they can't drift.
 PORT_MIN = 1
 PORT_MAX = 65535
+# Knative's own default, and what it injects as $PORT when a container declares
+# no port. Applied as the field default for both offerings rather than left
+# implicit, so a workload's port is a value you can read back, not a convention
+# you have to know.
+DEFAULT_PORT = 8080
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
