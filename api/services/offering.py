@@ -19,6 +19,7 @@ need to touch a cluster is handed to them by the caller.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from api.models.common import (
@@ -30,13 +31,39 @@ from api.models.common import (
 from api.models.container import ContainerResponse
 from api.models.function import FunctionResponse
 from api.services import ksvc_state, site_apply, site_read
+from api.services import registry as registry_svc
 from api.services import secrets as secret_svc
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
+from common.config import RegistryConfig
 from common.labels import OFFERING_CONTAINER, OFFERING_FUNCTION
 
 if TYPE_CHECKING:  # a type hint only - importing it at runtime would be a cycle
     from api.services.workloads import ApplyRequest
+
+
+@dataclass(frozen=True)
+class DeleteContext:
+    """What :meth:`Offering.after_delete` may need, so the protocol takes one value.
+
+    An offering is stateless policy, so everything it touches is handed to it.
+    Cleanup outgrew ``(cluster, oname)`` once it reached past the cluster: the
+    registry is addressed by ``{group}/{name}``, not by the object name, and it
+    needs settings an offering does not hold.
+
+    Attributes:
+        cluster: The local site, where the build objects are.
+        oname: The object name (``{name}-{group}``).
+        name: The workload name.
+        group: The owning group.
+        registry: Registry settings, for deleting the repositories by name.
+    """
+
+    cluster: Cluster
+    oname: str
+    name: str
+    group: str
+    registry: RegistryConfig
 
 
 class Offering(Protocol):
@@ -108,7 +135,7 @@ class Offering(Protocol):
         """
         ...
 
-    def after_delete(self, cluster: Cluster, oname: str) -> None:
+    def after_delete(self, ctx: DeleteContext) -> None:
         """Clean up what the KSVC's ownerReferences do not cascade to.
 
         Called on the local site once every site has confirmed the delete.
@@ -181,9 +208,16 @@ class FunctionOffering:
         git = site_read.secret_text(cluster, secret_svc.git_secret_name(oname))
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
 
-    def after_delete(self, cluster: Cluster, oname: str) -> None:
-        """Remove the build objects, which nothing cascades to on a non-running site."""
-        site_apply.delete_build_objects(cluster, oname)
+    def after_delete(self, ctx: DeleteContext) -> None:
+        """Remove the build objects, then the repositories the build pushed to.
+
+        Two kinds of leftover. The build objects are in a cluster but unowned on a
+        site that never ran the function, so nothing cascades to them. The registry
+        has no owner at all - no Kubernetes object references a repository - so it
+        is deleted by name (docs/BUILDING.md - Registry cleanup on delete).
+        """
+        site_apply.delete_build_objects(ctx.cluster, ctx.oname)
+        registry_svc.delete_function_repositories(ctx.registry, ctx.group, ctx.name)
 
     def build_status(
         self, builder: BuildBackend, cluster: Cluster, name: str, group: str
@@ -234,8 +268,12 @@ class ContainerOffering:
         """None. The registry credential is read by the shared state loader."""
         return {}
 
-    def after_delete(self, cluster: Cluster, oname: str) -> None:
-        """Nothing. Every container resource is owned by the KSVC and cascades."""
+    def after_delete(self, ctx: DeleteContext) -> None:
+        """Nothing. Every container resource is owned by the KSVC and cascades.
+
+        Its image is not the platform's to delete either - a container is deployed
+        from an image the caller built and may share with anything else.
+        """
 
     def build_status(
         self, builder: BuildBackend, cluster: Cluster, name: str, group: str

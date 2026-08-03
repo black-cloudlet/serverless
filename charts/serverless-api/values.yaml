@@ -44,6 +44,12 @@ registry:
   url: registry.internal
   organization: ""
 
+  # Delete a function's image and cache repositories when it is deleted - nothing
+  # in the cluster owns registry content. Needs a Quay OAuth token in the API
+  # namespace (externalSecrets below); without it, cleanup is skipped.
+  # docs/BUILDING.md - Registry cleanup on delete.
+  deleteOnFunctionDelete: true
+
 # Runtimes offered to clients, mounted as a file. Keys: builder (a build.builders
 # entry), versionEnv, defaultVersion, versions (must be a subset of what the
 # pinned buildpackage ships), buildEnv. commonEnv and dependencyMirror are merged
@@ -300,6 +306,14 @@ externalSecrets:
         - secretKey: SERVERLESS_ADMIN_API_KEY
           key: cloudlet/platforms/serverless
           property: admin-api-key
+    # Quay OAuth token (Organization -> Applications), scoped `repo:admin`, for
+    # deleting a deleted function's repositories (registry.deleteOnFunctionDelete).
+    # NOT the push robot - robots cannot call Quay's management API.
+    - name: serverless-api-registry
+      data:
+        - secretKey: SERVERLESS_REGISTRY__API_TOKEN
+          key: cloudlet/platforms/serverless
+          property: registry-api-token
 
 service:
   portName: http

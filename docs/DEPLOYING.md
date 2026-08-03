@@ -91,6 +91,7 @@ serverless-api chart                            one release per cluster/site
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
 ├── ExternalSecret          ...... the registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
+├── ExternalSecret          ...... the Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
 ├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Chart Topology)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)

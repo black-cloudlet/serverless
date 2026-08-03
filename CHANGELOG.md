@@ -17,6 +17,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   cached. New chart value `build.cache` (`registry`, the default, or `inherit`
   to write no cache spec). Existing `Image` objects pick the new spec up on
   their next apply; the first build after the switch is a cold one.
+- Deleting a function now deletes its registry repositories - both the image
+  repository and the `{name}_cache` one - instead of leaving them behind forever;
+  nothing in the cluster owns registry content, so a KSVC delete never reached
+  them. It uses Quay's management API (`DELETE /api/v1/repository/{ns}/{repo}`),
+  which removes the repository itself rather than only its manifests, and so
+  needs a Quay OAuth token with `repo:admin` - robot accounts are registry
+  credentials and cannot call `/api/v1`. Note how Quay scopes that token: it acts
+  as the user who authorized it, and with `registry.organization` empty each group
+  is its own Quay namespace, so that user needs admin on each. Both paths are
+  derived from config and the validated group/name, never from request input, and
+  only the function offering is touched. Best-effort: a registry that refuses
+  never fails the delete. New chart value `registry.deleteOnFunctionDelete`
+  (default true) and an `ExternalSecret` delivering the token to the API
+  namespace - **without that secret the step is skipped**, so an install that does
+  not wire it is unaffected. The repository half of an image reference is now a
+  named rule in `common/names.py` (`image_repository` / `cache_repository`)
+  beside `image_tag`, rather than an f-string inlined at each use, so the code
+  that pushes to a repository and the code that deletes one cannot disagree.
 - Functions can select a language version: `version` on create and update,
   validated against the runtime's advertised `versions` (the same list
   `GET /api/v1/functions/info` publishes) and reported back on GET. The list was

@@ -50,6 +50,22 @@ class RegistryConfig(BaseModel):
 
     url: str = "registry.internal"
     organization: str = ""
+    # Quay OAuth token used to delete a deleted function's repositories. Not the
+    # push robot - robots cannot call the management API. Absent, cleanup is
+    # skipped entirely. docs/BUILDING.md - Registry cleanup on delete.
+    api_token: str = ""
+    delete_on_function_delete: bool = True
+    timeout: float = 10.0
+
+    @property
+    def api_url(self) -> str:
+        """Registry base URL. Always https - internal TLS is trusted via the CA bundle."""
+        return f"https://{self.url.strip('/')}"
+
+    @property
+    def can_delete(self) -> bool:
+        """Whether repository cleanup is both wanted and credentialed."""
+        return bool(self.delete_on_function_delete and self.api_token)
 
     @property
     def base(self) -> str:

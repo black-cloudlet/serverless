@@ -1,0 +1,71 @@
+"""Registry cleanup: deleting the repositories a deleted function leaves behind.
+
+Nothing in the cluster owns registry content, so a function's images and its
+build cache (docs/BUILDING.md - Build cache) outlive the KSVC that produced
+them. This deletes both repositories when the function is deleted.
+
+Quay's management API, ``DELETE /api/v1/repository/{namespace}/{repository}``,
+which removes the repository itself rather than only its manifests. That is a
+Quay-specific call and needs a Quay OAuth token: robot accounts are registry
+credentials and cannot authenticate here (docs/BUILDING.md - Registry cleanup on delete).
+"""
+
+from __future__ import annotations
+
+import httpx
+
+from common.config import RegistryConfig
+from common.logging import get_logger
+from common.names import cache_repository, image_repository
+
+logger = get_logger(__name__)
+
+
+def delete_function_repositories(registry: RegistryConfig, group: str, name: str) -> None:
+    """Delete a function's image and cache repositories.
+
+    Best-effort and never raises: the workload is already gone platform-wide by
+    the time this runs, and failing a delete over leftover registry content
+    would report a function as undeleted when it is not.
+
+    Args:
+        registry: Registry settings, carrying the host and the API token.
+        group: The owning group.
+        name: The workload name.
+    """
+    if not registry.can_delete:
+        return
+    prefix = f"{registry.organization.strip('/')}/" if registry.organization.strip("/") else ""
+    headers = {"Authorization": f"Bearer {registry.api_token}"}
+    try:
+        with httpx.Client(base_url=registry.api_url, timeout=registry.timeout) as client:
+            for repo in (image_repository(group, name), cache_repository(group, name)):
+                _delete(client, headers, f"{prefix}{repo}")
+    except Exception:  # noqa: BLE001 - a leftover repository is logged, not fatal
+        logger.exception("registry cleanup failed for '%s' in group '%s'", name, group)
+
+
+def _delete(client: httpx.Client, headers: dict, repo: str) -> None:
+    """Delete one repository.
+
+    Args:
+        client: The registry HTTP client.
+        headers: Authorization headers carrying the OAuth token.
+        repo: The ``{namespace}/{repository}`` path the Quay route expects.
+    """
+    resp = client.delete(f"/api/v1/repository/{repo}", headers=headers)
+    if resp.status_code in (200, 202, 204):
+        logger.info("deleted registry repository '%s'", repo)
+    elif resp.status_code == 404:
+        pass  # never pushed, or already gone
+    elif resp.status_code in (401, 403):
+        # The token acts as the user who authorized it: that user needs admin on
+        # this namespace, and with no `registry.organization` every group is one.
+        logger.warning(
+            "not authorized to delete registry repository '%s' (%s); "
+            "the API token needs admin on that namespace",
+            repo,
+            resp.status_code,
+        )
+    else:
+        logger.warning("could not delete registry repository '%s': %s", repo, resp.status_code)

@@ -32,6 +32,8 @@ _UNDERSCORE = str.maketrans({"_": "-"})
 # or '_' and is capped at 128 characters.
 _TAG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _TAG_MAX = 128
+# Distinguishes a function's cache repository from its image repository.
+CACHE_SUFFIX = "_cache"
 
 # An image reference, per the OCI distribution grammar:
 #   [domain[:port]/]path[/path...][:tag][@algorithm:hex]
@@ -353,6 +355,47 @@ def image_tag(branch: str) -> str:
     if not tag:
         return "b-" + hashlib.sha256(branch.encode()).hexdigest()[:12]
     return tag
+
+
+def image_repository(group: str, name: str) -> str:
+    """The repository a function's images are pushed to: ``{group}/{name}``.
+
+    The other half of an image reference from :func:`image_tag`, and here for the
+    same reason: it is a naming rule, and the code that pushes to a repository and
+    the code that deletes one must agree on it exactly.
+
+    No projection needed, unlike the tag. Both parts are DNS-1123 labels, already
+    a subset of what an OCI path component allows, so there is nothing to rewrite.
+
+    Args:
+        group: The owning group.
+        name: The workload name.
+
+    Returns:
+        The repository path, below the registry base.
+    """
+    return f"{group}/{name}"
+
+
+def cache_repository(group: str, name: str) -> str:
+    """The repository a function's build cache is pushed to: ``{group}/{name}_cache``.
+
+    The ``_`` is what makes a collision with the image repository impossible
+    rather than unlikely: a name is a DNS-1123 label admitting only ``[a-z0-9-]``,
+    so no function can be named ``{name}_cache``. A reserved *tag* in the image
+    repository would not be safe the same way - a branch named ``cache`` projects
+    to exactly that tag (:func:`image_tag`) - and neither would a nested
+    ``{name}/cache`` path, which adds a repository level that Quay accepts only
+    with extended repository names enabled.
+
+    Args:
+        group: The owning group.
+        name: The workload name.
+
+    Returns:
+        The cache repository path, below the registry base.
+    """
+    return f"{image_repository(group, name)}{CACHE_SUFFIX}"
 
 
 def _schema(description: str, example: str, **fields) -> WithJsonSchema:

@@ -17,7 +17,16 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic.dataclasses import dataclass as validated_dataclass
 
-from common.names import Branch, GitUrl, Group, Name, SourcePath, image_tag
+from common.names import (
+    Branch,
+    GitUrl,
+    Group,
+    Name,
+    SourcePath,
+    cache_repository,
+    image_repository,
+    image_tag,
+)
 
 if TYPE_CHECKING:  # a type hint only - importing it would pull the k8s client
     from common.cluster import Cluster
@@ -160,7 +169,7 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
         The fully-qualified image reference.
     """
     base = registry_base.rstrip("/")
-    return f"{base}/{req.group}/{req.name}:{image_tag(req.branch)}"
+    return f"{base}/{image_repository(req.group, req.name)}:{image_tag(req.branch)}"
 
 
 def cache_reference(registry_base: str, req: BuildRequest) -> str:
@@ -186,4 +195,4 @@ def cache_reference(registry_base: str, req: BuildRequest) -> str:
         The fully-qualified cache reference.
     """
     base = registry_base.rstrip("/")
-    return f"{base}/{req.group}/{req.name}_cache:latest"
+    return f"{base}/{cache_repository(req.group, req.name)}:latest"
