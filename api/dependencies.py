@@ -8,10 +8,10 @@ from typing import Annotated
 from fastapi import Depends
 
 from api.core.config import get_settings
-from api.services.builder import KpackBuilder
 from api.services.container import ContainerService
 from api.services.deployer import Deployer
 from api.services.function import FunctionService
+from api.services.kpack_backend import KpackBackend
 from api.services.runtimes import RuntimeRegistry, load_runtimes
 from api.services.workloads import WorkloadService
 
@@ -37,7 +37,7 @@ def get_deployer() -> Deployer:
 def get_workload_service() -> WorkloadService:
     """The shared, offering-agnostic engine both offering services compose."""
     settings = get_settings()
-    return WorkloadService(settings, get_deployer(), KpackBuilder(settings, get_runtimes()))
+    return WorkloadService(settings, get_deployer(), KpackBackend(settings, get_runtimes()))
 
 
 @lru_cache

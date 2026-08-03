@@ -58,6 +58,16 @@ ANNOTATION_INJECTED_ENV = "serverless.platform/injected-env"
 # of read-back as it is not part of the user's spec.
 CA_BUNDLE_VOLUME = "ca-bundle"
 
+# Container port bounds (a TCP port). The single source the field validators on
+# both offerings and the /info capabilities projection read, so they can't drift.
+PORT_MIN = 1
+PORT_MAX = 65535
+# Knative's own default, and what it injects as $PORT when a container declares
+# no port. Applied as the field default for both offerings rather than left
+# implicit, so a workload's port is a value you can read back, not a convention
+# you have to know.
+DEFAULT_PORT = 8080
+
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
 ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]
@@ -400,7 +410,7 @@ class BuildStatusView(BaseModel):
     """A function's image build state, read from the local site's kpack Image.
 
     State and reason only. The built image stays internal - a function's client
-    deals in source, not images - so it is on :class:`common.contract.BuildStatus`,
+    deals in source, not images - so it is on :class:`common.build.BuildStatus`,
     which the build service reads, and never on the response.
 
     Attributes:

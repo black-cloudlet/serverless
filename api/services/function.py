@@ -6,11 +6,13 @@ from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
+from api.services.offering import FUNCTION
 from api.services.runtimes import RuntimeRegistry
-from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
-from common.contract import BuildPlan, BuildRequest
+from api.services.workloads import ApplyRequest, WorkloadService
+from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError
-from common.labels import workload_labels
+from common.labels import OFFERING_FUNCTION, workload_labels
+from common.names import object_name
 
 
 class FunctionService:
@@ -110,6 +112,7 @@ class FunctionService:
             gitRepo=spec.gitRepo,
             branch=spec.branch,
             path=spec.path,
+            port=spec.port,
         )
 
     async def accept(
@@ -128,7 +131,7 @@ class FunctionService:
         """
         self._assert_runtime(spec.runtime, spec.version)
         return await self._engine.accept_create(
-            offering=OFFERING_FUNCTION,
+            offering=FUNCTION,
             group=group,
             spec=spec,
             user=user,
@@ -154,7 +157,7 @@ class FunctionService:
         """
         self._assert_runtime(spec.runtime, spec.version)
         return await self._engine.accept_update(
-            offering=OFFERING_FUNCTION,
+            offering=FUNCTION,
             group=group,
             name=name,
             spec=spec,
@@ -199,32 +202,34 @@ class FunctionService:
         # over the same targets immediately before it mutates, which is both a
         # stronger guard (nothing happens in between) and one fewer cross-site trip.
         body, code = await self._engine.apply_workload(
-            name=spec.name,
-            user=user,
-            group=group,
-            image=plan.tag,
-            offering=OFFERING_FUNCTION,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            size=spec.size,
-            hostname=spec.hostname,
-            sites=spec.sites,
-            # Pulled with the same credential kpack pushed with. The Secret is the
-            # chart's, shared by every function, so it is referenced, never applied.
-            pull_secret_name=self._engine.builder.pull_secret,
-            pull_secret_manifest=None,
-            port=None,
-            created=True,
-            runtime=spec.runtime,
-            version=spec.version,
-            git_url=spec.gitRepo,
-            branch=spec.branch,
-            path=spec.path,
-            # The git credential goes to every site so any of them can rebuild
-            # after a switchover; only one site gets the Image (docs/BUILDING.md - Active/Active).
-            extra_secrets=plan.replicated,
-            local_resources=plan.local,
+            ApplyRequest(
+                name=spec.name,
+                user=user,
+                group=group,
+                image=plan.tag,
+                env=spec.env,
+                files=spec.files,
+                scaling=spec.scaling,
+                size=spec.size,
+                hostname=spec.hostname,
+                sites=spec.sites,
+                port=spec.port,
+                # Pulled with the same credential kpack pushed with. The Secret is the
+                # chart's, shared by every function, so it is referenced, never applied.
+                pull_secret_name=self._engine.builder.pull_secret,
+                created=True,
+                runtime=spec.runtime,
+                version=spec.version,
+                git_url=spec.gitRepo,
+                branch=spec.branch,
+                path=spec.path,
+                # The git credential goes to every site so any of them can rebuild
+                # after a switchover; only one site gets the Image
+                # (docs/BUILDING.md - Active/Active).
+                extra_secrets=plan.replicated,
+                local_resources=plan.local,
+            ),
+            FUNCTION,
         )
         return body, code
 
@@ -258,7 +263,7 @@ class FunctionService:
         # Reuse the load_existing result from accept_update (already authorized) to
         # avoid a second multi-site fanout; fall back to a fresh fetch otherwise.
         if existing is None:
-            existing = await self._engine.load_existing(name, OFFERING_FUNCTION, user, group)
+            existing = await self._engine.load_existing(name, FUNCTION, user, group)
 
         # Full replace, so the build inputs are the request's. The token is the
         # redacted keep: the stored one is reused unless the client sent a new one.
@@ -315,32 +320,36 @@ class FunctionService:
                 image = plan.tag
 
         body, code = await self._engine.apply_workload(
-            name=name,
-            user=user,
-            group=group,
-            image=image,
-            offering=OFFERING_FUNCTION,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            size=spec.size,
-            hostname=spec.hostname,
-            sites=None,
-            pull_secret_name=self._engine.builder.pull_secret,
-            pull_secret_manifest=None,
-            port=None,
-            created=False,
-            # stamp the (possibly updated) build metadata; never the token
-            runtime=runtime,
-            version=version,
-            git_url=git_url,
-            branch=branch,
-            path=path,
-            prev_host=existing.get("host"),
-            kept_env=existing.get("env_values"),
-            kept_files=existing.get("files_values"),
-            extra_secrets=replicated,
-            local_resources=local,
+            ApplyRequest(
+                name=name,
+                user=user,
+                group=group,
+                image=image,
+                env=spec.env,
+                files=spec.files,
+                scaling=spec.scaling,
+                size=spec.size,
+                hostname=spec.hostname,
+                sites=None,
+                # Replaced like every other non-secret field: omitting it returns
+                # the function to 8080, as omitting `version` returns it to the
+                # platform's default runtime version.
+                port=spec.port,
+                pull_secret_name=self._engine.builder.pull_secret,
+                created=False,
+                # stamp the (possibly updated) build metadata; never the token
+                runtime=runtime,
+                version=version,
+                git_url=git_url,
+                branch=branch,
+                path=path,
+                prev_host=existing.get("host"),
+                kept_env=existing.get("env_values"),
+                kept_files=existing.get("files_values"),
+                extra_secrets=replicated,
+                local_resources=local,
+            ),
+            FUNCTION,
         )
         return body, code
 
@@ -355,7 +364,7 @@ class FunctionService:
         Returns:
             The full single-function response.
         """
-        return await self._engine.get(OFFERING_FUNCTION, name, user, group)
+        return await self._engine.get(FUNCTION, name, user, group)
 
     async def logs(
         self,
@@ -381,7 +390,7 @@ class FunctionService:
             The function's per-pod logs from the local site.
         """
         return await self._engine.logs(
-            OFFERING_FUNCTION,
+            FUNCTION,
             name,
             user,
             group,
@@ -401,7 +410,7 @@ class FunctionService:
         Returns:
             The per-workload summaries.
         """
-        return await self._engine.list(OFFERING_FUNCTION, user, group, sort)
+        return await self._engine.list(FUNCTION, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
         """Delete a function and its derived resources.
@@ -411,4 +420,4 @@ class FunctionService:
             group: The owning group.
             user: The authenticated caller.
         """
-        await self._engine.delete(OFFERING_FUNCTION, name, user, group)
+        await self._engine.delete(FUNCTION, name, user, group)

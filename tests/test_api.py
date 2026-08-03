@@ -155,15 +155,16 @@ def test_info_is_public_and_static():
         assert body["routeDomain"]
         assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
 
-    # container-only: the port rules
+    # the port rules are identical for both offerings, and both publish them
+    rules = {"required": False, "default": 8080, "min": 1, "max": 65535}
     cont = c.get("/api/v1/containers/info").json()
-    assert cont["port"] == {"required": True, "min": 1, "max": 65535}
-    assert "runtimes" not in cont
-
-    # function-only: the available runtimes
     fn = c.get("/api/v1/functions/info").json()
+    assert cont["port"] == rules
+    assert fn["port"] == rules
+
+    # ...only the offering-specific halves differ
+    assert "runtimes" not in cont
     assert "python" in [r["name"] for r in fn["runtimes"]]
-    assert "port" not in fn
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
     assert metrics["concurrency"]["target"]["default"] == 100

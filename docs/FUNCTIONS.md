@@ -21,6 +21,7 @@ what functions share with containers is ARCHITECTURE.md.
 | `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see ARCHITECTURE.md: Secrets Management). |
 | `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `name` | yes | Logical workload name (DNS-1123). |
+| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `error`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
 **Build flow (Knative Functions / buildpacks):**
@@ -296,7 +297,7 @@ Build detail is read from the local cluster only; there is no cross-site aggrega
 path (the ksvc fan-out in ARCHITECTURE.md: Multi-Site (Active/Active HA) Design is unchanged). That read is complete precisely
 because the build site is always local: if an `Image` exists at all, it exists here.
 
-**As implemented.** `KpackBuilder.status` returns `None` when the local site has no `Image`
+**As implemented.** `KpackBackend.status` returns `None` when the local site has no `Image`
 - the switchover case above - and `_with_build_status` folds the rest into the rollup:
 `Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
 hands the verdict back to the ksvc. The response carries a `build` object

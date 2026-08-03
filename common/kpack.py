@@ -1,12 +1,12 @@
 """The kpack vocabulary: manifests for a build, and how to read its status.
 
 Shared rather than API-local because both halves of the build path speak it -
-the API writes the ``Image`` (:mod:`api.services.builder`), and the build
+the API writes the ``Image`` (:mod:`api.services.kpack_backend`), and the build
 service reads ``status.latestImage`` back off it (docs/BUILDING.md - Ownership).
 Naming it in one place is what keeps them agreeing on which object is which.
 
 Pure: no I/O and no framework, so it sits in the domain layer beside
-:mod:`common.contract`. The caller applies the manifests alongside the KSVC's
+:mod:`common.build`. The caller applies the manifests alongside the KSVC's
 other derived resources, in the workload's own namespace, so they are
 owner-stamped and garbage-collected with it.
 

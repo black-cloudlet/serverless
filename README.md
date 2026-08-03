@@ -29,7 +29,7 @@ api/        the control-plane API service (python -m api.main)
   models/   Pydantic request/response schemas
   services/ manifest builders + multi-site deployer + build orchestration
   routers/  functions / containers / info (public) endpoints
-common/     shared by api + a future builder service: build contract, cluster
+common/     shared by api + a future build service: build domain, cluster
             client (mTLS), settings, /healthz+/readyz + offline docs, labels,
             errors, logging
 charts/     Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
@@ -62,4 +62,4 @@ values are projected from Vault via the External Secrets Operator
 
 > **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
 > builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
-> (`func`/Tekton) is the remaining integration point - see `api/services/builder.py`.
+> (`func`/Tekton) is the remaining integration point - see `api/services/kpack_backend.py`.

@@ -126,9 +126,11 @@ def test_parse_spec_without_configmap_leaves_content_null():
 def test_parse_spec_reads_back_container_port():
     from api.services.describe import container_port
 
-    # no explicit port -> None (Knative default)
+    # container_port stays honest about the manifest: nothing stamped -> None
     assert container_port(_ksvc()) is None
-    assert parse_spec(_ksvc()).port is None
+    # ...but the spec reports the port the workload actually serves on. Only a
+    # workload written before ports were always stamped reaches this.
+    assert parse_spec(_ksvc()).port == 8080
     # an explicit port round-trips through the KSVC
     ksvc = build_ksvc(
         name="app-team",

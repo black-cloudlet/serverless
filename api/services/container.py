@@ -7,9 +7,11 @@ from api.models.common import LogsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.services import describe as describe_svc
 from api.services import secrets as secret_svc
-from api.services.workloads import OFFERING_CONTAINER, WorkloadService, object_name
+from api.services.offering import CONTAINER
+from api.services.workloads import ApplyRequest, WorkloadService
 from common.errors import ValidationError
-from common.labels import workload_labels
+from common.labels import OFFERING_CONTAINER, workload_labels
+from common.names import object_name
 
 
 class ContainerService:
@@ -49,7 +51,7 @@ class ContainerService:
             A Pending response with a ``statusUrl`` to poll.
         """
         return await self._engine.accept_create(
-            offering=OFFERING_CONTAINER,
+            offering=CONTAINER,
             group=group,
             spec=spec,
             user=user,
@@ -75,7 +77,7 @@ class ContainerService:
             A Pending response with a ``statusUrl`` to poll.
         """
         return await self._engine.accept_update(
-            offering=OFFERING_CONTAINER,
+            offering=CONTAINER,
             group=group,
             name=name,
             spec=spec,
@@ -142,21 +144,23 @@ class ContainerService:
         # over the same targets immediately before it mutates, which is both a
         # stronger guard (nothing happens in between) and one fewer cross-site trip.
         body, code = await self._engine.apply_workload(
-            name=spec.name,
-            user=user,
-            group=group,
-            image=spec.image,
-            offering=OFFERING_CONTAINER,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            size=spec.size,
-            port=spec.port,
-            hostname=spec.hostname,
-            sites=spec.sites,
-            pull_secret_name=pull_name,
-            pull_secret_manifest=pull,
-            created=True,
+            ApplyRequest(
+                name=spec.name,
+                user=user,
+                group=group,
+                image=spec.image,
+                env=spec.env,
+                files=spec.files,
+                scaling=spec.scaling,
+                size=spec.size,
+                port=spec.port,
+                hostname=spec.hostname,
+                sites=spec.sites,
+                pull_secret_name=pull_name,
+                pull_secret_manifest=pull,
+                created=True,
+            ),
+            CONTAINER,
         )
         body.registryUsername = spec.registryUsername
         return body, code
@@ -186,7 +190,7 @@ class ContainerService:
         # accept_update already fetched (and authorized) this; reuse it to avoid a
         # second multi-site fanout. Falls back to a fresh fetch for direct callers.
         if existing is None:
-            existing = await self._engine.load_existing(name, OFFERING_CONTAINER, user, group)
+            existing = await self._engine.load_existing(name, CONTAINER, user, group)
         image = spec.image
         port = spec.port
 
@@ -217,24 +221,26 @@ class ContainerService:
             pull_name = None  # remove -> public
 
         body, code = await self._engine.apply_workload(
-            name=name,
-            user=user,
-            group=group,
-            image=image,
-            offering=OFFERING_CONTAINER,
-            env=spec.env,
-            files=spec.files,
-            scaling=spec.scaling,
-            size=spec.size,
-            port=port,
-            hostname=spec.hostname,
-            sites=None,
-            pull_secret_name=pull_name,
-            pull_secret_manifest=pull,
-            created=False,
-            prev_host=existing.get("host"),
-            kept_env=existing.get("env_values"),
-            kept_files=existing.get("files_values"),
+            ApplyRequest(
+                name=name,
+                user=user,
+                group=group,
+                image=image,
+                env=spec.env,
+                files=spec.files,
+                scaling=spec.scaling,
+                size=spec.size,
+                port=port,
+                hostname=spec.hostname,
+                sites=None,
+                pull_secret_name=pull_name,
+                pull_secret_manifest=pull,
+                created=False,
+                prev_host=existing.get("host"),
+                kept_env=existing.get("env_values"),
+                kept_files=existing.get("files_values"),
+            ),
+            CONTAINER,
         )
         body.registryUsername = spec.registryUsername
         return body, code
@@ -250,7 +256,7 @@ class ContainerService:
         Returns:
             The full single-container response.
         """
-        return await self._engine.get(OFFERING_CONTAINER, name, user, group)
+        return await self._engine.get(CONTAINER, name, user, group)
 
     async def logs(
         self,
@@ -276,7 +282,7 @@ class ContainerService:
             The container's per-pod logs from the local site.
         """
         return await self._engine.logs(
-            OFFERING_CONTAINER,
+            CONTAINER,
             name,
             user,
             group,
@@ -296,7 +302,7 @@ class ContainerService:
         Returns:
             The per-workload summaries.
         """
-        return await self._engine.list(OFFERING_CONTAINER, user, group, sort)
+        return await self._engine.list(CONTAINER, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
         """Delete a container and its derived resources.
@@ -306,4 +312,4 @@ class ContainerService:
             group: The owning group.
             user: The authenticated caller.
         """
-        await self._engine.delete(OFFERING_CONTAINER, name, user, group)
+        await self._engine.delete(CONTAINER, name, user, group)

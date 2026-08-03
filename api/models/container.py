@@ -7,6 +7,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from api.models.common import (
+    DEFAULT_PORT,
+    PORT_MAX,
+    PORT_MIN,
     EnvVar,
     FileMount,
     Hostname,
@@ -16,11 +19,6 @@ from api.models.common import (
     WorkloadResponse,
     WorkloadSize,
 )
-
-# Container port bounds (a TCP port). The single source both the field validator
-# and the /info capabilities projection read, so they can't drift.
-PORT_MIN = 1
-PORT_MAX = 65535
 
 
 class ContainerCreate(BaseModel):
@@ -43,8 +41,11 @@ class ContainerCreate(BaseModel):
     sites: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
-    # Port the image listens on.
-    port: int = Field(ge=PORT_MIN, le=PORT_MAX)
+    # Port the image listens on. Defaults to 8080 - the port Knative injects as
+    # $PORT and the one most images serve on. Send it when the image differs:
+    # nothing can detect that, and the mismatch surfaces as a revision that never
+    # becomes ready rather than as a rejected request.
+    port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerCreate":
@@ -60,9 +61,9 @@ class ContainerCreate(BaseModel):
 class ContainerUpdate(BaseModel):
     """Replace the mutable spec: the body is the full desired state.
 
-    Non-secret fields are replaced, so ``image`` and ``port`` are required as on
-    create. Only redacted secret material is keep-on-omit - it cannot be read back,
-    so omitting it keeps what is stored.
+    Non-secret fields are replaced, so ``image`` is required as on create and
+    ``port`` returns to its default when omitted. Only redacted secret material is
+    keep-on-omit - it cannot be read back, so omitting it keeps what is stored.
     """
 
     image: ImageRef
@@ -75,7 +76,8 @@ class ContainerUpdate(BaseModel):
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
-    port: int = Field(ge=PORT_MIN, le=PORT_MAX)
+    # Replaced, not keep-on-omit: omitting it returns the container to 8080.
+    port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
     @model_validator(mode="after")
     def _registry_creds(self) -> "ContainerUpdate":

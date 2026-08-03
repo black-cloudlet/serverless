@@ -7,7 +7,7 @@ import base64
 import pytest
 
 from api.services import secrets as secret_svc
-from api.services.builder import KpackBuilder
+from api.services.kpack_backend import KpackBackend
 from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 from common import kpack
 from common.config import CommonSettings, SiteConfig
@@ -48,11 +48,11 @@ def _runtimes():
 
 
 def _builder(settings=None):
-    return KpackBuilder(settings or _settings(), _runtimes())
+    return KpackBackend(settings or _settings(), _runtimes())
 
 
 def _request(**over):
-    from common.contract import BuildRequest
+    from common.build import BuildRequest
 
     kwargs = dict(
         name="hello",
@@ -328,7 +328,7 @@ def test_the_built_image_never_reaches_a_function_response():
     """
     from api.models.common import BuildStatusView
     from api.models.function import FunctionResponse
-    from common.contract import BuildStatus
+    from common.build import BuildStatus
 
     assert "image" in BuildStatus.__dataclass_fields__
     assert "image" not in BuildStatusView.model_fields
@@ -362,16 +362,16 @@ def test_the_built_image_never_reaches_a_function_response():
 )
 def test_build_state_folds_into_the_overall_status(overall, state, expected):
     from api.models.common import BuildStatusView
-    from api.services.workloads import _with_build_status
+    from api.services.ksvc_state import with_build_status
 
-    assert _with_build_status(overall, BuildStatusView(state=state)) == expected
+    assert with_build_status(overall, BuildStatusView(state=state)) == expected
 
 
 def test_no_build_leaves_the_ksvc_rollup_untouched():
-    from api.services.workloads import _with_build_status
+    from api.services.ksvc_state import with_build_status
 
-    assert _with_build_status("Ready", None) == "Ready"
-    assert _with_build_status("Degraded", None) == "Degraded"
+    assert with_build_status("Ready", None) == "Ready"
+    assert with_build_status("Degraded", None) == "Degraded"
 
 
 def test_building_is_a_non_terminal_poll_state():
@@ -384,7 +384,7 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-def _ksvc(image="reg/fn:old", branch="main", path="", version=None):
+def _ksvc(image="reg/fn:old", branch="main", path="", version=None, port=None):
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
 
@@ -404,6 +404,7 @@ def _ksvc(image="reg/fn:old", branch="main", path="", version=None):
         branch=branch,
         path=path,
         version=version,
+        port=port,
     )
 
 
@@ -421,7 +422,7 @@ class _RecordingBuilder:
         return "reg/acme/payments/hello:main"
 
     def plan(self, req, labels):
-        from common.contract import BuildPlan
+        from common.build import BuildPlan
 
         self.calls += 1
         self.reqs.append(req)
@@ -443,7 +444,7 @@ class _RecordingBuilder:
         )
 
     def status(self, cluster, name, group):
-        from common.contract import BuildStatus
+        from common.build import BuildStatus
 
         return BuildStatus(state=self._state) if self._state else None
 
@@ -456,7 +457,7 @@ class _SiteAwareBuilder(_RecordingBuilder):
         self._built_on = built_on
 
     def status(self, cluster, name, group):
-        from common.contract import BuildStatus
+        from common.build import BuildStatus
 
         return BuildStatus(state=self._state) if cluster.site == self._built_on else None
 
@@ -467,15 +468,17 @@ def _principal():
     return Principal(subject="u", username="alice", groups=["payments"])
 
 
-def _create_spec():
+def _create_spec(**over):
     from api.models.function import FunctionCreate
 
-    return FunctionCreate(
+    base = dict(
         name="hello",
         gitRepo="https://git.internal/payments/hello.git",
         gitToken="ghp_tok",
         runtime="python",
     )
+    base.update(over)
+    return FunctionCreate(**base)
 
 
 def _function_service(clusters, builder, local_site=None):
@@ -606,7 +609,7 @@ def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
 
     class _Counting(_RecordingBuilder):
         def status(self, cluster, name, group):
-            from common.contract import BuildStatus
+            from common.build import BuildStatus
 
             seen.append(cluster.site)
             return BuildStatus(state="Ready")
@@ -617,7 +620,10 @@ def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
         local_site="site-a",
     )
 
-    assert svc._build_status("hello", "payments").state == "Ready"
+    from api.services.offering import FUNCTION
+
+    status = FUNCTION.build_status(svc.builder, svc.deployer.local_cluster(), "hello", "payments")
+    assert status.state == "Ready"
     assert seen == ["site-a"]
 
 
@@ -625,7 +631,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     """Switchover self-heal: an unchanged spec must still recreate a missing Image."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -650,13 +656,13 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert len(_applied_kind(cluster, "Image")) == 1
     # ...but the running image is untouched: it may be a digest a finished build
     # resolved, and rewriting it back to the tag would spawn a pointless revision
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
 
 
 async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
     """path is a build input: a different directory is a different application."""
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -679,7 +685,7 @@ async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
 
     assert builder.reqs[0].path == "services/worker"
     # a config-only update keeps the running image; this one must not
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
 
 
 async def test_update_without_any_token_emits_no_build():
@@ -706,7 +712,7 @@ async def test_update_without_any_token_emits_no_build():
 
 async def test_branch_change_moves_the_deployment_to_the_new_tag():
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
@@ -723,7 +729,7 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
         _principal(),
     )
     assert builder.calls == 1
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
 
 
 # ------------------------------------------------------- request validation
@@ -787,7 +793,7 @@ def test_a_branch_with_no_ascii_still_projects_to_a_usable_tag():
     """
     import re
 
-    from common.contract import image_reference
+    from common.build import image_reference
     from common.names import image_tag
 
     for branch in ("功能", "релиз", "機能/ログイン"):
@@ -888,7 +894,7 @@ def test_an_explicit_version_in_build_env_is_not_overridden():
             )
         ]
     )
-    plan = KpackBuilder(_settings(), runtimes).plan(_request(), {})
+    plan = KpackBackend(_settings(), runtimes).plan(_request(), {})
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
     assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"
@@ -907,7 +913,7 @@ def _version_runtimes(**over):
 
 
 def _version_env(runtimes, **req):
-    plan = KpackBuilder(_settings(), runtimes).plan(_request(runtime="go", **req), {})
+    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go", **req), {})
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     return [e["value"] for e in env if e["name"] == "BP_GO_VERSION"]
 
@@ -942,14 +948,14 @@ def test_a_caller_version_overrides_an_operator_build_env_pin():
 def test_exactly_one_version_entry_is_emitted():
     """Two entries for the same name would leave the build ambiguous."""
     pinned = _version_runtimes(buildEnv=[{"name": "BP_GO_VERSION", "value": "1.23"}])
-    plan = KpackBuilder(_settings(), pinned).plan(_request(runtime="go", version="1.25"), {})
+    plan = KpackBackend(_settings(), pinned).plan(_request(runtime="go", version="1.25"), {})
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     assert [e["name"] for e in env].count("BP_GO_VERSION") == 1
 
 
 def test_a_runtime_naming_no_version_env_gets_none_invented():
     runtimes = RuntimeRegistry([RuntimeSpec(name="go", builder="go")])
-    plan = KpackBuilder(_settings(), runtimes).plan(_request(runtime="go"), {})
+    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go"), {})
     image = _by_kind(plan.local, "Image")
     env = (image["spec"].get("build") or {}).get("env") or []
     assert not [e for e in env if e["name"].startswith("BP_")]
@@ -958,7 +964,7 @@ def test_a_runtime_naming_no_version_env_gets_none_invented():
 async def test_changing_the_version_rebuilds_and_moves_the_image():
     """The language version is a build input like branch or path."""
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -981,7 +987,7 @@ async def test_changing_the_version_rebuilds_and_moves_the_image():
 
     assert builder.reqs[0].version == "3.12"
     # a config-only update keeps the running image; a version change must not
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
 
 
 async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuilds():
@@ -991,7 +997,7 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     that is a different build from the pinned one it replaces.
     """
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1009,14 +1015,14 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     )
 
     assert builder.reqs[0].version is None  # -> the builder pins defaultVersion
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
 
 
 async def test_resending_the_same_version_is_not_a_rebuild():
     """A config-only edit that echoes the stored version must not disturb it."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1038,4 +1044,188 @@ async def test_resending_the_same_version_is_not_a_rebuild():
         _principal(),
     )
 
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+
+
+# ------------------------------------------- the BuildBackend protocol itself
+
+
+def test_the_kpack_backend_matches_the_build_backend_protocol():
+    """Every ``BuildBackend`` member exists on ``KpackBackend`` with the same signature.
+
+    The protocol's whole job is stopping the API and a future build service from
+    drifting apart, and nothing else enforces it: there is no type checker in the
+    dev extra, so a protocol nobody executes is a comment. This is the check -
+    it caught ``pull_secret`` being declared ``-> str`` while the implementation
+    returned ``str | None``.
+
+    Both modules use ``from __future__ import annotations``, so the annotations
+    compare as the source strings: a difference in spelling is a difference here,
+    which is the point.
+    """
+    import inspect
+
+    from common.build import BuildBackend
+
+    for name, declared in vars(BuildBackend).items():
+        if name.startswith("_") or not callable(getattr(declared, "fget", declared)):
+            continue
+        implemented = getattr(KpackBackend, name, None)
+        assert implemented is not None, f"KpackBackend is missing BuildBackend.{name}"
+        # A property must stay a property: callers read `backend.pull_secret`.
+        assert isinstance(declared, property) == isinstance(implemented, property), (
+            f"BuildBackend.{name} and KpackBackend.{name} disagree on being a property"
+        )
+        declared_fn = declared.fget if isinstance(declared, property) else declared
+        implemented_fn = implemented.fget if isinstance(implemented, property) else implemented
+        assert inspect.signature(declared_fn) == inspect.signature(implemented_fn), (
+            f"KpackBackend.{name}{inspect.signature(implemented_fn)} does not match "
+            f"BuildBackend.{name}{inspect.signature(declared_fn)}"
+        )
+
+
+# --------------------------------------------------- a function's port
+
+
+def _pod_ports(cluster):
+    from tests.test_auth_and_deployer import _applied_kind
+
+    container = _applied_kind(cluster, "Service")[0]["spec"]["template"]["spec"]["containers"][0]
+    return container.get("ports")
+
+
+async def test_a_function_omitting_a_port_is_stamped_with_the_default():
+    """The normal case: 8080, written explicitly rather than left to convention.
+
+    Stamping it is the point - it is the same port Knative would have injected,
+    but now it is a value in the manifest that a read can report, instead of a
+    default a client has to already know.
+    """
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    body, _ = await svc.create("payments", _create_spec(), _principal())
+
+    assert _pod_ports(cluster) == [{"containerPort": 8080}]
+    assert body.port == 8080
+
+
+async def test_a_function_can_pin_a_port_for_an_app_that_hardcodes_one():
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    body, _ = await svc.create("payments", _create_spec(port=9000), _principal())
+
+    assert _pod_ports(cluster) == [{"containerPort": 9000}]
+    assert body.port == 9000  # echoed back, like a container's
+
+
+async def test_a_function_port_is_replaced_on_update_not_kept():
+    """Omitting it returns the function to 8080, as omitting `version` does.
+
+    The rule is the container's - the offerings share one port contract: only
+    secret material is keep-on-omit, because only secret material cannot be read
+    back. A port can (GET reports it), so a PUT that leaves it out is asking for
+    the default, not for no change.
+    """
+    from api.models.function import FunctionUpdate
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(port=9000)},
+        secrets={"hello-payments-git": stored},
+    )
+    await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+        ),
+        _principal(),
+    )
+
+    assert _pod_ports(cluster) == [{"containerPort": 8080}]  # back to the default, not 9000
+
+
+async def test_a_function_port_is_reported_on_read():
+    from api.services.offering import FUNCTION
+    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+
+    cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc(port=9000)})
+    engine = _workload_service({"site-a": cluster}, builder=_RecordingBuilder())
+    body = await engine.get(FUNCTION, "hello", _principal(), "payments")
+
+    assert body.port == 9000
+
+
+# ----------------------------------------------- the Offering protocol itself
+
+
+def test_both_offerings_match_the_offering_protocol():
+    """Same guard as the BuildBackend conformance check, for the same reason.
+
+    The engine no longer branches on which offering it has; it calls these
+    members. A missing or renamed one would be an AttributeError on a live
+    request path, and with no type checker in the dev extra nothing else looks.
+    """
+    import inspect
+
+    from api.services.offering import CONTAINER, FUNCTION, Offering
+
+    for impl in (FUNCTION, CONTAINER):
+        for name, declared in vars(Offering).items():
+            if name.startswith("_"):
+                continue
+            assert hasattr(impl, name), f"{type(impl).__name__} is missing Offering.{name}"
+            if isinstance(declared, property):
+                continue  # a declared property may be satisfied by a class attribute
+            # `self` is bound on the implementation's method but declared on the
+            # protocol's, so drop it before the signatures can be compared.
+            declared_sig = inspect.signature(declared)
+            unbound = declared_sig.replace(parameters=list(declared_sig.parameters.values())[1:])
+            assert inspect.signature(getattr(impl, name)) == unbound, (
+                f"{type(impl).__name__}.{name} does not match Offering.{name}"
+            )
+
+
+async def test_changing_only_the_port_does_not_rebuild():
+    """The port is a runtime field, not a build input - it never reaches kpack.
+
+    `BuildRequest` has no port, so nothing about the image depends on it: a
+    buildpack image serves whatever `$PORT` Knative injects, and the port is
+    decided when the KSVC is applied, not when the image is compiled. So a
+    port-only edit must behave like any other config-only edit - keep the
+    running image, spawn one new revision - rather than making the caller wait
+    out a build to move a port.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc()},  # deployed at reg/fn:old
+        secrets={"hello-payments-git": stored},
+    )
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        # every build input identical to what is stored; only the port moves
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            port=9000,
+        ),
+        _principal(),
+    )
+
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert extract_image(ksvc) == "reg/fn:old"  # NOT moved to the build tag
+    assert _pod_ports(cluster) == [{"containerPort": 9000}]

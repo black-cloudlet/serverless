@@ -1,9 +1,13 @@
-"""The build contract shared by the API (client) and the builder service.
+"""The build domain shared by the API (client) and the build service.
 
 Both sides import these types, so the request/response shape can't drift between
-the caller and the builder. :class:`Builder` is implemented today by the
-in-process ``KpackBuilder``; a remote builder microservice would implement the
+the caller and the backend. :class:`BuildBackend` is implemented today by the
+in-process ``KpackBackend``; a remote build microservice would implement the
 same protocol with no change to callers.
+
+The protocol is named ``BuildBackend``, not ``Builder``: kpack has its own
+``Builder`` CR (the buildpack composition an ``Image`` references by name, see
+docs/BUILDING.md - Buildpack Topology), and one spelling cannot mean both.
 """
 
 from __future__ import annotations
@@ -99,12 +103,16 @@ class BuildStatus:
     message: str | None = None
 
 
-class Builder(Protocol):
+class BuildBackend(Protocol):
     """Declares function builds and reports their state."""
 
     @property
-    def pull_secret(self) -> str:
-        """The registry Secret a built function's KSVC pulls its image with."""
+    def pull_secret(self) -> str | None:
+        """The registry Secret a built function's KSVC pulls its image with.
+
+        None when the platform configures no registry credential, so the KSVC
+        references no Secret the chart never created.
+        """
         ...
 
     def image_ref(self, req: BuildRequest) -> str:
@@ -136,7 +144,7 @@ class Builder(Protocol):
 def image_reference(registry_base: str, req: BuildRequest) -> str:
     """The image reference convention for a build: ``{base}/{group}/{name}:{tag}``.
 
-    Shared so the API and the builder agree on where a build's image lands.
+    Shared so the API and the build backend agree on where a build's image lands.
 
     The tag is the branch projected into what an OCI tag allows - a branch may
     contain ``/`` and a tag may not, so ``feature/login`` pushes to

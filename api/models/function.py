@@ -7,6 +7,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from api.models.common import (
+    DEFAULT_PORT,
+    PORT_MAX,
+    PORT_MIN,
     Branch,
     BuildStatusView,
     EnvVar,
@@ -46,6 +49,11 @@ class FunctionCreate(BaseModel):
     sites: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
+    # Identical to a container's, deliberately: an app either serves on 8080 or
+    # it does not, and which offering built it changes nothing. A buildpack app
+    # that reads $PORT gets 8080 either way; one that hardcodes another port can
+    # say so instead of never becoming ready.
+    port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
 class FunctionUpdate(BaseModel):
@@ -70,6 +78,10 @@ class FunctionUpdate(BaseModel):
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"
     hostname: Hostname | None = None
+    # Replaced, NOT keep-on-omit - the same rule `version` follows: omitting it
+    # returns the function to 8080 rather than keeping the port deployed. Only
+    # secret material is keep-on-omit, because only it cannot be read back.
+    port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
 class FunctionResponse(WorkloadResponse):
@@ -91,3 +103,4 @@ class FunctionResponse(WorkloadResponse):
     # Present once the function has an Image on the local site; None on a site
     # that has never built it (e.g. straight after a switchover).
     build: BuildStatusView | None = None
+    port: int | None = None  # explicit container port, or None for Knative's default

@@ -20,7 +20,7 @@ DOMAIN = [
     "common.labels",
     "common.errors",
     "common.config",
-    "common.contract",
+    "common.build",
     "common.kpack",
 ]
 # Layer 2: adds the kubernetes client, still no web framework.

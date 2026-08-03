@@ -9,8 +9,14 @@ from fastapi import APIRouter, Depends
 from api import __version__
 from api.core.config import Settings, get_settings
 from api.dependencies import RuntimesDep
-from api.models.common import SITE_STATUSES, Scaling, WorkloadStatus
-from api.models.container import PORT_MAX, PORT_MIN
+from api.models.common import (
+    DEFAULT_PORT,
+    PORT_MAX,
+    PORT_MIN,
+    SITE_STATUSES,
+    Scaling,
+    WorkloadStatus,
+)
 from api.models.info import (
     ContainerInfoResponse,
     ErrorCode,
@@ -30,6 +36,15 @@ router = APIRouter(prefix="/api/v1", tags=["info"])
 # A poll ends here; every other workload status is still in flight. Derived from
 # the same Literal, so a new status cannot be added without landing on one side.
 TERMINAL_STATUSES = ("Ready", "Degraded")
+
+
+def _port_rules() -> PortCapability:
+    """The container port rules, identical for both offerings.
+
+    One function rather than two literals: the offerings agreeing is the point,
+    and two call sites constructing this separately is how they stop agreeing.
+    """
+    return PortCapability(required=False, default=DEFAULT_PORT, min=PORT_MIN, max=PORT_MAX)
 
 
 def _base(settings: Settings) -> dict:
@@ -69,7 +84,7 @@ async def get_container_info(
     """
     return ContainerInfoResponse(
         **_base(settings),
-        port=PortCapability(required=True, min=PORT_MIN, max=PORT_MAX),
+        port=_port_rules(),
     )
 
 
@@ -93,6 +108,7 @@ async def get_function_info(
     """
     return FunctionInfoResponse(
         **_base(settings),
+        port=_port_rules(),
         runtimes=[
             RuntimeCapability(
                 name=spec.name,
