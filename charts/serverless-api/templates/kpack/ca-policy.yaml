@@ -3,7 +3,7 @@
 {{- $inj := .Values.build.caInjection }}
 {{- $certPath := printf "%s/%s" $inj.mountPath $ca.key }}
 # Mounts the internal CA bundle into build containers so git, pip, npm and go
-# trust internal TLS. Verification stays on. (§5)
+# trust internal TLS. Verification stays on. docs/BUILDING.md - Trust: CA Injection.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:

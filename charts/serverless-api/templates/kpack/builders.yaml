@@ -1,5 +1,6 @@
 {{- if .Values.build.enabled }}
-# A Builder must be Ready before any Image using it will build. (§3)
+# A Builder must be Ready before any Image using it will build.
+# docs/BUILDING.md - Buildpack Topology.
 # The ClusterStack and ClusterStore it binds to are created by the kpack chart;
 # this composes them into a builder image and pushes it to the registry.
 {{- range .Values.build.builders }}

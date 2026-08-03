@@ -13,7 +13,7 @@ image:
 replicaCount: 2
 
 namespaces:
-  # The API and everything that builds images (§2.1).
+  # The API itself. Builds and workloads live in `workloads` below.
   api: serverless-api
   # Knative Services and their pods - what has been built, not the building.
   workloads: serverless-workloads
@@ -42,7 +42,7 @@ registry:
 # Runtimes offered to clients, mounted as a file. Keys: builder (a build.builders
 # entry), versionEnv, defaultVersion, versions (must be a subset of what the
 # pinned buildpackage ships), buildEnv. commonEnv and dependencyMirror are merged
-# into buildEnv at render time. docs/BUILDING.md - Runtime Versions.
+# into buildEnv at render time. docs/BUILDING.md - Runtime Versions & Dependencies.
 runtimesMountPath: /etc/serverless/runtimes
 runtimes:
   - name: python

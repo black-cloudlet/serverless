@@ -1,5 +1,6 @@
 # External exposure for the API itself. The serverless-api.{base_domain} DNS
-# record fronts the active instance across both clusters (docs §2/§4).
+# record fronts the active instance across both clusters
+# (docs/ARCHITECTURE.md - Networking & Exposure).
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:

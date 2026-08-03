@@ -39,7 +39,7 @@ Dockerfile
 ```
 
 The ArgoCD `ApplicationSet` is **not** in this repo - it lives in the central GitOps repo
-and renders `charts/serverless-api` once per site (docs §8).
+and renders `charts/serverless-api` once per site (docs/DEPLOYING.md - Deployment & GitOps).
 
 ## Develop
 
@@ -57,7 +57,8 @@ SERVERLESS_AUTH_ENABLED=false uvicorn api.main:app --reload
 ```
 
 Configuration is environment-driven (`SERVERLESS_*`); see `.env.example`. In production the
-values are projected from Vault via the External Secrets Operator (docs §7).
+values are projected from Vault via the External Secrets Operator
+(docs/ARCHITECTURE.md - Secrets Management).
 
 > **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
 > builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
