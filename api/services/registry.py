@@ -40,13 +40,18 @@ def delete_function_repositories(registry: RegistryConfig, group: str, name: str
     try:
         with httpx.Client(base_url=registry.api_url, timeout=registry.timeout) as client:
             for repo in (image_repository(group, name), cache_repository(group, name)):
-                _delete(client, headers, f"{prefix}{repo}")
+                _delete_repository(client, headers, f"{prefix}{repo}")
     except Exception:  # noqa: BLE001 - a leftover repository is logged, not fatal
         logger.exception("registry cleanup failed for '%s' in group '%s'", name, group)
 
 
-def _delete(client: httpx.Client, headers: dict, repo: str) -> None:
+def _delete_repository(client: httpx.Client, headers: dict, repo: str) -> None:
     """Delete one repository.
+
+    The outcomes are read off httpx rather than compared against literals:
+    ``is_success`` is the whole 2xx class, which is what "deleted" means here.
+    Quay answers a repository delete with 204, but listing the codes we happen
+    to have seen would quietly log a successful 200 as a failure.
 
     Args:
         client: The registry HTTP client.
@@ -54,11 +59,11 @@ def _delete(client: httpx.Client, headers: dict, repo: str) -> None:
         repo: The ``{namespace}/{repository}`` path the Quay route expects.
     """
     resp = client.delete(f"/api/v1/repository/{repo}", headers=headers)
-    if resp.status_code in (200, 202, 204):
+    if resp.is_success:
         logger.info("deleted registry repository '%s'", repo)
-    elif resp.status_code == 404:
+    elif resp.status_code == httpx.codes.NOT_FOUND:
         pass  # never pushed, or already gone
-    elif resp.status_code in (401, 403):
+    elif resp.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
         # The token acts as the user who authorized it: that user needs admin on
         # this namespace, and with no `registry.organization` every group is one.
         logger.warning(

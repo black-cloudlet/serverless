@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -29,9 +31,10 @@ class _Quay:
             return httpx.Response(405)
         self.tokens.append(request.headers.get("Authorization", ""))
         repo = request.url.path.removeprefix("/api/v1/repository/")
-        if self._status in (200, 202, 204):
+        resp = httpx.Response(self._status)
+        if resp.is_success:
             self.deleted.append(repo)
-        return httpx.Response(self._status)
+        return resp
 
 
 def _run(monkeypatch, quay: _Quay, settings=None) -> None:
@@ -110,3 +113,29 @@ def test_repository_paths_track_the_reference_convention():
     assert cache_reference("registry.internal/acme", req).startswith(
         f"registry.internal/acme/{cache}:"
     )
+
+
+@pytest.mark.parametrize("status", [200, 201, 202, 204])
+def test_any_2xx_is_reported_as_deleted(monkeypatch, caplog, status):
+    """Success is the whole 2xx class, not the codes we happened to have seen.
+
+    Asserted on what the code *logged*, not on what the fake recorded: the
+    response status changes nothing about the request that was already sent, so
+    the log line is the only place the code's verdict is observable. Quay
+    answers with 204 today, and enumerating that - plus the 200/202 added
+    defensively - would report a registry answering 201 as a failed cleanup.
+    """
+    caplog.set_level(logging.INFO, logger="api.services.registry")
+    _run(monkeypatch, _Quay(status=status))
+
+    assert [r.levelno for r in caplog.records] == [logging.INFO, logging.INFO]
+    assert "deleted registry repository" in caplog.records[0].getMessage()
+
+
+def test_a_refused_delete_is_reported_as_a_warning(monkeypatch, caplog):
+    """The counterpart: a non-2xx must not be logged as a successful cleanup."""
+    caplog.set_level(logging.INFO, logger="api.services.registry")
+    _run(monkeypatch, _Quay(status=403))
+
+    assert [r.levelno for r in caplog.records] == [logging.WARNING, logging.WARNING]
+    assert "not authorized" in caplog.records[0].getMessage()
