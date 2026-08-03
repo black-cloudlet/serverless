@@ -100,7 +100,7 @@ spec:
 {{- if and .Values.build.enabled $build.enabled }}
 ---
 # Build pods only (`kpack.io/build`), not tenant pods. Additive: the default-deny
-# and the tenant allowlist above are unchanged. docs/BUILD-PIPELINE.md §12.6.
+# and the tenant allowlist above are unchanged. docs/DEPLOYING.md - Network policy for build pods.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
