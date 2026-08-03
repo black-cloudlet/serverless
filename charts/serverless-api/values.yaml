@@ -13,11 +13,16 @@ image:
 replicaCount: 2
 
 namespaces:
-  # The API and everything that builds images (§2.1).
+  # The API itself. Builds and workloads live in `workloads` below.
   api: serverless-api
   # Knative Services and their pods - what has been built, not the building.
   workloads: serverless-workloads
+  # -- Labels for both namespaces; the two below add to (and override) them.
+  # labels:
+  #   team: platform
   labels: {}
+  # apiLabels:
+  #   pod-security.kubernetes.io/enforce: restricted
   apiLabels: {}
   workloadsLabels: {}
 
@@ -39,20 +44,10 @@ registry:
   url: registry.internal
   organization: ""
 
-# Function runtimes offered to clients, mounted as a file (see services.runtimes).
-#
-# Each entry resolves a runtime to the kpack Builder that builds it and to the
-# build-time environment that selects the language version and points the package
-# manager at the on-prem artifact server. `build.commonEnv` and the dependency
-# mirror are merged into every entry's `buildEnv` when the ConfigMap is rendered,
-# so the API applies one already-resolved list. See docs/BUILD-PIPELINE.md §4.
-#
-#   builder        Name of a `build.builders` entry (several runtimes may share one).
-#   versionEnv     Buildpack env var that selects the language version.
-#   defaultVersion Used when the caller does not request a version.
-#   versions       Allow-list offered to callers. MUST be a subset of what the
-#                  pinned buildpackage ships - there is no fallback download.
-#   buildEnv       Extra build env (package-manager index URLs, ...).
+# Runtimes offered to clients, mounted as a file. Keys: builder (a build.builders
+# entry), versionEnv, defaultVersion, versions (must be a subset of what the
+# pinned buildpackage ships), buildEnv. commonEnv and dependencyMirror are merged
+# into buildEnv at render time. docs/BUILDING.md - Runtime Versions & Dependencies.
 runtimesMountPath: /etc/serverless/runtimes
 runtimes:
   - name: python
@@ -82,44 +77,36 @@ runtimes:
       - name: npm_config_registry
         value: "https://artifactory.internal/artifactory/api/npm/npm/"
 
-# Function image builds (kpack + Cloud Native Buildpacks). docs/BUILD-PIPELINE.md.
-#
-# Created in `namespaces.api`, not `namespaces.workloads` (§2.1). All images
-# resolve against `registry.url`, never a public registry.
+# Function image builds (kpack + Cloud Native Buildpacks). docs/BUILDING.md.
+# Everything lands in `namespaces.workloads` and resolves against `registry.url`.
 build:
   # False where kpack is not installed; the API and its workloads still deploy.
   enabled: true
 
-  # The cluster-scoped content the Builders below are composed from. Both are
-  # created by the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`),
-  # which owns everything cluster-wide; these are references only, so the names
-  # must match what that release created.
-  #
-  # The store must provide every buildpack id used in the orders below or the
-  # Builder never becomes Ready. That contract now spans two releases, so a
-  # mismatch surfaces as a not-Ready Builder rather than as a chart error.
+  # References to cluster-scoped objects the kpack release creates
+  # (clusterBuild.stacks / clusterBuild.stores). Names must match, and the store
+  # must provide every id the orders below name - kpack reports a mismatch on
+  # the Builder's status, nothing checks it here.
   stack:
     name: serverless-base
 
   store:
     name: serverless-store
 
-  # Builder images land in `{registry base}/{builderRepository}/{name}`; the
-  # repo must exist and be writable by the build ServiceAccount.
+  # Builder images land in `{registry base}/{builderRepository}/{name}`. The repo
+  # must exist and be writable by the build ServiceAccount.
   builderRepository: serverless/builders
 
-  # Username the API pairs with each caller's git token in the basic-auth Secret
-  # kpack clones with. GitHub and GitLab PATs ignore it; Bitbucket app passwords
-  # need the real username, so override there.
+  # Username paired with each caller's git token. GitHub/GitLab PATs ignore it;
+  # Bitbucket app passwords need the real username.
   gitUsername: x-access-token
 
   # Identity the Builders run as - registry only, no git credential. Function
-  # builds use a per-function account the API creates instead (§6).
+  # builds use a per-function account the API creates.
   serviceAccount:
     name: kpack-builder
-    # The one platform-wide build credential: kpack pushes the built image with
-    # it, the build pod pulls the builder image with it, and every function's
-    # KSVC pulls its image with it - so a function never supplies registry creds.
+    # The one platform-wide build credential: kpack pushes with it, the build pod
+    # and every function's KSVC pull with it.
     registrySecret:
       name: serverless-registry-creds
       # False when the Secret is provided out-of-band.
@@ -128,35 +115,32 @@ build:
       usernameProperty: registry-username
       passwordProperty: registry-password
 
-  # Internal-CA trust for build pods, as a Kyverno mutation rather than the
-  # Paketo ca-certificates binding: the binding misses `prepare`, which is where
-  # kpack clones over TLS. Verification is never disabled (§5).
+  # Internal-CA trust for build pods, as a Kyverno mutation - the Paketo
+  # ca-certificates binding misses `prepare`, where kpack clones over TLS.
+  # docs/BUILDING.md - Trust: CA Injection.
   caInjection:
     # Needs Kyverno. False if the CA is baked into the mirrored stack images.
     enabled: true
-    # Not caBundle.mountPath (/etc/ssl/certs) - that would shadow the build
-    # image's own trust store. This path plus per-tool env is additive.
+    # NOT /etc/ssl/certs - that would shadow the build image's own trust store.
     mountPath: /etc/serverless/ca
-    # Fail rejects the build pod outright; Ignore would let it start without the
-    # CA and die later with an opaque TLS error from pip/npm/git.
+    # Fail rejects the build pod; Ignore lets it start and die on an opaque TLS error.
     failurePolicy: Fail
 
-  # Redirects every buildpack runtime download to the on-prem artifact server;
-  # required when airgapped. `{originalHost}` is substituted and the upstream
-  # path appended, so a mirror of upstream layout needs no curation. A mirror
-  # needing auth must use a `dependency-mirror` binding instead, to keep
-  # credentials out of this ConfigMap (§14.4).
-  # e.g. https://artifactory.internal/artifactory/deps/{originalHost}
+  # Redirects every buildpack download to the on-prem artifact server; required
+  # when airgapped. `{originalHost}` is required, not cosmetic. A mirror needing
+  # auth must use a `dependency-mirror` binding instead, to keep credentials out
+  # of this ConfigMap.
+  # dependencyMirror: https://artifactory.internal/deps/{originalHost}
   dependencyMirror: ""
 
   # Build env applied to every runtime, merged ahead of each runtime's buildEnv.
+  # commonEnv:
+  #   - name: BP_OCI_SOURCE
+  #     value: https://git.internal
   commonEnv: []
 
-  # Requests/limits for the build pod (kpack Image spec.build.resources). Builds
-  # are far heavier than the function they produce - a dependency resolve plus a
-  # compile - so without limits they are BestEffort and are the first thing
-  # evicted under node pressure. One bound for every build: the variance that
-  # matters is small function vs large one, not Go vs Node.
+  # Build pod requests/limits. A build is far heavier than the function it
+  # produces; without these it is BestEffort and evicted first under pressure.
   resources:
     requests:
       cpu: 500m
@@ -165,23 +149,28 @@ build:
       cpu: "2"
       memory: 4Gi
 
-  # One kpack Builder per entry. `order` takes ids, {id, optional} entries, or
-  # explicit [{group: [...]}] groups (see the builderOrder helper).
+  # One kpack Builder per entry. Groups are tried in order; the first whose
+  # non-optional buildpacks all detect wins. Components are spelled out rather
+  # than using the language composites, so an unsupported path fails at `detect`
+  # instead of mid-build. docs/BUILDING.md - Buildpack Topology.
   #
-  # Groups are tried in order; the first whose non-optional buildpacks all
-  # detect wins. They are spelled out rather than referencing the language
-  # composites so the platform supports exactly the paths it mirrors - anything
-  # else fails at `detect` instead of mid-build on an unmirrored download:
+  # `order` accepts three shapes, so a Paketo order can be pasted in verbatim.
+  # The entries below use the third; the first two are shorthand for one group:
   #
-  #   go      - vendored and non-vendored
-  #   python  - requirements.txt (pip) and pyproject.toml (poetry)
-  #   node    - npm; yarn is deliberately not offered
+  #   order: [paketo-buildpacks/go-dist, paketo-buildpacks/go-build]
+  #   order:
+  #     - { id: paketo-buildpacks/go-dist }
+  #     - { id: paketo-buildpacks/git, optional: true }
+  #   order:
+  #     - group:
+  #         - { id: paketo-buildpacks/go-dist }
+  #         - { id: paketo-buildpacks/git, optional: true }
   #
-  # Every id must exist in the ClusterStore or the Builder never becomes Ready;
-  # `optional` governs detection, not presence.
+  # `optional` governs detection, not presence: every id must still exist in the
+  # ClusterStore or the Builder never becomes Ready.
   builders:
-    # Two groups, differing only by go-mod-vendor: vendored apps take the
-    # first, everything else falls through to the second and needs GOPROXY.
+    # Two groups differing only by go-mod-vendor: vendored apps take the first,
+    # everything else falls through to the second and needs GOPROXY.
     - name: go
       order:
         - group:
@@ -203,8 +192,7 @@ build:
             - { id: paketo-buildpacks/procfile, optional: true }
             - { id: paketo-buildpacks/environment-variables, optional: true }
             - { id: paketo-buildpacks/image-labels, optional: true }
-    # pip first, then the two poetry variants (poetry-run vs python-start).
-    # pipenv and conda groups are omitted - their dependencies are not mirrored.
+    # pip first, then the two poetry variants. pipenv and conda are omitted.
     - name: python
       order:
         - group:
@@ -239,8 +227,7 @@ build:
             - { id: paketo-buildpacks/procfile, optional: true }
             - { id: paketo-buildpacks/environment-variables, optional: true }
             - { id: paketo-buildpacks/image-labels, optional: true }
-    # npm only. The upstream yarn group is omitted, so a yarn.lock app fails at
-    # detect rather than requiring the yarn dependencies to be mirrored.
+    # npm only; a yarn.lock app fails at detect rather than needing yarn mirrored.
     - name: node
       order:
         - group:
@@ -291,8 +278,11 @@ service:
 
 # The OpenShift Route exposing the API.
 route:
+  # -- Defaults to the operator-generated host.
   host: ""
   labels: {}
+  # annotations:
+  #   haproxy.router.openshift.io/timeout: 60s
   annotations: {}
 
 resources:
@@ -303,8 +293,8 @@ resources:
     cpu: "1"
     memory: 512Mi
 
-# Default-deny NetworkPolicies isolating workload pods from each other and other
-# namespaces. Verify namespace names + CIDRs match your cluster.
+# Default-deny NetworkPolicies for workload pods. Verify the namespace names and
+# CIDRs match your cluster.
 networkPolicy:
   enabled: true
   # Namespaces allowed to connect TO workload pods.
@@ -317,30 +307,29 @@ networkPolicy:
   egressNamespaces:
     - knative-serving # autoscaler / webhook
   dnsNamespace: openshift-dns
-  # Off-cluster egress (LBs/Routes/external); internal CIDRs excluded so pods
-  # can't reach other pods/Services directly. Set to YOUR cluster's CIDRs.
+  # Off-cluster egress. Internal CIDRs are excluded so pods cannot reach other
+  # pods/Services directly - set these to YOUR cluster's CIDRs.
   externalEgress:
     cidr: 0.0.0.0/0
     exceptCIDRs:
       - 10.128.0.0/14 # pod network
       - 172.30.0.0/16 # service network
 
-  # Build pods share the workloads namespace and its default-deny, but need to
-  # reach things tenant pods must not: git, the registry, the artifact mirror.
-  # NetworkPolicies are additive, so this opens those paths for pods labelled
-  # `kpack.io/build` ONLY - the tenant allowlist above is untouched.
-  #
-  # The off-cluster rule above already covers a git/registry/mirror that lives
-  # outside the cluster; `egressCIDRs` is for the ones that do not, since the
-  # internal pod and service CIDRs are excluded there.
+  # Build pods need git, the registry and the artifact mirror, which tenant pods
+  # must not reach. NetworkPolicies are additive, so this opens those paths for
+  # pods labelled `kpack.io/build` only. The off-cluster rule above already
+  # covers anything outside the cluster; these are for in-cluster targets.
   build:
     enabled: true
-    # Namespaces allowed to reach build pods. kpack drives builds through the
-    # API server and reads logs via the kubelet, so nothing normally connects
+    # kpack drives builds through the API server, so nothing normally connects
     # in; this is here for a kpack that grows a direct call.
     ingressNamespaces:
       - kpack
     # Namespaces build pods may reach - an in-cluster registry or git server.
+    # egressNamespaces:
+    #   - internal-registry
     egressNamespaces: []
     # In-cluster CIDRs for the same, when they are not a namespace you can name.
+    # egressCIDRs:
+    #   - 10.9.0.0/24
     egressCIDRs: []

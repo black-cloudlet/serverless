@@ -3,10 +3,11 @@
 # Every field of a runtime entry is serialized, so new per-runtime keys pass
 # through with no template change. Each entry's `buildEnv` arrives already merged
 # with the shared build env and the dependency mirror (see the helper), so the
-# API applies it as-is to a build. docs/BUILD-PIPELINE.md §4.
+# API applies it as-is to a build. docs/BUILDING.md - Runtime Versions & Dependencies.
 #
 # Credentials must never be placed here - this ConfigMap is readable by anyone
-# with ConfigMap read in the namespace. Use a binding instead (§14.4).
+# with ConfigMap read in the namespace. Use a binding instead
+# (docs/BUILDING.md - Airgapped Mirror Inventory).
 apiVersion: v1
 kind: ConfigMap
 metadata:
