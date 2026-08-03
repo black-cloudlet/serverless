@@ -11,7 +11,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - Function builds cache their layers in the registry rather than in a
   PersistentVolumeClaim. Every kpack `Image` now carries an explicit
-  `spec.cache.registry.tag` at `{base}/{group}/{name}/cache`; nothing set
+  `spec.cache.registry.tag` at `{base}/{group}/{name}_cache`; nothing set
   `spec.cache` before, so the choice fell to kpack's own default of a PVC per
   `Image` - storage that grew with the function count instead of with what was
   cached. New chart value `build.cache` (`registry`, the default, or `inherit`

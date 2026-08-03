@@ -219,7 +219,7 @@ def test_build_cache_defaults_to_the_registry_not_a_volume():
     _, manifests = _manifests()
     # the volume form is a PVC per Image, so it scales with the function count
     assert _by_kind(manifests, "Image")["spec"]["cache"] == {
-        "registry": {"tag": "registry.internal/acme/payments/hello/cache:latest"}
+        "registry": {"tag": "registry.internal/acme/payments/hello_cache:latest"}
     }
 
 

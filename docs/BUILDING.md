@@ -38,7 +38,7 @@ the build flow, and what the API owns versus the build service.
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
-| Build cache | **Registry**, at `{base}/{group}/{name}/cache` - not kpack's default PVC per `Image`, which scales with the function count |
+| Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
 | Registry layout | `registry.url` + optional `registry.organization`, prefixing every image the chart and the API reference (BUILDING.md: Runtime Versions & Dependencies) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
@@ -203,7 +203,7 @@ pair:
 
   base/{build.builderRepository}/{name}             Builder tags
   base/{group}/{name}:{branch}                      function images (the API)
-  base/{group}/{name}/cache:latest                  build layer cache (BUILDING.md: Build cache)
+  base/{group}/{name}_cache:latest                  build layer cache (BUILDING.md: Build cache)
 ```
 
 Empty organization collapses this to the flat `{host}/{repository}` layout, so existing
@@ -263,18 +263,23 @@ one also pins its build to the node holding it. The registry is storage the plat
 already runs, the build `ServiceAccount` already carries a push credential for it
 (BUILDING.md: Registry & Git Credentials), and nothing new has to be provisioned per function.
 
-The cache lands beside the function image, one segment deeper:
+The cache is a sibling repository of the function image:
 
 ```
 base/{group}/{name}:{branch}                      function images
-base/{group}/{name}/cache:latest                  that function's layer cache
+base/{group}/{name}_cache:latest                  that function's layer cache
 ```
 
-The extra segment is load-bearing, not cosmetic. `group` and `name` are both DNS-1123
-labels, so a function repository is *always* exactly two segments below the base and a
-three-segment path can never be one. Parking the cache in the function's own repository
-under a reserved tag would not be safe the same way: a branch named `cache` projects to
-exactly that tag, and image and cache would overwrite each other.
+The `_` is load-bearing, not cosmetic. A name is a DNS-1123 label, which admits only
+`[a-z0-9-]`, so no function can ever be named `{name}_cache` and the two repositories
+can never be the same one. Two alternatives were rejected for colliding:
+
+- **A reserved tag** in the function's own repository (`{name}:cache`) - a branch named
+  `cache` projects to exactly that tag, and image and cache would overwrite each other.
+- **A nested path** (`{name}/cache`) - collision-free, but it adds a repository level.
+  Quay's native model is two-level (`namespace/repository`), so a nested path needs
+  `FEATURE_EXTENDED_REPOSITORY_NAMES`. The suffix form needs no such flag, and keeps the
+  cache inside whatever namespace the function image already lives in.
 
 The cache is per `Image` - that is, per function, not per branch. There is one `Image` per
 function whose `spec.tag` follows the branch, so keying the cache by branch would strand
@@ -577,7 +582,7 @@ creates **one** build - no lease or leader election is required.
 | Event | Action |
 |-------|--------|
 | Function delete | Nothing to do *in the cluster*: the `Image` and build `ServiceAccount` are owned by the KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
-| Function delete (registry) | The function's image repository and its `.../cache` repository (BUILDING.md: Build cache) both outlive the KSVC - nothing in the cluster owns registry content. Both are named deterministically from `{group}/{name}`, so registry retention can select them together. |
+| Function delete (registry) | The function's image repository and its `{name}_cache` repository (BUILDING.md: Build cache) both outlive the KSVC - nothing in the cluster owns registry content. Both are named deterministically from `{group}/{name}`, so registry retention can select them together. |
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
 | Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
 
@@ -611,7 +616,7 @@ spec:
       revision: 9f2c1ab…               # pushed SHA (webhook) or branch
   cache:                               # registry, not a PVC (BUILDING.md: Build cache)
     registry:
-      tag: registry.internal/<org>/payments/hello/cache:latest
+      tag: registry.internal/<org>/payments/hello_cache:latest
   build:
     env:
       - { name: BP_CPYTHON_VERSION, value: "3.12" }
@@ -910,9 +915,10 @@ Either form is attached per build through `spec.build.services`, alongside the C
    *Default if undecided: periodic.*
 5. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
    trees (node_modules, Go module graphs) may need explicit limits.
-6. **Cache retention** (BUILDING.md: Build cache) - the `.../cache` repositories grow with every build and
-   nothing prunes them today. Registry-side retention on the `cache` path is the cheapest
-   answer; the alternative is folding them into the periodic prune.
+6. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
+   cache repository does not accumulate tags; superseded blobs are the registry's to
+   reclaim. Whether the registry's own GC settles this, or the periodic prune has to,
+   depends on the registry.
 
 ### Resolved
 
