@@ -65,11 +65,9 @@ class BuildConfig(BaseModel):
     registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
     git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
     resources: dict = Field(default_factory=dict)
-    # "registry" caches build layers in the registry the build already pushes to,
-    # one repository per function and no PVC. "inherit" writes no `spec.cache` at
-    # all and takes whatever the kpack install defaults to - on a stock kpack that
-    # is a PersistentVolumeClaim per Image, which is why it is not the default
-    # here. docs/BUILDING.md - Build cache.
+    # "registry" caches build layers in the registry the build already pushes to;
+    # "inherit" writes no `spec.cache` and takes kpack's default, a PVC per Image.
+    # docs/BUILDING.md - Build cache.
     cache: Literal["registry", "inherit"] = "registry"
 
 

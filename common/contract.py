@@ -158,24 +158,14 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
 def cache_reference(registry_base: str, req: BuildRequest) -> str:
     """Where a build's layer cache lives: ``{base}/{group}/{name}/cache:latest``.
 
-    kpack caches build layers either in a per-``Image`` PersistentVolumeClaim or
-    in the registry. This is the registry form, and the reason it is the default
-    is arithmetic: a volume cache is a PVC per function, provisioned at its full
-    size whether or not a build ever fills it, while the registry is storage the
-    platform already runs and already pushes to.
+    The registry form of kpack's cache, preferred over the volume form because
+    that one is a PVC per function (docs/BUILDING.md - Build cache).
 
-    The extra ``cache`` path segment is what keeps it from ever colliding with a
-    function image. Both ``group`` and ``name`` are DNS-1123 labels, so neither
-    can contain "/" and a function repository is *always* exactly two segments
-    below the base - a three-segment path is unreachable. Sharing the function's
-    repository under a reserved tag would not be safe the same way: a branch
-    named ``cache`` projects to that exact tag (:func:`common.names.image_tag`),
-    and the two would overwrite each other.
-
-    A dedicated repository per function, rather than one shared cache, is also
-    what lets registry retention name it: it is derived from ``{group}/{name}``
-    exactly like the image repository, so a policy can select the two together.
-    Nothing prunes it today (BUILDING.md: Open Questions).
+    The extra path segment is what makes a collision with a function image
+    impossible rather than unlikely: ``group`` and ``name`` are DNS-1123 labels,
+    so a function repository is always exactly two segments below the base. A
+    reserved tag in the function's own repository would not be - a branch named
+    ``cache`` projects to exactly that tag (:func:`common.names.image_tag`).
 
     Args:
         registry_base: Registry host, plus organization when the registry has

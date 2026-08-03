@@ -87,10 +87,9 @@ def build_image(
         env: Build-time environment (runtime version, package index URLs, the
             dependency mirror).
         resources: Requests/limits for the build pod.
-        cache_tag: Registry reference to cache build layers in
-            (:func:`common.contract.cache_reference`). None omits ``spec.cache``
-            entirely, which does NOT mean "no cache" - it hands the decision to
-            the kpack install's own defaulting, which is a PVC per Image.
+        cache_tag: Registry reference to cache build layers in. None omits
+            ``spec.cache``, which is not "no cache" - it takes the kpack
+            install's default, a PVC per Image.
 
     Returns:
         The Image manifest dict.
@@ -107,10 +106,8 @@ def build_image(
     # buildpacks detect and build in, not the ref that is cloned.
     if sub_path:
         spec["source"]["subPath"] = sub_path
-    # Written as the registry form, never the volume form: the volume cache is a
-    # PVC per Image, so it scales with the number of functions rather than with
-    # how much is actually cached. The build ServiceAccount already carries the
-    # push credential for this registry, so nothing extra is needed to use it.
+    # The build ServiceAccount already pushes to this registry, so the cache
+    # needs no credential of its own.
     if cache_tag:
         spec["cache"] = {"registry": {"tag": cache_tag}}
     build: dict = {}
