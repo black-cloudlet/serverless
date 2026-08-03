@@ -58,6 +58,11 @@ ANNOTATION_INJECTED_ENV = "serverless.platform/injected-env"
 # of read-back as it is not part of the user's spec.
 CA_BUNDLE_VOLUME = "ca-bundle"
 
+# Container port bounds (a TCP port). The single source the field validators on
+# both offerings and the /info capabilities projection read, so they can't drift.
+PORT_MIN = 1
+PORT_MAX = 65535
+
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
 ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]

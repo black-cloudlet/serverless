@@ -19,6 +19,7 @@ deployer's fan-out.
 from __future__ import annotations
 
 import base64
+from typing import TYPE_CHECKING
 
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
@@ -36,21 +37,24 @@ from api.services.files import files_name
 from api.services.ksvc_state import extract_image
 from common.cluster import Cluster, ResourceKind
 from common.errors import NotFoundError, ServiceUnavailableError
-from common.labels import OFFERING_FUNCTION
+
+if TYPE_CHECKING:  # a type hint only - offering imports this module at runtime
+    from api.services.offering import Offering
 
 
-def existing_state(obj: dict, cluster: Cluster, offering: str, oname: str) -> dict:
+def existing_state(obj: dict, cluster: Cluster, offering: Offering, oname: str) -> dict:
     """Read an existing workload's carried-forward state + backing secret values.
 
     Runs off the event loop (blocking cluster reads). ``env_values``/
     ``files_values`` back the keep-on-write path (fail loud on a transient read;
-    see :func:`secret_data`). The pull-secret and git reads are best-effort: a
-    failure just degrades a registry keep to carrying the existing secret forward.
+    see :func:`secret_data`). The pull-secret read is best-effort: a failure just
+    degrades a registry keep to carrying the existing secret forward.
 
     Args:
         obj: The workload's KSVC, already fetched.
         cluster: The site to read the backing Secrets from.
-        offering: "function" or "container".
+        offering: The offering, for whatever it carries that this doesn't
+            (:meth:`~api.services.offering.Offering.read_extra_state`).
         oname: The object name (``{name}-{group}``).
 
     Returns:
@@ -82,11 +86,9 @@ def existing_state(obj: dict, cluster: Cluster, offering: str, oname: str) -> di
             state["registry_token"] = secret_svc.registry_token(ps)
         except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades to carry-forward
             pass
-    # Functions carry a stored git token; read it so a build-input change can
-    # rebuild without the client re-supplying it.
-    if offering == OFFERING_FUNCTION:
-        git = secret_text(cluster, secret_svc.git_secret_name(oname))
-        state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
+    # Whatever else this offering carries forward - a function's stored git token,
+    # so a build-input change can rebuild without the client re-supplying it.
+    state.update(offering.read_extra_state(cluster, oname))
     return state
 
 

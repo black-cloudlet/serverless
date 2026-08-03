@@ -21,31 +21,27 @@ the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from api.auth.claims import Principal
 from api.core.config import Settings
 from api.models.common import (
     ANNOTATION_HOST,
-    ANNOTATION_RUNTIME,
-    ANNOTATION_RUNTIME_VERSION,
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
-    BuildStatusView,
     LogsResponse,
     PodLogs,
     SiteStatus,
     WorkloadResponse,
     WorkloadSummary,
 )
-from api.models.container import ContainerResponse
-from api.models.function import FunctionResponse
 from api.services import describe as describe_svc
 from api.services import ksvc as ksvc_svc
 from api.services import ksvc_state, preflight, site_apply, site_read
 from api.services import route as route_svc
-from api.services import secrets as secret_svc
 from api.services.deployer import (
     Deployer,
     aggregate,
@@ -56,6 +52,7 @@ from api.services.deployer import (
 from api.services.env import env_secret_name, resolve_env
 from api.services.files import files_name, resolve_files
 from api.services.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
+from api.services.offering import Offering
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
@@ -63,11 +60,87 @@ from common.errors import (
     NotFoundError,
     SiteTotalFailure,
 )
-from common.labels import OFFERING_CONTAINER, OFFERING_FUNCTION
 from common.logging import get_logger
 from common.names import object_name
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ApplyRequest:
+    """Everything one apply needs, as a value instead of a signature.
+
+    :meth:`WorkloadService.apply_workload` took twenty-five keyword arguments, and
+    the reason it could is that they were the *union* of both offerings' needs -
+    a container passed five dead build-metadata nulls, a function
+    passed a dead pull-secret manifest. Bundling them does not by itself fix
+    that, but it puts the whole input in one place where the offering-specific
+    tail is visible as a group rather than as more parameters.
+
+    Attributes:
+        name: Workload name.
+        group: Owning group.
+        user: The authenticated caller.
+        image: The image (or built tag) to deploy.
+        env: Env vars to resolve onto the workload.
+        files: File mounts to resolve onto the workload.
+        scaling: Autoscaling settings.
+        size: Resource t-shirt size.
+        hostname: Optional custom host; None takes the default.
+        sites: Target site names, or None for all.
+        port: Explicit container port, or None for Knative's default (8080).
+        created: True for a create - enables the absence check and the
+            rollback of a half-applied workload, and picks the success status.
+        pull_secret_name: Name of the image-pull Secret the KSVC references.
+        pull_secret_manifest: The pull Secret to apply, when this offering
+            creates one (a container's; a function's is the chart's).
+        prev_host: The host the workload currently uses (update only); when it
+            differs from the resolved host, the old DomainMapping is retired so
+            the old host doesn't stay claimed.
+        kept_env: Decoded existing env-Secret values, so a secret env var sent
+            without a value keeps its stored value (update only).
+        kept_files: Decoded existing files-Secret values, so a secret file sent
+            without content keeps its stored content (update only).
+        extra_secrets: Owned Secrets applied to every site (the function's git
+            token). Not in the managed prune set, so omitting one keeps the
+            stored copy.
+        local_resources: Owned manifests applied to the local site only (the
+            function's Image and build ServiceAccount). Fanning them out would
+            race two sites to push the same tag.
+        runtime: Function runtime, stamped as an annotation.
+        version: Requested language version, stamped as an annotation. None
+            means the caller took the platform default.
+        git_url: Function source repo, stamped as an annotation.
+        branch: Function source branch, stamped as an annotation.
+        path: Function source sub-directory, stamped as an annotation.
+    """
+
+    name: str
+    group: str
+    user: Principal
+    image: str
+    env: list
+    files: list
+    scaling: object
+    size: str
+    hostname: str | None
+    sites: list[str] | None
+    port: int | None
+    created: bool
+    pull_secret_name: str | None = None
+    pull_secret_manifest: dict | None = None
+    prev_host: str | None = None
+    kept_env: dict[str, str] | None = None
+    kept_files: dict[str, bytes] | None = None
+    extra_secrets: Sequence[dict] = field(default_factory=tuple)
+    local_resources: Sequence[dict] = field(default_factory=tuple)
+    # Build metadata, stamped as KSVC annotations so a read can report the source
+    # a function was built from. All None for an offering that has no build.
+    runtime: str | None = None
+    version: str | None = None
+    git_url: str | None = None
+    branch: str | None = None
+    path: str | None = None
 
 
 class WorkloadService:
@@ -152,11 +225,13 @@ class WorkloadService:
         """Assert no workload named ``{name}-{group}`` exists (see :meth:`assert_deployable`)."""
         await self.assert_deployable(name, group, targets, require_absent=True)
 
-    def accepted(self, kind: str, name: str, group: str, host: str, **extra) -> WorkloadResponse:
+    def accepted(
+        self, offering: Offering, name: str, group: str, host: str, **extra
+    ) -> WorkloadResponse:
         """Build the Pending 202 body returned by accept/accept_update.
 
         Args:
-            kind: The offering ("function" or "container").
+            offering: The offering being deployed.
             name: Workload name.
             group: Owning group.
             host: The resolved external host.
@@ -165,15 +240,14 @@ class WorkloadService:
         Returns:
             A response with ``overallStatus="Pending"`` and a ``statusUrl``.
         """
-        cls = FunctionResponse if kind == OFFERING_FUNCTION else ContainerResponse
-        return cls(
+        return offering.response_model(
             name=name,
             group=group,
-            type=kind,
+            type=offering.name,
             hostname=host,
             overallStatus="Pending",
             sites=[],
-            statusUrl=f"/api/v1/groups/{group}/{kind}s/{name}",
+            statusUrl=f"/api/v1/groups/{group}/{offering.name}s/{name}",
             **extra,
         )
 
@@ -192,7 +266,7 @@ class WorkloadService:
             logger.exception("background deploy failed for %s", args)
 
     async def accept_create(
-        self, *, offering: str, group: str, spec, user: Principal, background, work, **extra
+        self, *, offering: Offering, group: str, spec, user: Principal, background, work, **extra
     ) -> WorkloadResponse:
         """Run a create's synchronous pre-flight, then schedule the deploy (202).
 
@@ -201,7 +275,7 @@ class WorkloadService:
         queue the deploy and return the Pending 202.
 
         Args:
-            offering: "function" or "container".
+            offering: The offering being created.
             group: The owning group (from the request path).
             spec: The create request (carries name/sites/hostname/env/files).
             user: The authenticated caller.
@@ -228,7 +302,7 @@ class WorkloadService:
     async def accept_update(
         self,
         *,
-        offering: str,
+        offering: Offering,
         group: str,
         name: str,
         spec,
@@ -246,7 +320,7 @@ class WorkloadService:
         background work need not re-fetch it.
 
         Args:
-            offering: "function" or "container".
+            offering: The offering being updated.
             group: The owning group (from the request path).
             name: The workload name.
             spec: The update request.
@@ -284,85 +358,27 @@ class WorkloadService:
         return self.accepted(offering, name, group, host, **extra)
 
     async def apply_workload(
-        self,
-        *,
-        name: str,
-        user: Principal,
-        group: str,
-        image: str,
-        offering: str,
-        env,
-        files,
-        scaling,
-        size,
-        hostname,
-        sites,
-        pull_secret_name: str | None,
-        pull_secret_manifest: dict | None,
-        port: int | None,
-        created: bool,
-        runtime: str | None = None,
-        version: str | None = None,
-        git_url: str | None = None,
-        branch: str | None = None,
-        path: str | None = None,
-        prev_host: str | None = None,
-        kept_env: dict[str, str] | None = None,
-        kept_files: dict[str, bytes] | None = None,
-        extra_secrets: list[dict] = (),
-        local_resources: list[dict] = (),
+        self, req: ApplyRequest, offering: Offering
     ) -> tuple[WorkloadResponse, int]:
         """Build the manifests once and apply the workload to every target site.
 
         Applies the KSVC, its derived resources (owned via ownerReferences), and
         the DomainMapping to each site, pruning backing objects the new spec no
-        longer references. Offering-agnostic; the function/container services
-        supply the offering-specific inputs.
+        longer references. Offering-agnostic: what differs between a function and
+        a container is asked of ``offering``, never branched on here.
 
         Args:
-            name: Workload name.
-            user: The authenticated caller.
-            group: Owning group.
-            image: The image (or built digest) to deploy.
-            offering: "function" or "container".
-            env: Env vars to resolve onto the workload.
-            files: File mounts to resolve onto the workload.
-            scaling: Autoscaling settings.
-            size: Resource t-shirt size.
-            hostname: Optional custom host.
-            sites: Target site names, or None for all.
-            pull_secret_name: Name of the image pull secret, if any.
-            pull_secret_manifest: The pull secret manifest to apply, if any.
-            port: Explicit container port, or None for Knative's default
-                (functions pass None). See :func:`api.services.ksvc.build_ksvc`.
-            created: True for a create (affects the success status code).
-            runtime: Function runtime, stamped as an annotation.
-            version: Requested language version, stamped as an annotation. None
-                means the caller took the platform default.
-            git_url: Function source repo, stamped as an annotation.
-            branch: Function source branch, stamped as an annotation.
-            path: Function source sub-directory, stamped as an annotation.
-            prev_host: The host the workload currently uses (update only); when it
-                differs from the resolved host, the old DomainMapping is retired so
-                the old host doesn't stay claimed.
-            kept_env: Decoded existing env-Secret values, so a secret env var sent
-                without a value keeps its stored value (update only).
-            kept_files: Decoded existing files-Secret values, so a secret file sent
-                without content keeps its stored content (update only).
-            extra_secrets: Owned Secrets applied to every site (the function's
-                git token). Not in the managed prune set, so omitting one keeps
-                the stored copy.
-            local_resources: Owned manifests applied to the local site only (the
-                function's Image and build ServiceAccount). Fanning them out
-                would race two sites to push the same tag.
+            req: The apply request (see :class:`ApplyRequest`).
+            offering: The offering being deployed.
 
         Returns:
             The response body and HTTP status code.
         """
-        self.assert_group(user, group)
-        oname = object_name(name, group)
-        targets = self.deployer.resolve_targets(sites)
-        host = self.host_for(name, hostname, group)
+        self.assert_group(req.user, req.group)
+        oname = object_name(req.name, req.group)
+        targets = self.deployer.resolve_targets(req.sites)
+        host = self.host_for(req.name, req.hostname, req.group)
+        owner = req.user.username
 
         # Re-checked here, immediately before the mutation, and not merely trusted
         # from accept time: this is the guard, and it has to be the last thing that
@@ -370,35 +386,37 @@ class WorkloadService:
         # idempotent apply would otherwise hijack another workload's mapping; on a
         # create the same pass also confirms the name is still unused, which is why
         # the offering services no longer probe for that separately.
-        await self.assert_deployable(name, group, targets, host=host, require_absent=created)
+        await self.assert_deployable(
+            req.name, req.group, targets, host=host, require_absent=req.created
+        )
 
-        resolved = resolve_files(oname, group, user.username, files, kept_files)
-        resolved_env = resolve_env(oname, group, user.username, env, kept_env)
-        backing = resolved.backing + resolved_env.backing + list(extra_secrets)
+        resolved = resolve_files(oname, req.group, owner, req.files, req.kept_files)
+        resolved_env = resolve_env(oname, req.group, owner, req.env, req.kept_env)
+        backing = resolved.backing + resolved_env.backing + list(req.extra_secrets)
         ksvc = ksvc_svc.build_ksvc(
             name=oname,
-            group=group,
-            owner=user.username,
-            image=image,
-            offering=offering,
+            group=req.group,
+            owner=owner,
+            image=req.image,
+            offering=offering.name,
             host=host,
             env=resolved_env.env,
             volumes=resolved.volumes,
-            scaling=scaling,
-            size=size,
-            port=port,
-            pull_secret=pull_secret_name,
-            runtime=runtime,
-            version=version,
-            git_url=git_url,
-            branch=branch,
-            path=path,
+            scaling=req.scaling,
+            size=req.size,
+            port=req.port,
+            pull_secret=req.pull_secret_name,
+            runtime=req.runtime,
+            version=req.version,
+            git_url=req.git_url,
+            branch=req.branch,
+            path=req.path,
             ca_config_map=self.settings.ca_bundle.config_map,
             ca_mount_path=self.settings.ca_bundle.mount_path,
             ca_file=self.settings.ca_bundle.file,
         )
         mapping = route_svc.build_domain_mapping(
-            name=oname, group=group, owner=user.username, offering=offering, host=host
+            name=oname, group=req.group, owner=owner, offering=offering.name, host=host
         )
 
         # The resolvers emit only what the new spec still needs, so prune the rest:
@@ -410,26 +428,24 @@ class WorkloadService:
             (ResourceKind.SECRET, env_secret_name(oname)),
             (ResourceKind.CONFIG_MAP, files_name(oname)),
             (ResourceKind.SECRET, files_name(oname)),
-        }
+        } | offering.managed_secrets(oname)
         # Keyed on whether the KSVC still references it, not on the manifest: the
-        # secret can be carried forward without being re-applied. Containers only.
-        if offering == OFFERING_CONTAINER:
-            managed_derived.add((ResourceKind.SECRET, secret_svc.pull_secret_name(oname)))
-            if pull_secret_name:
-                applied_derived.add((ResourceKind.SECRET, pull_secret_name))
-        to_prune = () if created else managed_derived - applied_derived
+        # secret can be carried forward without being re-applied.
+        if req.pull_secret_name:
+            applied_derived.add((ResourceKind.SECRET, req.pull_secret_name))
+        to_prune = () if req.created else managed_derived - applied_derived
 
         # Always built on the LOCAL site, whether or not the function runs here.
         # The registry is shared, so a site that only runs it pulls what we pushed.
-        build_site = self.deployer.local_site() if local_resources else None
+        build_site = self.deployer.local_site() if req.local_resources else None
         # A non-target local site gets the build objects only. No KSVC there to own
         # them, so they are applied unowned and delete() reclaims them by name.
-        build_only = bool(local_resources) and not any(c.site == build_site for c in targets)
+        build_only = bool(req.local_resources) and not any(c.site == build_site for c in targets)
         if build_only:
             await asyncio.to_thread(
                 site_apply.apply_build_objects,
                 self.deployer.local_cluster(),
-                list(extra_secrets) + list(local_resources),
+                list(req.extra_secrets) + list(req.local_resources),
             )
 
         def apply(cluster: Cluster) -> SiteStatus:
@@ -438,44 +454,35 @@ class WorkloadService:
                 oname=oname,
                 ksvc=ksvc,
                 backing=(
-                    backing + list(local_resources) if cluster.site == build_site else backing
+                    backing + list(req.local_resources) if cluster.site == build_site else backing
                 ),
-                pull_secret_manifest=pull_secret_manifest,
+                pull_secret_manifest=req.pull_secret_manifest,
                 mapping=mapping,
                 to_prune=to_prune,
-                created=created,
-                prev_host=prev_host,
+                created=req.created,
+                prev_host=req.prev_host,
             )
 
         statuses = await self.deployer.fanout(targets, apply)
         overall = aggregate(statuses)
         common = dict(
-            name=name,
-            group=group,
-            type=offering,
+            name=req.name,
+            group=req.group,
+            type=offering.name,
             hostname=host,
             overallStatus=overall,
-            size=size,
+            size=req.size,
             sites=statuses,
-            scaling=scaling,
-            env=describe_svc.redact_env(env),
-            files=describe_svc.redact_files(files),
-            createdAt=datetime.now(ISRAEL_TZ) if created else None,
+            scaling=req.scaling,
+            env=describe_svc.redact_env(req.env),
+            files=describe_svc.redact_files(req.files),
+            createdAt=datetime.now(ISRAEL_TZ) if req.created else None,
         )
-        if offering == OFFERING_FUNCTION:
-            body: WorkloadResponse = FunctionResponse(
-                **common,
-                runtime=runtime,
-                version=version,
-                gitRepo=git_url,
-                branch=branch,
-                path=path,
-            )
-        else:
-            body = ContainerResponse(**common, image=image, port=port)
-        return body, status_code_for(overall, created=created)
+        return offering.applied_response(common, req), status_code_for(overall, created=req.created)
 
-    async def load_existing(self, name: str, offering: str, user: Principal, group: str) -> dict:
+    async def load_existing(
+        self, name: str, offering: Offering, user: Principal, group: str
+    ) -> dict:
         """Fetch an existing workload's carried-forward state (offering-scoped).
 
         Reads from whichever site has the workload; a down site is never reported
@@ -483,7 +490,8 @@ class WorkloadService:
 
         Args:
             name: The workload name.
-            offering: The expected offering ("function" or "container").
+            offering: The expected offering; another one's workload of the same
+                name is hidden as a 404 rather than loaded.
             user: The authenticated caller.
             group: The owning group.
 
@@ -520,9 +528,9 @@ class WorkloadService:
             # An object_name collision could resolve to another group's workload or
             # the other offering; both mean "not this workload" -> hide as 404.
             if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-                labels.get(LABEL_OFFERING) != offering
+                labels.get(LABEL_OFFERING) != offering.name
             ):
-                raise NotFoundError(f"{offering} workload '{name}' not found")
+                raise NotFoundError(f"{offering.name} workload '{name}' not found")
             # Read the backing Secrets from the local site when it has the workload,
             # else any site that does - they're uniform, so prefer the cheapest hop.
             present = {s.site for s in statuses if s.status == "Present"}
@@ -536,16 +544,18 @@ class WorkloadService:
         # Absent on every site we could reach. If one was unreachable we can't be
         # sure it's truly gone -> fail closed (503), not a misleading 404.
         preflight.assert_all_sites_checked(statuses, f"load workload '{name}'")
-        raise NotFoundError(f"{offering} workload '{name}' not found")
+        raise NotFoundError(f"{offering.name} workload '{name}' not found")
 
-    async def get(self, kind: str, name: str, user: Principal, group: str) -> WorkloadResponse:
+    async def get(
+        self, offering: Offering, name: str, user: Principal, group: str
+    ) -> WorkloadResponse:
         """Read one workload with live per-site status and its redacted spec.
 
         Fans out to all sites; a site that returns a clean 404 is omitted, while
         an unreachable site stays visible and degrades the rollup.
 
         Args:
-            kind: The offering ("function" or "container").
+            offering: The offering being read.
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
@@ -559,7 +569,7 @@ class WorkloadService:
                 site was unreachable.
         """
         self.assert_group(user, group)
-        offering = kind  # the API kind ("function"/"container") is the offering label
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
         # The spec is uniform across sites, so read it back once from one
@@ -621,7 +631,7 @@ class WorkloadService:
         # Hidden as a 404 so the response cannot leak that it exists; the real
         # reason is logged, so denied-vs-absent stays debuggable.
         if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-            labels.get(LABEL_OFFERING) != offering
+            labels.get(LABEL_OFFERING) != kind
         ):
             logger.debug(
                 "get %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
@@ -638,13 +648,16 @@ class WorkloadService:
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
         # Independent reads of different objects - the spec's ConfigMaps and pull
-        # secret, and the function's kpack Image - so they overlap instead of
-        # chaining two round trips onto the response. Only a function has a build.
+        # secret, and the build backend's Image - so they overlap instead of
+        # chaining two round trips onto the response. Branching on the declared
+        # capability, not on which offering this is: an offering with no build
+        # must not pay for a thread that would only return None.
         spec_read = asyncio.to_thread(site_read.describe_spec, cluster, obj)
-        if kind == OFFERING_FUNCTION:
-            spec, build = await asyncio.gather(
-                spec_read, asyncio.to_thread(self._build_status, name, group)
+        if offering.has_build:
+            build_read = asyncio.to_thread(
+                offering.build_status, self.builder, self.deployer.local_cluster(), name, group
             )
+            spec, build = await asyncio.gather(spec_read, build_read)
         else:
             spec, build = await spec_read, None
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
@@ -664,53 +677,13 @@ class WorkloadService:
             env=spec.env,
             files=spec.files,
         )
-        if kind == OFFERING_FUNCTION:
-            # function-only: runtime (from annotation); no image (built artifact)
-            annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            return FunctionResponse(
-                **{**common, "overallStatus": ksvc_state.with_build_status(overall, build)},
-                runtime=annotations.get(ANNOTATION_RUNTIME),
-                version=annotations.get(ANNOTATION_RUNTIME_VERSION),
-                gitRepo=spec.gitRepo,
-                branch=spec.branch,
-                path=spec.path,
-                build=build,
-            )
-        # container-only: the client-supplied image
-        return ContainerResponse(
-            **common,
-            image=ksvc_state.extract_image(obj),
-            registryUsername=spec.registryUsername,
-            port=spec.port,
-        )
+        return offering.fetched_response(common, obj, spec, build)
 
-    def _build_status(self, name: str, group: str) -> BuildStatusView | None:
-        """The function's build state from the LOCAL site, or None if it has none.
-
-        One site builds and it is always this one (docs/BUILDING.md), including for a
-        function deployed only elsewhere - so the Image is here whenever it
-        exists anywhere, and a cross-site fan-out would add latency to every GET
-        for something that cannot be found anywhere else.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-
-        Returns:
-            The build status, or None when there is no Image here or the build
-            backend cannot be read - never an error, since a function whose
-            image already exists must still report its KSVC status.
-        """
-        status = self.builder.status(self.deployer.local_cluster(), name, group)
-        if status is None:
-            return None
-        return BuildStatusView(state=status.state, message=status.message)
-
-    async def delete(self, kind: str, name: str, user: Principal, group: str) -> None:
+    async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
         """Delete a workload from every site; GC cascades its derived resources.
 
         Args:
-            kind: The offering ("function" or "container").
+            offering: The offering being deleted.
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
@@ -722,7 +695,7 @@ class WorkloadService:
                 delete cannot be confirmed.
         """
         self.assert_group(user, group)
-        offering = kind  # the API kind ("function"/"container") is the offering label
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         denied: list[str] = []
 
@@ -738,7 +711,7 @@ class WorkloadService:
             # the other offering. Recorded, not raised: raising here would be caught
             # by the fan-out and become indistinguishable from an unreachable site.
             if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-                labels.get(LABEL_OFFERING) != offering
+                labels.get(LABEL_OFFERING) != kind
             ):
                 denied.append(cluster.site)
                 return SiteStatus(site=cluster.site, status="Denied")
@@ -769,19 +742,17 @@ class WorkloadService:
             raise NotFoundError(f"{kind} '{name}' not found")
 
         # Every site answered and none refused, so the workload is gone platform-wide
-        # and the build objects can go too. Reached even when nothing was deleted:
-        # that is the case where an earlier partial delete orphaned them, and a
-        # leftover Image would keep rebuilding a function nothing runs.
-        if offering == OFFERING_FUNCTION:
-            await asyncio.to_thread(
-                site_apply.delete_build_objects, self.deployer.local_cluster(), oname
-            )
+        # and whatever the ownerReferences did not cascade to can go too. Reached
+        # even when nothing was deleted: that is the case where an earlier partial
+        # delete orphaned them, and a leftover Image would keep rebuilding a
+        # function nothing runs.
+        await asyncio.to_thread(offering.after_delete, self.deployer.local_cluster(), oname)
         if all(s.status == "Absent" for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 
     async def logs(
         self,
-        kind: str,
+        offering: Offering,
         name: str,
         user: Principal,
         group: str,
@@ -797,7 +768,7 @@ class WorkloadService:
         deployed here but scaled to zero returns an empty ``pods`` list.
 
         Args:
-            kind: The offering ("function" or "container").
+            offering: The offering being read.
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
@@ -813,7 +784,7 @@ class WorkloadService:
                 can't access it (hidden as 404, matching GET).
         """
         self.assert_group(user, group)
-        offering = kind  # the API kind ("function"/"container") is the offering label
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         cluster = self.deployer.local_cluster()
 
@@ -823,7 +794,7 @@ class WorkloadService:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
             if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-                labels.get(LABEL_OFFERING) != offering
+                labels.get(LABEL_OFFERING) != kind
             ):
                 raise NotFoundError(f"{kind} '{name}' not found")
             pods = cluster.get(
@@ -850,13 +821,13 @@ class WorkloadService:
         return LogsResponse(
             name=name,
             group=group,
-            type=offering,  # type: ignore[arg-type]
+            type=kind,  # type: ignore[arg-type]
             site=self.deployer.local_site(),
             pods=pods,
         )
 
     async def list(
-        self, kind: str, user: Principal, group: str, sort: str = "name"
+        self, offering: Offering, user: Principal, group: str, sort: str = "name"
     ) -> list[WorkloadSummary]:
         """Summarize every workload of this offering owned by ``group``.
 
@@ -866,7 +837,7 @@ class WorkloadService:
         an all-down fan-out fails the call.
 
         Args:
-            kind: The offering ("function" or "container").
+            offering: The offering being listed.
             user: The authenticated caller.
             group: The owning group.
             sort: Sort key, "name" or "createdAt" (default "name").
@@ -878,8 +849,8 @@ class WorkloadService:
             SiteTotalFailure: If every site is unreachable.
         """
         self.assert_group(user, group)
-        offering = kind  # the API kind ("function"/"container") is the offering label
-        selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={offering}"
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={kind}"
 
         def fetch(cluster: Cluster) -> list[dict]:
             return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)

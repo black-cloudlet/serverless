@@ -9,8 +9,7 @@ from fastapi import APIRouter, Depends
 from api import __version__
 from api.core.config import Settings, get_settings
 from api.dependencies import RuntimesDep
-from api.models.common import SITE_STATUSES, Scaling, WorkloadStatus
-from api.models.container import PORT_MAX, PORT_MIN
+from api.models.common import PORT_MAX, PORT_MIN, SITE_STATUSES, Scaling, WorkloadStatus
 from api.models.info import (
     ContainerInfoResponse,
     ErrorCode,
@@ -93,6 +92,9 @@ async def get_function_info(
     """
     return FunctionInfoResponse(
         **_base(settings),
+        # Optional here, required for a container: the platform builds a
+        # function's image, so Knative's injected $PORT is a correct default.
+        port=PortCapability(required=False, min=PORT_MIN, max=PORT_MAX),
         runtimes=[
             RuntimeCapability(
                 name=spec.name,

@@ -384,7 +384,7 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-def _ksvc(image="reg/fn:old", branch="main", path="", version=None):
+def _ksvc(image="reg/fn:old", branch="main", path="", version=None, port=None):
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
 
@@ -404,6 +404,7 @@ def _ksvc(image="reg/fn:old", branch="main", path="", version=None):
         branch=branch,
         path=path,
         version=version,
+        port=port,
     )
 
 
@@ -467,15 +468,17 @@ def _principal():
     return Principal(subject="u", username="alice", groups=["payments"])
 
 
-def _create_spec():
+def _create_spec(**over):
     from api.models.function import FunctionCreate
 
-    return FunctionCreate(
+    base = dict(
         name="hello",
         gitRepo="https://git.internal/payments/hello.git",
         gitToken="ghp_tok",
         runtime="python",
     )
+    base.update(over)
+    return FunctionCreate(**base)
 
 
 def _function_service(clusters, builder, local_site=None):
@@ -617,7 +620,10 @@ def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
         local_site="site-a",
     )
 
-    assert svc._build_status("hello", "payments").state == "Ready"
+    from api.services.offering import FUNCTION
+
+    status = FUNCTION.build_status(svc.builder, svc.deployer.local_cluster(), "hello", "payments")
+    assert status.state == "Ready"
     assert seen == ["site-a"]
 
 
@@ -1076,3 +1082,109 @@ def test_the_kpack_backend_matches_the_build_backend_protocol():
             f"KpackBackend.{name}{inspect.signature(implemented_fn)} does not match "
             f"BuildBackend.{name}{inspect.signature(declared_fn)}"
         )
+
+
+# --------------------------------------------------- a function's port
+
+
+def _pod_ports(cluster):
+    from tests.test_auth_and_deployer import _applied_kind
+
+    container = _applied_kind(cluster, "Service")[0]["spec"]["template"]["spec"]["containers"][0]
+    return container.get("ports")
+
+
+async def test_a_function_omitting_a_port_leaves_knative_its_default():
+    """The normal case: a buildpack app listens on the injected $PORT (8080).
+
+    Nothing must be stamped, because stamping 8080 explicitly would be a
+    different KSVC spec than the one Knative defaults to - a needless revision.
+    """
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    await svc.create("payments", _create_spec(), _principal())
+
+    assert _pod_ports(cluster) is None
+
+
+async def test_a_function_can_pin_a_port_for_an_app_that_hardcodes_one():
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    body, _ = await svc.create("payments", _create_spec(port=9000), _principal())
+
+    assert _pod_ports(cluster) == [{"containerPort": 9000}]
+    assert body.port == 9000  # echoed back, like a container's
+
+
+async def test_a_function_port_is_replaced_on_update_not_kept():
+    """Omitting it returns the function to the default, as omitting `version` does.
+
+    The rule is the container's: only secret material is keep-on-omit, because
+    only secret material cannot be read back. A port can (GET reports it), so a
+    PUT that leaves it out is asking for the default, not for no change.
+    """
+    from api.models.function import FunctionUpdate
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(port=9000)},
+        secrets={"hello-payments-git": stored},
+    )
+    await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+        ),
+        _principal(),
+    )
+
+    assert _pod_ports(cluster) is None
+
+
+async def test_a_function_port_is_reported_on_read():
+    from api.services.offering import FUNCTION
+    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+
+    cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc(port=9000)})
+    engine = _workload_service({"site-a": cluster}, builder=_RecordingBuilder())
+    body = await engine.get(FUNCTION, "hello", _principal(), "payments")
+
+    assert body.port == 9000
+
+
+# ----------------------------------------------- the Offering protocol itself
+
+
+def test_both_offerings_match_the_offering_protocol():
+    """Same guard as the BuildBackend conformance check, for the same reason.
+
+    The engine no longer branches on which offering it has; it calls these
+    members. A missing or renamed one would be an AttributeError on a live
+    request path, and with no type checker in the dev extra nothing else looks.
+    """
+    import inspect
+
+    from api.services.offering import CONTAINER, FUNCTION, Offering
+
+    for impl in (FUNCTION, CONTAINER):
+        for name, declared in vars(Offering).items():
+            if name.startswith("_"):
+                continue
+            assert hasattr(impl, name), f"{type(impl).__name__} is missing Offering.{name}"
+            if isinstance(declared, property):
+                continue  # a declared property may be satisfied by a class attribute
+            # `self` is bound on the implementation's method but declared on the
+            # protocol's, so drop it before the signatures can be compared.
+            declared_sig = inspect.signature(declared)
+            unbound = declared_sig.replace(parameters=list(declared_sig.parameters.values())[1:])
+            assert inspect.signature(getattr(impl, name)) == unbound, (
+                f"{type(impl).__name__}.{name} does not match Offering.{name}"
+            )

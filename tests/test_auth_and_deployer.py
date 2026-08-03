@@ -4,6 +4,7 @@ from api.auth.claims import principal_from_claims
 from api.core.config import Settings, SiteConfig, SSOConfig
 from api.models.common import SiteStatus
 from api.services.deployer import Deployer, aggregate, status_code_for
+from api.services.offering import CONTAINER, FUNCTION
 from common.errors import SiteTotalFailure, ValidationError
 from tests.conftest import runtime_registry
 
@@ -430,7 +431,7 @@ async def test_load_existing_returns_image():
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    existing = await svc.load_existing("app", "container", user, "team")
+    existing = await svc.load_existing("app", CONTAINER, user, "team")
     assert existing["image"] == "reg/x:1"
 
 
@@ -446,7 +447,7 @@ async def test_load_existing_offering_mismatch_404():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await svc.load_existing("app", "function", user, "team")  # it's a container
+        await svc.load_existing("app", FUNCTION, user, "team")  # it's a container
 
 
 async def test_accept_container_returns_pending_and_schedules():
@@ -512,7 +513,7 @@ async def test_get_reports_size_and_live_usage_per_site():
 
     engine = _workload_service({"site-a": _UsageCluster("site-a")})
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
     assert body.size == "medium"
     site = body.sites[0]
     # replicas sourced from Revision.status.actualReplicas (3), not len(metrics) (2)
@@ -603,7 +604,7 @@ async def test_get_returns_redacted_spec():
 
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
 
     # flattened ContainerResponse mirrors the create body (secrets redacted)
     assert body.image == "reg/app:1"  # container image returned on read
@@ -686,7 +687,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
 
     engine = _workload_service({"site-a": _C()}, builder=_ReadyBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("function", "fn", user, "team")
+    body = await engine.get(FUNCTION, "fn", user, "team")
 
     assert body.runtime == "python"
     assert body.gitRepo == "https://git.example.com/team/monorepo.git"
@@ -743,7 +744,7 @@ async def test_get_function_building_image_reports_building():
 
     engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("function", "fn", user, "team")
+    body = await engine.get(FUNCTION, "fn", user, "team")
 
     assert body.build.state == "Building"
     assert body.overallStatus == "Building"
@@ -770,7 +771,7 @@ async def test_get_overall_status_reflects_rollout_state():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     async def _overall():
-        return (await engine.get("container", "app", user, "team")).overallStatus
+        return (await engine.get(CONTAINER, "app", user, "team")).overallStatus
 
     # no Ready condition yet -> Deploying (regression: this used to be Degraded)
     assert await _overall() == "Deploying"
@@ -811,7 +812,7 @@ async def test_get_failed_site_surfaces_ready_condition_message():
 
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
 
     site = body.sites[0]
     assert site.status == "Failed"
@@ -819,7 +820,7 @@ async def test_get_failed_site_surfaces_ready_condition_message():
 
     # Falls back to the reason code when the condition carries no message.
     ksvc["status"]["conditions"][0].pop("message")
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
     assert body.sites[0].error == "RevisionFailed"
 
 
@@ -872,7 +873,7 @@ async def test_get_failed_site_prefers_revision_specific_reason():
 
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
 
     site = body.sites[0]
     assert site.status == "Failed"
@@ -899,7 +900,7 @@ async def test_get_ready_site_has_no_error():
 
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
     assert body.sites[0].status == "Ready" and body.sites[0].error is None
 
 
@@ -914,7 +915,7 @@ async def test_list_overall_status_per_workload():
         {"site-a": _ListCluster("site-a", [deploying, failed])}, local_site="site-a"
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    summaries = {s.name: s.overallStatus for s in await engine.list("container", user, "team")}
+    summaries = {s.name: s.overallStatus for s in await engine.list(CONTAINER, user, "team")}
 
     assert summaries["app"] == "Deploying"  # not a false Degraded
     assert summaries["bad"] == "Degraded"
@@ -1503,7 +1504,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
     # A transient failure reading the backing Secret must NOT look like "no stored
     # value" (which would 400 a valid keep) - it surfaces as a retryable 503.
     with pytest.raises(ServiceUnavailableError):
-        await engine.load_existing("api", "container", user, "team")
+        await engine.load_existing("api", CONTAINER, user, "team")
 
 
 async def test_load_existing_reads_secrets_from_local_site():
@@ -1539,7 +1540,7 @@ async def test_load_existing_reads_secrets_from_local_site():
     engine = _workload_service({"site-a": local, "site-b": remote}, local_site="site-a")
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    state = await engine.load_existing("api", "container", user, "team")
+    state = await engine.load_existing("api", CONTAINER, user, "team")
     assert state["env_values"] == {"K": "local-val"}
 
 
@@ -1563,7 +1564,7 @@ async def test_list_fans_out_and_merges_sites():
     engine = _workload_service({"site-a": site_a, "site-b": site_b})
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    out = await engine.list("container", user, "team")
+    out = await engine.list(CONTAINER, user, "team")
     assert [w.name for w in out] == ["orders", "web"]  # sorted, suffix stripped
 
     orders = next(w for w in out if w.name == "orders")
@@ -1599,7 +1600,7 @@ async def test_list_skips_unreachable_site_best_effort():
     engine = _workload_service({"site-a": site_a, "site-b": _Boom("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    out = await engine.list("container", user, "team")
+    out = await engine.list(CONTAINER, user, "team")
     assert [w.name for w in out] == ["orders"]
     assert out[0].sites == ["site-a"]  # only the reachable site contributes
 
@@ -1622,11 +1623,11 @@ async def test_list_sort_by_created_at():
     engine = _workload_service({"site-a": local}, local_site="site-a")
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    by_name = await engine.list("container", user, "team")  # default
+    by_name = await engine.list(CONTAINER, user, "team")  # default
     assert [w.name for w in by_name] == ["aaa", "bbb"]
     assert by_name[0].createdAt is not None  # creation time populated
 
-    by_created = await engine.list("container", user, "team", sort="createdAt")
+    by_created = await engine.list(CONTAINER, user, "team", sort="createdAt")
     assert [w.name for w in by_created] == ["bbb", "aaa"]  # oldest first
 
 
@@ -1646,7 +1647,7 @@ async def test_list_errors_when_all_sites_fail():
     engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(SiteTotalFailure):
-        await engine.list("container", user, "team")
+        await engine.list(CONTAINER, user, "team")
 
 
 async def test_accept_rejects_group_caller_is_not_member_of():
@@ -1699,7 +1700,7 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
     engine = _workload_service({"site-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    await engine.delete("container", "app", user, "team")
+    await engine.delete(CONTAINER, "app", user, "team")
 
     assert cluster.deleted == [(ResourceKind.KNATIVE_SERVICE, "app-team")]
 
@@ -1712,7 +1713,7 @@ async def test_delete_missing_workload_is_404():
     engine = _workload_service({"site-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await engine.delete("container", "app", user, "team")
+        await engine.delete(CONTAINER, "app", user, "team")
     assert cluster.deleted == []  # nothing deleted when the workload is absent
 
 
@@ -1736,7 +1737,7 @@ async def test_delete_fails_closed_when_a_site_cannot_be_reached():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(ServiceUnavailableError):
-        await engine.delete("function", "app", user, "team")
+        await engine.delete(FUNCTION, "app", user, "team")
 
     # the build objects survive: nothing may be torn down on an unconfirmed delete
     assert not any(kind != ResourceKind.KNATIVE_SERVICE for kind, _ in up.deleted)
@@ -1759,7 +1760,7 @@ async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(NotFoundError):
-        await engine.delete("function", "app", user, "team")
+        await engine.delete(FUNCTION, "app", user, "team")
 
     assert (ResourceKind.KPACK_IMAGE, "fn-app-team") in cluster.deleted
     assert (ResourceKind.SERVICE_ACCOUNT, "fn-app-team") in cluster.deleted
@@ -1784,7 +1785,7 @@ async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(NotFoundError):
-        await engine.delete("function", "app", user, "team")
+        await engine.delete(FUNCTION, "app", user, "team")
     assert cluster.deleted == []  # not the KSVC, and not the build objects
 
 
@@ -2005,7 +2006,7 @@ async def test_load_existing_unreachable_site_is_503_not_404():
     svc = _workload_service({"site-a": _DownCluster()})  # get() raises RuntimeError
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
-        await svc.load_existing("app", "container", user, "team")
+        await svc.load_existing("app", CONTAINER, user, "team")
 
 
 async def test_load_existing_truly_absent_is_404():
@@ -2015,7 +2016,7 @@ async def test_load_existing_truly_absent_is_404():
     svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get() -> NotFoundError
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await svc.load_existing("app", "container", user, "team")
+        await svc.load_existing("app", CONTAINER, user, "team")
 
 
 def _ready_ksvc(name="app-team"):
@@ -2036,7 +2037,7 @@ async def test_get_omits_404_site_and_stays_healthy():
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
     assert body.overallStatus == "Ready"
     assert [s.site for s in body.sites] == ["site-a"]  # site-b omitted, not Failed
 
@@ -2052,7 +2053,7 @@ async def test_get_down_site_still_degrades():
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
     assert body.overallStatus == "Degraded"
     assert {s.site for s in body.sites} == {"site-a", "site-b"}
 
@@ -2064,7 +2065,7 @@ async def test_get_absent_everywhere_is_404():
     engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
-        await engine.get("container", "app", user, "team")
+        await engine.get(CONTAINER, "app", user, "team")
 
 
 async def test_get_all_sites_down_is_503():
@@ -2075,7 +2076,7 @@ async def test_get_all_sites_down_is_503():
     engine = _workload_service({"site-a": _DownCluster("site-a"), "site-b": _DownCluster("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
-        await engine.get("container", "app", user, "team")
+        await engine.get(CONTAINER, "app", user, "team")
 
 
 def test_principal_normalizes_slash_and_ggd_prefixes():
@@ -2409,7 +2410,7 @@ async def test_list_total_failure_details_have_message_key():
     engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(SiteTotalFailure) as ei:
-        await engine.list("container", user, "team")
+        await engine.list(CONTAINER, user, "team")
     assert all(set(d) == {"site", "message"} for d in ei.value.details)
 
 
@@ -2478,7 +2479,7 @@ async def test_get_reports_terminating_during_delete():
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    body = await engine.get("container", "app", user, "team")
+    body = await engine.get(CONTAINER, "app", user, "team")
     assert body.overallStatus == "Terminating"
     assert body.sites[0].status == "Terminating"
 
@@ -2616,7 +2617,6 @@ def _pod(name, revision="app-team-00001"):
 
 async def test_logs_reads_local_site_pods():
     from api.auth.claims import Principal
-    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster(
         "site-a",
@@ -2628,7 +2628,7 @@ async def test_logs_reads_local_site_pods():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     resp = await engine.logs(
-        OFFERING_FUNCTION,
+        FUNCTION,
         "app",
         user,
         "team",
@@ -2646,7 +2646,6 @@ async def test_logs_reads_local_site_pods():
 
 async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
     from api.auth.claims import Principal
-    from common.labels import OFFERING_CONTAINER
 
     cluster = _LogsCluster(
         "site-a",
@@ -2659,7 +2658,7 @@ async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     resp = await engine.logs(
-        OFFERING_CONTAINER,
+        CONTAINER,
         "app",
         user,
         "team",
@@ -2677,14 +2676,13 @@ async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
 
 async def test_logs_scaled_to_zero_returns_empty():
     from api.auth.claims import Principal
-    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(), pods=[])
     engine = _workload_service({"site-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     resp = await engine.logs(
-        OFFERING_FUNCTION,
+        FUNCTION,
         "app",
         user,
         "team",
@@ -2698,7 +2696,6 @@ async def test_logs_scaled_to_zero_returns_empty():
 async def test_logs_not_on_local_site_is_404():
     from api.auth.claims import Principal
     from common.errors import NotFoundError
-    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=None)  # KSVC absent locally
     engine = _workload_service({"site-a": cluster})
@@ -2706,7 +2703,7 @@ async def test_logs_not_on_local_site_is_404():
 
     with pytest.raises(NotFoundError):
         await engine.logs(
-            OFFERING_FUNCTION,
+            FUNCTION,
             "app",
             user,
             "team",
@@ -2719,7 +2716,6 @@ async def test_logs_not_on_local_site_is_404():
 async def test_logs_wrong_offering_hidden_as_404():
     from api.auth.claims import Principal
     from common.errors import NotFoundError
-    from common.labels import OFFERING_FUNCTION
 
     # a container by this name exists locally; /functions must not read its logs
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(offering="container"))
@@ -2728,7 +2724,7 @@ async def test_logs_wrong_offering_hidden_as_404():
 
     with pytest.raises(NotFoundError):
         await engine.logs(
-            OFFERING_FUNCTION,
+            FUNCTION,
             "app",
             user,
             "team",
@@ -2741,7 +2737,6 @@ async def test_logs_wrong_offering_hidden_as_404():
 async def test_logs_wrong_group_hidden_as_404():
     from api.auth.claims import Principal
     from common.errors import ForbiddenError
-    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(group="other"))
     engine = _workload_service({"site-a": cluster})
@@ -2750,7 +2745,7 @@ async def test_logs_wrong_group_hidden_as_404():
     # assert_group rejects a group the caller isn't in before any cluster read
     with pytest.raises(ForbiddenError):
         await engine.logs(
-            OFFERING_FUNCTION,
+            FUNCTION,
             "app",
             user,
             "other",
@@ -2956,7 +2951,7 @@ async def test_get_reads_a_sites_revision_and_usage_on_the_fanout_thread():
 
     engine = _workload_service({"site-a": _ThreadRecordingCluster()})
     user = Principal(subject="u", username="alice", groups=["team"])
-    await engine.get("container", "app", user, "team")
+    await engine.get(CONTAINER, "app", user, "team")
 
     assert {"ksvc", "revision", "usage"} <= seen.keys()
     assert seen["revision"] == seen["ksvc"], "revision read spawned a thread"
@@ -3024,7 +3019,7 @@ async def test_get_overlaps_the_spec_and_build_reads():
 
     engine = _workload_service({"site-a": _SpecCluster()}, builder=_SlowBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
-    await engine.get("function", "app", user, "team")
+    await engine.get(FUNCTION, "app", user, "team")
 
     (spec_start, spec_end), (build_start, build_end) = spans["spec"], spans["build"]
     assert spec_start < build_end and build_start < spec_end, "reads did not overlap"

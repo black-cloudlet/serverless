@@ -155,15 +155,17 @@ def test_info_is_public_and_static():
         assert body["routeDomain"]
         assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
 
-    # container-only: the port rules
+    # container-only: a port is required, since only the caller knows the image's
     cont = c.get("/api/v1/containers/info").json()
     assert cont["port"] == {"required": True, "min": 1, "max": 65535}
     assert "runtimes" not in cont
 
-    # function-only: the available runtimes
+    # function-only: the available runtimes. A function advertises the same port
+    # rules but does NOT require one - the platform builds the image, so
+    # Knative's injected $PORT is a correct default.
     fn = c.get("/api/v1/functions/info").json()
     assert "python" in [r["name"] for r in fn["runtimes"]]
-    assert "port" not in fn
+    assert fn["port"] == {"required": False, "min": 1, "max": 65535}
     metrics = {m["name"]: m for m in body["scaling"]["metrics"]}
     assert metrics["concurrency"]["minScaleFloor"] == 0
     assert metrics["concurrency"]["target"]["default"] == 100

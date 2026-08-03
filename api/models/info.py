@@ -130,6 +130,10 @@ class FunctionInfoResponse(BaseInfo):
     Attributes:
         runtimes: The runtimes a function may be built with, each with its
             selectable versions.
+        port: The container port rules. Unlike a container's, ``required`` is
+            false: the platform builds the image, so omitting the port leaves
+            Knative's injected default.
     """
 
     runtimes: list[RuntimeCapability]
+    port: PortCapability

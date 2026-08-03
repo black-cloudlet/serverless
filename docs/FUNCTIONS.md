@@ -21,6 +21,7 @@ what functions share with containers is ARCHITECTURE.md.
 | `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see ARCHITECTURE.md: Secrets Management). |
 | `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `name` | yes | Logical workload name (DNS-1123). |
+| `port` | no | Container port. Optional here but **required** for a container, and the asymmetry is the point: the platform builds this image, so the buildpack launcher listens on the `$PORT` Knative injects (8080) and omitting the field is correct for any app that reads it. Send one only for an app with a hardcoded port. Replaced on `PUT`, not keep-on-omit - leaving it out returns the function to the default, the same rule `version` follows. Bounds are advertised on `GET /api/v1/functions/info`. |
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
 **Build flow (Knative Functions / buildpacks):**

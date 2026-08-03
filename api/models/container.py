@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from api.models.common import (
+    PORT_MAX,
+    PORT_MIN,
     EnvVar,
     FileMount,
     Hostname,
@@ -16,11 +18,6 @@ from api.models.common import (
     WorkloadResponse,
     WorkloadSize,
 )
-
-# Container port bounds (a TCP port). The single source both the field validator
-# and the /info capabilities projection read, so they can't drift.
-PORT_MIN = 1
-PORT_MAX = 65535
 
 
 class ContainerCreate(BaseModel):

@@ -765,6 +765,7 @@ Serverless/
 │   ├── models/                      # Pydantic schemas: common, function, container, info
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine (orchestration)
+│   │   ├── offering.py              # Offering protocol: all that differs between fn/container
 │   │   ├── preflight.py             # accept-time guards: host/name conflicts, spec validation
 │   │   ├── site_apply.py            # write one workload into one site (ordering + rollback)
 │   │   ├── site_read.py             # read one workload's state back out of a site
