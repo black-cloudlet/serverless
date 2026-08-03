@@ -109,6 +109,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   positional arguments, which raised `TypeError: get() takes 1 positional
   argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
 
+### Added
+
+- `build.scc` ships a least-privilege OpenShift `SecurityContextConstraints` for
+  kpack build pods, off by default. kpack sets a build pod's runAsUser/runAsGroup
+  from the builder image's CNB user (1000 on Paketo jammy); `restricted-v2`
+  allocates uids from the namespace's own range and rejects an explicit one
+  outside it, so with nothing else available the pod is refused at admission and
+  the build never starts - per function, since a function build runs as the
+  `fn-{workload}` account the API creates at request time. The SCC grants those
+  ids and nothing more, and carries no priority, so pods `restricted-v2` can
+  admit are unaffected. `anyuid` would have worked and would also have permitted
+  uid 0 (docs/DEPLOYING.md - OpenShift SCC for builds).
+
 ### Changed
 
 - `ClusterStack` and `ClusterStore` moved out of this chart into the kpack

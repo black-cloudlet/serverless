@@ -182,6 +182,49 @@ along with the rest of the pod and service networks.
 `Builder` (this chart) and `ClusterStack`/`ClusterStore` (the kpack chart) are managed by
 Helm/ArgoCD, not by the services - no runtime write permission on them.
 
+### OpenShift SCC for builds
+
+kpack sets a build pod's `runAsUser`/`runAsGroup` from the builder image's CNB user - 1000
+on the Paketo jammy images - and an `fsGroup` to match. OpenShift's default `restricted-v2`
+SCC allocates uids from the namespace's own range (`1000700000`-ish) and rejects an
+explicit one outside it. With no other SCC available to the pod's ServiceAccount, admission
+finds nothing that admits it and the build never starts:
+
+```
+pods "fn-hello-build-1-build-pod" is forbidden: unable to validate against any
+security context constraint
+```
+
+**This fails per function, not per install.** A Builder build runs as `kpack-builder`, but a
+function build runs as the `fn-{workload}` account the API creates at request time - so the
+symptom appears on the first function build, after everything else looked healthy.
+
+`build.scc.enabled` ships a `SecurityContextConstraints` granting exactly those ids and
+nothing more: no host namespaces, no added capabilities, no privilege escalation, all
+capabilities dropped, `runtime/default` seccomp. It carries no `priority`, so it is used
+only for pods `restricted-v2` cannot admit and everything else in the namespace keeps its
+usual constraint. Reach for the shipped `anyuid` instead and you also permit uid 0.
+
+Because the per-function accounts cannot be named ahead of time, the RoleBinding grants it
+to `system:serviceaccounts:{workloads namespace}`. That is a real widening - a tenant KSVC
+pod in that namespace could also request uid 1000 - and it is why the SCC is written this
+narrowly. Set `build.scc.allServiceAccounts=false` and list accounts explicitly if you
+would rather bind it by name and accept that function builds need their own grant.
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `build.scc.enabled` | `false` | SCCs do not exist outside OpenShift. |
+| `build.scc.runAsUser` / `.fsGroup` | `1000` | The builder image's `CNB_USER_ID` / `CNB_GROUP_ID`. Confirm with `skopeo inspect --config docker://<build image> \| jq '.config.Env'` before changing base images. |
+| `build.scc.allServiceAccounts` | `true` | Binds the namespace's ServiceAccount group, covering the per-function accounts. |
+| `build.scc.volumes` | see values | `persistentVolumeClaim` is needed only for kpack's volume build cache. |
+
+If a build still fails admission after this, the controller log names the offending field -
+each SCC it tried and why that one rejected the pod:
+
+```bash
+oc -n kpack logs deploy/kpack-controller | grep -o 'unable to validate.*'
+```
+
 ---
 
 ## Sample Manifests
