@@ -1,18 +1,7 @@
 {{- if and .Values.build.enabled .Values.build.scc.enabled }}
 {{- $scc := .Values.build.scc }}
-# OpenShift admission for kpack build pods.
-#
-# kpack sets the build pod's runAsUser/runAsGroup from the builder image's CNB
-# user, and an fsGroup to match. `restricted-v2` allocates UIDs from the
-# namespace's own range and rejects an explicit one outside it, so with no other
-# SCC available the pod is refused outright:
-#
-#   pods "fn-x-build-1-build-pod" is forbidden: unable to validate against any
-#   security context constraint
-#
-# This grants exactly those ids and nothing else - no host access, no extra
-# capabilities, no privilege escalation - rather than reaching for `anyuid`,
-# which would also permit UID 0. docs/DEPLOYING.md - OpenShift SCC for builds.
+# Lets build pods run as the builder image's uid, which restricted-v2 rejects.
+# docs/DEPLOYING.md - OpenShift SCC for builds.
 apiVersion: security.openshift.io/v1
 kind: SecurityContextConstraints
 metadata:
@@ -23,8 +12,7 @@ metadata:
     kubernetes.io/description: >-
       Least-privilege SCC for kpack build pods: the builder image's CNB uid/gid,
       and nothing a restricted pod does not already get.
-# No priority: this is selected only for pods restricted-v2 cannot admit, so
-# everything else in the namespace keeps its usual constraint.
+# Unset, so it is chosen only for pods restricted-v2 cannot admit.
 priority: null
 allowPrivilegeEscalation: false
 allowPrivilegedContainer: false
@@ -35,11 +23,10 @@ allowHostPID: false
 allowHostPorts: false
 readOnlyRootFilesystem: false
 defaultAddCapabilities: []
+allowedCapabilities: []
 requiredDropCapabilities:
   - ALL
-allowedCapabilities: []
 runAsUser:
-  # The exact uid the builder declares, not a range and not RunAsAny.
   type: MustRunAsRange
   uidRangeMin: {{ $scc.runAsUser }}
   uidRangeMax: {{ $scc.runAsUser }}
@@ -61,50 +48,4 @@ volumes:
   {{- toYaml $scc.volumes | nindent 2 }}
 users: []
 groups: []
----
-# Nothing may use an SCC without being granted it. OpenShift generates a
-# `system:openshift:scc:*` ClusterRole for the shipped SCCs only, so a custom one
-# needs its own.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ .Values.name }}-use-{{ $scc.name }}
-  labels:
-    {{- include "serverless-api.labels" . | nindent 4 }}
-rules:
-  - apiGroups: ["security.openshift.io"]
-    resources: ["securitycontextconstraints"]
-    resourceNames: [{{ $scc.name | quote }}]
-    verbs: ["use"]
----
-# Bound in the workloads namespace only. A function's build runs as the
-# `fn-{workload}` account the API creates at request time, which cannot be named
-# here - hence the group. The SCC above is narrow enough that this grants a
-# tenant pod nothing but the option of running as that one uid.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ .Values.name }}-use-{{ $scc.name }}
-  namespace: {{ .Values.namespaces.workloads }}
-  labels:
-    {{- include "serverless-api.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ .Values.name }}-use-{{ $scc.name }}
-subjects:
-{{- if $scc.allServiceAccounts }}
-  - kind: Group
-    apiGroup: rbac.authorization.k8s.io
-    name: system:serviceaccounts:{{ .Values.namespaces.workloads }}
-{{- else }}
-  - kind: ServiceAccount
-    name: {{ .Values.build.serviceAccount.name }}
-    namespace: {{ .Values.namespaces.workloads }}
-{{- range $scc.serviceAccounts }}
-  - kind: ServiceAccount
-    name: {{ . }}
-    namespace: {{ $.Values.namespaces.workloads }}
-{{- end }}
-{{- end }}
 {{- end }}

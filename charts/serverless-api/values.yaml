@@ -115,32 +115,22 @@ build:
       usernameProperty: registry-username
       passwordProperty: registry-password
 
-  # OpenShift only: kpack sets the build pod's runAsUser/runAsGroup from the
-  # builder image's CNB user, which `restricted-v2` rejects because the uid is
-  # outside the namespace's allocated range - the pod is refused at admission
-  # with "unable to validate against any security context constraint". This
-  # ships a least-privilege SCC granting exactly those ids.
-  # docs/DEPLOYING.md - OpenShift SCC for builds.
+  # OpenShift only: a least-privilege SCC letting build pods run as the builder
+  # image's uid, which restricted-v2 rejects. Without it every build is refused
+  # at admission. docs/DEPLOYING.md - OpenShift SCC for builds.
   scc:
-    # False on plain Kubernetes, where SCCs do not exist.
     enabled: false
     name: kpack-build
-    # The builder image's CNB_USER_ID / CNB_GROUP_ID. Paketo jammy uses 1000;
-    # confirm before changing base images:
-    #   skopeo inspect --config docker://<build image> | jq '.config.Env'
+    # The builder image's CNB_USER_ID / CNB_GROUP_ID.
     runAsUser: 1000
     fsGroup: 1000
-    # Grant it to every ServiceAccount in the workloads namespace. Needed for
-    # function builds: the API creates `fn-{workload}` at request time, so it
-    # cannot be named here. False binds only the accounts below.
+    # Bind to the namespace's SA group - per-function build accounts are named
+    # at request time. False binds `build.serviceAccount.name` and those below.
     allServiceAccounts: true
-    # Extra ServiceAccounts to bind when `allServiceAccounts` is false;
-    # `build.serviceAccount.name` is always included.
     # serviceAccounts:
     #   - fn-my-function
     serviceAccounts: []
-    # Volume types a build pod may mount. `persistentVolumeClaim` is required
-    # only for kpack's volume build cache.
+    # `persistentVolumeClaim` is only for kpack's volume build cache.
     volumes:
       - configMap
       - downwardAPI

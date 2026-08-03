@@ -1,0 +1,44 @@
+{{- if and .Values.build.enabled .Values.build.scc.enabled }}
+{{- $scc := .Values.build.scc }}
+# A custom SCC gets no generated `system:openshift:scc:*` ClusterRole, so it
+# needs its own. The group covers the per-function build accounts, which the API
+# names at request time. docs/DEPLOYING.md - OpenShift SCC for builds.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.name }}-use-{{ $scc.name }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: [{{ $scc.name | quote }}]
+    verbs: ["use"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.name }}-use-{{ $scc.name }}
+  namespace: {{ .Values.namespaces.workloads }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.name }}-use-{{ $scc.name }}
+subjects:
+{{- if $scc.allServiceAccounts }}
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:{{ .Values.namespaces.workloads }}
+{{- else }}
+  - kind: ServiceAccount
+    name: {{ .Values.build.serviceAccount.name }}
+    namespace: {{ .Values.namespaces.workloads }}
+{{- range $scc.serviceAccounts }}
+  - kind: ServiceAccount
+    name: {{ . }}
+    namespace: {{ $.Values.namespaces.workloads }}
+{{- end }}
+{{- end }}
+{{- end }}
