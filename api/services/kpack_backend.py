@@ -11,8 +11,12 @@ needs only ONE git Secret: kpack reads the workload's own ``{workload}-git``.
 
 Declaring is not completing, so ``plan`` returns the deterministic tag the
 build will push to. Callers deploy against that tag and read progress back
-through :meth:`KpackBuilder.status` - the reason a just-created function reports
+through :meth:`KpackBackend.status` - the reason a just-created function reports
 ``Building`` rather than ``Ready`` (docs/FUNCTIONS.md - Function Status Resolution).
+
+This is the in-process implementation of :class:`common.build.BuildBackend`;
+``Builder`` throughout this module means kpack's own ``Builder`` CR, never the
+protocol.
 """
 
 from __future__ import annotations
@@ -20,15 +24,15 @@ from __future__ import annotations
 from api.services import secrets as secret_svc
 from api.services.runtimes import RuntimeRegistry
 from common import kpack
-from common.cluster import Cluster, ResourceKind
-from common.config import CommonSettings
-from common.contract import (
+from common.build import (
     BuildPlan,
     BuildRequest,
     BuildStatus,
     cache_reference,
     image_reference,
 )
+from common.cluster import Cluster, ResourceKind
+from common.config import CommonSettings
 from common.errors import NotFoundError, ValidationError
 from common.logging import get_logger
 from common.names import object_name
@@ -36,15 +40,15 @@ from common.names import object_name
 logger = get_logger(__name__)
 
 
-class KpackBuilder:
+class KpackBackend:
     """Emits the kpack manifests for a function build and reads their state."""
 
     def __init__(self, settings: CommonSettings, runtimes: RuntimeRegistry):
-        """Initialize the builder.
+        """Initialize the backend.
 
         Args:
             settings: Shared settings (registry, build credentials).
-            runtimes: Resolves a runtime to its Builder and build environment.
+            runtimes: Resolves a runtime to its kpack Builder and build environment.
         """
         self._registry = settings.registry
         self._build = settings.build

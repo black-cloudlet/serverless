@@ -400,7 +400,7 @@ class BuildStatusView(BaseModel):
     """A function's image build state, read from the local site's kpack Image.
 
     State and reason only. The built image stays internal - a function's client
-    deals in source, not images - so it is on :class:`common.contract.BuildStatus`,
+    deals in source, not images - so it is on :class:`common.build.BuildStatus`,
     which the build service reads, and never on the response.
 
     Attributes:

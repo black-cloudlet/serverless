@@ -150,7 +150,7 @@ def build_ksvc(
         pull_secret: Image pull secret name, if any.
         runtime: Function runtime annotation, if any.
         version: Requested language version annotation, if any. Absent means the
-            caller took the platform default (see services.builder).
+            caller took the platform default (see services.kpack_backend).
         git_url: Function source repo annotation, if any.
         branch: Function source branch annotation, if any.
         path: Function source sub-directory annotation, if any.

@@ -50,8 +50,8 @@ from api.services.deployer import (
 from api.services.env import env_secret_name, resolve_env
 from api.services.files import files_name, resolve_files
 from common import kpack
+from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
-from common.contract import Builder
 from common.errors import (
     ConflictError,
     ForbiddenError,
@@ -207,13 +207,13 @@ def _revision_failure_message(rev: dict | None) -> str | None:
 class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
-    def __init__(self, settings: Settings, deployer: Deployer, builder: Builder):
+    def __init__(self, settings: Settings, deployer: Deployer, builder: BuildBackend):
         """Initialize the engine.
 
         Args:
             settings: Global settings.
             deployer: The multi-site fan-out helper.
-            builder: The function image builder.
+            builder: The function image build backend.
         """
         self.settings = settings
         self.deployer = deployer

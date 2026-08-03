@@ -8,7 +8,7 @@ from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
 from api.services.runtimes import RuntimeRegistry
 from api.services.workloads import OFFERING_FUNCTION, WorkloadService, object_name
-from common.contract import BuildPlan, BuildRequest
+from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError
 from common.labels import workload_labels
 

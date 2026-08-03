@@ -295,7 +295,7 @@ class _NullBuilder:
         return "reg/built:1"
 
     def plan(self, req, labels):
-        from common.contract import BuildPlan
+        from common.build import BuildPlan
 
         return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
 
@@ -646,8 +646,8 @@ async def test_get_function_returns_build_inputs_and_build_state():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
+    from common.build import BuildStatus
     from common.cluster import ResourceKind
-    from common.contract import BuildStatus
 
     ksvc = build_ksvc(
         name="fn-team",
@@ -707,8 +707,8 @@ async def test_get_function_building_image_reports_building():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
+    from common.build import BuildStatus
     from common.cluster import ResourceKind
-    from common.contract import BuildStatus
 
     ksvc = build_ksvc(
         name="fn-team",
@@ -1094,7 +1094,7 @@ async def test_function_update_rebuilds_when_token_given():
             return "reg/built:rel"
 
         def plan(self, req, labels):
-            from common.contract import BuildPlan
+            from common.build import BuildPlan
 
             self.calls += 1
             self.req = req
@@ -1201,7 +1201,7 @@ async def test_function_create_persists_git_secret():
 
     class _StubBuilder(_NullBuilder):
         def plan(self, req, labels):
-            from common.contract import BuildPlan
+            from common.build import BuildPlan
 
             # the git Secret is now part of what the builder declares
             return BuildPlan(
@@ -1240,7 +1240,7 @@ async def test_function_update_reuses_stored_git_token():
             self.calls = 0
 
         def plan(self, req, labels):
-            from common.contract import BuildPlan
+            from common.build import BuildPlan
 
             self.calls += 1
             self.req = req
@@ -2976,8 +2976,8 @@ async def test_get_overlaps_the_spec_and_build_reads():
     from api.models.common import Scaling
     from api.services.files import VolumeSpec
     from api.services.ksvc import build_ksvc
+    from common.build import BuildStatus
     from common.cluster import ResourceKind
-    from common.contract import BuildStatus
 
     # a function carrying one mounted file, so reading its spec costs a ConfigMap get
     ksvc = build_ksvc(

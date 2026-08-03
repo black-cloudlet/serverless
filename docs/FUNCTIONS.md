@@ -296,7 +296,7 @@ Build detail is read from the local cluster only; there is no cross-site aggrega
 path (the ksvc fan-out in ARCHITECTURE.md: Multi-Site (Active/Active HA) Design is unchanged). That read is complete precisely
 because the build site is always local: if an `Image` exists at all, it exists here.
 
-**As implemented.** `KpackBuilder.status` returns `None` when the local site has no `Image`
+**As implemented.** `KpackBackend.status` returns `None` when the local site has no `Image`
 - the switchover case above - and `_with_build_status` folds the rest into the rollup:
 `Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
 hands the verdict back to the ksvc. The response carries a `build` object

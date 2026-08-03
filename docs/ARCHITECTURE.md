@@ -768,7 +768,7 @@ Serverless/
 │   │   ├── function.py              # function orchestration (build from Git)
 │   │   ├── container.py             # container orchestration (image + pull secret)
 │   │   ├── deployer.py              # multi-site fan-out (builds each site's Cluster)
-│   │   ├── builder.py               # api-side Builder (KpackBuilder; future RemoteBuilder)
+│   │   ├── kpack_backend.py         # api-side BuildBackend (KpackBackend; future RemoteBackend)
 │   │   ├── ksvc.py                  # KSVC manifest construction (+ t-shirt sizes)
 │   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
 │   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
@@ -778,7 +778,7 @@ Serverless/
 ├── common/                          # shared by api + (future) builder service
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
-│   ├── contract.py                  # BuildRequest/BuildPlan/BuildStatus/Builder - the API↔builder contract
+│   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build-service domain
 │   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the builder)
 │   ├── names.py                     # name/branch rules + object_name - the {name}-{group} primary key
 │   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
@@ -818,11 +818,11 @@ Serverless/
 
 > **Monorepo, future-ready.** The repo is organized as services + a shared
 > library so a **builder** microservice can be added as a second package
-> (`builder/`) without restructuring: it would import the build contract and the
+> (`builder/`) without restructuring: it would import the build domain and the
 > cluster client from `common/`, ship its own Dockerfile + image
 > (`…/serverless/builder`), and deploy from the same chart. The API talks to it
-> through `common.contract.Builder` - today via the in-process `KpackBuilder`,
-> later via a `RemoteBuilder` HTTP client - with no change to the orchestration.
+> through `common.build.BuildBackend` - today via the in-process `KpackBackend`,
+> later via a `RemoteBackend` HTTP client - with no change to the orchestration.
 > The builder subclasses `common.config.CommonSettings` (sites, CA bundle,
 > registry, timeouts) and reuses `common.cluster.Cluster`. (Identifier/validation
 > helpers are the next candidate to lift into `common/`.)

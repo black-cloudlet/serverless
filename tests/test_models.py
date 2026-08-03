@@ -331,7 +331,7 @@ def test_the_platform_builds_function_tags_the_image_validator_accepts():
     If the two drifted, the platform could generate a reference its own
     container endpoint would reject - the same string, two verdicts.
     """
-    from common.contract import BuildRequest, image_reference
+    from common.build import BuildRequest, image_reference
     from common.names import validate_image_ref
 
     for registry_base, branch in [

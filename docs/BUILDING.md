@@ -465,7 +465,7 @@ anticipates this split (`common/cluster.py`: *"the API and a future builder serv
 reach a cluster the same way"*; `common/labels.py`: *"a future builder service stamps them
 on its build resources"*).
 
-**Contract change - implemented.** `Builder.build` no longer returns a finished image. It
+**Contract change - implemented.** `BuildBackend.build` no longer returns a finished image. It
 records desired state (git Secret -> ServiceAccount -> `Image`, in dependency order) and
 returns the deterministic tag the build will push to; the ksvc is applied against that tag
 immediately, and `GET` reports `Building` until kpack finishes (FUNCTIONS.md: Function Status Resolution). "Created" no longer
@@ -476,7 +476,7 @@ function's env Secret and DomainMapping and carrying the same `ownerReference`. 
 what deletes them with the function (BUILDING.md: Lifecycle & Cleanup) - there is no cleanup code, because there is
 nothing to clean up.
 
-`Builder.plan` splits them by how far each piece travels, and the split is load-bearing:
+`BuildBackend.plan` splits them by how far each piece travels, and the split is load-bearing:
 
 | | Scope | Why |
 |---|---|---|

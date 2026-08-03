@@ -7,7 +7,7 @@ import base64
 import pytest
 
 from api.services import secrets as secret_svc
-from api.services.builder import KpackBuilder
+from api.services.kpack_backend import KpackBackend
 from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 from common import kpack
 from common.config import CommonSettings, SiteConfig
@@ -48,11 +48,11 @@ def _runtimes():
 
 
 def _builder(settings=None):
-    return KpackBuilder(settings or _settings(), _runtimes())
+    return KpackBackend(settings or _settings(), _runtimes())
 
 
 def _request(**over):
-    from common.contract import BuildRequest
+    from common.build import BuildRequest
 
     kwargs = dict(
         name="hello",
@@ -328,7 +328,7 @@ def test_the_built_image_never_reaches_a_function_response():
     """
     from api.models.common import BuildStatusView
     from api.models.function import FunctionResponse
-    from common.contract import BuildStatus
+    from common.build import BuildStatus
 
     assert "image" in BuildStatus.__dataclass_fields__
     assert "image" not in BuildStatusView.model_fields
@@ -421,7 +421,7 @@ class _RecordingBuilder:
         return "reg/acme/payments/hello:main"
 
     def plan(self, req, labels):
-        from common.contract import BuildPlan
+        from common.build import BuildPlan
 
         self.calls += 1
         self.reqs.append(req)
@@ -443,7 +443,7 @@ class _RecordingBuilder:
         )
 
     def status(self, cluster, name, group):
-        from common.contract import BuildStatus
+        from common.build import BuildStatus
 
         return BuildStatus(state=self._state) if self._state else None
 
@@ -456,7 +456,7 @@ class _SiteAwareBuilder(_RecordingBuilder):
         self._built_on = built_on
 
     def status(self, cluster, name, group):
-        from common.contract import BuildStatus
+        from common.build import BuildStatus
 
         return BuildStatus(state=self._state) if cluster.site == self._built_on else None
 
@@ -606,7 +606,7 @@ def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
 
     class _Counting(_RecordingBuilder):
         def status(self, cluster, name, group):
-            from common.contract import BuildStatus
+            from common.build import BuildStatus
 
             seen.append(cluster.site)
             return BuildStatus(state="Ready")
@@ -787,7 +787,7 @@ def test_a_branch_with_no_ascii_still_projects_to_a_usable_tag():
     """
     import re
 
-    from common.contract import image_reference
+    from common.build import image_reference
     from common.names import image_tag
 
     for branch in ("功能", "релиз", "機能/ログイン"):
@@ -888,7 +888,7 @@ def test_an_explicit_version_in_build_env_is_not_overridden():
             )
         ]
     )
-    plan = KpackBuilder(_settings(), runtimes).plan(_request(), {})
+    plan = KpackBackend(_settings(), runtimes).plan(_request(), {})
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
     assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"
@@ -907,7 +907,7 @@ def _version_runtimes(**over):
 
 
 def _version_env(runtimes, **req):
-    plan = KpackBuilder(_settings(), runtimes).plan(_request(runtime="go", **req), {})
+    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go", **req), {})
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     return [e["value"] for e in env if e["name"] == "BP_GO_VERSION"]
 
@@ -942,14 +942,14 @@ def test_a_caller_version_overrides_an_operator_build_env_pin():
 def test_exactly_one_version_entry_is_emitted():
     """Two entries for the same name would leave the build ambiguous."""
     pinned = _version_runtimes(buildEnv=[{"name": "BP_GO_VERSION", "value": "1.23"}])
-    plan = KpackBuilder(_settings(), pinned).plan(_request(runtime="go", version="1.25"), {})
+    plan = KpackBackend(_settings(), pinned).plan(_request(runtime="go", version="1.25"), {})
     env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
     assert [e["name"] for e in env].count("BP_GO_VERSION") == 1
 
 
 def test_a_runtime_naming_no_version_env_gets_none_invented():
     runtimes = RuntimeRegistry([RuntimeSpec(name="go", builder="go")])
-    plan = KpackBuilder(_settings(), runtimes).plan(_request(runtime="go"), {})
+    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go"), {})
     image = _by_kind(plan.local, "Image")
     env = (image["spec"].get("build") or {}).get("env") or []
     assert not [e for e in env if e["name"].startswith("BP_")]
@@ -1039,3 +1039,40 @@ async def test_resending_the_same_version_is_not_a_rebuild():
     )
 
     assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+
+
+# ------------------------------------------- the BuildBackend protocol itself
+
+
+def test_the_kpack_backend_matches_the_build_backend_protocol():
+    """Every ``BuildBackend`` member exists on ``KpackBackend`` with the same signature.
+
+    The protocol's whole job is stopping the API and a future build service from
+    drifting apart, and nothing else enforces it: there is no type checker in the
+    dev extra, so a protocol nobody executes is a comment. This is the check -
+    it caught ``pull_secret`` being declared ``-> str`` while the implementation
+    returned ``str | None``.
+
+    Both modules use ``from __future__ import annotations``, so the annotations
+    compare as the source strings: a difference in spelling is a difference here,
+    which is the point.
+    """
+    import inspect
+
+    from common.build import BuildBackend
+
+    for name, declared in vars(BuildBackend).items():
+        if name.startswith("_") or not callable(getattr(declared, "fget", declared)):
+            continue
+        implemented = getattr(KpackBackend, name, None)
+        assert implemented is not None, f"KpackBackend is missing BuildBackend.{name}"
+        # A property must stay a property: callers read `backend.pull_secret`.
+        assert isinstance(declared, property) == isinstance(implemented, property), (
+            f"BuildBackend.{name} and KpackBackend.{name} disagree on being a property"
+        )
+        declared_fn = declared.fget if isinstance(declared, property) else declared
+        implemented_fn = implemented.fget if isinstance(implemented, property) else implemented
+        assert inspect.signature(declared_fn) == inspect.signature(implemented_fn), (
+            f"KpackBackend.{name}{inspect.signature(implemented_fn)} does not match "
+            f"BuildBackend.{name}{inspect.signature(declared_fn)}"
+        )
