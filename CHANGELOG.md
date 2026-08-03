@@ -70,6 +70,40 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   (per-namespace, override the shared set) - e.g. to set
   `pod-security.kubernetes.io/enforce` or a `namespaceSelector` target.
 
+- Functions can pin a container `port` (1-65535) on create and update, stamped as
+  the KSVC's `containerPort` and reported back on GET. Optional, unlike a
+  container's: the platform builds the image, so the buildpack launcher serves
+  the `$PORT` Knative injects (8080) and omitting the field stays correct - send
+  one only for an app that hardcodes a port and would otherwise never go ready.
+  Replaced on `PUT` like every other non-secret field, so omitting it returns the
+  function to the default. It is **not** a build input: `BuildRequest` has no
+  port, so moving one costs a revision, not a rebuild. This reverses the earlier
+  position that a function's port is "the build's responsibility, not a request
+  field" - an app with a fixed port had no way to say so.
+- `GET /api/v1/functions/info` publishes the same `port` rules the container
+  document does, with `required: false`, from the same constants the request
+  validator reads.
+
+### Changed
+
+- The build contract is renamed for what it contracts: `common/contract.py` ->
+  `common/build.py`, the `Builder` protocol -> `BuildBackend`,
+  `api/services/builder.py` -> `api/services/kpack_backend.py`, and
+  `KpackBuilder` -> `KpackBackend`. "Builder" now unambiguously means kpack's own
+  `Builder` CR, which is what the docs use it for throughout. `BuildBackend` also
+  declared `pull_secret -> str` while the implementation returned `str | None`;
+  corrected, and covered by a test comparing every member's signature, since the
+  dev extra has no type checker to notice the next drift.
+- `api/services/workloads.py` is split by responsibility into `ksvc_state` (read a
+  Knative object, pure), `preflight` (the guards that run before a write),
+  `site_apply` (write one workload into one site) and `site_read` (read its state
+  back), leaving the orchestration behind. The offering-specific behaviour the
+  engine used to branch on seven times - response shaping, a container's pull-Secret
+  prune, a function's git-token read, build status and build-object cleanup - is now
+  the `Offering` protocol in `api/services/offering.py`, implemented once per
+  offering. `apply_workload` takes an `ApplyRequest` instead of 25 keyword
+  arguments. The offering constants move to `common/labels.py`, beside the
+  `LABEL_OFFERING` they are the values of. No behaviour change.
 ### Fixed
 
 - `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
