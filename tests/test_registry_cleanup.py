@@ -37,6 +37,20 @@ class _Quay:
         return resp
 
 
+_LOGGER = "api.services.registry"
+
+
+def _records(caplog):
+    """Only this module's records.
+
+    caplog's handler sits on the root logger, so it collects every propagating
+    record - httpx logs each request at INFO. Filtering by logger name keeps
+    these assertions about what the cleanup path concluded, and independent of
+    whatever else in the suite has lowered the root level.
+    """
+    return [r for r in caplog.records if r.name == _LOGGER]
+
+
 def _run(monkeypatch, quay: _Quay, settings=None) -> None:
     transport = httpx.MockTransport(quay.handler)
     real = httpx.Client
@@ -125,17 +139,19 @@ def test_any_2xx_is_reported_as_deleted(monkeypatch, caplog, status):
     answers with 204 today, and enumerating that - plus the 200/202 added
     defensively - would report a registry answering 201 as a failed cleanup.
     """
-    caplog.set_level(logging.INFO, logger="api.services.registry")
+    caplog.set_level(logging.INFO, logger=_LOGGER)
     _run(monkeypatch, _Quay(status=status))
 
-    assert [r.levelno for r in caplog.records] == [logging.INFO, logging.INFO]
-    assert "deleted registry repository" in caplog.records[0].getMessage()
+    records = _records(caplog)
+    assert [r.levelno for r in records] == [logging.INFO, logging.INFO]
+    assert "deleted registry repository" in records[0].getMessage()
 
 
 def test_a_refused_delete_is_reported_as_a_warning(monkeypatch, caplog):
     """The counterpart: a non-2xx must not be logged as a successful cleanup."""
-    caplog.set_level(logging.INFO, logger="api.services.registry")
+    caplog.set_level(logging.INFO, logger=_LOGGER)
     _run(monkeypatch, _Quay(status=403))
 
-    assert [r.levelno for r in caplog.records] == [logging.WARNING, logging.WARNING]
-    assert "not authorized" in caplog.records[0].getMessage()
+    records = _records(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING, logging.WARNING]
+    assert "not authorized" in records[0].getMessage()
