@@ -17,7 +17,12 @@ namespaces:
   api: serverless-api
   # Knative Services and their pods - what has been built, not the building.
   workloads: serverless-workloads
+  # -- Labels for both namespaces; the two below add to (and override) them.
+  # labels:
+  #   team: platform
   labels: {}
+  # apiLabels:
+  #   pod-security.kubernetes.io/enforce: restricted
   apiLabels: {}
   workloadsLabels: {}
 
@@ -124,10 +129,14 @@ build:
   # Redirects every buildpack download to the on-prem artifact server; required
   # when airgapped. `{originalHost}` is required, not cosmetic. A mirror needing
   # auth must use a `dependency-mirror` binding instead, to keep credentials out
-  # of this ConfigMap. e.g. https://artifactory.internal/deps/{originalHost}
+  # of this ConfigMap.
+  # dependencyMirror: https://artifactory.internal/deps/{originalHost}
   dependencyMirror: ""
 
   # Build env applied to every runtime, merged ahead of each runtime's buildEnv.
+  # commonEnv:
+  #   - name: BP_OCI_SOURCE
+  #     value: https://git.internal
   commonEnv: []
 
   # Build pod requests/limits. A build is far heavier than the function it
@@ -140,11 +149,25 @@ build:
       cpu: "2"
       memory: 4Gi
 
-  # One kpack Builder per entry. `order` takes ids, {id, optional} entries, or
-  # explicit [{group: [...]}] groups. Groups are tried in order; the first whose
+  # One kpack Builder per entry. Groups are tried in order; the first whose
   # non-optional buildpacks all detect wins. Components are spelled out rather
   # than using the language composites, so an unsupported path fails at `detect`
   # instead of mid-build. docs/BUILDING.md - Buildpack Topology.
+  #
+  # `order` accepts three shapes, so a Paketo order can be pasted in verbatim.
+  # The entries below use the third; the first two are shorthand for one group:
+  #
+  #   order: [paketo-buildpacks/go-dist, paketo-buildpacks/go-build]
+  #   order:
+  #     - { id: paketo-buildpacks/go-dist }
+  #     - { id: paketo-buildpacks/git, optional: true }
+  #   order:
+  #     - group:
+  #         - { id: paketo-buildpacks/go-dist }
+  #         - { id: paketo-buildpacks/git, optional: true }
+  #
+  # `optional` governs detection, not presence: every id must still exist in the
+  # ClusterStore or the Builder never becomes Ready.
   builders:
     # Two groups differing only by go-mod-vendor: vendored apps take the first,
     # everything else falls through to the second and needs GOPROXY.
@@ -255,8 +278,11 @@ service:
 
 # The OpenShift Route exposing the API.
 route:
+  # -- Defaults to the operator-generated host.
   host: ""
   labels: {}
+  # annotations:
+  #   haproxy.router.openshift.io/timeout: 60s
   annotations: {}
 
 resources:
@@ -300,6 +326,10 @@ networkPolicy:
     ingressNamespaces:
       - kpack
     # Namespaces build pods may reach - an in-cluster registry or git server.
+    # egressNamespaces:
+    #   - internal-registry
     egressNamespaces: []
     # In-cluster CIDRs for the same, when they are not a namespace you can name.
+    # egressCIDRs:
+    #   - 10.9.0.0/24
     egressCIDRs: []
