@@ -15,6 +15,13 @@ LABEL_OFFERING = "serverless.platform/offering"
 LABEL_WORKLOAD = "serverless.platform/workload"
 MANAGED_BY_VALUE = "serverless-api"
 
+# The two values LABEL_OFFERING takes. They live beside the key rather than in
+# the API's service layer because they are the same string in three places - the
+# label, the API kind in the URL path, and the response `type` - and a service
+# that only reads labels (the build service) still has to know them.
+OFFERING_FUNCTION = "function"
+OFFERING_CONTAINER = "container"
+
 
 def ownership_labels(group: str, owner: str, offering: str | None = None) -> dict[str, str]:
     """Build the ownership/management labels stamped on every resource.

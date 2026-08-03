@@ -764,7 +764,11 @@ Serverless/
 │   ├── routers/                     # functions, containers, info (public)
 │   ├── models/                      # Pydantic schemas: common, function, container, info
 │   ├── services/                    # business logic
-│   │   ├── workloads.py             # shared build-once / deploy-both engine
+│   │   ├── workloads.py             # shared build-once / deploy-both engine (orchestration)
+│   │   ├── preflight.py             # accept-time guards: host/name conflicts, spec validation
+│   │   ├── site_apply.py            # write one workload into one site (ordering + rollback)
+│   │   ├── site_read.py             # read one workload's state back out of a site
+│   │   ├── ksvc_state.py            # interpret a Knative object (pure, no cluster I/O)
 │   │   ├── function.py              # function orchestration (build from Git)
 │   │   ├── container.py             # container orchestration (image + pull secret)
 │   │   ├── deployer.py              # multi-site fan-out (builds each site's Cluster)

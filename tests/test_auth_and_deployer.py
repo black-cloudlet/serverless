@@ -184,17 +184,17 @@ def test_status_code_for_deploying_is_non_terminal():
 
 
 def test_ksvc_status_distinguishes_failed_from_deploying():
-    from api.services.workloads import _ksvc_status
+    from api.services.ksvc_state import ksvc_status
 
     def _obj(ready_status):
         conditions = [{"type": "Ready", "status": ready_status}] if ready_status else []
         return {"status": {"conditions": conditions, "latestCreatedRevisionName": "rev-1"}}
 
-    assert _ksvc_status(_obj("True")) == ("Ready", "rev-1")
-    assert _ksvc_status(_obj("False")) == ("Failed", "rev-1")  # terminal failure
-    assert _ksvc_status(_obj("Unknown")) == ("Deploying", "rev-1")  # still progressing
-    assert _ksvc_status(_obj(None)) == ("Deploying", "rev-1")  # no condition yet
-    assert _ksvc_status({}) == ("Deploying", None)  # brand-new, no status block
+    assert ksvc_status(_obj("True")) == ("Ready", "rev-1")
+    assert ksvc_status(_obj("False")) == ("Failed", "rev-1")  # terminal failure
+    assert ksvc_status(_obj("Unknown")) == ("Deploying", "rev-1")  # still progressing
+    assert ksvc_status(_obj(None)) == ("Deploying", "rev-1")  # no condition yet
+    assert ksvc_status({}) == ("Deploying", None)  # brand-new, no status block
 
 
 def _settings_with_sites():
@@ -1084,7 +1084,7 @@ async def test_function_update_rebuilds_when_token_given():
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
     from api.services.ksvc import build_ksvc
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
 
     class _StubBuilder(_NullBuilder):
         def __init__(self):
@@ -1135,7 +1135,7 @@ async def test_function_update_rebuilds_when_token_given():
     assert builder.req.git_url == "https://git/old.git"
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert _extract_image(ksvc) == "reg/built:rel"  # deployed at the rebuilt tag
+    assert extract_image(ksvc) == "reg/built:rel"  # deployed at the rebuilt tag
 
 
 async def test_function_update_without_token_keeps_image():
@@ -1144,7 +1144,7 @@ async def test_function_update_without_token_keeps_image():
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
     from api.services.ksvc import build_ksvc
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
 
     class _StubBuilder(_NullBuilder):
         def __init__(self):
@@ -1188,7 +1188,7 @@ async def test_function_update_without_token_keeps_image():
     )
     assert builder.calls == 0
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert _extract_image(ksvc) == "reg/fn:old"  # existing image preserved
+    assert extract_image(ksvc) == "reg/fn:old"  # existing image preserved
 
 
 async def test_function_create_persists_git_secret():
@@ -2497,18 +2497,18 @@ def test_creation_time_is_israel_local_time_with_dst():
     DST-aware offset: +03:00 (IDT) in summer, +02:00 (IST) in winter."""
     from zoneinfo import ZoneInfo
 
-    from api.services.workloads import _creation_time
+    from api.services.ksvc_state import creation_time
 
-    summer = _creation_time({"metadata": {"creationTimestamp": "2026-07-01T09:00:00Z"}})
+    summer = creation_time({"metadata": {"creationTimestamp": "2026-07-01T09:00:00Z"}})
     assert summer.tzinfo == ZoneInfo("Asia/Jerusalem")
     assert summer.utcoffset().total_seconds() == 3 * 3600  # IDT
     assert (summer.hour, summer.minute) == (12, 0)  # 09:00Z -> 12:00 IDT
 
-    winter = _creation_time({"metadata": {"creationTimestamp": "2026-01-01T09:00:00Z"}})
+    winter = creation_time({"metadata": {"creationTimestamp": "2026-01-01T09:00:00Z"}})
     assert winter.utcoffset().total_seconds() == 2 * 3600  # IST
     assert winter.hour == 11  # 09:00Z -> 11:00 IST
 
-    assert _creation_time({"metadata": {}}) is None  # absent -> None
+    assert creation_time({"metadata": {}}) is None  # absent -> None
 
 
 # --- A1: roll back a failed create, never a failed update ---
@@ -2616,7 +2616,7 @@ def _pod(name, revision="app-team-00001"):
 
 async def test_logs_reads_local_site_pods():
     from api.auth.claims import Principal
-    from api.services.workloads import OFFERING_FUNCTION
+    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster(
         "site-a",
@@ -2646,7 +2646,7 @@ async def test_logs_reads_local_site_pods():
 
 async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
     from api.auth.claims import Principal
-    from api.services.workloads import OFFERING_CONTAINER
+    from common.labels import OFFERING_CONTAINER
 
     cluster = _LogsCluster(
         "site-a",
@@ -2677,7 +2677,7 @@ async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
 
 async def test_logs_scaled_to_zero_returns_empty():
     from api.auth.claims import Principal
-    from api.services.workloads import OFFERING_FUNCTION
+    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(), pods=[])
     engine = _workload_service({"site-a": cluster})
@@ -2697,8 +2697,8 @@ async def test_logs_scaled_to_zero_returns_empty():
 
 async def test_logs_not_on_local_site_is_404():
     from api.auth.claims import Principal
-    from api.services.workloads import OFFERING_FUNCTION
     from common.errors import NotFoundError
+    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=None)  # KSVC absent locally
     engine = _workload_service({"site-a": cluster})
@@ -2718,8 +2718,8 @@ async def test_logs_not_on_local_site_is_404():
 
 async def test_logs_wrong_offering_hidden_as_404():
     from api.auth.claims import Principal
-    from api.services.workloads import OFFERING_FUNCTION
     from common.errors import NotFoundError
+    from common.labels import OFFERING_FUNCTION
 
     # a container by this name exists locally; /functions must not read its logs
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(offering="container"))
@@ -2740,8 +2740,8 @@ async def test_logs_wrong_offering_hidden_as_404():
 
 async def test_logs_wrong_group_hidden_as_404():
     from api.auth.claims import Principal
-    from api.services.workloads import OFFERING_FUNCTION
     from common.errors import ForbiddenError
+    from common.labels import OFFERING_FUNCTION
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(group="other"))
     engine = _workload_service({"site-a": cluster})

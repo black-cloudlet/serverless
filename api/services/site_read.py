@@ -1,0 +1,199 @@
+"""Reading a workload's stored and live state back out of a site.
+
+The counterpart to :mod:`api.services.site_apply`: everything here fetches from
+one cluster and nothing writes. It is separate from :mod:`api.services.ksvc_state`
+because these calls do I/O - which is what makes their error handling the
+interesting part, and why it differs per function rather than being uniform:
+
+* the **kept-values** reads (:func:`secret_data`, :func:`secret_text`) fail loud.
+  Returning ``{}`` for a Secret that exists but could not be read would make a
+  valid "keep" look unset and fail the update as a 400, losing a stored secret.
+* the **decoration** reads (:func:`revision`, :func:`site_usage`,
+  :func:`describe_spec`) are best-effort. A workload whose replica count or live
+  usage could not be fetched still has a status worth returning.
+
+Every function here blocks, and is called through ``asyncio.to_thread`` or the
+deployer's fan-out.
+"""
+
+from __future__ import annotations
+
+import base64
+
+from api.models.common import (
+    ANNOTATION_GIT_BRANCH,
+    ANNOTATION_GIT_PATH,
+    ANNOTATION_GIT_URL,
+    ANNOTATION_HOST,
+    ANNOTATION_RUNTIME,
+    ANNOTATION_RUNTIME_VERSION,
+)
+from api.services import describe as describe_svc
+from api.services import metrics as metrics_svc
+from api.services import secrets as secret_svc
+from api.services.env import env_secret_name
+from api.services.files import files_name
+from api.services.ksvc_state import extract_image
+from common.cluster import Cluster, ResourceKind
+from common.errors import NotFoundError, ServiceUnavailableError
+from common.labels import OFFERING_FUNCTION
+
+
+def existing_state(obj: dict, cluster: Cluster, offering: str, oname: str) -> dict:
+    """Read an existing workload's carried-forward state + backing secret values.
+
+    Runs off the event loop (blocking cluster reads). ``env_values``/
+    ``files_values`` back the keep-on-write path (fail loud on a transient read;
+    see :func:`secret_data`). The pull-secret and git reads are best-effort: a
+    failure just degrades a registry keep to carrying the existing secret forward.
+
+    Args:
+        obj: The workload's KSVC, already fetched.
+        cluster: The site to read the backing Secrets from.
+        offering: "function" or "container".
+        oname: The object name (``{name}-{group}``).
+
+    Returns:
+        The carried-forward state.
+    """
+    ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+    ps_name = describe_svc.pull_secret_name(obj)
+    state = {
+        "image": extract_image(obj),
+        "runtime": ann.get(ANNOTATION_RUNTIME),
+        "version": ann.get(ANNOTATION_RUNTIME_VERSION),
+        "gitUrl": ann.get(ANNOTATION_GIT_URL),
+        "branch": ann.get(ANNOTATION_GIT_BRANCH),
+        "path": ann.get(ANNOTATION_GIT_PATH),
+        "host": ann.get(ANNOTATION_HOST),
+        "pull_secret": ps_name,
+        # Existing secret values, so an update can keep a redacted secret the
+        # client sent back without a value (see resolve_env/_files). Env values
+        # are text; file content is bytes, which is why they read differently.
+        "env_values": secret_text(cluster, env_secret_name(oname)),
+        "files_values": secret_data(cluster, files_name(oname)),
+    }
+    # Existing registry creds (decoded from the pull secret), so a keep (token
+    # omitted) can re-key them to the current image's registry.
+    if ps_name:
+        try:
+            ps = cluster.get(ResourceKind.SECRET, ps_name)
+            state["registry_username"] = secret_svc.registry_username(ps)
+            state["registry_token"] = secret_svc.registry_token(ps)
+        except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades to carry-forward
+            pass
+    # Functions carry a stored git token; read it so a build-input change can
+    # rebuild without the client re-supplying it.
+    if offering == OFFERING_FUNCTION:
+        git = secret_text(cluster, secret_svc.git_secret_name(oname))
+        state["git_token"] = git.get(secret_svc.GIT_TOKEN_KEY)
+    return state
+
+
+def secret_data(cluster: Cluster, name: str) -> dict[str, bytes]:
+    """Raw ``data`` of a Secret (base64 -> bytes); ``{}`` if it doesn't exist.
+
+    Bytes, not text: a secret file may hold a keystore or a DER certificate, and
+    decoding that to ``str`` here would either raise or produce something that
+    cannot be re-encoded when the keep is written back.
+
+    Used by the update path so a redacted "keep" field echoed back is preserved. A
+    genuine 404 means no stored values (``{}``). Any other error must NOT be
+    swallowed: ``{}`` would make a valid keep look unset and fail it as a 400, so it
+    surfaces as a 503 and the update is retried rather than losing a secret.
+
+    Raises:
+        ServiceUnavailableError: If the Secret exists but couldn't be read.
+    """
+    try:
+        secret = cluster.get(ResourceKind.SECRET, name)
+    except NotFoundError:
+        return {}  # no such Secret -> nothing stored
+    except Exception as exc:  # noqa: BLE001 - transient/unknown read failure
+        raise ServiceUnavailableError(
+            f"could not read secret '{name}' to preserve kept values; retry"
+        ) from exc
+    out: dict[str, bytes] = {}
+    for key, val in (secret.get("data") or {}).items():
+        try:
+            out[key] = base64.b64decode(val)
+        except Exception:  # noqa: BLE001, S112 - skip an undecodable key
+            continue
+    return out
+
+
+def secret_text(cluster: Cluster, name: str) -> dict[str, str]:
+    """:func:`secret_data` as text, for the values that genuinely are text.
+
+    Env values and the git token become a container env var and an HTTP basic-auth
+    password, both of which are strings by definition. A stored value that is not
+    valid UTF-8 could not have been written through this API, so it is skipped
+    rather than guessed at.
+    """
+    out: dict[str, str] = {}
+    for key, raw in secret_data(cluster, name).items():
+        try:
+            out[key] = raw.decode("utf-8")
+        except UnicodeDecodeError:  # noqa: S112 - not text, so not an env value
+            continue
+    return out
+
+
+def describe_spec(cluster: Cluster, obj: dict):
+    """Read the desired-state spec (secrets redacted) from a KSVC.
+
+    Fetches the file ConfigMap(s) for non-secret file contents and the pull
+    secret for the registry username (never the token). Best-effort: a failed
+    read just leaves the corresponding field null.
+    """
+    configmaps: dict[str, dict] = {}
+    for cm_name in describe_svc.configmap_refs(obj):
+        try:
+            cm = cluster.get(ResourceKind.CONFIG_MAP, cm_name)
+            configmaps[cm_name] = cm.get("data") or {}
+        except Exception:  # noqa: BLE001, S110 - content is best-effort, skip silently
+            pass
+    registry_username = None
+    ps_name = describe_svc.pull_secret_name(obj)
+    if ps_name:
+        try:
+            secret = cluster.get(ResourceKind.SECRET, ps_name)
+            registry_username = secret_svc.registry_username(secret)
+        except Exception:  # noqa: BLE001, S110 - username is best-effort, skip silently
+            pass
+    return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
+
+
+def revision(cluster: Cluster, name: str | None) -> dict | None:
+    """Best-effort fetch of the Knative Revision the KSVC points at.
+
+    The Revision carries both the autoscaler's live scale and the specific
+    rollout-failure conditions, so a single read feeds both the replica count
+    and the per-site error detail.
+
+    Returns:
+        The Revision object, or None if it has no revision yet or can't be read.
+    """
+    if not name:
+        return None
+    try:
+        return cluster.get(ResourceKind.KNATIVE_REVISION, name)
+    except Exception:  # noqa: BLE001 - best-effort, never fatal
+        return None
+
+
+def site_usage(cluster: Cluster, oname: str):
+    """Best-effort live cpu/memory summed over the workload's running pods.
+
+    Returns:
+        The usage summary, or None if the metrics API is unavailable or the
+        workload is scaled to zero (no running pods).
+    """
+    try:
+        items = cluster.get(
+            ResourceKind.POD_METRICS,
+            label_selector=f"serving.knative.dev/service={oname}",
+        )
+        return metrics_svc.sum_usage(items)
+    except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
+        return None

@@ -362,16 +362,16 @@ def test_the_built_image_never_reaches_a_function_response():
 )
 def test_build_state_folds_into_the_overall_status(overall, state, expected):
     from api.models.common import BuildStatusView
-    from api.services.workloads import _with_build_status
+    from api.services.ksvc_state import with_build_status
 
-    assert _with_build_status(overall, BuildStatusView(state=state)) == expected
+    assert with_build_status(overall, BuildStatusView(state=state)) == expected
 
 
 def test_no_build_leaves_the_ksvc_rollup_untouched():
-    from api.services.workloads import _with_build_status
+    from api.services.ksvc_state import with_build_status
 
-    assert _with_build_status("Ready", None) == "Ready"
-    assert _with_build_status("Degraded", None) == "Degraded"
+    assert with_build_status("Ready", None) == "Ready"
+    assert with_build_status("Degraded", None) == "Degraded"
 
 
 def test_building_is_a_non_terminal_poll_state():
@@ -625,7 +625,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     """Switchover self-heal: an unchanged spec must still recreate a missing Image."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -650,13 +650,13 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert len(_applied_kind(cluster, "Image")) == 1
     # ...but the running image is untouched: it may be a digest a finished build
     # resolved, and rewriting it back to the tag would spawn a pointless revision
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
 
 
 async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
     """path is a build input: a different directory is a different application."""
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -679,7 +679,7 @@ async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
 
     assert builder.reqs[0].path == "services/worker"
     # a config-only update keeps the running image; this one must not
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
 
 
 async def test_update_without_any_token_emits_no_build():
@@ -706,7 +706,7 @@ async def test_update_without_any_token_emits_no_build():
 
 async def test_branch_change_moves_the_deployment_to_the_new_tag():
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
@@ -723,7 +723,7 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
         _principal(),
     )
     assert builder.calls == 1
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
 
 
 # ------------------------------------------------------- request validation
@@ -958,7 +958,7 @@ def test_a_runtime_naming_no_version_env_gets_none_invented():
 async def test_changing_the_version_rebuilds_and_moves_the_image():
     """The language version is a build input like branch or path."""
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -981,7 +981,7 @@ async def test_changing_the_version_rebuilds_and_moves_the_image():
 
     assert builder.reqs[0].version == "3.12"
     # a config-only update keeps the running image; a version change must not
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
 
 
 async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuilds():
@@ -991,7 +991,7 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     that is a different build from the pinned one it replaces.
     """
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1009,14 +1009,14 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     )
 
     assert builder.reqs[0].version is None  # -> the builder pins defaultVersion
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
 
 
 async def test_resending_the_same_version_is_not_a_rebuild():
     """A config-only edit that echoes the stored version must not disturb it."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.workloads import _extract_image
+    from api.services.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1038,7 +1038,7 @@ async def test_resending_the_same_version_is_not_a_rebuild():
         _principal(),
     )
 
-    assert _extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
 
 
 # ------------------------------------------- the BuildBackend protocol itself

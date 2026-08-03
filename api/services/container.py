@@ -7,9 +7,10 @@ from api.models.common import LogsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.services import describe as describe_svc
 from api.services import secrets as secret_svc
-from api.services.workloads import OFFERING_CONTAINER, WorkloadService, object_name
+from api.services.workloads import WorkloadService
 from common.errors import ValidationError
-from common.labels import workload_labels
+from common.labels import OFFERING_CONTAINER, workload_labels
+from common.names import object_name
 
 
 class ContainerService:
