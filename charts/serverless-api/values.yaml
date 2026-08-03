@@ -121,8 +121,9 @@ build:
   scc:
     enabled: false
     name: kpack-build
-    # The builder image's CNB_USER_ID / CNB_GROUP_ID.
-    runAsUser: 1000
+    # The builder image's CNB_USER_ID / CNB_GROUP_ID. They differ: the Paketo
+    # jammy images run as uid 1001, gid 1000.
+    runAsUser: 1001
     fsGroup: 1000
     # Bind to the namespace's SA group - per-function build accounts are named
     # at request time. False binds `build.serviceAccount.name` and those below.

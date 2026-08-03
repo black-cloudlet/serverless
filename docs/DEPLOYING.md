@@ -184,16 +184,22 @@ Helm/ArgoCD, not by the services - no runtime write permission on them.
 
 ### OpenShift SCC for builds
 
-kpack sets a build pod's `runAsUser`/`runAsGroup` from the builder image's CNB user - 1000
-on the Paketo jammy images - and an `fsGroup` to match. OpenShift's default `restricted-v2`
-SCC allocates uids from the namespace's own range (`1000700000`-ish) and rejects an
-explicit one outside it. With no other SCC available to the pod's ServiceAccount, admission
-finds nothing that admits it and the build never starts:
+kpack sets a build pod's `runAsUser` from the builder image's CNB user and an `fsGroup`
+from its CNB group. On the Paketo jammy images those are **not the same number** - uid
+1001, gid 1000. OpenShift's default `restricted-v2` SCC allocates uids from the namespace's
+own range and rejects an explicit one outside it. With no other SCC available to the pod's
+ServiceAccount, admission finds nothing that admits it and the build never starts:
 
 ```
 pods "fn-hello-build-1-build-pod" is forbidden: unable to validate against any
-security context constraint
+security context constraint: ... .spec.securityContext.fsGroup: Invalid value:
+[]int64{1000}: 1000 is not an allowed group, provider restricted-v2:
+.initContainers[0].runAsUser: Invalid value: 1001: must be in the ranges:
+[1001290000, 1001299999]
 ```
+
+The tail of that message is the useful part: it names the exact ids the pod asked for, which
+is what `build.scc.runAsUser` and `.fsGroup` have to match.
 
 **This fails per function, not per install.** A Builder build runs as `kpack-builder`, but a
 function build runs as the `fn-{workload}` account the API creates at request time - so the
@@ -214,7 +220,8 @@ would rather bind it by name and accept that function builds need their own gran
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `build.scc.enabled` | `false` | SCCs do not exist outside OpenShift. |
-| `build.scc.runAsUser` / `.fsGroup` | `1000` | The builder image's `CNB_USER_ID` / `CNB_GROUP_ID`. Confirm with `skopeo inspect --config docker://<build image> \| jq '.config.Env'` before changing base images. |
+| `build.scc.runAsUser` | `1001` | The builder image's `CNB_USER_ID` (Paketo jammy). |
+| `build.scc.fsGroup` | `1000` | Its `CNB_GROUP_ID` - a *different* number on jammy. Confirm both with `skopeo inspect --config docker://<build image> \| jq '.config.Env'` before changing base images. |
 | `build.scc.allServiceAccounts` | `true` | Binds the namespace's ServiceAccount group, covering the per-function accounts. |
 | `build.scc.volumes` | see values | `persistentVolumeClaim` is needed only for kpack's volume build cache. |
 

@@ -112,15 +112,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ### Added
 
 - `build.scc` ships a least-privilege OpenShift `SecurityContextConstraints` for
-  kpack build pods, off by default. kpack sets a build pod's runAsUser/runAsGroup
-  from the builder image's CNB user (1000 on Paketo jammy); `restricted-v2`
-  allocates uids from the namespace's own range and rejects an explicit one
-  outside it, so with nothing else available the pod is refused at admission and
-  the build never starts - per function, since a function build runs as the
-  `fn-{workload}` account the API creates at request time. The SCC grants those
-  ids and nothing more, and carries no priority, so pods `restricted-v2` can
-  admit are unaffected. `anyuid` would have worked and would also have permitted
-  uid 0 (docs/DEPLOYING.md - OpenShift SCC for builds).
+  kpack build pods, off by default. A build pod runs as the builder image's CNB
+  user and group - uid 1001, gid 1000 on the Paketo jammy images, which are not
+  the same number - and `restricted-v2` allocates uids from the namespace's own
+  range and rejects an explicit one outside it. With nothing else available the
+  pod is refused at admission and the build never starts, per function rather
+  than per install: a function build runs as the `fn-{workload}` account the API
+  creates at request time. The SCC grants those two ids and nothing more, and
+  carries no priority, so pods `restricted-v2` can admit are unaffected.
+  `anyuid` would also have worked, and would also have permitted uid 0
+  (docs/DEPLOYING.md - OpenShift SCC for builds).
 
 ### Changed
 
