@@ -126,6 +126,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `LABEL_OFFERING` they are the values of. No behaviour change.
 ### Fixed
 
+- DNS was blocked in the workloads namespace on OpenShift: `allow-egress-dns` opened
+  53, but a NetworkPolicy matches the destination pod's port and OpenShift's CoreDNS
+  listens on 5353. New `networkPolicy.dnsPorts`, default `[53, 5353]`.
 - `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
   the response read `spec.path`, but `WorkloadSpec` never declared the field, so
   `parse_spec`'s `path=` was silently dropped by Pydantic and the read raised
