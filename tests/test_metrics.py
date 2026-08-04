@@ -1,9 +1,17 @@
 from api.services.metrics import (
+    Usage,
     parse_cpu_millicores,
     parse_memory_bytes,
     pod_usage,
-    sum_usage,
+    total,
+    total_usage,
 )
+
+
+def sum_usage(items):
+    """The summed figure as the response carries it (None when nothing measured)."""
+    measured = total_usage(items)
+    return measured.quantities() if measured else None
 
 
 def test_parse_quantities():
@@ -78,6 +86,30 @@ def test_pod_usage_omits_pods_that_reported_nothing():
     # A pod the metrics-server has not scraped yet is absent, not a zero row.
     assert pod_usage([_pod("fresh", "r", [])]) == []
     assert pod_usage([]) == []
+
+
+def test_total_sums_sites_from_raw_figures_not_rounded_ones():
+    # Two sites of 1.5Mi each. Rounded first they are 2Mi + 2Mi = 4Mi; summed raw
+    # the workload total is 3Mi - which is the true figure, and why the cross-site
+    # rollup works in Usage rather than in the strings the response carries.
+    site_a = total_usage([_pod("a", "r", [{"usage": {"cpu": "500u", "memory": "1536Ki"}}])])
+    site_b = total_usage([_pod("b", "r", [{"usage": {"cpu": "500u", "memory": "1536Ki"}}])])
+    assert site_a.quantities().memory == "2Mi"
+    assert site_b.quantities().memory == "2Mi"
+
+    workload = total([site_a, site_b])
+    assert workload.quantities().memory == "3Mi"
+    assert workload.quantities().cpu == "1m"
+
+
+def test_total_of_nothing_is_none_not_zero():
+    # "consuming nothing" and "nobody measured" must not render as the same answer
+    assert total([]) is None
+    assert total_usage([]) is None
+
+
+def test_usage_adds_componentwise():
+    assert Usage(10.0, 100.0) + Usage(5.0, 50.0) == Usage(15.0, 150.0)
 
 
 def test_pod_usage_tolerates_a_pod_without_metadata():

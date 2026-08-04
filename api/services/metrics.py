@@ -3,13 +3,19 @@
 ``metrics.k8s.io`` reports per-container usage as Kubernetes *quantity* strings
 (e.g. cpu ``"1234567n"``, memory ``"123456Ki"``). We sum across all containers
 of all the workload's pods into one cpu/memory figure per site
-(:func:`sum_usage`), and project the same parse per pod (:func:`pod_usage`) for
-the status view's breakdown.
+(:func:`total_usage`), and project the same parse per pod (:func:`pod_usage`)
+for the status view's breakdown.
+
+Everything here works in :class:`Usage` - raw floats - and rounds only at the
+edge. That is what lets a figure be summed again (pods into a site, sites into a
+workload) without the total drifting from the parts it covers.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from api.models.common import PodUsage, ResourceUsage
 
@@ -79,18 +85,57 @@ _SIDECAR = "queue-proxy"
 _REVISION_LABEL = "serving.knative.dev/revision"
 
 
-def _quantities(cpu_milli: float, mem_bytes: float) -> ResourceUsage:
-    """Project raw totals into the API's quantity strings (one rounding rule)."""
-    return ResourceUsage(cpu=f"{round(cpu_milli)}m", memory=f"{round(mem_bytes / 2**20)}Mi")
+@dataclass(frozen=True)
+class Usage:
+    """Measured cpu/memory, kept unrounded.
+
+    Rounding is deferred to :meth:`quantities`, at the edge of the response,
+    because it does not survive addition: rounding each part and summing the
+    results drifts from the true total by up to half a unit *per part*. Carrying
+    the raw figures instead means a site total can be summed from its pods, and a
+    workload total from its sites, without either disagreeing with the parts it
+    covers.
+    """
+
+    cpu_milli: float
+    mem_bytes: float
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(self.cpu_milli + other.cpu_milli, self.mem_bytes + other.mem_bytes)
+
+    def quantities(self) -> ResourceUsage:
+        """Project to the API's quantity strings - the one place rounding happens."""
+        return ResourceUsage(
+            cpu=f"{round(self.cpu_milli)}m",
+            memory=f"{round(self.mem_bytes / 2**20)}Mi",
+        )
 
 
-def _pod_totals(pod_metrics: list[dict]) -> list[tuple[str, str | None, float, float]]:
-    """Per-pod ``(name, revision, cpu millicores, memory bytes)``, unrounded.
+def total(usages: Iterable[Usage]) -> Usage | None:
+    """Add measured usages up, or None when there is nothing measured.
 
-    The single parse behind both :func:`sum_usage` and :func:`pod_usage`, so a
-    site's total and the breakdown it is the sum of cannot disagree. Rounding is
-    deliberately left to the caller: summing already-rounded per-pod figures
-    would drift from the total by up to half a unit per replica.
+    The rollup used both within a site (over its pods) and across sites (over a
+    workload's per-site totals). ``None`` rather than a zero, matching everything
+    else here: a workload consuming nothing and a workload nobody measured are
+    different answers and must not render as the same one.
+
+    Args:
+        usages: The measured figures to add.
+
+    Returns:
+        The sum, or None if ``usages`` is empty.
+    """
+    summed: Usage | None = None
+    for usage in usages:
+        summed = usage if summed is None else summed + usage
+    return summed
+
+
+def _pod_totals(pod_metrics: list[dict]) -> list[tuple[str, str | None, Usage]]:
+    """Per-pod ``(name, revision, usage)``, unrounded.
+
+    The single parse behind both :func:`total_usage` and :func:`pod_usage`, so a
+    site's total and the breakdown it is the sum of cannot disagree.
 
     A pod whose containers report nothing is omitted rather than carried as a
     zero - "not measured yet" and "idle" are different states, and a fresh pod
@@ -102,7 +147,7 @@ def _pod_totals(pod_metrics: list[dict]) -> list[tuple[str, str | None, float, f
     Returns:
         One tuple per pod that reported usage.
     """
-    totals: list[tuple[str, str | None, float, float]] = []
+    totals: list[tuple[str, str | None, Usage]] = []
     for pod in pod_metrics:
         meta = pod.get("metadata", {}) or {}
         cpu_milli = 0.0
@@ -120,31 +165,28 @@ def _pod_totals(pod_metrics: list[dict]) -> list[tuple[str, str | None, float, f
                 seen = True
         if seen:
             revision = (meta.get("labels", {}) or {}).get(_REVISION_LABEL)
-            totals.append((meta.get("name", ""), revision, cpu_milli, mem_bytes))
+            totals.append((meta.get("name", ""), revision, Usage(cpu_milli, mem_bytes)))
     return totals
 
 
-def sum_usage(pod_metrics: list[dict]) -> ResourceUsage | None:
+def total_usage(pod_metrics: list[dict]) -> Usage | None:
     """Sum cpu/memory over each pod's user container(s), ignoring queue-proxy.
 
     Args:
         pod_metrics: PodMetrics items for the workload's pods.
 
     Returns:
-        The summed usage, or None if there's nothing (e.g. the workload is
+        The summed usage, or None if nothing reported (e.g. the workload is
         scaled to zero).
     """
-    totals = _pod_totals(pod_metrics)
-    if not totals:
-        return None
-    return _quantities(sum(t[2] for t in totals), sum(t[3] for t in totals))
+    return total(usage for _, _, usage in _pod_totals(pod_metrics))
 
 
 def pod_usage(pod_metrics: list[dict]) -> list[PodUsage]:
     """The same usage broken down per replica, for the status view.
 
     Costs no extra cluster call - the PodMetrics list already carries per-pod
-    data, which :func:`sum_usage` collapses. Reported in the order the metrics
+    data, which :func:`total_usage` collapses. Reported in the order the metrics
     API returned, so a client can sort on whichever field it renders by.
 
     Args:
@@ -154,6 +196,6 @@ def pod_usage(pod_metrics: list[dict]) -> list[PodUsage]:
         One entry per pod that reported usage; empty when none did.
     """
     return [
-        PodUsage(pod=name, revision=revision, usage=_quantities(cpu_milli, mem_bytes))
-        for name, revision, cpu_milli, mem_bytes in _pod_totals(pod_metrics)
+        PodUsage(pod=name, revision=revision, usage=usage.quantities())
+        for name, revision, usage in _pod_totals(pod_metrics)
     ]

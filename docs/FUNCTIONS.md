@@ -121,10 +121,8 @@ body (secrets redacted) with the live status alongside:
     { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
   ],
   "sites": [
-    { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
-      "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" } },
-    { "site": "south", "status": "Ready", "revision": "image-resizer-00001",
-      "replicas": 1, "usage": { "cpu": "90m", "memory": "175Mi" } }
+    { "site": "central", "status": "Ready", "revision": "image-resizer-00001", "replicas": 2 },
+    { "site": "south", "status": "Ready", "revision": "image-resizer-00001", "replicas": 1 }
   ]
 }
 ```
@@ -142,7 +140,8 @@ source, not images.)
 > (no scheme), mirroring the create body's `hostname`; reach the workload at
 > `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
 > the source fields) are read from the **local site** (uniform across sites); the
-> per-site `sites[]` status/`replicas`/`usage` come from fanning out to every site.
+> per-site `sites[]` status/`replicas` come from fanning out to every site. Live
+> **usage** is not here - see the `/status` endpoint below.
 >
 > **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
 > values and secret file contents come back `null` with `secret: true`; the **git token**
@@ -168,9 +167,47 @@ source, not images.)
 > pre-flight, so they surface as an immediate `400`, not a background deploy failure.
 >
 > **Live status.** `replicas` is the autoscaler's live scale
-> (`Revision.status.actualReplicas`); `usage` is live cpu/memory summed over a
-> site's running pods (user container only, not the queue-proxy sidecar),
-> best-effort and `null` when scaled to zero or the metrics API is unavailable.
+> (`Revision.status.actualReplicas`), best-effort and `null` when it cannot be read.
+> It rides along on a read the per-site error detail needs anyway, which is why it
+> is on this response and live **usage** is not: measuring usage is a PodMetrics
+> call per site, and the full GET is not the endpoint to poll.
+>
+> **Polling live state: `GET .../{name}/status`.** Everything that changes on its
+> own, and nothing that does not. It returns the same `overallStatus` (for a
+> function including `Building`, since the build is still read), workload-wide
+> `replicas` and `usage` totals, and per site the status, `revision`, `replicas`,
+> `usage` and a per-pod breakdown of that usage:
+>
+> ```json
+> {
+>   "name": "image-resizer", "group": "media", "type": "function",
+>   "overallStatus": "Ready", "replicas": 3,
+>   "usage": { "cpu": "210m", "memory": "355Mi" },
+>   "build": { "state": "Ready", "message": null },
+>   "sites": [
+>     { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
+>       "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" },
+>       "pods": [
+>         { "pod": "image-resizer-00001-deployment-7f4c-abcde", "revision": "image-resizer-00001",
+>           "usage": { "cpu": "70m", "memory": "95Mi" } },
+>         { "pod": "image-resizer-00001-deployment-7f4c-fghij", "revision": "image-resizer-00001",
+>           "usage": { "cpu": "50m", "memory": "85Mi" } }
+>       ] }
+>   ]
+> }
+> ```
+>
+> Usage is summed over each pod's user container only, never the queue-proxy
+> sidecar, and is `null` when the workload is scaled to zero or the metrics API
+> could not be read. The **totals** are summed from the raw per-site figures, not
+> from the rounded ones on the response, so they will not always equal the sum of
+> what is printed: two pods at 0.5m each each render `"0m"` while their site reads
+> `"1m"`. Render the `usage` field for a total rather than adding up `pods[]`.
+> A total is `null` outright if any site could not be measured - a number missing
+> a whole site still looks authoritative, so there is no partial version of it.
+>
+> Everything here is **polled**, not streamed, and `usage` can be no fresher than
+> the cluster's metrics-server scrape interval whatever you do.
 
 ### Editing a workload: `PUT` request recipes
 

@@ -8,9 +8,11 @@ interesting part, and why it differs per function rather than being uniform:
 * the **kept-values** reads (:func:`secret_data`, :func:`secret_text`) fail loud.
   Returning ``{}`` for a Secret that exists but could not be read would make a
   valid "keep" look unset and fail the update as a 400, losing a stored secret.
-* the **decoration** reads (:func:`revision`, :func:`site_usage`,
+* the **decoration** reads (:func:`revision`, :func:`site_usage_detail`,
   :func:`describe_spec`) are best-effort. A workload whose replica count or live
-  usage could not be fetched still has a status worth returning.
+  usage could not be fetched still has a status worth returning. ``site_usage_detail``
+  goes one step further and *reports* that it failed (:class:`SiteUsage.measured`),
+  because its caller sums across sites and a silent zero would understate the total.
 
 Every function here blocks, and is called through ``asyncio.to_thread`` or the
 deployer's fan-out.
@@ -19,6 +21,7 @@ deployer's fan-out.
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from api.models.common import (
@@ -28,6 +31,7 @@ from api.models.common import (
     ANNOTATION_HOST,
     ANNOTATION_RUNTIME,
     ANNOTATION_RUNTIME_VERSION,
+    PodUsage,
 )
 from api.services import describe as describe_svc
 from api.services import metrics as metrics_svc
@@ -184,17 +188,37 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
         return None
 
 
-def site_usage_detail(cluster: Cluster, oname: str):
-    """Best-effort live usage: the site total, and the per-pod breakdown of it.
+@dataclass(frozen=True)
+class SiteUsage:
+    """One site's live usage read: whether it could be taken, and what it showed.
 
-    One PodMetrics list read projected two ways, so the status view's breakdown
-    costs no round trip beyond what the summed figure already costs.
+    ``measured`` is the distinction the rest of the best-effort reads here do not
+    need to make. They degrade to a null field on the site that failed, which is
+    visible. A cross-site *total* is not: summing over a site whose metrics API
+    did not answer produces a smaller number that still looks authoritative, so
+    the workload total needs to know the difference between "nothing running" and
+    "nobody could tell".
+
+    Attributes:
+        measured: False when the metrics API could not be read at all.
+        total: The site's summed usage; None when measured but nothing is running.
+        pods: The per-pod breakdown of ``total``.
+    """
+
+    measured: bool
+    total: metrics_svc.Usage | None
+    pods: list[PodUsage]
+
+
+def site_usage_detail(cluster: Cluster, oname: str) -> SiteUsage:
+    """Best-effort live usage for one site: the total, and its per-pod breakdown.
+
+    One PodMetrics list read projected two ways, so the breakdown costs no round
+    trip beyond what the summed figure already costs. Never raises: an unreadable
+    metrics API must not fail a status that is otherwise worth returning.
 
     Returns:
-        ``(total, pods)``. The total is None and the list empty if the metrics
-        API is unavailable or the workload is scaled to zero (no running pods) -
-        an unreadable metrics API must not fail a status that is otherwise
-        worth returning.
+        The site's usage, with ``measured=False`` if the read itself failed.
     """
     try:
         items = cluster.get(
@@ -202,17 +226,9 @@ def site_usage_detail(cluster: Cluster, oname: str):
             label_selector=f"serving.knative.dev/service={oname}",
         )
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-        return None, []
-    return metrics_svc.sum_usage(items), metrics_svc.pod_usage(items)
-
-
-def site_usage(cluster: Cluster, oname: str):
-    """Best-effort live cpu/memory summed over the workload's running pods.
-
-    The full GET's view: the total only (see :func:`site_usage_detail`).
-
-    Returns:
-        The usage summary, or None if the metrics API is unavailable or the
-        workload is scaled to zero (no running pods).
-    """
-    return site_usage_detail(cluster, oname)[0]
+        return SiteUsage(measured=False, total=None, pods=[])
+    return SiteUsage(
+        measured=True,
+        total=metrics_svc.total_usage(items),
+        pods=metrics_svc.pod_usage(items),
+    )

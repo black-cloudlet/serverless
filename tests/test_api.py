@@ -31,6 +31,8 @@ def _status(kind, name, group, build=None):
         group=group,
         type=kind,
         overallStatus="Building" if build else "Ready",
+        replicas=2,
+        usage=ResourceUsage(cpu="300m", memory="384Mi"),
         build=build,
         sites=[
             SiteStatusDetail(
@@ -411,6 +413,9 @@ def test_get_container_status_is_live_state_only(client):
     body = r.json()
     assert body["name"] == "foo" and body["type"] == "container"
     assert body["overallStatus"] == "Ready"
+    # workload-wide totals, for the number a dashboard puts in large type
+    assert body["replicas"] == 2
+    assert body["usage"] == {"cpu": "300m", "memory": "384Mi"}
     site = body["sites"][0]
     assert site["replicas"] == 2
     assert site["usage"] == {"cpu": "300m", "memory": "384Mi"}

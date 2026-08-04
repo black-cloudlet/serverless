@@ -43,6 +43,7 @@ from api.models.common import (
 from api.services import describe as describe_svc
 from api.services import ksvc as ksvc_svc
 from api.services import ksvc_state, preflight, site_apply, site_read
+from api.services import metrics as metrics_svc
 from api.services import route as route_svc
 from api.services.deployer import (
     Deployer,
@@ -592,16 +593,11 @@ class WorkloadService:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
             status, revision = ksvc_state.ksvc_status(obj)
-            # Sequential on purpose. These two reads used to run in a
-            # ThreadPoolExecutor built per site per request, which spawned and tore
-            # down two threads on every poll - and nested that pool inside the
-            # default executor this very function borrowed its worker from, so
-            # enough concurrent polls filled the outer pool with workers doing
-            # nothing but waiting on the inner one. Concurrency belongs at the
-            # fan-out, where sites already run in parallel; both of these go to the
-            # same cluster, so running them in order costs one round trip.
+            # One read, and it earns its place twice over: the Revision carries the
+            # live scale and the specific rollout-failure condition. The usage read
+            # that used to sit beside it is gone from this path - it is a cluster
+            # call for something only a poller wants, and pollers have /status.
             rev = site_read.revision(cluster, revision)
-            usage = site_read.site_usage(cluster, oname)
             replicas = ksvc_state.revision_replicas(rev)
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
@@ -614,7 +610,6 @@ class WorkloadService:
                 revision=revision,
                 error=error,
                 replicas=replicas,
-                usage=usage,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -707,7 +702,8 @@ class WorkloadService:
             group: Owning group.
 
         Returns:
-            The live status view, per-pod usage included.
+            The live status view: workload-wide totals, per-site state, and the
+            per-pod usage behind each site's figure.
 
         Raises:
             NotFoundError: If the workload exists on no reachable site.
@@ -719,6 +715,9 @@ class WorkloadService:
         oname = object_name(name, group)
         # One KSVC per site, kept only to authorize off (the spec is not read here).
         reps: dict[str, dict] = {}
+        # Raw per-site usage, kept beside the response objects because the workload
+        # total has to be summed from these, not from the rounded figures on them.
+        usage_by_site: dict[str, site_read.SiteUsage] = {}
 
         def fetch(cluster: Cluster) -> SiteStatusDetail | None:
             # A 404 means not deployed here, so omit the site rather than fail it;
@@ -732,7 +731,8 @@ class WorkloadService:
             # Sequential for the reason spelled out in get(): both reads go to the
             # same cluster, and the concurrency belongs at the fan-out.
             rev = site_read.revision(cluster, revision)
-            usage, pods = site_read.site_usage_detail(cluster, oname)
+            site_usage = site_read.site_usage_detail(cluster, oname)
+            usage_by_site[cluster.site] = site_usage
             error = None
             if status == "Failed":
                 error = revision_failure_message(rev) or ksvc_failure_message(obj)
@@ -742,8 +742,8 @@ class WorkloadService:
                 revision=revision,
                 error=error,
                 replicas=ksvc_state.revision_replicas(rev),
-                usage=usage,
-                pods=pods,
+                usage=site_usage.total.quantities() if site_usage.total else None,
+                pods=site_usage.pods,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -755,6 +755,16 @@ class WorkloadService:
             # sure it's absent -> 503; otherwise it's genuinely gone -> 404.
             preflight.assert_all_sites_checked(statuses, f"get status of workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
+
+        # A site that could not be reached never ran `fetch`: the deployer builds
+        # its result, and the deployer deals in SiteStatus. Widen it here, because
+        # the alternative is that one down site fails the whole response with a
+        # 500 - the exact case active/active exists to survive, and the one where
+        # a client most needs to see the site that is still up.
+        statuses = [
+            s if isinstance(s, SiteStatusDetail) else SiteStatusDetail(**s.model_dump())
+            for s in statuses
+        ]
 
         # Authorize off the local site if it has the workload, else any site that
         # does - the labels are uniform, so one object answers it.
@@ -788,11 +798,28 @@ class WorkloadService:
                 offering.build_status, self.builder, self.deployer.local_cluster(), name, group
             )
             overall = ksvc_state.with_build_status(overall, build)
+
+        # The platform-wide totals: what this workload is actually running and
+        # consuming, across sites. Both are null rather than partial when a site
+        # could not answer - a total is a single number a dashboard shows in large
+        # type, and one silently missing a site is worse than no number at all,
+        # because nothing about it looks wrong. The per-site entries stay, so a
+        # client can still show what the reachable sites reported.
+        reads = [usage_by_site.get(s.site) for s in statuses]
+        usage = None
+        if all(r is not None and r.measured for r in reads):
+            usage = metrics_svc.total(r.total for r in reads if r.total)
+        replicas = None
+        if all(s.replicas is not None for s in statuses):
+            replicas = sum(s.replicas for s in statuses)
+
         return WorkloadStatusResponse(
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
             overallStatus=overall,  # type: ignore[arg-type]
+            replicas=replicas,
+            usage=usage.quantities() if usage else None,
             build=build,
             sites=statuses,
         )

@@ -337,19 +337,25 @@ class ScalingCapabilities(BaseModel):
 class SiteStatus(BaseModel):
     """The deploy/health state of a workload at a single site.
 
+    Carries no live usage: measuring it is a cluster call of its own, and this is
+    on the full GET, which is not the endpoint to poll. ``replicas`` stays because
+    it is free - it comes off the Revision read that the per-site failure detail
+    needs anyway. Usage lives on :class:`SiteStatusDetail`, which only the status
+    view returns.
+
     Attributes:
         site: The site name.
         status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
         revision: The Knative revision the site is serving, if known.
         error: The failure message when the site errored, else None.
+        replicas: Running pods at this site (None if unknown).
     """
 
     site: str
     status: str
     revision: str | None = None
     error: str | None = None
-    replicas: int | None = None  # running pods at this site (None if unknown)
-    usage: "ResourceUsage | None" = None  # live cpu/memory summed over those pods
+    replicas: int | None = None
 
 
 class ResourceUsage(BaseModel):
@@ -380,15 +386,20 @@ class PodUsage(BaseModel):
 
 
 class SiteStatusDetail(SiteStatus):
-    """:class:`SiteStatus` plus the per-pod breakdown behind ``usage``.
+    """:class:`SiteStatus` plus what it costs a cluster call to measure.
 
-    Only the status view returns this. The full GET stays on the summed figure:
-    the breakdown costs no extra cluster call, but it changes size with the
-    replica count, and a response that already carries the whole spec is the
-    wrong place to put something unbounded.
+    Only the status view returns this, which is what keeps the PodMetrics read
+    off the full GET entirely. ``usage`` is null when the site is scaled to zero
+    or its metrics API could not be read - the two are told apart at the workload
+    level, where an unmeasured site nulls the total rather than under-reporting it.
+
+    Attributes:
+        usage: Live cpu/memory summed over this site's running pods.
+        pods: The replicas ``usage`` is the sum of.
     """
 
-    pods: list[PodUsage] = []  # the replicas `usage` is the sum of
+    usage: ResourceUsage | None = None
+    pods: list[PodUsage] = []
 
 
 class WorkloadBase(BaseModel):
@@ -474,6 +485,13 @@ class WorkloadStatusResponse(BaseModel):
         group: The owning SSO group.
         type: function or container.
         overallStatus: The rollup a client polls on, identical to the full GET's.
+        replicas: Running pods across every site - what the workload is actually
+            scaled to platform-wide. Null if any site's scale is unknown.
+        usage: Cpu/memory across every site, summed from the raw per-site figures
+            rather than the rounded ones. Null if any site could not be measured:
+            a total that silently omits an unreachable site under-reports a
+            workload that is still running there, and this is the number a
+            dashboard puts in large type.
         build: A function's build state; null for a container, and for a function
             that has none.
         sites: Per-site live state, one entry per site that has the workload.
@@ -483,6 +501,8 @@ class WorkloadStatusResponse(BaseModel):
     group: str
     type: Literal["function", "container"]
     overallStatus: WorkloadStatus
+    replicas: int | None = None
+    usage: ResourceUsage | None = None
     build: BuildStatusView | None = None
     sites: list[SiteStatusDetail] = []
 

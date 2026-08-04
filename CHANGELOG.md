@@ -10,24 +10,34 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ### Added
 
 - `GET /api/v1/groups/{group}/{type}/{name}/status` - a poll target that returns
-  only live state. Until now a client watching a workload had to call the full
-  GET, which also reads the file ConfigMaps and the backing Secret to rebuild the
-  redacted spec; on a two-second refresh that pulls secret material out of the
-  cluster on a loop for config that only changes when the client changes it. The
-  new endpoint fans out the same way and returns the same `overallStatus`, plus
-  per site the KSVC status, `revision`, `replicas` and `usage` - and, new here, a
-  **per-pod breakdown** of that usage (`sites[].pods[]`, each carrying `pod`,
-  `revision` and its own `usage`), which costs no extra cluster call because the
-  PodMetrics list already holds it and `sum_usage` was collapsing it. The
-  per-replica figures make a hot or about-to-OOM pod visible, and their
-  `revision` distinguishes the old replicas from the new ones mid-rollout. The
-  build read is kept for functions: `overallStatus` is `Building` only because
-  the build says so, so dropping it would have reported a normal first build as
-  `Deploying`, then `Degraded` once the KSVC started failing to pull an image
-  that does not exist yet. `metrics.pod_usage` and `metrics.sum_usage` project
-  one parse (`_pod_totals`), so a site's total and the breakdown it is the sum of
-  cannot drift - the total sums the raw figures rather than the rounded per-pod
-  ones. The full GET is unchanged; new RBAC is not needed. Note what this is not:
+  only live state, and now the single home for live usage. Until now a client
+  watching a workload had to call the full GET, which also reads the file
+  ConfigMaps and the backing Secret to rebuild the redacted spec; on a
+  two-second refresh that pulls secret material out of the cluster on a loop for
+  config that only changes when the client changes it. The new endpoint fans out
+  the same way and returns the same `overallStatus`, plus:
+  - **workload-wide `replicas` and `usage` totals** - what the workload is
+    actually running and consuming across sites, which is the number a dashboard
+    shows in large type;
+  - per site the KSVC status, `revision`, `replicas` and `usage`;
+  - a **per-pod breakdown** of each site's usage (`sites[].pods[]`, each carrying
+    `pod`, `revision` and its own `usage`), which costs no extra cluster call
+    because the PodMetrics list already holds it and the old `sum_usage` was
+    collapsing it. The per-replica figures make a hot or about-to-OOM pod
+    visible, and their `revision` separates the old replicas from the new ones
+    mid-rollout.
+
+  Rounding happens once, at the response edge: `metrics.Usage` carries raw floats
+  and everything sums in that, so a site total agrees with its pods and a
+  workload total with its sites. A consequence worth knowing before reading the
+  JSON - **the totals need not equal the sum of the printed parts**: two pods at
+  0.5m each render `"0m"` under a site reading `"1m"`. Render `usage`; never sum
+  `pods[]` client-side. Totals are also **null rather than partial** when any site
+  could not be measured, since a figure quietly missing a whole site still reads
+  as authoritative. The build read is kept for functions: `overallStatus` is
+  `Building` only because the build says so, so dropping it would have reported a
+  normal first build as `Deploying`, then `Degraded` once the KSVC started failing
+  to pull an image that does not exist yet. No new RBAC. Note what this is not:
   everything is still **polled**. Streaming logs, metrics and replica count over
   SSE is the follow-up (docs/ARCHITECTURE.md - Open Questions / Future Work), and
   `usage` can never be fresher than the metrics-server scrape either way.
@@ -128,6 +138,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **Breaking:** the single-workload `GET` no longer returns `sites[].usage`. Live
+  usage moved to the new `/status` endpoint above, which is where a client
+  polling for it should have been looking anyway. This is not a cosmetic move:
+  usage was a PodMetrics list call **per site on every GET**, and a GET is also
+  what a client fetches to render a workload's configuration, where the number
+  was never looked at. Removing it takes one cluster round trip per site off that
+  path. `sites[].replicas` **stays** - it rides along on the Revision read the
+  per-site failure detail already needs, so it costs nothing. Clients reading
+  `sites[].usage` from the GET should call `/status`, which reports it per site,
+  per pod, and as a workload total.
+
 - The build contract is renamed for what it contracts: `common/contract.py` ->
   `common/build.py`, the `Builder` protocol -> `BuildBackend`,
   `api/services/builder.py` -> `api/services/kpack_backend.py`, and
@@ -147,6 +168,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   arguments. The offering constants move to `common/labels.py`, beside the
   `LABEL_OFFERING` they are the values of. No behaviour change.
 ### Fixed
+
+- `/status` returned 500 when one site was unreachable - the exact failure
+  active/active exists to absorb, and the moment a client most needs to see the
+  site that is still up. A site that cannot be reached never runs the per-site
+  read: the deployer builds its result, and the deployer deals in `SiteStatus`,
+  not the usage-carrying `SiteStatusDetail` the response declares, so validation
+  rejected the mixed list. The unreachable site's status is now widened into the
+  response instead, and the workload totals go null rather than pretending it
+  contributed nothing.
 
 - `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
   the response read `spec.path`, but `WorkloadSpec` never declared the field, so
