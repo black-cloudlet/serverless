@@ -27,7 +27,9 @@ exposed through a **Python / FastAPI** REST API.
 api/        the control-plane API service (python -m api.main)
   auth/     self-contained OIDC auth component (SSO)
   models/   Pydantic request/response schemas
-  services/ manifest builders + multi-site deployer + build orchestration
+  services/ workload engine + offerings, split by responsibility:
+            manifests/ (build what gets applied), sites/ (fan-out + per-site
+            read/write), state/ (interpret what came back), builder/ (image build)
   routers/  functions / containers / info (public) endpoints
 common/     shared by api + a future build service: build domain, cluster
             client (mTLS), settings, /healthz+/readyz + offline docs, labels,
@@ -62,4 +64,4 @@ values are projected from Vault via the External Secrets Operator
 
 > **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
 > builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
-> (`func`/Tekton) is the remaining integration point - see `api/services/kpack_backend.py`.
+> (`func`/Tekton) is the remaining integration point - see `api/services/builder/kpack_backend.py`.

@@ -1,0 +1,104 @@
+"""Merge a group's per-site KSVC listings into one summary per workload.
+
+Pure, like :mod:`api.services.state.ksvc_state`: it takes what the fan-out already
+fetched and returns the response objects. The listing's I/O - the fan-out and
+the build-state read - stays in the engine, so the merge rules that decide what
+a workload deployed to one site of two reads as are testable with plain dicts.
+
+The merge is deliberately partial-tolerant. A site that did not answer is simply
+absent from the input, and a workload's rollup covers only the sites that did
+return it, so a single-site workload reads ``Ready`` rather than ``Degraded``.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from api.models.common import (
+    ANNOTATION_HOST,
+    ANNOTATION_SIZE,
+    BuildStatusView,
+    WorkloadSummary,
+)
+from api.services.manifests import route as route_svc
+from api.services.sites.deployer import overall_status
+from api.services.state import ksvc_state
+
+# createdAt is optional, so sort Nones last rather than letting a comparison fail.
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def merge(
+    results: list[tuple[str, list[dict] | None]],
+    *,
+    group: str,
+    offering: str,
+    builds: dict[str, BuildStatusView],
+    route_domain: str,
+    sort: str = "name",
+) -> list[WorkloadSummary]:
+    """One summary per workload, merged across the sites that returned it.
+
+    Args:
+        results: ``(site, ksvcs_or_None)`` per site; None means it did not answer.
+        group: The owning group.
+        offering: The offering being listed ("function"/"container").
+        builds: Build states keyed by object name, for the build-first rollup.
+            Empty for an offering with no build.
+        route_domain: Used to derive a host for a workload whose KSVC carries no
+            host annotation.
+        sort: "name" or "createdAt".
+
+    Returns:
+        The sorted summaries.
+    """
+    suffix = f"-{group}"
+    merged: dict[str, dict] = {}
+    for site, items in results:
+        if items is None:
+            continue
+        for obj in items:
+            meta = obj.get("metadata", {}) or {}
+            oname = meta.get("name", "")
+            # object name is "{name}-{group}"; recover the display name
+            name = oname[: -len(suffix)] if oname.endswith(suffix) else oname
+            annotations = meta.get("annotations", {}) or {}
+            status, _ = ksvc_state.ksvc_status(obj)
+            entry = merged.setdefault(
+                name,
+                {
+                    # the object name, which is what a build state is keyed by
+                    "oname": oname,
+                    "host": None,
+                    "size": None,
+                    "createdAt": None,
+                    "sites": [],
+                    "statuses": [],
+                },
+            )
+            entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
+            entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
+            entry["createdAt"] = entry["createdAt"] or ksvc_state.creation_time(obj)
+            entry["sites"].append(site)
+            entry["statuses"].append(status)
+
+    summaries = [
+        WorkloadSummary(
+            name=name,
+            group=group,
+            type=offering,
+            hostname=entry["host"] or route_svc.host_for(name, group, route_domain),
+            overallStatus=ksvc_state.with_build_status(
+                overall_status(entry["statuses"]), builds.get(entry["oname"])
+            ),
+            size=entry["size"],
+            createdAt=entry["createdAt"],
+            sites=sorted(entry["sites"]),
+        )
+        for name, entry in merged.items()
+    ]
+    if sort == "createdAt":
+        summaries.sort(key=lambda w: (w.createdAt is None, w.createdAt or _EPOCH))
+    else:
+        summaries.sort(key=lambda w: w.name)
+    return summaries

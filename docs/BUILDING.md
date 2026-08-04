@@ -150,7 +150,7 @@ pointed at the on-prem artifact server:
 
 All of this is **data**, carried by the existing `runtimes` list in `values.yaml`. It
 serialises into the runtimes ConfigMap through `toYaml` and is read by
-`api/services/runtimes.py`, whose `RuntimeSpec` is `extra="allow"` - so these fields flow
+`api/services/builder/runtimes.py`, whose `RuntimeSpec` is `extra="allow"` - so these fields flow
 end-to-end with no template or model change:
 
 ```yaml

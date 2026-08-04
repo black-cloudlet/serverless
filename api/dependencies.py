@@ -8,11 +8,11 @@ from typing import Annotated
 from fastapi import Depends
 
 from api.core.config import get_settings
+from api.services.builder.kpack_backend import KpackBackend
+from api.services.builder.runtimes import RuntimeRegistry, load_runtimes
 from api.services.container import ContainerService
-from api.services.deployer import Deployer
 from api.services.function import FunctionService
-from api.services.kpack_backend import KpackBackend
-from api.services.runtimes import RuntimeRegistry, load_runtimes
+from api.services.sites.deployer import Deployer
 from api.services.workloads import WorkloadService
 
 

@@ -13,10 +13,10 @@ logic lives here so it can be read (and tested) without the deploy path around i
 from __future__ import annotations
 
 from api.models.common import LABEL_WORKLOAD, SiteStatus
-from api.services import route as route_svc
-from api.services.deployer import Deployer
-from api.services.env import resolve_env
-from api.services.files import resolve_files
+from api.services.manifests import route as route_svc
+from api.services.manifests.env import resolve_env
+from api.services.manifests.files import resolve_files
+from api.services.sites.deployer import Deployer
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
     ConflictError,

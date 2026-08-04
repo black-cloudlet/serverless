@@ -1,7 +1,7 @@
 from api.models.common import Scaling
-from api.services.describe import configmap_refs, parse_spec
-from api.services.files import VolumeSpec
-from api.services.ksvc import ContainerEnv, build_ksvc
+from api.services.manifests.files import VolumeSpec
+from api.services.manifests.ksvc import ContainerEnv, build_ksvc
+from api.services.state.describe import configmap_refs, parse_spec
 
 
 def _ksvc():
@@ -37,7 +37,7 @@ def test_configmap_refs_excludes_platform_ca():
 
 
 def test_parse_spec_hides_injected_ca_env_but_keeps_user_override():
-    from api.services.ksvc import CA_ENV_VARS
+    from api.services.manifests.ksvc import CA_ENV_VARS
 
     # The user sets SSL_CERT_FILE themselves; the rest are platform-injected.
     ksvc = build_ksvc(
@@ -124,7 +124,7 @@ def test_parse_spec_without_configmap_leaves_content_null():
 
 
 def test_parse_spec_reads_back_container_port():
-    from api.services.describe import container_port
+    from api.services.state.describe import container_port
 
     # container_port stays honest about the manifest: nothing stamped -> None
     assert container_port(_ksvc()) is None

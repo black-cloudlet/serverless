@@ -1,7 +1,7 @@
 """Reading a workload's stored and live state back out of a site.
 
-The counterpart to :mod:`api.services.site_apply`: everything here fetches from
-one cluster and nothing writes. It is separate from :mod:`api.services.ksvc_state`
+The counterpart to :mod:`api.services.sites.site_apply`: everything here fetches from
+one cluster and nothing writes. It is separate from :mod:`api.services.state.ksvc_state`
 because these calls do I/O - which is what makes their error handling the
 interesting part, and why it differs per function rather than being uniform:
 
@@ -31,12 +31,12 @@ from api.models.common import (
     ANNOTATION_RUNTIME,
     ANNOTATION_RUNTIME_VERSION,
 )
-from api.services import describe as describe_svc
-from api.services import metrics as metrics_svc
-from api.services import secrets as secret_svc
-from api.services.env import env_secret_name
-from api.services.files import files_name
-from api.services.ksvc_state import extract_image
+from api.services.manifests import secrets as secret_svc
+from api.services.manifests.env import env_secret_name
+from api.services.manifests.files import files_name
+from api.services.state import describe as describe_svc
+from api.services.state import metrics as metrics_svc
+from api.services.state.ksvc_state import extract_image
 from common.cluster import Cluster, ResourceKind
 from common.errors import NotFoundError, ServiceUnavailableError
 

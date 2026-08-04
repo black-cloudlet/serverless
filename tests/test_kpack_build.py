@@ -6,9 +6,9 @@ import base64
 
 import pytest
 
-from api.services import secrets as secret_svc
-from api.services.kpack_backend import KpackBackend
-from api.services.runtimes import RuntimeRegistry, RuntimeSpec
+from api.services.builder.kpack_backend import KpackBackend
+from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
+from api.services.manifests import secrets as secret_svc
 from common import kpack
 from common.config import CommonSettings, SiteConfig
 from common.errors import NotFoundError, ValidationError
@@ -362,13 +362,13 @@ def test_the_built_image_never_reaches_a_function_response():
 )
 def test_build_state_folds_into_the_overall_status(overall, state, expected):
     from api.models.common import BuildStatusView
-    from api.services.ksvc_state import with_build_status
+    from api.services.state.ksvc_state import with_build_status
 
     assert with_build_status(overall, BuildStatusView(state=state)) == expected
 
 
 def test_no_build_leaves_the_ksvc_rollup_untouched():
-    from api.services.ksvc_state import with_build_status
+    from api.services.state.ksvc_state import with_build_status
 
     assert with_build_status("Ready", None) == "Ready"
     assert with_build_status("Degraded", None) == "Degraded"
@@ -381,7 +381,7 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
     `Failed` - `Unable to fetch image ...` in the sites table right below it.
     """
     from api.models.common import BuildStatusView, SiteStatus
-    from api.services.ksvc_state import sites_with_build_status
+    from api.services.state.ksvc_state import sites_with_build_status
 
     sites = [
         SiteStatus(
@@ -408,7 +408,7 @@ def test_only_a_running_build_masks_a_failing_site(state):
     arrives, so the site's pull error is the truth and must stay visible.
     """
     from api.models.common import BuildStatusView, SiteStatus
-    from api.services.ksvc_state import sites_with_build_status
+    from api.services.state.ksvc_state import sites_with_build_status
 
     sites = [SiteStatus(site="a", status="Failed", error="boom")]
 
@@ -417,7 +417,7 @@ def test_only_a_running_build_masks_a_failing_site(state):
 
 
 def test_building_is_a_non_terminal_poll_state():
-    from api.services.deployer import status_code_for
+    from api.services.sites.deployer import status_code_for
 
     assert status_code_for("Building", created=False) == 202
     assert status_code_for("Building", created=True) == 202
@@ -428,7 +428,7 @@ def test_building_is_a_non_terminal_poll_state():
 
 def _ksvc(image="reg/fn:old", branch="main", path="", version=None, port=None):
     from api.models.common import Scaling
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
 
     return build_ksvc(
         name="hello-payments",
@@ -673,7 +673,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     """Switchover self-heal: an unchanged spec must still recreate a missing Image."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -704,7 +704,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
 async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
     """path is a build input: a different directory is a different application."""
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -754,7 +754,7 @@ async def test_update_without_any_token_emits_no_build():
 
 async def test_branch_change_moves_the_deployment_to_the_new_tag():
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
@@ -1006,7 +1006,7 @@ def test_a_runtime_naming_no_version_env_gets_none_invented():
 async def test_changing_the_version_rebuilds_and_moves_the_image():
     """The language version is a build input like branch or path."""
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1039,7 +1039,7 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     that is a different build from the pinned one it replaces.
     """
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1064,7 +1064,7 @@ async def test_resending_the_same_version_is_not_a_rebuild():
     """A config-only edit that echoes the stored version must not disturb it."""
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1246,7 +1246,7 @@ async def test_changing_only_the_port_does_not_rebuild():
     out a build to move a port.
     """
     from api.models.function import FunctionUpdate
-    from api.services.ksvc_state import extract_image
+    from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")

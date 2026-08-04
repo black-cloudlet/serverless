@@ -21,8 +21,8 @@ protocol.
 
 from __future__ import annotations
 
-from api.services import secrets as secret_svc
-from api.services.runtimes import RuntimeRegistry
+from api.services.builder.runtimes import RuntimeRegistry
+from api.services.manifests import secrets as secret_svc
 from common import kpack
 from common.build import (
     BuildPlan,

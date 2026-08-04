@@ -5,13 +5,13 @@ from api.models.common import (
     FileMount,
     Scaling,
 )
-from api.services import ksvc as ksvc_svc
-from api.services import resources as res
-from api.services import route as route_svc
-from api.services import secrets as secret_svc
-from api.services.env import env_secret_name, resolve_env
-from api.services.files import resolve_files
-from api.services.ksvc import ContainerEnv
+from api.services.manifests import ksvc as ksvc_svc
+from api.services.manifests import resources as res
+from api.services.manifests import route as route_svc
+from api.services.manifests import secrets as secret_svc
+from api.services.manifests.env import env_secret_name, resolve_env
+from api.services.manifests.files import resolve_files
+from api.services.manifests.ksvc import ContainerEnv
 
 
 def test_build_ksvc_basic():
@@ -149,7 +149,7 @@ def test_build_ksvc_mounts_ca_bundle():
 
 def test_build_ksvc_injects_ca_env_pointed_at_the_bundle():
     from api.models.common import ANNOTATION_INJECTED_ENV
-    from api.services.ksvc import CA_ENV_VARS
+    from api.services.manifests.ksvc import CA_ENV_VARS
 
     m = ksvc_svc.build_ksvc(
         name="app-team",
@@ -177,7 +177,7 @@ def test_build_ksvc_injects_ca_env_pointed_at_the_bundle():
 
 def test_build_ksvc_ca_env_user_override_wins_and_is_not_marked_injected():
     from api.models.common import ANNOTATION_INJECTED_ENV
-    from api.services.ksvc import CA_ENV_VARS
+    from api.services.manifests.ksvc import CA_ENV_VARS
 
     m = ksvc_svc.build_ksvc(
         name="app-team",
@@ -241,7 +241,7 @@ def test_build_ksvc_env_secret_ref():
 
 def test_resolve_files_aggregates_one_cm_and_one_secret():
     from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
-    from api.services.files import files_name
+    from api.services.manifests.files import files_name
 
     files = [
         FileMount(mountPath="/etc/app/app.yaml", content="x: 1\n"),
@@ -337,7 +337,7 @@ def test_resolve_env_duplicate_name_rejected():
     import pytest
 
     from api.models.common import EnvVar
-    from api.services.env import resolve_env
+    from api.services.manifests.env import resolve_env
     from common.errors import ValidationError
 
     env = [EnvVar(name="DUP", value="1"), EnvVar(name="DUP", value="2")]
@@ -416,7 +416,7 @@ def test_resolve_files_secret_keeps_stored_content_when_omitted():
 
     import pytest
 
-    from api.services.files import _key
+    from api.services.manifests.files import _key
     from common.errors import ValidationError
 
     key = _key("/etc/tls/tls.key")
@@ -464,7 +464,7 @@ def test_binary_secret_file_survives_create_and_keep_on_update():
     """
     import base64
 
-    from api.services.files import resolve_files
+    from api.services.manifests.files import resolve_files
 
     blob = bytes([0x30, 0x82, 0x04, 0xA2, 0xFF, 0xFE, 0x00, 0x01])  # PKCS#12-ish
     mount = FileMount(
@@ -495,7 +495,7 @@ def test_binary_non_secret_file_goes_to_binary_data():
     """
     import base64
 
-    from api.services.files import resolve_files
+    from api.services.manifests.files import resolve_files
 
     blob = bytes([0xFF, 0xFE, 0x00])
     files = [
@@ -516,7 +516,7 @@ def test_redact_files_reports_no_text_form_for_binary_content():
     """
     import base64
 
-    from api.services.describe import redact_files
+    from api.services.state.describe import redact_files
 
     views = redact_files(
         [

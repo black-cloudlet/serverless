@@ -3,8 +3,8 @@ import pytest
 from api.auth.claims import principal_from_claims
 from api.core.config import Settings, SiteConfig, SSOConfig
 from api.models.common import SiteStatus
-from api.services.deployer import Deployer, aggregate, status_code_for
 from api.services.offering import CONTAINER, FUNCTION
+from api.services.sites.deployer import Deployer, aggregate, status_code_for
 from common.errors import SiteTotalFailure, ValidationError
 from tests.conftest import runtime_registry
 
@@ -165,7 +165,7 @@ def test_aggregate_total_failure():
 
 
 def test_overall_status_rollup():
-    from api.services.deployer import overall_status
+    from api.services.sites.deployer import overall_status
 
     assert overall_status(["Ready", "Ready"]) == "Ready"
     assert overall_status(["Deploying", "Deploying"]) == "Deploying"
@@ -185,7 +185,7 @@ def test_stats_code_for_deploying_is_non_terminal():
 
 
 def test_ksvc_status_distinguishes_failed_from_deploying():
-    from api.services.ksvc_state import ksvc_status
+    from api.services.state.ksvc_state import ksvc_status
 
     def _obj(ready_status):
         conditions = [{"type": "Ready", "status": ready_status}] if ready_status else []
@@ -757,8 +757,8 @@ class _ListCluster:
 async def test_get_returns_redacted_spec():
     from api.auth.claims import Principal
     from api.models.common import Scaling
-    from api.services.files import VolumeSpec
-    from api.services.ksvc import ContainerEnv, build_ksvc
+    from api.services.manifests.files import VolumeSpec
+    from api.services.manifests.ksvc import ContainerEnv, build_ksvc
     from common.cluster import ResourceKind
 
     ksvc = build_ksvc(
@@ -792,7 +792,7 @@ async def test_get_returns_redacted_spec():
         name = "site-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
-            from api.services.secrets import build_pull_secret
+            from api.services.manifests.secrets import build_pull_secret
 
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
@@ -823,7 +823,7 @@ async def test_get_returns_redacted_spec():
 
 def _bare_ksvc(name="app-team", offering="container"):
     from api.models.common import Scaling
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
 
     return build_ksvc(
         name=name,
@@ -848,7 +848,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
     """
     from api.auth.claims import Principal
     from api.models.common import Scaling
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
     from common.cluster import ResourceKind
 
@@ -909,7 +909,7 @@ async def test_get_function_building_image_reports_building():
     """A function whose image is still building is Building, not Degraded."""
     from api.auth.claims import Principal
     from api.models.common import Scaling
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
     from common.cluster import ResourceKind
 
@@ -1246,7 +1246,7 @@ async def test_update_prunes_backing_no_longer_referenced():
     from api.models.common import EnvVar, FileMount, Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
     from common.cluster import ResourceKind
 
     existing = build_ksvc(
@@ -1311,7 +1311,7 @@ async def test_container_update_rotates_pull_secret():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -1362,8 +1362,8 @@ async def test_function_update_rebuilds_when_token_given():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
-    from api.services.ksvc import build_ksvc
-    from api.services.ksvc_state import extract_image
+    from api.services.manifests.ksvc import build_ksvc
+    from api.services.state.ksvc_state import extract_image
 
     class _StubBuilder(_NullBuilder):
         def __init__(self):
@@ -1422,8 +1422,8 @@ async def test_function_update_without_token_keeps_image():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
-    from api.services.ksvc import build_ksvc
-    from api.services.ksvc_state import extract_image
+    from api.services.manifests.ksvc import build_ksvc
+    from api.services.state.ksvc_state import extract_image
 
     class _StubBuilder(_NullBuilder):
         def __init__(self):
@@ -1476,7 +1476,7 @@ async def test_function_create_persists_git_secret():
     from api.auth.claims import Principal
     from api.models.function import FunctionCreate
     from api.services.function import FunctionService
-    from api.services.secrets import GIT_TOKEN_KEY, build_git_secret
+    from api.services.manifests.secrets import GIT_TOKEN_KEY, build_git_secret
 
     class _StubBuilder(_NullBuilder):
         def plan(self, req, labels):
@@ -1511,8 +1511,8 @@ async def test_function_update_reuses_stored_git_token():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
-    from api.services.ksvc import build_ksvc
-    from api.services.secrets import build_git_secret, git_secret_name
+    from api.services.manifests.ksvc import build_ksvc
+    from api.services.manifests.secrets import build_git_secret, git_secret_name
 
     class _StubBuilder(_NullBuilder):
         def __init__(self):
@@ -1565,9 +1565,9 @@ async def test_container_update_keeps_secret_env_value_when_omitted():
     from api.auth.claims import Principal
     from api.models.common import EnvVar, Scaling
     from api.models.container import ContainerUpdate
-    from api.services import resources as res
     from api.services.container import ContainerService
-    from api.services.ksvc import ContainerEnv, build_ksvc
+    from api.services.manifests import resources as res
+    from api.services.manifests.ksvc import ContainerEnv, build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -1609,8 +1609,8 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
-    from api.services.secrets import build_pull_secret
+    from api.services.manifests.ksvc import build_ksvc
+    from api.services.manifests.secrets import build_pull_secret
 
     # Existing container pulls from reg-a with stored creds bob/s3cret.
     existing = build_ksvc(
@@ -1659,8 +1659,8 @@ async def test_update_container_username_change_without_token_rejected():
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
-    from api.services.secrets import build_pull_secret
+    from api.services.manifests.ksvc import build_ksvc
+    from api.services.manifests.secrets import build_pull_secret
     from common.errors import ValidationError
 
     existing = build_ksvc(
@@ -1706,9 +1706,9 @@ async def test_container_update_both_creds_null_removes_pull_secret():
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.describe import pull_secret_name
-    from api.services.ksvc import build_ksvc
-    from api.services.secrets import build_pull_secret
+    from api.services.manifests.ksvc import build_ksvc
+    from api.services.manifests.secrets import build_pull_secret
+    from api.services.state.describe import pull_secret_name
     from common.cluster import ResourceKind
 
     existing = build_ksvc(
@@ -1749,7 +1749,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
 
     from api.auth.claims import Principal
     from api.models.common import Scaling
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
     from common.cluster import ResourceKind
     from common.errors import NotFoundError, ServiceUnavailableError
 
@@ -1788,8 +1788,8 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
 async def test_load_existing_reads_secrets_from_local_site():
     from api.auth.claims import Principal
     from api.models.common import Scaling
-    from api.services import resources as res
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests import resources as res
+    from api.services.manifests.ksvc import build_ksvc
 
     ksvc = build_ksvc(
         name="api-team",
@@ -2119,7 +2119,7 @@ async def test_apply_sets_owner_references_on_derived():
     from api.models.common import EnvVar, FileMount, Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
 
     existing = build_ksvc(
         name="api-team",
@@ -2242,7 +2242,7 @@ async def test_update_reuses_existing_without_refetch():
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
 
     existing_ksvc = build_ksvc(
         name="api-team",
@@ -2481,7 +2481,7 @@ def test_validate_audience_verified_only_when_configured(monkeypatch):
 
 def _existing_container_ksvc():
     from api.models.common import Scaling
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
 
     return build_ksvc(
         name="api-team",
@@ -2646,7 +2646,7 @@ async def test_update_unchanged_host_retires_no_mapping():
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.ksvc import build_ksvc
     from common.cluster import ResourceKind
 
     existing = build_ksvc(
@@ -2763,7 +2763,7 @@ async def test_get_reports_terminating_during_delete():
 
 
 def test_overall_status_terminating_precedence():
-    from api.services.deployer import overall_status
+    from api.services.sites.deployer import overall_status
 
     assert overall_status(["Terminating", "Ready"]) == "Terminating"
     assert overall_status(["Terminating", "Deploying"]) == "Terminating"
@@ -2776,7 +2776,7 @@ def test_creation_time_is_israel_local_time_with_dst():
     DST-aware offset: +03:00 (IDT) in summer, +02:00 (IST) in winter."""
     from zoneinfo import ZoneInfo
 
-    from api.services.ksvc_state import creation_time
+    from api.services.state.ksvc_state import creation_time
 
     summer = creation_time({"metadata": {"creationTimestamp": "2026-07-01T09:00:00Z"}})
     assert summer.tzinfo == ZoneInfo("Asia/Jerusalem")
@@ -3077,8 +3077,8 @@ async def test_container_service_logs_delegates_to_engine():
 
 
 def _function_service_with_runtimes(names, builder="python"):
+    from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
     from api.services.function import FunctionService
-    from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 
     engine = _workload_service({"site-a": _FakeCluster("site-a")})
     # `builder` is what makes a runtime buildable; pass None for one that is
@@ -3269,8 +3269,8 @@ async def test_get_overlaps_the_spec_and_build_reads():
 
     from api.auth.claims import Principal
     from api.models.common import Scaling
-    from api.services.files import VolumeSpec
-    from api.services.ksvc import build_ksvc
+    from api.services.manifests.files import VolumeSpec
+    from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
     from common.cluster import ResourceKind
 

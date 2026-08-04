@@ -5,9 +5,9 @@ from __future__ import annotations
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
-from api.services import describe as describe_svc
+from api.services.builder.runtimes import RuntimeRegistry
 from api.services.offering import FUNCTION
-from api.services.runtimes import RuntimeRegistry
+from api.services.state import describe as describe_svc
 from api.services.workloads import ApplyRequest, WorkloadService
 from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError

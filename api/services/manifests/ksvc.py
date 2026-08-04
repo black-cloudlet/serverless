@@ -16,7 +16,7 @@ from api.models.common import (
     CA_BUNDLE_VOLUME,
     Scaling,
 )
-from api.services.files import VolumeSpec
+from api.services.manifests.files import VolumeSpec
 from common.labels import workload_labels
 
 KSVC_API = "serving.knative.dev/v1"

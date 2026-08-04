@@ -179,7 +179,7 @@ def validate_image_ref(image: str) -> str:
     """Validate a container image reference the caller wants deployed.
 
     The value is written verbatim to ``containers[0].image`` and is parsed by
-    :func:`api.services.secrets.registry_of` to key the pull secret, so an
+    :func:`api.services.manifests.secrets.registry_of` to key the pull secret, so an
     unusable reference passes every check here and surfaces minutes later as a
     bare ``ErrImagePull`` on a revision - the failure mode the other validators
     in this module exist to prevent.

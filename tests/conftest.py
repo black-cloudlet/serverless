@@ -36,7 +36,7 @@ def runtime_registry(names=("python", "go", "node"), builder="python"):
     FunctionService requires its registry rather than defaulting to the
     process-wide one, so tests supply it the same way api.dependencies does.
     """
-    from api.services.runtimes import RuntimeRegistry, RuntimeSpec
+    from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
 
     return RuntimeRegistry([RuntimeSpec(name=n, builder=builder) for n in names])
 

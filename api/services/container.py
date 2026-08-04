@@ -5,9 +5,9 @@ from __future__ import annotations
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
-from api.services import describe as describe_svc
-from api.services import secrets as secret_svc
+from api.services.manifests import secrets as secret_svc
 from api.services.offering import CONTAINER
+from api.services.state import describe as describe_svc
 from api.services.workloads import ApplyRequest, WorkloadService
 from common.errors import ValidationError
 from common.labels import OFFERING_CONTAINER, workload_labels

@@ -767,20 +767,27 @@ Serverless/
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine (orchestration)
 │   │   ├── offering.py              # Offering protocol: all that differs between fn/container
-│   │   ├── preflight.py             # accept-time guards: host/name conflicts, spec validation
-│   │   ├── site_apply.py            # write one workload into one site (ordering + rollback)
-│   │   ├── site_read.py             # read one workload's state back out of a site
-│   │   ├── ksvc_state.py            # interpret a Knative object (pure, no cluster I/O)
 │   │   ├── function.py              # function orchestration (build from Git)
 │   │   ├── container.py             # container orchestration (image + pull secret)
-│   │   ├── deployer.py              # multi-site fan-out (builds each site's Cluster)
-│   │   ├── kpack_backend.py         # api-side BuildBackend (KpackBackend; future RemoteBackend)
-│   │   ├── ksvc.py                  # KSVC manifest construction (+ t-shirt sizes)
-│   │   ├── runtimes.py              # available-runtimes registry (mounted ConfigMap)
-│   │   ├── route.py                 # host + Knative DomainMapping (operator makes the Route)
-│   │   ├── env.py / files.py        # env & file resolution (+ their Secret/ConfigMap)
-│   │   ├── resources.py / secrets.py# manifest + imagePullSecret/git-token builders
-│   │   └── describe.py / metrics.py # read-back spec (redacted) + pod usage
+│   │   ├── manifests/               # build what gets applied (pure; never reaches a cluster)
+│   │   │   ├── ksvc.py              # KSVC manifest construction
+│   │   │   ├── route.py             # host + Knative DomainMapping (operator makes the Route)
+│   │   │   ├── env.py / files.py    # env & file resolution (+ their Secret/ConfigMap)
+│   │   │   └── resources.py / secrets.py  # t-shirt sizes + imagePullSecret/git-token builders
+│   │   ├── sites/                   # talking to the clusters
+│   │   │   ├── deployer.py          # multi-site fan-out + status rollup
+│   │   │   ├── preflight.py         # guards that run before any write (host/name conflicts)
+│   │   │   ├── site_apply.py        # write one workload into one site (ordering + rollback)
+│   │   │   └── site_read.py         # read one workload's state back out of a site
+│   │   ├── state/                   # interpret what came back (pure, no cluster I/O)
+│   │   │   ├── ksvc_state.py        # interpret a Knative object
+│   │   │   ├── ownership.py         # is this workload the caller's - the one shared rule
+│   │   │   ├── summaries.py         # merge a group's per-site listings into one row each
+│   │   │   └── describe.py / metrics.py  # read-back spec (redacted) + pod usage
+│   │   └── builder/                 # the function image build
+│   │       ├── kpack_backend.py     # api-side BuildBackend (KpackBackend; future RemoteBackend)
+│   │       ├── runtimes.py          # available-runtimes registry (mounted ConfigMap)
+│   │       └── registry.py          # reclaim the repositories a build pushed to
 ├── common/                          # shared by api + (future) builder service
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)

@@ -5,17 +5,17 @@ add only the offering-specific prep (build-from-Git vs image + pull secret);
 apply, host/absence checks, access control and get/delete all live here.
 
 What lives here is the *orchestration* - which sites to visit, in what order,
-and what a partial answer means. The pieces it orchestrates were pulled out to
-be readable on their own, and are worth knowing before reading this file:
+and what a partial answer means. Everything it orchestrates was pulled out to be
+readable and testable on its own:
 
-* :mod:`api.services.ksvc_state`  - interpret a Knative object (pure, no I/O)
-* :mod:`api.services.preflight`   - the guards that run before any write
-* :mod:`api.services.site_apply`  - write one workload into one site
-* :mod:`api.services.site_read`   - read one workload's state back out
+* :mod:`api.services.manifests` - build what gets applied (pure)
+* :mod:`api.services.sites`     - fan out, and write/read one site
+* :mod:`api.services.state`     - interpret what came back (pure)
+* :mod:`api.services.builder`   - the function image build
 
 The ``assert_*``/``host_for``/``validate_spec`` methods below are thin
-delegations to :mod:`api.services.preflight`, kept on the engine because that is
-the object the offering services and the routers hold.
+delegations to :mod:`api.services.sites.preflight`, kept on the engine because
+that is the object the offering services and the routers hold.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 
 from api.auth.claims import Principal
 from api.core.config import Settings
@@ -40,22 +40,23 @@ from api.models.common import (
     WorkloadStatsResponse,
     WorkloadSummary,
 )
-from api.services import describe as describe_svc
-from api.services import ksvc as ksvc_svc
-from api.services import ksvc_state, preflight, site_apply, site_read
-from api.services import metrics as metrics_svc
-from api.services import route as route_svc
-from api.services.deployer import (
+from api.services.manifests import ksvc as ksvc_svc
+from api.services.manifests import route as route_svc
+from api.services.manifests.env import env_secret_name, resolve_env
+from api.services.manifests.files import files_name, resolve_files
+from api.services.offering import DeleteContext, Offering
+from api.services.sites import preflight, site_apply, site_read
+from api.services.sites.deployer import (
     Deployer,
     aggregate,
-    overall_status,
     overall_status_for_sites,
     status_code_for,
 )
-from api.services.env import env_secret_name, resolve_env
-from api.services.files import files_name, resolve_files
-from api.services.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
-from api.services.offering import DeleteContext, Offering
+from api.services.state import describe as describe_svc
+from api.services.state import ksvc_state, ownership
+from api.services.state import metrics as metrics_svc
+from api.services.state import summaries as summaries_svc
+from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
@@ -67,6 +68,26 @@ from common.logging import get_logger
 from common.names import object_name
 
 logger = get_logger(__name__)
+
+
+def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
+    """Log a denied read and return the 404 that hides it.
+
+    Denied and absent are the same answer to the caller, so the response cannot
+    leak that the workload exists; the real reason goes to the log, where
+    denied-vs-absent stays debuggable.
+    """
+    labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+    logger.debug(
+        "%s %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
+        action,
+        kind,
+        name,
+        user.username,
+        labels.get(LABEL_GROUP),
+        labels.get(LABEL_OFFERING),
+    )
+    return NotFoundError(f"{kind} '{name}' not found")
 
 
 @dataclass
@@ -182,7 +203,7 @@ class WorkloadService:
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host, validating any custom one.
 
-        See :func:`api.services.preflight.resolve_host`.
+        See :func:`api.services.sites.preflight.resolve_host`.
         """
         return preflight.resolve_host(name, hostname, group, self.settings.route_domain)
 
@@ -198,7 +219,7 @@ class WorkloadService:
     ) -> None:
         """Validate a spec synchronously, before the request is accepted.
 
-        See :func:`api.services.preflight.validate_spec`.
+        See :func:`api.services.sites.preflight.validate_spec`.
         """
         preflight.validate_spec(name, group, owner, env, files, kept_env, kept_files)
 
@@ -213,7 +234,7 @@ class WorkloadService:
     ) -> None:
         """Assert a workload can be deployed: host free, and optionally name unused.
 
-        See :func:`api.services.preflight.assert_deployable`.
+        See :func:`api.services.sites.preflight.assert_deployable`.
         """
         await preflight.assert_deployable(
             self.deployer, name, group, targets, host=host, require_absent=require_absent
@@ -528,12 +549,9 @@ class WorkloadService:
 
         obj = found.get("obj")
         if obj is not None:
-            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
             # An object_name collision could resolve to another group's workload or
             # the other offering; both mean "not this workload" -> hide as 404.
-            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-                labels.get(LABEL_OFFERING) != offering.name
-            ):
+            if not ownership.owned_by(obj, user, offering.name):
                 raise NotFoundError(f"{offering.name} workload '{name}' not found")
             # Read the backing Secrets from the local site when it has the workload,
             # else any site that does - they're uniform, so prefer the cheapest hop.
@@ -625,21 +643,8 @@ class WorkloadService:
         # The spec is uniform across sites: read it (and authorize) from the local
         # site if it has the workload, else any site that does.
         obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
-        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-        # Hidden as a 404 so the response cannot leak that it exists; the real
-        # reason is logged, so denied-vs-absent stays debuggable.
-        if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-            labels.get(LABEL_OFFERING) != kind
-        ):
-            logger.debug(
-                "get %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
-                kind,
-                name,
-                user.username,
-                labels.get(LABEL_GROUP),
-                labels.get(LABEL_OFFERING),
-            )
-            raise NotFoundError(f"{kind} '{name}' not found")
+        if not ownership.owned_by(obj, user, kind):
+            raise _hidden_404("get", kind, name, user, obj)
 
         host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
         # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
@@ -741,21 +746,8 @@ class WorkloadService:
             raise NotFoundError(f"{kind} '{name}' not found")
 
         obj = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
-        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-        # Hidden as a 404 so the response cannot leak that it exists; the real
-        # reason is logged, so denied-vs-absent stays debuggable.
-        if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-            labels.get(LABEL_OFFERING) != kind
-        ):
-            logger.debug(
-                "stats of %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
-                kind,
-                name,
-                user.username,
-                labels.get(LABEL_GROUP),
-                labels.get(LABEL_OFFERING),
-            )
-            raise NotFoundError(f"{kind} '{name}' not found")
+        if not ownership.owned_by(obj, user, kind):
+            raise _hidden_404("stats of", kind, name, user, obj)
 
         overall = overall_status_for_sites(statuses)
         if offering.has_build:
@@ -817,13 +809,9 @@ class WorkloadService:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
-            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-            # An object_name collision could resolve to another group's workload or
-            # the other offering. Recorded, not raised: raising here would be caught
-            # by the fan-out and become indistinguishable from an unreachable site.
-            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-                labels.get(LABEL_OFFERING) != kind
-            ):
+            # Recorded, not raised: raising here would be caught by the fan-out and
+            # become indistinguishable from an unreachable site.
+            if not ownership.owned_by(obj, user, kind):
                 denied.append(cluster.site)
                 return SiteStatus(site=cluster.site, status="Denied")
             # Cascades to every owned resource: the config Secrets/ConfigMap, the
@@ -912,10 +900,7 @@ class WorkloadService:
             # Authorize off the KSVC on the local site; a genuine 404 (not
             # deployed here) and a cross-group/offering hit both surface as 404.
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-            if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
-                labels.get(LABEL_OFFERING) != kind
-            ):
+            if not ownership.owned_by(obj, user, kind):
                 raise NotFoundError(f"{kind} '{name}' not found")
             pods = cluster.get(
                 ResourceKind.POD, label_selector=f"serving.knative.dev/service={oname}"
@@ -1001,58 +986,11 @@ class WorkloadService:
                 details=[{"site": site, "message": None} for site, _ in results],
             )
 
-        suffix = f"-{group}"
-        merged: dict[str, dict] = {}
-        for site, items in results:
-            if items is None:
-                continue
-            for obj in items:
-                meta = obj.get("metadata", {}) or {}
-                oname = meta.get("name", "")
-
-                # object name is "{name}-{group}"; recover the display name
-                name = oname[: -len(suffix)] if oname.endswith(suffix) else oname
-                annotations = meta.get("annotations", {}) or {}
-                status, _ = ksvc_state.ksvc_status(obj)
-                entry = merged.setdefault(
-                    name,
-                    {
-                        # the object name, which is what a build state is keyed by
-                        "oname": oname,
-                        "host": None,
-                        "size": None,
-                        "createdAt": None,
-                        "sites": [],
-                        "statuses": [],
-                    },
-                )
-                entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
-                entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
-                entry["createdAt"] = entry["createdAt"] or ksvc_state.creation_time(obj)
-                entry["sites"].append(site)
-                entry["statuses"].append(status)
-
-        summaries = []
-        for name, entry in merged.items():
-            host = entry["host"] or route_svc.host_for(name, group, self.settings.route_domain)
-            overall = ksvc_state.with_build_status(
-                overall_status(entry["statuses"]), builds.get(entry["oname"])
-            )
-            summaries.append(
-                WorkloadSummary(
-                    name=name,
-                    group=group,
-                    type=kind,
-                    hostname=host,
-                    overallStatus=overall,
-                    size=entry["size"],
-                    createdAt=entry["createdAt"],
-                    sites=sorted(entry["sites"]),
-                )
-            )
-        if sort == "createdAt":
-            _epoch = datetime.min.replace(tzinfo=timezone.utc)  # Nones sort last
-            summaries.sort(key=lambda w: (w.createdAt is None, w.createdAt or _epoch))
-        else:
-            summaries.sort(key=lambda w: w.name)
-        return summaries
+        return summaries_svc.merge(
+            results,
+            group=group,
+            offering=kind,
+            builds=builds,
+            route_domain=self.settings.route_domain,
+            sort=sort,
+        )
