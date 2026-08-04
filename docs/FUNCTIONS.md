@@ -298,7 +298,7 @@ path (the ksvc fan-out in ARCHITECTURE.md: Multi-Site (Active/Active HA) Design 
 because the build site is always local: if an `Image` exists at all, it exists here.
 
 **As implemented.** `KpackBackend.status` returns `None` when the local site has no `Image`
-- the switchover case above - and `_with_build_status` folds the rest into the rollup:
+- the switchover case above - and `with_build_status` folds the rest into the rollup:
 `Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
 hands the verdict back to the ksvc. The response carries a `build` object
 (`state`/`image`/`message`), so a failed build explains itself instead of surfacing as a
@@ -307,5 +307,24 @@ bare image-pull error. `Building` maps to HTTP `202`, like `Deploying`.
 The first build is the case that motivates the ordering: the ksvc is already applied and is
 failing to pull an image kpack has not pushed yet. Read deployment-first, every new function
 would report `Degraded` for the whole of its first build.
+
+**The rule applies to every surface that reports status, not just the rollup.** Two of them
+used to escape it, and both showed a red failure for a perfectly normal build:
+
+- The **per-site rows**. `sites[]` is read straight off each ksvc, so a response could say
+  `Building` in `overallStatus` and `Failed` - `Unable to fetch image "..."` in the `sites`
+  table directly below it. While a build is in flight a failing site now reports `Building`
+  with `error: null` (`ksvc_state.sites_with_build_status`): that pull failure *is* the
+  running build, not an independent one. Only a **running** build masks anything - a failed
+  build leaves the rows untouched, because then the image genuinely never arrives.
+- The **listing**. `GET .../functions` had no build read at all, so every new function
+  was `Degraded` on the list while being `Building` on its own GET. It now folds the same
+  way, using `BuildBackend.statuses` - one label-selected read of the local site's `Image`s
+  for the whole group, keyed by object name (`{name}-{group}`), overlapped with the ksvc
+  fan-out rather than chained onto it. A listing that cannot read kpack falls back to the
+  ksvc statuses, exactly as a single GET does.
+
+`Building` is therefore a *site* status as well as a workload one, and `GET /info` publishes
+it in both vocabularies so a client hardcodes neither.
 
 ---

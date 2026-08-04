@@ -95,7 +95,11 @@ WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded"
 # Per-site values that reach a response. SiteStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
-SITE_STATUSES = ("Ready", "Deploying", "Failed", "Terminating", "Timeout")
+# "Building" appears here for the same reason it appears in WorkloadStatus: while a
+# function's image is still being built, every site's KSVC is failing to pull an
+# image that does not exist yet, and reporting that as "Failed" describes the
+# symptom instead of the cause (docs/FUNCTIONS.md - Function Status Resolution).
+SITE_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}

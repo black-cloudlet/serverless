@@ -846,6 +846,14 @@ class WorkloadService:
         workload reads ``Ready``, not ``Degraded``. An unreachable site is skipped; only
         an all-down fan-out fails the call.
 
+        Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
+        Resolution): a function whose first build is still running has a KSVC that
+        cannot pull its image yet, so a listing that read the KSVC alone showed
+        every new function as ``Degraded`` for the whole of that build. The build
+        states come from one label-selected read of the local site, so the fold
+        costs a single round trip for the entire listing - overlapped with the
+        fan-out, not chained onto it.
+
         Args:
             offering: The offering being listed.
             user: The authenticated caller.
@@ -865,7 +873,16 @@ class WorkloadService:
         def fetch(cluster: Cluster) -> list[dict]:
             return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
 
-        results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
+        listing = self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
+        # Branching on the declared capability, not on which offering this is: an
+        # offering with no build must not pay for a thread that returns {}.
+        if offering.has_build:
+            builds_read = asyncio.to_thread(
+                offering.build_states, self.builder, self.deployer.local_cluster(), group
+            )
+            results, builds = await asyncio.gather(listing, builds_read)
+        else:
+            results, builds = await listing, {}
         if all(items is None for _, items in results):
             # Same {site, message} shape as aggregate's total-failure; gather_each
             # keeps no per-site error, so message is None.
@@ -889,7 +906,15 @@ class WorkloadService:
                 status, _ = ksvc_state.ksvc_status(obj)
                 entry = merged.setdefault(
                     name,
-                    {"host": None, "size": None, "createdAt": None, "sites": [], "statuses": []},
+                    {
+                        # the object name, which is what a build state is keyed by
+                        "oname": oname,
+                        "host": None,
+                        "size": None,
+                        "createdAt": None,
+                        "sites": [],
+                        "statuses": [],
+                    },
                 )
                 entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
                 entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
@@ -900,7 +925,9 @@ class WorkloadService:
         summaries = []
         for name, entry in merged.items():
             host = entry["host"] or route_svc.host_for(name, group, self.settings.route_domain)
-            overall = overall_status(entry["statuses"])
+            overall = ksvc_state.with_build_status(
+                overall_status(entry["statuses"]), builds.get(entry["oname"])
+            )
             summaries.append(
                 WorkloadSummary(
                     name=name,

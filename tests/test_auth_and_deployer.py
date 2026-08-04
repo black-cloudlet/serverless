@@ -303,6 +303,9 @@ class _NullBuilder:
     def status(self, cluster, name, group):
         return None
 
+    def statuses(self, cluster, group):
+        return {}
+
 
 def _workload_service(clusters, builder=None, local_site=None):
     from api.services.workloads import WorkloadService
@@ -619,7 +622,7 @@ async def test_get_returns_redacted_spec():
     assert body.registryUsername == "bob"
 
 
-def _bare_ksvc(name="app-team"):
+def _bare_ksvc(name="app-team", offering="container"):
     from api.models.common import Scaling
     from api.services.ksvc import build_ksvc
 
@@ -628,7 +631,7 @@ def _bare_ksvc(name="app-team"):
         group="team",
         owner="alice",
         image="reg/app:1",
-        offering="container",
+        offering=offering,
         host=f"{name}.ex.com",
         env=[],
         volumes=[],
@@ -727,7 +730,15 @@ async def test_get_function_building_image_reports_building():
         branch="main",
     )
     # KSVC can't pull an image that does not exist yet -> Ready=False
-    ksvc["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+    ksvc["status"] = {
+        "conditions": [
+            {
+                "type": "Ready",
+                "status": "False",
+                "message": 'Unable to fetch image "reg/team/fn:main": not found',
+            }
+        ]
+    }
 
     class _C:
         site = "site-a"
@@ -748,6 +759,10 @@ async def test_get_function_building_image_reports_building():
 
     assert body.build.state == "Building"
     assert body.overallStatus == "Building"
+    # The per-site row agrees with the headline instead of contradicting it: the
+    # KSVC's pull failure IS the running build, not a second, independent one.
+    assert body.sites[0].status == "Building"
+    assert body.sites[0].error is None
     assert body.path is None  # no sub-directory -> built from the repository root
     assert body.version is None  # took the platform default; /info says what that is
 
@@ -919,6 +934,70 @@ async def test_list_overall_status_per_workload():
 
     assert summaries["app"] == "Deploying"  # not a false Degraded
     assert summaries["bad"] == "Degraded"
+
+
+async def test_list_folds_the_build_state_in_like_get_does():
+    """A listing is build-first too: a first build reads Building, not Degraded.
+
+    Regression: the console's function cards showed a red `Degraded` for the whole
+    of a normal first build, because the list read only the KSVC - which cannot
+    pull an image kpack has not pushed yet. The single GET already folded the
+    build in; the list did not, so the two disagreed about the same function.
+    """
+    from api.auth.claims import Principal
+    from common.build import BuildStatus
+
+    building = _bare_ksvc("fn-team", offering="function")
+    building["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+    broken = _bare_ksvc("bad-team", offering="function")
+    broken["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
+    serving = _bare_ksvc("old-team", offering="function")
+    serving["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+
+    reads = []
+
+    class _Builder(_NullBuilder):
+        def statuses(self, cluster, group):
+            # One read for the whole listing, not one per function.
+            reads.append((cluster.site, group))
+            return {
+                "fn-team": BuildStatus(state="Building"),
+                "bad-team": BuildStatus(state="Failed", message="compile error"),
+            }
+
+    engine = _workload_service(
+        {"site-a": _ListCluster("site-a", [building, broken, serving])},
+        builder=_Builder(),
+        local_site="site-a",
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    summaries = {s.name: s.overallStatus for s in await engine.list(FUNCTION, user, "team")}
+
+    assert summaries["fn"] == "Building"
+    # a failed build is the honest cause of the same symptom -> still Degraded
+    assert summaries["bad"] == "Degraded"
+    # no build in flight -> the KSVC has the last word, as after a switchover
+    assert summaries["old"] == "Ready"
+    assert reads == [("site-a", "team")]  # local site only, once
+
+
+async def test_list_of_containers_reads_no_build():
+    """An offering with no build never pays for the build read (`has_build`)."""
+    from api.auth.claims import Principal
+
+    class _Builder(_NullBuilder):
+        def statuses(self, cluster, group):
+            raise AssertionError("a container listing must not read the build backend")
+
+    engine = _workload_service(
+        {"site-a": _ListCluster("site-a", [_bare_ksvc("app-team")])},
+        builder=_Builder(),
+        local_site="site-a",
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    summaries = await engine.list(CONTAINER, user, "team")
+
+    assert [s.name for s in summaries] == ["app"]
 
 
 class _ApplyCluster:

@@ -149,6 +149,23 @@ class BuildBackend(Protocol):
         """The build state on one cluster, or None if it has no build for this workload."""
         ...
 
+    def statuses(self, cluster: Cluster, group: str) -> dict[str, BuildStatus]:
+        """Every build state a group has on one cluster, keyed by workload object name.
+
+        The listing counterpart of :meth:`status`. It exists as its own call
+        rather than a loop over :meth:`status` because a listing needs the whole
+        group at once: one label-selected read answers for every workload,
+        where the loop would be a round trip per workload on every poll.
+
+        Args:
+            cluster: The cluster to read (normally the local site).
+            group: The owning group.
+
+        Returns:
+            ``{object_name: BuildStatus}``, omitting workloads with no build.
+        """
+        ...
+
 
 def image_reference(registry_base: str, req: BuildRequest) -> str:
     """The image reference convention for a build: ``{base}/{group}/{name}:{tag}``.
