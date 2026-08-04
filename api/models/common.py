@@ -341,19 +341,25 @@ class ScalingCapabilities(BaseModel):
 class SiteStatus(BaseModel):
     """The deploy/health state of a workload at a single site.
 
+    Carries no live usage: measuring it is a cluster call of its own, and this is
+    on the full GET, which is not the endpoint to poll. ``replicas`` stays because
+    it is free - it comes off the Revision read that the per-site failure detail
+    needs anyway. Usage lives on :class:`SiteStatusDetail`, which only the status
+    view returns.
+
     Attributes:
         site: The site name.
         status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
         revision: The Knative revision the site is serving, if known.
         error: The failure message when the site errored, else None.
+        replicas: Running pods at this site (None if unknown).
     """
 
     site: str
     status: str
     revision: str | None = None
     error: str | None = None
-    replicas: int | None = None  # running pods at this site (None if unknown)
-    usage: "ResourceUsage | None" = None  # live cpu/memory summed over those pods
+    replicas: int | None = None
 
 
 class ResourceUsage(BaseModel):
@@ -361,6 +367,27 @@ class ResourceUsage(BaseModel):
 
     cpu: str | None = None  # e.g. "120m"
     memory: str | None = None  # e.g. "180Mi"
+
+
+class SiteStats(BaseModel):
+    """One site's live state, as the stats view reports it.
+
+    Not a :class:`SiteStatus`: that one is the full GET's row, and carries the
+    rollout detail (``revision``, ``error``) rather than what a workload is
+    consuming right now.
+
+    Attributes:
+        site: The site name.
+        status: Per-site status (Ready/Building/Deploying/Failed/...).
+        replicas: Running pods at this site, or None if unknown.
+        usage: Live cpu/memory over those pods; None when scaled to zero or the
+            metrics API could not be read.
+    """
+
+    site: str
+    status: str
+    replicas: int | None = None
+    usage: ResourceUsage | None = None
 
 
 class WorkloadBase(BaseModel):
@@ -424,6 +451,30 @@ class BuildStatusView(BaseModel):
 
     state: str
     message: str | None = None
+
+
+class WorkloadStatsResponse(BaseModel):
+    """A workload's live state only - the endpoint to poll.
+
+    Carries what changes on its own and none of the desired-state config, which
+    a client already holds and which cannot change unless it changes it. That is
+    what lets this be read every couple of seconds without re-reading the
+    workload's backing Secret on every tick.
+
+    Attributes:
+        overallStatus: The rollup, identical to the full GET's - ``Building``
+            included, since the build is still read even though it is not
+            reported here.
+        replicas: Running pods across every site. None if any site's is unknown.
+        usage: Cpu/memory across every site. None if any site could not be
+            measured, rather than a total quietly missing one.
+        sites: One entry per site that has the workload.
+    """
+
+    overallStatus: WorkloadStatus
+    replicas: int | None = None
+    usage: ResourceUsage | None = None
+    sites: list[SiteStats] = []
 
 
 class WorkloadResponse(WorkloadBase):

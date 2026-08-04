@@ -7,7 +7,12 @@ from api.auth.claims import Principal
 from api.auth.deps import require_auth
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
-from api.models.common import SiteStatus
+from api.models.common import (
+    ResourceUsage,
+    SiteStats,
+    SiteStatus,
+    WorkloadStatsResponse,
+)
 from api.models.container import ContainerResponse
 from api.models.function import FunctionResponse
 
@@ -15,6 +20,23 @@ from api.models.function import FunctionResponse
 def _model(kind, **fields):
     cls = FunctionResponse if kind == "function" else ContainerResponse
     return cls(**fields)
+
+
+def _stats(overall="Ready"):
+    """A live stats view: two replicas at one site."""
+    return WorkloadStatsResponse(
+        overallStatus=overall,
+        replicas=2,
+        usage=ResourceUsage(cpu="300m", memory="384Mi"),
+        sites=[
+            SiteStats(
+                site="site-a",
+                status=overall,
+                replicas=2,
+                usage=ResourceUsage(cpu="300m", memory="384Mi"),
+            )
+        ],
+    )
 
 
 def _accepted(kind, name, group, **extra):
@@ -56,6 +78,9 @@ class FakeFunctions:
             "function", name, runtime="python", gitRepo="https://git/x.git", branch="main"
         )
 
+    async def stats(self, name, group, user):
+        return _stats("Building")
+
     async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
         from api.models.common import LogsResponse, PodLogs
 
@@ -95,6 +120,9 @@ class FakeContainers:
 
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
+
+    async def stats(self, name, group, user):
+        return _stats()
 
     async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
         from api.models.common import LogsResponse, PodLogs
@@ -358,6 +386,35 @@ def test_get_container_shape(client):
     # function-only fields (gitRepo/runtime) absent.
     assert body["image"] == "reg/x:1" and body["registryUsername"] == "svc-team"
     assert "gitRepo" not in body and "runtime" not in body
+
+
+def test_get_container_stats_is_live_state_only(client):
+    r = client.get("/api/v1/groups/team/containers/foo/stats")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["overallStatus"] == "Ready"
+    assert body["replicas"] == 2
+    assert body["usage"] == {"cpu": "300m", "memory": "384Mi"}
+    site = body["sites"][0]
+    assert site == {
+        "site": "site-a",
+        "status": "Ready",
+        "replicas": 2,
+        "usage": {"cpu": "300m", "memory": "384Mi"},
+    }
+    # nothing else: no desired-state config, and no identity echo of the path
+    assert set(body) == {"overallStatus", "replicas", "usage", "sites"}
+
+
+def test_get_function_stats_reports_a_running_build(client):
+    # Building comes from the build read, which stays even though it is not a field
+    body = client.get("/api/v1/groups/team/functions/foo/stats").json()
+    assert body["overallStatus"] == "Building"
+    assert body["sites"][0]["status"] == "Building"
+
+
+def test_stats_path_name_validated_at_the_edge(client):
+    assert client.get("/api/v1/groups/team/functions/Bad_Name/stats").status_code == 400
 
 
 def test_get_function_logs(client):

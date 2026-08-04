@@ -177,7 +177,7 @@ def test_overall_status_rollup():
     assert overall_status([]) == "Degraded"
 
 
-def test_status_code_for_deploying_is_non_terminal():
+def test_stats_code_for_deploying_is_non_terminal():
     # Deploying is an accepted, still-rolling-out state, not a partial failure
     assert status_code_for("Deploying", created=True) == 202
     assert status_code_for("Deploying", created=False) == 202
@@ -473,12 +473,19 @@ async def test_accept_container_returns_pending_and_schedules():
     assert len(bg.tasks) == 1  # deploy scheduled in the background
 
 
-async def test_get_reports_size_and_live_usage_per_site():
+async def test_get_reports_size_and_replicas_but_carries_no_usage():
+    """The full GET keeps `replicas` and drops `usage`.
+
+    Not an arbitrary split: `replicas` rides along on the Revision read the
+    per-site failure detail needs anyway, so it is free, while usage is a
+    PodMetrics call of its own. Reading PodMetrics here is an assertion failure -
+    that is what keeps the cost off a response nobody polls for live numbers.
+    """
     from api.auth.claims import Principal
     from api.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
     from common.cluster import ResourceKind
 
-    class _UsageCluster:
+    class _NoMetricsCluster:
         def __init__(self, name):
             self.site = name
             self.name = name
@@ -501,29 +508,221 @@ async def test_get_reports_size_and_live_usage_per_site():
                 }
             if kind == ResourceKind.KNATIVE_REVISION:
                 assert name == "app-team-00001"
-                # replicas come from here, not from the metrics pod count
                 return {"status": {"actualReplicas": 3}}
-            if kind == ResourceKind.POD_METRICS:
-                # two replicas, each with a user container + queue-proxy sidecar
-                pod = {
-                    "containers": [
-                        {"name": "user-container", "usage": {"cpu": "60m", "memory": "90Mi"}},
-                        {"name": "queue-proxy", "usage": {"cpu": "999m", "memory": "999Mi"}},
-                    ]
-                }
-                return [pod, pod]
-            raise AssertionError(f"unexpected kind {kind}")
+            raise AssertionError(f"the full GET must not read {kind}")
 
-    engine = _workload_service({"site-a": _UsageCluster("site-a")})
+    engine = _workload_service({"site-a": _NoMetricsCluster("site-a")})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
     assert body.size == "medium"
     site = body.sites[0]
-    # replicas sourced from Revision.status.actualReplicas (3), not len(metrics) (2)
-    assert site.replicas == 3
-    # usage summed over the metrics pods' user containers, ignoring queue-proxy
-    assert site.usage.cpu == "120m"
-    assert site.usage.memory == "180Mi"
+    assert site.replicas == 3  # from Revision.status.actualReplicas
+    assert not hasattr(site, "usage")  # live usage is a /status field now
+
+
+class _StatsCluster:
+    """Serves the three reads the stats view is allowed to make, and only those.
+
+    Any other kind is an assertion failure - what keeps a spec read (a ConfigMap,
+    or the backing Secret) from creeping into a path a client polls every few
+    seconds.
+    """
+
+    def __init__(self, name, pods=None, replicas=2, offering="container", group="team"):
+        self.site = name
+        self.name = name
+        self._pods = pods
+        self._replicas = replicas
+        self._offering = offering
+        self._group = group
+
+    def get(self, kind, name=None, label_selector=None, namespace=None):
+        from api.models.common import LABEL_GROUP, LABEL_OFFERING
+        from common.cluster import ResourceKind
+
+        if kind == ResourceKind.KNATIVE_SERVICE:
+            return {
+                "metadata": {
+                    "name": name,
+                    "labels": {LABEL_GROUP: self._group, LABEL_OFFERING: self._offering},
+                },
+                "status": {
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                    "latestReadyRevisionName": "app-team-00002",
+                },
+            }
+        if kind == ResourceKind.KNATIVE_REVISION:
+            return {"status": {"actualReplicas": self._replicas}}
+        if kind == ResourceKind.POD_METRICS:
+            assert label_selector == "serving.knative.dev/service=app-team"
+            return list(self._pods or [])
+        raise AssertionError(f"the stats view must not read {kind}")
+
+
+def _metrics_pod(cpu, memory):
+    return {
+        "containers": [
+            {"name": "user-container", "usage": {"cpu": cpu, "memory": memory}},
+            {"name": "queue-proxy", "usage": {"cpu": "999m", "memory": "999Mi"}},
+        ]
+    }
+
+
+async def test_stats_returns_live_state_and_reads_nothing_else():
+    from api.auth.claims import Principal
+
+    engine = _workload_service(
+        {"site-a": _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")] * 2)}
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.stats(CONTAINER, "app", user, "team")
+
+    assert body.overallStatus == "Ready"
+    assert body.replicas == 2
+    # summed over the user containers, ignoring the queue-proxy sidecar
+    assert (body.usage.cpu, body.usage.memory) == ("120m", "180Mi")
+    site = body.sites[0]
+    assert (site.site, site.status, site.replicas) == ("site-a", "Ready", 2)
+    assert (site.usage.cpu, site.usage.memory) == ("120m", "180Mi")
+
+
+async def test_stats_totals_across_sites_from_the_raw_figures():
+    """The workload total is summed before rounding, so it is not 0m here."""
+    from api.auth.claims import Principal
+
+    def site(name):
+        return _StatsCluster(name, pods=[_metrics_pod("500u", "1536Ki")] * 2)
+
+    engine = _workload_service({"site-a": site("site-a"), "site-b": site("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.stats(CONTAINER, "app", user, "team")
+
+    assert body.sites[0].usage.cpu == "1m"  # each site holds 2 x 0.5m
+    assert body.usage.cpu == "2m"
+    assert body.usage.memory == "6Mi"
+    assert body.replicas == 4
+
+
+async def test_stats_total_is_null_when_a_site_could_not_be_measured():
+    """A total that quietly drops a site is worse than no total."""
+    from api.auth.claims import Principal
+    from common.cluster import ResourceKind
+
+    class _NoMetrics(_StatsCluster):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            if kind == ResourceKind.POD_METRICS:
+                raise RuntimeError("metrics API unavailable")
+            return super().get(kind, name, label_selector, namespace)
+
+    good = _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")])
+    engine = _workload_service({"site-a": good, "site-b": _NoMetrics("site-b")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.stats(CONTAINER, "app", user, "team")
+
+    assert body.usage is None  # not "60m", which would understate the workload
+    assert body.sites[0].usage.cpu == "60m"  # what site-a reported still stands
+    assert body.sites[1].usage is None
+    assert body.replicas == 4  # replicas came off the Revision, which answered
+
+
+async def test_stats_survives_a_site_that_is_entirely_down():
+    from api.auth.claims import Principal
+
+    class _Down:
+        site = name = "site-b"
+
+        def get(self, *a, **k):
+            raise RuntimeError("site down")
+
+    up = _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")])
+    engine = _workload_service({"site-a": up, "site-b": _Down()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.stats(CONTAINER, "app", user, "team")
+
+    assert body.overallStatus == "Degraded"
+    by_site = {s.site: s for s in body.sites}
+    assert by_site["site-a"].usage.cpu == "60m"  # the healthy site still reports
+    assert by_site["site-b"].status == "Failed"
+    assert by_site["site-b"].usage is None
+    assert body.usage is None and body.replicas is None
+
+
+async def test_stats_scaled_to_zero_is_not_an_error():
+    from api.auth.claims import Principal
+
+    engine = _workload_service({"site-a": _StatsCluster("site-a", pods=[], replicas=0)})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.stats(CONTAINER, "app", user, "team")
+
+    assert body.replicas == 0
+    assert body.usage is None  # nothing running, so nothing measured
+    assert body.sites[0].usage is None
+
+
+async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
+    """Build-first, on both surfaces - matching the full GET (#38).
+
+    A function whose image is not built yet has a KSVC that cannot pull it. Left
+    unfolded the header would read Building over a site row saying Failed.
+    """
+    from api.auth.claims import Principal
+    from common.build import BuildStatus
+    from common.cluster import ResourceKind
+
+    class _C:
+        site = name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            from api.models.common import LABEL_GROUP, LABEL_OFFERING
+
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return {
+                    "metadata": {
+                        "name": name,
+                        "labels": {LABEL_GROUP: "team", LABEL_OFFERING: "function"},
+                    },
+                    "status": {"conditions": [{"type": "Ready", "status": "False"}]},
+                }
+            raise RuntimeError("revision/metrics are best-effort")
+
+    class _BuildingBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            return BuildStatus(state="Building")
+
+    engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.stats(FUNCTION, "fn", user, "team")
+
+    assert body.overallStatus == "Building"  # not Degraded, and not Deploying
+    assert body.sites[0].status == "Building"  # and the row agrees with the header
+
+
+async def test_stats_hides_another_groups_workload_as_404():
+    from api.auth.claims import Principal
+    from common.errors import NotFoundError
+
+    engine = _workload_service({"site-a": _StatsCluster("site-a", pods=[], group="other")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(NotFoundError):
+        await engine.stats(CONTAINER, "app", user, "team")
+
+
+async def test_stats_of_an_unconfirmable_workload_fails_closed():
+    """A site that cannot answer means "absent" is not established -> 503, not 404."""
+    from api.auth.claims import Principal
+    from common.errors import ServiceUnavailableError
+
+    class _Down:
+        site = "site-b"
+        name = "site-b"
+
+        def get(self, *a, **k):
+            raise RuntimeError("site down")
+
+    engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _Down()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(ServiceUnavailableError):
+        await engine.stats(CONTAINER, "app", user, "team")
 
 
 def _list_ksvc(oname, size, host, ready=True):
@@ -2991,20 +3190,11 @@ async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
     assert body.sites[0].status == "Deploying"  # just written, not yet reconciled
 
 
-async def test_get_reads_a_sites_revision_and_usage_on_the_fanout_thread():
-    """No per-site, per-request thread pool.
-
-    These two reads used to run in a ThreadPoolExecutor constructed inside the
-    fan-out worker - nesting a pool inside the default executor the worker was
-    itself borrowed from. Running them on the calling thread is what keeps a
-    poll loop from filling the outer pool with threads that only wait.
-    """
+def _thread_recording_cluster(seen):
     import threading
 
-    from api.auth.claims import Principal
     from common.cluster import ResourceKind
 
-    seen: dict[str, str] = {}
     ksvc = _bare_ksvc()
     # a revision name is what makes the Revision read happen at all
     ksvc["status"] = {
@@ -3028,9 +3218,40 @@ async def test_get_reads_a_sites_revision_and_usage_on_the_fanout_thread():
                 return []
             raise AssertionError(f"unexpected kind {kind}")
 
-    engine = _workload_service({"site-a": _ThreadRecordingCluster()})
+    return _ThreadRecordingCluster()
+
+
+async def test_get_reads_a_sites_revision_on_the_fanout_thread_and_never_measures():
+    """No per-site, per-request thread pool - and no metrics call at all.
+
+    The Revision read used to run in a ThreadPoolExecutor constructed inside the
+    fan-out worker - nesting a pool inside the default executor the worker was
+    itself borrowed from. Running it on the calling thread is what keeps a poll
+    loop from filling the outer pool with threads that only wait.
+
+    The usage read is no longer here at all: measuring costs a cluster call, and
+    the full GET is not the endpoint to poll.
+    """
+    from api.auth.claims import Principal
+
+    seen: dict[str, str] = {}
+    engine = _workload_service({"site-a": _thread_recording_cluster(seen)})
     user = Principal(subject="u", username="alice", groups=["team"])
     await engine.get(CONTAINER, "app", user, "team")
+
+    assert {"ksvc", "revision"} <= seen.keys()
+    assert seen["revision"] == seen["ksvc"], "revision read spawned a thread"
+    assert "usage" not in seen, "the full GET measured usage; that belongs to /stats"
+
+
+async def test_stats_reads_revision_and_usage_on_the_fanout_thread():
+    """The stats view takes the measurement, and on the same thread."""
+    from api.auth.claims import Principal
+
+    seen: dict[str, str] = {}
+    engine = _workload_service({"site-a": _thread_recording_cluster(seen)})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    await engine.stats(CONTAINER, "app", user, "team")
 
     assert {"ksvc", "revision", "usage"} <= seen.keys()
     assert seen["revision"] == seen["ksvc"], "revision read spawned a thread"

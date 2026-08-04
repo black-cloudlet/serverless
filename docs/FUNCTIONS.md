@@ -121,10 +121,8 @@ body (secrets redacted) with the live status alongside:
     { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
   ],
   "sites": [
-    { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
-      "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" } },
-    { "site": "south", "status": "Ready", "revision": "image-resizer-00001",
-      "replicas": 1, "usage": { "cpu": "90m", "memory": "175Mi" } }
+    { "site": "central", "status": "Ready", "revision": "image-resizer-00001", "replicas": 2 },
+    { "site": "south", "status": "Ready", "revision": "image-resizer-00001", "replicas": 1 }
   ]
 }
 ```
@@ -142,7 +140,8 @@ source, not images.)
 > (no scheme), mirroring the create body's `hostname`; reach the workload at
 > `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
 > the source fields) are read from the **local site** (uniform across sites); the
-> per-site `sites[]` status/`replicas`/`usage` come from fanning out to every site.
+> per-site `sites[]` status/`replicas` come from fanning out to every site. Live
+> **usage** is not here - see the `/stats` endpoint below.
 >
 > **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
 > values and secret file contents come back `null` with `secret: true`; the **git token**
@@ -168,9 +167,35 @@ source, not images.)
 > pre-flight, so they surface as an immediate `400`, not a background deploy failure.
 >
 > **Live status.** `replicas` is the autoscaler's live scale
-> (`Revision.status.actualReplicas`); `usage` is live cpu/memory summed over a
-> site's running pods (user container only, not the queue-proxy sidecar),
-> best-effort and `null` when scaled to zero or the metrics API is unavailable.
+> (`Revision.status.actualReplicas`), best-effort and `null` when it cannot be read.
+> It rides along on a read the per-site error detail needs anyway, which is why it
+> is on this response and live **usage** is not: measuring usage is a PodMetrics
+> call per site, and the full GET is not the endpoint to poll.
+>
+> **Polling live state: `GET .../{name}/stats`.** A lightweight view of what
+> changes on its own - the rollup, replica count and resource usage, nothing else:
+>
+> ```json
+> {
+>   "overallStatus": "Ready",
+>   "replicas": 3,
+>   "usage": { "cpu": "210m", "memory": "355Mi" },
+>   "sites": [
+>     { "site": "central", "status": "Ready", "replicas": 2,
+>       "usage": { "cpu": "120m", "memory": "180Mi" } },
+>     { "site": "south", "status": "Ready", "replicas": 1,
+>       "usage": { "cpu": "90m", "memory": "175Mi" } }
+>   ]
+> }
+> ```
+>
+> `overallStatus` matches the full GET's, `Building` included - the build is still
+> read, it is just not a field here. Usage covers each pod's user container only,
+> never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
+> API could not be read. The top-level totals are summed across sites **before**
+> rounding, so they need not equal the sum of the printed per-site figures; and a
+> total is `null` if any site could not be measured, rather than one quietly
+> missing a site. Usage is never fresher than the cluster's metrics-server scrape.
 
 ### Editing a workload: `PUT` request recipes
 

@@ -9,6 +9,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- `GET /api/v1/groups/{group}/{type}/{name}/stats` - a lightweight endpoint to
+  poll for live numbers: `overallStatus`, workload-wide `replicas` and `usage`,
+  and the same three per site. Nothing else. Until now a client watching a
+  workload had to call the full GET, which also reads the file ConfigMaps and the
+  backing Secret to rebuild the redacted spec - on a two-second refresh that
+  pulls secret material out of the cluster on a loop for config that only changes
+  when the client changes it.
+
+  A function's build is still read even though it is not a field here, because
+  that is what makes a running build `Building` instead of the `Degraded` its
+  not-yet-pushed image would otherwise produce - on the rollup and on the per-site
+  rows alike, matching the full GET. Usage sums each pod's user container only,
+  never the queue-proxy sidecar. Totals are summed across sites **before**
+  rounding, so they need not equal the sum of the printed per-site figures, and
+  are `null` if any site could not be measured rather than quietly missing one.
+  No new RBAC. Everything here is still polled; streaming is a separate follow-up
+  (docs/ARCHITECTURE.md - Open Questions / Future Work), and `usage` is never
+  fresher than the metrics-server scrape either way.
 - Function builds cache their layers in the registry rather than in a
   PersistentVolumeClaim. Every kpack `Image` now carries an explicit
   `spec.cache.registry.tag` at `{base}/{group}/{name}_cache`; nothing set
@@ -105,6 +123,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   that did not read `$PORT` had no way to say so and simply never became ready.
 
 ### Changed
+
+- **Breaking:** the single-workload `GET` no longer returns `sites[].usage`. Live
+  usage moved to `/stats`, which is where a client polling for it should be
+  looking. It was a PodMetrics call **per site on every GET**, including the GETs
+  that render a workload's configuration, where the number is never read - so
+  this takes one cluster round trip per site off that path. `sites[].replicas`
+  stays: it rides along on the Revision read the per-site failure detail already
+  needs, so it costs nothing.
 
 - The build contract is renamed for what it contracts: `common/contract.py` ->
   `common/build.py`, the `Builder` protocol -> `BuildBackend`,

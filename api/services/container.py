@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from api.auth.claims import Principal
-from api.models.common import LogsResponse, WorkloadSummary
+from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.services import describe as describe_svc
 from api.services import secrets as secret_svc
@@ -257,6 +257,19 @@ class ContainerService:
             The full single-container response.
         """
         return await self._engine.get(CONTAINER, name, user, group)
+
+    async def stats(self, name: str, group: str, user: Principal) -> WorkloadStatsResponse:
+        """Read the container's live state (the poll view).
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The rollup plus per-site replicas and usage.
+        """
+        return await self._engine.stats(CONTAINER, name, user, group)
 
     async def logs(
         self,

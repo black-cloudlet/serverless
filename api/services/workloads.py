@@ -34,13 +34,16 @@ from api.models.common import (
     LABEL_OFFERING,
     LogsResponse,
     PodLogs,
+    SiteStats,
     SiteStatus,
     WorkloadResponse,
+    WorkloadStatsResponse,
     WorkloadSummary,
 )
 from api.services import describe as describe_svc
 from api.services import ksvc as ksvc_svc
 from api.services import ksvc_state, preflight, site_apply, site_read
+from api.services import metrics as metrics_svc
 from api.services import route as route_svc
 from api.services.deployer import (
     Deployer,
@@ -590,16 +593,11 @@ class WorkloadService:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
             status, revision = ksvc_state.ksvc_status(obj)
-            # Sequential on purpose. These two reads used to run in a
-            # ThreadPoolExecutor built per site per request, which spawned and tore
-            # down two threads on every poll - and nested that pool inside the
-            # default executor this very function borrowed its worker from, so
-            # enough concurrent polls filled the outer pool with workers doing
-            # nothing but waiting on the inner one. Concurrency belongs at the
-            # fan-out, where sites already run in parallel; both of these go to the
-            # same cluster, so running them in order costs one round trip.
+            # One read, and it earns its place twice over: the Revision carries the
+            # live scale and the specific rollout-failure condition. The usage read
+            # that used to sit beside it is gone from this path - it is a cluster
+            # call for something only a poller wants, and pollers have /status.
             rev = site_read.revision(cluster, revision)
-            usage = site_read.site_usage(cluster, oname)
             replicas = ksvc_state.revision_replicas(rev)
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
@@ -612,7 +610,6 @@ class WorkloadService:
                 revision=revision,
                 error=error,
                 replicas=replicas,
-                usage=usage,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -679,6 +676,119 @@ class WorkloadService:
             files=spec.files,
         )
         return offering.fetched_response(common, obj, spec, build)
+
+    async def stats(
+        self, offering: Offering, name: str, user: Principal, group: str
+    ) -> WorkloadStatsResponse:
+        """Read a workload's live state: rollup, and per-site replicas and usage.
+
+        The poll counterpart to :meth:`get`. Same fan-out, authorization and
+        rollup, but none of the desired-state reads - no file ConfigMaps and no
+        backing Secret - so a client refreshing every few seconds is not pulling
+        secret material out of the cluster on a loop for config that only changes
+        when it changes it.
+
+        The build is still read for a function, though it is not reported here:
+        it is what makes a running build ``Building`` instead of the ``Degraded``
+        its unpullable image would otherwise produce (docs/FUNCTIONS.md -
+        Function Status Resolution).
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+
+        Returns:
+            The live stats view.
+
+        Raises:
+            NotFoundError: If the workload exists on no reachable site.
+            ServiceUnavailableError: If it can't be confirmed absent because a
+                site was unreachable.
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        reps: dict[str, dict] = {}
+        # Raw, because the workload total is summed from these rather than from
+        # the rounded figures the response carries.
+        usage_by_site: dict[str, site_read.SiteUsage] = {}
+
+        def fetch(cluster: Cluster) -> SiteStatus | None:
+            try:
+                obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            except NotFoundError:
+                return None  # not deployed here; omit the site rather than fail it
+            reps[cluster.site] = obj
+            status, revision = ksvc_state.ksvc_status(obj)
+            usage_by_site[cluster.site] = site_read.site_usage(cluster, oname)
+            rev = site_read.revision(cluster, revision)
+            return SiteStatus(
+                site=cluster.site,
+                status=status,
+                replicas=ksvc_state.revision_replicas(rev),
+                error=revision_failure_message(rev) if status == "Failed" else None,
+            )
+
+        targets = self.deployer.resolve_targets(None)
+        results = await self.deployer.fanout(targets, fetch)
+        statuses = [s for s in results if s is not None]  # drop sites without it
+
+        if not reps:
+            # If a site was unreachable we can't be sure it's absent -> 503.
+            preflight.assert_all_sites_checked(statuses, f"get stats of workload '{name}'")
+            raise NotFoundError(f"{kind} '{name}' not found")
+
+        obj = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
+        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+        # Hidden as a 404 so the response cannot leak that it exists; the real
+        # reason is logged, so denied-vs-absent stays debuggable.
+        if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+            labels.get(LABEL_OFFERING) != kind
+        ):
+            logger.debug(
+                "stats of %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
+                kind,
+                name,
+                user.username,
+                labels.get(LABEL_GROUP),
+                labels.get(LABEL_OFFERING),
+            )
+            raise NotFoundError(f"{kind} '{name}' not found")
+
+        overall = overall_status_for_sites(statuses)
+        if offering.has_build:
+            build = await asyncio.to_thread(
+                offering.build_status, self.builder, self.deployer.local_cluster(), name, group
+            )
+            overall = ksvc_state.with_build_status(overall, build)
+            statuses = ksvc_state.sites_with_build_status(statuses, build)
+
+        # Both totals are null rather than partial when a site could not answer:
+        # a single number quietly missing a whole site still reads as authoritative.
+        reads = [usage_by_site.get(s.site) for s in statuses]
+        usage = None
+        if all(r is not None and r.measured for r in reads):
+            usage = metrics_svc.total(r.total for r in reads if r.total)
+        replicas = None
+        if all(s.replicas is not None for s in statuses):
+            replicas = sum(s.replicas for s in statuses)
+
+        return WorkloadStatsResponse(
+            overallStatus=overall,  # type: ignore[arg-type]
+            replicas=replicas,
+            usage=usage.quantities() if usage else None,
+            sites=[
+                SiteStats(
+                    site=s.site,
+                    status=s.status,
+                    replicas=s.replicas,
+                    usage=u.total.quantities() if u and u.total else None,
+                )
+                for s, u in zip(statuses, reads, strict=True)
+            ],
+        )
 
     async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
         """Delete a workload from every site; GC cascades its derived resources.

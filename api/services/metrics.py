@@ -2,12 +2,18 @@
 
 ``metrics.k8s.io`` reports per-container usage as Kubernetes *quantity* strings
 (e.g. cpu ``"1234567n"``, memory ``"123456Ki"``). We sum across all containers
-of all the workload's pods into one cpu/memory figure per site.
+of all the workload's pods into one figure per site.
+
+Figures are carried as :class:`Usage` - raw floats - and rounded only at the
+edge, so a per-site total can be summed again into a workload total without
+drifting from the sites it covers.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from api.models.common import ResourceUsage
 
@@ -74,15 +80,44 @@ def parse_memory_bytes(quantity: str) -> float:
 _SIDECAR = "queue-proxy"
 
 
-def sum_usage(pod_metrics: list[dict]) -> ResourceUsage | None:
-    """Sum cpu/memory over each pod's user container(s), ignoring queue-proxy.
+@dataclass(frozen=True)
+class Usage:
+    """Measured cpu/memory, unrounded so it can be summed again."""
+
+    cpu_milli: float
+    mem_bytes: float
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(self.cpu_milli + other.cpu_milli, self.mem_bytes + other.mem_bytes)
+
+    def quantities(self) -> ResourceUsage:
+        """Project to the API's quantity strings - the one place rounding happens."""
+        return ResourceUsage(
+            cpu=f"{round(self.cpu_milli)}m",
+            memory=f"{round(self.mem_bytes / 2**20)}Mi",
+        )
+
+
+def total(usages: Iterable[Usage]) -> Usage | None:
+    """Add measured usages up, or None when nothing was measured.
+
+    None rather than a zero: a workload consuming nothing and a workload nobody
+    measured are different answers.
+    """
+    summed: Usage | None = None
+    for usage in usages:
+        summed = usage if summed is None else summed + usage
+    return summed
+
+
+def total_usage(pod_metrics: list[dict]) -> Usage | None:
+    """Sum cpu/memory over every pod's user container(s), ignoring queue-proxy.
 
     Args:
         pod_metrics: PodMetrics items for the workload's pods.
 
     Returns:
-        The summed usage, or None if there's nothing (e.g. the workload is
-        scaled to zero).
+        The site's usage, or None if nothing reported (e.g. scaled to zero).
     """
     cpu_milli = 0.0
     mem_bytes = 0.0
@@ -98,9 +133,4 @@ def sum_usage(pod_metrics: list[dict]) -> ResourceUsage | None:
             if usage.get("memory"):
                 mem_bytes += parse_memory_bytes(usage["memory"])
                 seen = True
-    if not seen:
-        return None
-    return ResourceUsage(
-        cpu=f"{round(cpu_milli)}m",
-        memory=f"{round(mem_bytes / 2**20)}Mi",
-    )
+    return Usage(cpu_milli, mem_bytes) if seen else None

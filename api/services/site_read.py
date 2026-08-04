@@ -10,7 +10,8 @@ interesting part, and why it differs per function rather than being uniform:
   valid "keep" look unset and fail the update as a 400, losing a stored secret.
 * the **decoration** reads (:func:`revision`, :func:`site_usage`,
   :func:`describe_spec`) are best-effort. A workload whose replica count or live
-  usage could not be fetched still has a status worth returning.
+  usage could not be fetched still has a status worth returning. ``site_usage``
+  also reports *that* it failed, because its caller sums across sites.
 
 Every function here blocks, and is called through ``asyncio.to_thread`` or the
 deployer's fan-out.
@@ -19,6 +20,7 @@ deployer's fan-out.
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from api.models.common import (
@@ -184,18 +186,34 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
         return None
 
 
-def site_usage(cluster: Cluster, oname: str):
-    """Best-effort live cpu/memory summed over the workload's running pods.
+@dataclass(frozen=True)
+class SiteUsage:
+    """One site's usage read: whether it could be taken, and what it showed.
+
+    ``measured`` is what a cross-site total needs and the other best-effort reads
+    here do not: they degrade to a null field on the site that failed, which is
+    visible, while a total summed over a site that did not answer is just a
+    smaller number that still looks authoritative.
+    """
+
+    measured: bool
+    total: metrics_svc.Usage | None
+
+
+def site_usage(cluster: Cluster, oname: str) -> SiteUsage:
+    """Best-effort live cpu/memory summed over one site's running pods.
+
+    Never raises: an unreadable metrics API must not fail a status that is
+    otherwise worth returning.
 
     Returns:
-        The usage summary, or None if the metrics API is unavailable or the
-        workload is scaled to zero (no running pods).
+        The site's usage, with ``measured=False`` if the read itself failed.
     """
     try:
         items = cluster.get(
             ResourceKind.POD_METRICS,
             label_selector=f"serving.knative.dev/service={oname}",
         )
-        return metrics_svc.sum_usage(items)
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-        return None
+        return SiteUsage(measured=False, total=None)
+    return SiteUsage(measured=True, total=metrics_svc.total_usage(items))

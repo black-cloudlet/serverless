@@ -8,7 +8,13 @@ from fastapi import APIRouter, BackgroundTasks, Query
 
 from api.auth.deps import CurrentUser
 from api.dependencies import ContainerDep
-from api.models.common import Group, LogsResponse, Name, WorkloadSummary
+from api.models.common import (
+    Group,
+    LogsResponse,
+    Name,
+    WorkloadStatsResponse,
+    WorkloadSummary,
+)
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 
 router = APIRouter(prefix="/api/v1/groups/{group}/containers", tags=["containers"])
@@ -102,6 +108,27 @@ async def get_container(
         The full single-container response.
     """
     return await svc.get(name, group, user)
+
+
+@router.get("/{name}/stats", response_model=WorkloadStatsResponse)
+async def get_container_stats(
+    group: Group, name: Name, user: CurrentUser, svc: ContainerDep
+) -> WorkloadStatsResponse:
+    """Get the container's live state: status, replicas and usage, per site.
+
+    The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
+    and the live numbers behind it, and none of the desired-state config.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller (injected).
+        svc: The container service (injected).
+
+    Returns:
+        The container's live stats view.
+    """
+    return await svc.stats(name, group, user)
 
 
 @router.get("/{name}/logs", response_model=LogsResponse)
