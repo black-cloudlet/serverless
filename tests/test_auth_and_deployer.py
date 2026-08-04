@@ -523,6 +523,165 @@ async def test_get_reports_size_and_live_usage_per_site():
     assert site.usage.memory == "180Mi"
 
 
+class _StatusCluster:
+    """Serves the three reads the status view is allowed to make, and only those.
+
+    Any other kind is an assertion failure, which is the point: it is what pins
+    the endpoint to live state and keeps a spec read (a ConfigMap, or the backing
+    Secret) from creeping back into a path a client polls every few seconds.
+    """
+
+    def __init__(self, name, pods=None, replicas=2, offering="container", group="team"):
+        self.site = name
+        self.name = name
+        self._pods = pods
+        self._replicas = replicas
+        self._offering = offering
+        self._group = group
+
+    def get(self, kind, name=None, label_selector=None, namespace=None):
+        from api.models.common import LABEL_GROUP, LABEL_OFFERING
+        from common.cluster import ResourceKind
+
+        if kind == ResourceKind.KNATIVE_SERVICE:
+            return {
+                "metadata": {
+                    "name": name,
+                    "labels": {LABEL_GROUP: self._group, LABEL_OFFERING: self._offering},
+                },
+                "status": {
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                    "latestReadyRevisionName": "app-team-00002",
+                },
+            }
+        if kind == ResourceKind.KNATIVE_REVISION:
+            return {"status": {"actualReplicas": self._replicas}}
+        if kind == ResourceKind.POD_METRICS:
+            assert label_selector == "serving.knative.dev/service=app-team"
+            return list(self._pods or [])
+        raise AssertionError(f"the status view must not read {kind}")
+
+
+def _metrics_pod(pod, revision, cpu, memory):
+    return {
+        "metadata": {"name": pod, "labels": {"serving.knative.dev/revision": revision}},
+        "containers": [
+            {"name": "user-container", "usage": {"cpu": cpu, "memory": memory}},
+            {"name": "queue-proxy", "usage": {"cpu": "999m", "memory": "999Mi"}},
+        ],
+    }
+
+
+async def test_status_breaks_usage_down_per_pod_and_reads_nothing_else():
+    from api.auth.claims import Principal
+
+    pods = [
+        _metrics_pod("app-team-00002-a", "app-team-00002", "60m", "90Mi"),
+        _metrics_pod("app-team-00001-b", "app-team-00001", "60m", "90Mi"),
+    ]
+    engine = _workload_service({"site-a": _StatusCluster("site-a", pods=pods)})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.status(CONTAINER, "app", user, "team")
+
+    assert body.name == "app" and body.type == "container"
+    assert body.overallStatus == "Ready"
+    assert body.build is None  # a container has no build
+    site = body.sites[0]
+    assert site.replicas == 2
+    # the total is what the full GET reports: the sidecar is excluded from both
+    assert (site.usage.cpu, site.usage.memory) == ("120m", "180Mi")
+    # and the breakdown adds up to it, each replica tagged with its revision -
+    # which is what distinguishes the old pod from the new one mid-rollout
+    assert [(p.pod, p.revision) for p in site.pods] == [
+        ("app-team-00002-a", "app-team-00002"),
+        ("app-team-00001-b", "app-team-00001"),
+    ]
+    assert [p.usage.cpu for p in site.pods] == ["60m", "60m"]
+
+
+async def test_status_scaled_to_zero_reports_no_pods_not_an_error():
+    from api.auth.claims import Principal
+
+    engine = _workload_service({"site-a": _StatusCluster("site-a", pods=[], replicas=0)})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    site = (await engine.status(CONTAINER, "app", user, "team")).sites[0]
+
+    assert site.replicas == 0
+    assert site.usage is None  # nothing running, so nothing measured
+    assert site.pods == []
+
+
+async def test_status_reports_building_from_the_build_backend():
+    """The build read is not decoration: without it this reads Degraded.
+
+    A function whose image does not exist yet has a KSVC failing to pull one. The
+    poll view is what a client watches through exactly that window, so it folds
+    the build in the same way the full GET does.
+    """
+    from api.auth.claims import Principal
+    from common.build import BuildStatus
+    from common.cluster import ResourceKind
+
+    class _C:
+        site = "site-a"
+        name = "site-a"
+
+        def get(self, kind, name=None, label_selector=None, namespace=None):
+            from api.models.common import LABEL_GROUP, LABEL_OFFERING
+
+            if kind == ResourceKind.KNATIVE_SERVICE:
+                return {
+                    "metadata": {
+                        "name": name,
+                        "labels": {LABEL_GROUP: "team", LABEL_OFFERING: "function"},
+                    },
+                    # can't pull an image that has not been built yet
+                    "status": {"conditions": [{"type": "Ready", "status": "False"}]},
+                }
+            raise RuntimeError("revision/metrics are best-effort")
+
+    class _BuildingBuilder(_NullBuilder):
+        def status(self, cluster, name, group):
+            return BuildStatus(state="Building")
+
+    engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+    body = await engine.status(FUNCTION, "fn", user, "team")
+
+    assert body.build.state == "Building"
+    assert body.overallStatus == "Building"  # not Degraded, and not Deploying
+    # the site underneath is still honestly reported as failing to come up
+    assert body.sites[0].status == "Failed"
+
+
+async def test_status_hides_another_groups_workload_as_404():
+    from api.auth.claims import Principal
+    from common.errors import NotFoundError
+
+    engine = _workload_service({"site-a": _StatusCluster("site-a", pods=[], group="other")})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(NotFoundError):
+        await engine.status(CONTAINER, "app", user, "team")
+
+
+async def test_status_of_an_unconfirmable_workload_fails_closed():
+    """A site that cannot answer means "absent" is not established -> 503, not 404."""
+    from api.auth.claims import Principal
+    from common.errors import ServiceUnavailableError
+
+    class _Down:
+        site = "site-b"
+        name = "site-b"
+
+        def get(self, *a, **k):
+            raise RuntimeError("site down")
+
+    engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _Down()})
+    user = Principal(subject="u", username="alice", groups=["team"])
+    with pytest.raises(ServiceUnavailableError):
+        await engine.status(CONTAINER, "app", user, "team")
+
+
 def _list_ksvc(oname, size, host, ready=True):
     from api.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
 

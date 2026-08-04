@@ -35,7 +35,9 @@ from api.models.common import (
     LogsResponse,
     PodLogs,
     SiteStatus,
+    SiteStatusDetail,
     WorkloadResponse,
+    WorkloadStatusResponse,
     WorkloadSummary,
 )
 from api.services import describe as describe_svc
@@ -679,6 +681,121 @@ class WorkloadService:
             files=spec.files,
         )
         return offering.fetched_response(common, obj, spec, build)
+
+    async def status(
+        self, offering: Offering, name: str, user: Principal, group: str
+    ) -> WorkloadStatusResponse:
+        """Read only what is live: the rollup, and per-site scale and usage.
+
+        The poll counterpart to :meth:`get`, for a client refreshing every few
+        seconds. Same fan-out, same authorization and the same rollup, but none of
+        the desired-state reads - no file ConfigMaps and, above all, no backing
+        Secret. That is the point: the spec changes only when a client changes it,
+        so re-reading secret material on every tick buys nothing.
+
+        The build read stays, because it is not decoration. A function's
+        ``overallStatus`` is ``Building`` only because the build says so
+        (:func:`~api.services.ksvc_state.with_build_status`), and this is the
+        endpoint polled during the first build - the exact window where dropping
+        it would report ``Deploying``, then ``Degraded`` once the KSVC starts
+        failing to pull an image that does not exist yet.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+
+        Returns:
+            The live status view, per-pod usage included.
+
+        Raises:
+            NotFoundError: If the workload exists on no reachable site.
+            ServiceUnavailableError: If it can't be confirmed absent because a
+                site was unreachable.
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        # One KSVC per site, kept only to authorize off (the spec is not read here).
+        reps: dict[str, dict] = {}
+
+        def fetch(cluster: Cluster) -> SiteStatusDetail | None:
+            # A 404 means not deployed here, so omit the site rather than fail it;
+            # anything else propagates and keeps a down site visible as Degraded.
+            try:
+                obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            except NotFoundError:
+                return None
+            reps[cluster.site] = obj
+            status, revision = ksvc_state.ksvc_status(obj)
+            # Sequential for the reason spelled out in get(): both reads go to the
+            # same cluster, and the concurrency belongs at the fan-out.
+            rev = site_read.revision(cluster, revision)
+            usage, pods = site_read.site_usage_detail(cluster, oname)
+            error = None
+            if status == "Failed":
+                error = revision_failure_message(rev) or ksvc_failure_message(obj)
+            return SiteStatusDetail(
+                site=cluster.site,
+                status=status,
+                revision=revision,
+                error=error,
+                replicas=ksvc_state.revision_replicas(rev),
+                usage=usage,
+                pods=pods,
+            )
+
+        targets = self.deployer.resolve_targets(None)
+        results = await self.deployer.fanout(targets, fetch)
+        statuses = [s for s in results if s is not None]  # drop sites without it
+
+        if not reps:
+            # Present on no reachable site. If a site was unreachable we can't be
+            # sure it's absent -> 503; otherwise it's genuinely gone -> 404.
+            preflight.assert_all_sites_checked(statuses, f"get status of workload '{name}'")
+            raise NotFoundError(f"{kind} '{name}' not found")
+
+        # Authorize off the local site if it has the workload, else any site that
+        # does - the labels are uniform, so one object answers it.
+        obj = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
+        labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+        # Hidden as a 404 so the response cannot leak that it exists; the real
+        # reason is logged, so denied-vs-absent stays debuggable.
+        if not user.can_access_group(labels.get(LABEL_GROUP, "")) or (
+            labels.get(LABEL_OFFERING) != kind
+        ):
+            logger.debug(
+                "status of %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
+                kind,
+                name,
+                user.username,
+                labels.get(LABEL_GROUP),
+                labels.get(LABEL_OFFERING),
+            )
+            raise NotFoundError(f"{kind} '{name}' not found")
+
+        # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
+        # status drives the rollup, exactly as on the full GET.
+        overall = overall_status_for_sites(statuses)
+        # Read after authorizing, like get() does, so a cross-group probe cannot
+        # spend a cluster read. Folding it in here rather than in the offering:
+        # nothing else in this response is offering-specific, and both paths apply
+        # the one projection, so the two views cannot disagree on Building.
+        build = None
+        if offering.has_build:
+            build = await asyncio.to_thread(
+                offering.build_status, self.builder, self.deployer.local_cluster(), name, group
+            )
+            overall = ksvc_state.with_build_status(overall, build)
+        return WorkloadStatusResponse(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            overallStatus=overall,  # type: ignore[arg-type]
+            build=build,
+            sites=statuses,
+        )
 
     async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
         """Delete a workload from every site; GC cascades its derived resources.

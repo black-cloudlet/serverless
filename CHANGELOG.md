@@ -9,6 +9,28 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- `GET /api/v1/groups/{group}/{type}/{name}/status` - a poll target that returns
+  only live state. Until now a client watching a workload had to call the full
+  GET, which also reads the file ConfigMaps and the backing Secret to rebuild the
+  redacted spec; on a two-second refresh that pulls secret material out of the
+  cluster on a loop for config that only changes when the client changes it. The
+  new endpoint fans out the same way and returns the same `overallStatus`, plus
+  per site the KSVC status, `revision`, `replicas` and `usage` - and, new here, a
+  **per-pod breakdown** of that usage (`sites[].pods[]`, each carrying `pod`,
+  `revision` and its own `usage`), which costs no extra cluster call because the
+  PodMetrics list already holds it and `sum_usage` was collapsing it. The
+  per-replica figures make a hot or about-to-OOM pod visible, and their
+  `revision` distinguishes the old replicas from the new ones mid-rollout. The
+  build read is kept for functions: `overallStatus` is `Building` only because
+  the build says so, so dropping it would have reported a normal first build as
+  `Deploying`, then `Degraded` once the KSVC started failing to pull an image
+  that does not exist yet. `metrics.pod_usage` and `metrics.sum_usage` project
+  one parse (`_pod_totals`), so a site's total and the breakdown it is the sum of
+  cannot drift - the total sums the raw figures rather than the rounded per-pod
+  ones. The full GET is unchanged; new RBAC is not needed. Note what this is not:
+  everything is still **polled**. Streaming logs, metrics and replica count over
+  SSE is the follow-up (docs/ARCHITECTURE.md - Open Questions / Future Work), and
+  `usage` can never be fresher than the metrics-server scrape either way.
 - Function builds cache their layers in the registry rather than in a
   PersistentVolumeClaim. Every kpack `Image` now carries an explicit
   `spec.cache.registry.tag` at `{base}/{group}/{name}_cache`; nothing set

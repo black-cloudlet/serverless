@@ -8,7 +8,13 @@ from fastapi import APIRouter, BackgroundTasks, Query
 
 from api.auth.deps import CurrentUser
 from api.dependencies import FunctionDep
-from api.models.common import Group, LogsResponse, Name, WorkloadSummary
+from api.models.common import (
+    Group,
+    LogsResponse,
+    Name,
+    WorkloadStatusResponse,
+    WorkloadSummary,
+)
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 
 router = APIRouter(prefix="/api/v1/groups/{group}/functions", tags=["functions"])
@@ -102,6 +108,30 @@ async def get_function(
         The full single-function response.
     """
     return await svc.get(name, group, user)
+
+
+@router.get("/{name}/status", response_model=WorkloadStatusResponse)
+async def get_function_status(
+    group: Group, name: Name, user: CurrentUser, svc: FunctionDep
+) -> WorkloadStatusResponse:
+    """Get only the function's live state: rollup, per-site replicas and usage.
+
+    The endpoint to poll. Returns the same ``overallStatus`` as the full GET -
+    build state included, so a function still being built reports ``Building`` -
+    and the per-site scale and consumption behind it, with a per-pod breakdown of
+    that consumption. None of the desired-state config: a client already holds it,
+    and it cannot change on its own.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller (injected).
+        svc: The function service (injected).
+
+    Returns:
+        The function's live status view.
+    """
+    return await svc.status(name, group, user)
 
 
 @router.get("/{name}/logs", response_model=LogsResponse)

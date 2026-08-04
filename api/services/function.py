@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from api.auth.claims import Principal
-from api.models.common import LogsResponse, WorkloadSummary
+from api.models.common import LogsResponse, WorkloadStatusResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services import describe as describe_svc
 from api.services.offering import FUNCTION
@@ -365,6 +365,22 @@ class FunctionService:
             The full single-function response.
         """
         return await self._engine.get(FUNCTION, name, user, group)
+
+    async def status(self, name: str, group: str, user: Principal) -> WorkloadStatusResponse:
+        """Read the function's live state only (the poll view).
+
+        Includes the build state, which is what reports ``Building`` while the
+        first image is still being built.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The rollup plus per-site replicas and usage, broken down per pod.
+        """
+        return await self._engine.status(FUNCTION, name, user, group)
 
     async def logs(
         self,

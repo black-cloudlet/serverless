@@ -359,6 +359,38 @@ class ResourceUsage(BaseModel):
     memory: str | None = None  # e.g. "180Mi"
 
 
+class PodUsage(BaseModel):
+    """One replica's live consumption, as its share of a site's total.
+
+    ``usage`` is the same type as the per-site figure it contributes to, so the
+    breakdown and the sum are read the same way and are projected from one parse
+    (:func:`api.services.metrics.pod_usage`) - a site whose pods do not add up to
+    its total would be a bug in one place, not a disagreement between two.
+
+    Attributes:
+        pod: The pod name.
+        revision: The Knative revision the pod belongs to, if labelled - what
+            distinguishes the old replicas from the new ones mid-rollout.
+        usage: This pod's cpu/memory, summed over its user container(s).
+    """
+
+    pod: str
+    revision: str | None = None
+    usage: ResourceUsage
+
+
+class SiteStatusDetail(SiteStatus):
+    """:class:`SiteStatus` plus the per-pod breakdown behind ``usage``.
+
+    Only the status view returns this. The full GET stays on the summed figure:
+    the breakdown costs no extra cluster call, but it changes size with the
+    replica count, and a response that already carries the whole spec is the
+    wrong place to put something unbounded.
+    """
+
+    pods: list[PodUsage] = []  # the replicas `usage` is the sum of
+
+
 class WorkloadBase(BaseModel):
     """Identity fields common to every workload view (list item and full GET)."""
 
@@ -420,6 +452,39 @@ class BuildStatusView(BaseModel):
 
     state: str
     message: str | None = None
+
+
+class WorkloadStatusResponse(BaseModel):
+    """Just a workload's live state: the rollup, and per-site scale and usage.
+
+    The poll view. It carries what changes on its own - status, replicas, usage -
+    and none of the desired-state config, which only changes when a client changes
+    it and which it already has from the create response or one full GET. That is
+    what lets it be read every couple of seconds without pulling the backing
+    Secret out of the cluster on a loop.
+
+    One model for both offerings, unlike the full GET: nothing here is
+    offering-specific. ``build`` is a function's state and is null for a
+    container, but it is not optional decoration - a function's ``overallStatus``
+    is only ``Building`` because the build says so
+    (:func:`api.services.ksvc_state.with_build_status`).
+
+    Attributes:
+        name: The workload name.
+        group: The owning SSO group.
+        type: function or container.
+        overallStatus: The rollup a client polls on, identical to the full GET's.
+        build: A function's build state; null for a container, and for a function
+            that has none.
+        sites: Per-site live state, one entry per site that has the workload.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    overallStatus: WorkloadStatus
+    build: BuildStatusView | None = None
+    sites: list[SiteStatusDetail] = []
 
 
 class WorkloadResponse(WorkloadBase):

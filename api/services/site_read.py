@@ -184,18 +184,35 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
         return None
 
 
-def site_usage(cluster: Cluster, oname: str):
-    """Best-effort live cpu/memory summed over the workload's running pods.
+def site_usage_detail(cluster: Cluster, oname: str):
+    """Best-effort live usage: the site total, and the per-pod breakdown of it.
+
+    One PodMetrics list read projected two ways, so the status view's breakdown
+    costs no round trip beyond what the summed figure already costs.
 
     Returns:
-        The usage summary, or None if the metrics API is unavailable or the
-        workload is scaled to zero (no running pods).
+        ``(total, pods)``. The total is None and the list empty if the metrics
+        API is unavailable or the workload is scaled to zero (no running pods) -
+        an unreadable metrics API must not fail a status that is otherwise
+        worth returning.
     """
     try:
         items = cluster.get(
             ResourceKind.POD_METRICS,
             label_selector=f"serving.knative.dev/service={oname}",
         )
-        return metrics_svc.sum_usage(items)
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-        return None
+        return None, []
+    return metrics_svc.sum_usage(items), metrics_svc.pod_usage(items)
+
+
+def site_usage(cluster: Cluster, oname: str):
+    """Best-effort live cpu/memory summed over the workload's running pods.
+
+    The full GET's view: the total only (see :func:`site_usage_detail`).
+
+    Returns:
+        The usage summary, or None if the metrics API is unavailable or the
+        workload is scaled to zero (no running pods).
+    """
+    return site_usage_detail(cluster, oname)[0]
