@@ -351,6 +351,8 @@ networkPolicy:
   egressNamespaces:
     - knative-serving # autoscaler / webhook
   dnsNamespace: openshift-dns
+  # Pod ports, not Service ports - OpenShift's CoreDNS listens on 5353, kube-dns on 53.
+  dnsPorts: [53, 5353]
   # Off-cluster egress. Internal CIDRs are excluded so pods cannot reach other
   # pods/Services directly - set these to YOUR cluster's CIDRs.
   externalEgress:

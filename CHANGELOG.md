@@ -126,6 +126,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `LABEL_OFFERING` they are the values of. No behaviour change.
 ### Fixed
 
+- DNS was blocked in the workloads namespace on OpenShift: `allow-egress-dns` opened
+  53, but a NetworkPolicy matches the destination pod's port and OpenShift's CoreDNS
+  listens on 5353. New `networkPolicy.dnsPorts`, default `[53, 5353]`.
 - Listing functions reported a normal first build as `Degraded`. The build-first
   rule (docs/FUNCTIONS.md - Function Status Resolution) was applied only on the
   single GET, so `GET .../functions` read the KSVC alone - and that KSVC is
