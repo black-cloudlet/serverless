@@ -374,6 +374,48 @@ def test_no_build_leaves_the_ksvc_rollup_untouched():
     assert with_build_status("Degraded", None) == "Degraded"
 
 
+def test_a_running_build_folds_into_the_per_site_rows_too():
+    """A failing site under a running build reports the build, not the pull error.
+
+    Without this the detail view contradicts itself: `Building` in the header and
+    `Failed` - `Unable to fetch image ...` in the sites table right below it.
+    """
+    from api.models.common import BuildStatusView, SiteStatus
+    from api.services.ksvc_state import sites_with_build_status
+
+    sites = [
+        SiteStatus(
+            site="a",
+            status="Failed",
+            revision="fn-team-00001",
+            error='Unable to fetch image "reg/team/fn:main": not found',
+        ),
+        SiteStatus(site="b", status="Ready", revision="fn-team-00001"),
+    ]
+    folded = sites_with_build_status(sites, BuildStatusView(state="Building"))
+
+    assert folded[0].status == "Building"
+    assert folded[0].error is None
+    assert folded[0].revision == "fn-team-00001"  # everything else is untouched
+    assert folded[1].status == "Ready"  # a site that isn't failing is left alone
+
+
+@pytest.mark.parametrize("state", ["Failed", "Ready", "Unknown"])
+def test_only_a_running_build_masks_a_failing_site(state):
+    """A build that is not in flight leaves the rows exactly as the KSVC read them.
+
+    A failed build is the case that matters: then the image genuinely never
+    arrives, so the site's pull error is the truth and must stay visible.
+    """
+    from api.models.common import BuildStatusView, SiteStatus
+    from api.services.ksvc_state import sites_with_build_status
+
+    sites = [SiteStatus(site="a", status="Failed", error="boom")]
+
+    assert sites_with_build_status(sites, BuildStatusView(state=state)) == sites
+    assert sites_with_build_status(sites, None) == sites
+
+
 def test_building_is_a_non_terminal_poll_state():
     from api.services.deployer import status_code_for
 

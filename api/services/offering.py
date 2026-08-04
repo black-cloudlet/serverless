@@ -148,6 +148,17 @@ class Offering(Protocol):
         """The workload's build state, or None when the offering has no build."""
         ...
 
+    def build_states(
+        self, builder: BuildBackend, cluster: Cluster, group: str
+    ) -> dict[str, BuildStatusView]:
+        """Build states for a whole group's listing, keyed by object name.
+
+        The listing counterpart of :meth:`build_status`: one read for every
+        workload in the group, so a list does not pay a round trip per function.
+        Empty for an offering with no build.
+        """
+        ...
+
 
 class FunctionOffering:
     """A function: built from source, so it has a build and a git credential."""
@@ -173,6 +184,11 @@ class FunctionOffering:
     ) -> WorkloadResponse:
         """The function response, with the build folded into the status rollup.
 
+        Folded into the per-site rows too, and for the same reason: while the
+        build runs, every site is failing to pull an image that does not exist
+        yet, so a row left unfolded would contradict the headline it sits under
+        (see :func:`~api.services.ksvc_state.sites_with_build_status`).
+
         No image is exposed: the built image is an internal artifact, so a client
         reads ``gitRepo``/``branch`` instead. The runtime and version come from
         the KSVC's annotations rather than the spec - they are build inputs, not
@@ -183,6 +199,7 @@ class FunctionOffering:
             **{
                 **common,
                 "overallStatus": ksvc_state.with_build_status(common["overallStatus"], build),
+                "sites": ksvc_state.sites_with_build_status(common["sites"], build),
             },
             runtime=annotations.get(ANNOTATION_RUNTIME),
             version=annotations.get(ANNOTATION_RUNTIME_VERSION),
@@ -237,6 +254,19 @@ class FunctionOffering:
             return None
         return BuildStatusView(state=status.state, message=status.message)
 
+    def build_states(
+        self, builder: BuildBackend, cluster: Cluster, group: str
+    ) -> dict[str, BuildStatusView]:
+        """Every function's build state in the group, from the local site's Images.
+
+        Same site and same reasoning as :meth:`build_status`, in one read: a list
+        of twenty functions would otherwise be twenty kpack reads per poll.
+        """
+        return {
+            workload: BuildStatusView(state=status.state, message=status.message)
+            for workload, status in builder.statuses(cluster, group).items()
+        }
+
 
 class ContainerOffering:
     """A container: a pre-built image, so it has a pull credential and no build."""
@@ -280,6 +310,12 @@ class ContainerOffering:
     ) -> BuildStatusView | None:
         """None. A container is deployed from an image the caller already built."""
         return None
+
+    def build_states(
+        self, builder: BuildBackend, cluster: Cluster, group: str
+    ) -> dict[str, BuildStatusView]:
+        """Empty. A container has no build to fold into a listing."""
+        return {}
 
 
 FUNCTION: Offering = FunctionOffering()

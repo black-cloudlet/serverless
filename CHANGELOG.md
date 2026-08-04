@@ -126,6 +126,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `LABEL_OFFERING` they are the values of. No behaviour change.
 ### Fixed
 
+- Listing functions reported a normal first build as `Degraded`. The build-first
+  rule (docs/FUNCTIONS.md - Function Status Resolution) was applied only on the
+  single GET, so `GET .../functions` read the KSVC alone - and that KSVC is
+  failing to pull an image kpack has not pushed yet. The list now folds the build
+  state in exactly as the GET does, and the two can no longer disagree about the
+  same function. It costs one extra read for the whole listing, not one per
+  function: `BuildBackend.statuses` label-selects every one of a group's kpack
+  `Image`s from the local site in a single call, overlapped with the site
+  fan-out. A container listing does not make the call at all.
+- A function's per-site rows contradicted its own header while it built: the
+  header said `Building` and the `sites` table directly below said `Failed` -
+  `Unable to fetch image "..."`, which reads as a broken deploy during what is a
+  normal build. While a build is in flight a failing site now reports `Building`
+  with no error, since that pull failure is the running build rather than a
+  second, independent one; the build's own state stays on `build`. Only a
+  *running* build masks anything - a failed build leaves the rows untouched,
+  because then the image genuinely never arrives and the site is telling the
+  truth. `Building` is published in the site-status vocabulary on `/info`
+  alongside the workload one.
 - `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
   the response read `spec.path`, but `WorkloadSpec` never declared the field, so
   `parse_spec`'s `path=` was silently dropped by Pydantic and the read raised

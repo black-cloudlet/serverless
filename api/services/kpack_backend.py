@@ -34,6 +34,7 @@ from common.build import (
 from common.cluster import Cluster, ResourceKind
 from common.config import CommonSettings
 from common.errors import NotFoundError, ValidationError
+from common.labels import LABEL_GROUP, LABEL_OFFERING, LABEL_WORKLOAD, OFFERING_FUNCTION
 from common.logging import get_logger
 from common.names import object_name
 
@@ -213,3 +214,37 @@ class KpackBackend:
             return None
         state, latest, message = kpack.build_status(image)
         return BuildStatus(state=state, image=latest, message=message)
+
+    def statuses(self, cluster: Cluster, group: str) -> dict[str, BuildStatus]:
+        """Read every function build state a group has on one cluster, in one call.
+
+        Keyed by the ``workload`` label - the object name ``{name}-{group}`` -
+        because that is what the Image carries and what the caller already has
+        from the KSVC it is annotating. The Image's own name (``fn-{workload}``)
+        is an implementation detail of this module.
+
+        Never an error: a listing that could not read kpack falls through to the
+        KSVC statuses, exactly as :meth:`status` does for a single workload.
+
+        Args:
+            cluster: The cluster to read (normally the local site).
+            group: The owning group.
+
+        Returns:
+            ``{object_name: BuildStatus}``; empty when the group has no builds or
+            kpack could not be read.
+        """
+        selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={OFFERING_FUNCTION}"
+        try:
+            images = cluster.get(ResourceKind.KPACK_IMAGE, label_selector=selector)
+        except Exception:  # noqa: BLE001 - kpack absent or unreadable is not fatal
+            logger.warning("could not list kpack Images for group '%s' on %s", group, cluster.site)
+            return {}
+        out: dict[str, BuildStatus] = {}
+        for image in images:
+            workload = ((image.get("metadata") or {}).get("labels") or {}).get(LABEL_WORKLOAD)
+            if not workload:
+                continue  # not one of ours to attribute to a workload
+            state, latest, message = kpack.build_status(image)
+            out[workload] = BuildStatus(state=state, image=latest, message=message)
+        return out
