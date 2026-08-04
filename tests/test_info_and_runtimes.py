@@ -1,6 +1,6 @@
 from api.models.common import Scaling
-from api.services.ksvc import workload_sizes
-from api.services.runtimes import RuntimeRegistry, RuntimeSpec, load_runtimes
+from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec, load_runtimes
+from api.services.manifests.ksvc import workload_sizes
 
 
 def test_load_runtimes_from_file(tmp_path):
@@ -23,7 +23,7 @@ def test_a_missing_runtimes_file_is_fatal(tmp_path):
     accept functions it can never build and only fail minutes later."""
     import pytest
 
-    from api.services.runtimes import RuntimeConfigError
+    from api.services.builder.runtimes import RuntimeConfigError
 
     with pytest.raises(RuntimeConfigError, match="not found"):
         load_runtimes(str(tmp_path / "does-not-exist.yaml"))
@@ -32,7 +32,7 @@ def test_a_missing_runtimes_file_is_fatal(tmp_path):
 def test_an_empty_runtimes_file_is_fatal(tmp_path):
     import pytest
 
-    from api.services.runtimes import RuntimeConfigError
+    from api.services.builder.runtimes import RuntimeConfigError
 
     f = tmp_path / "runtimes.yaml"
     f.write_text("runtimes: []\n")
@@ -43,7 +43,7 @@ def test_an_empty_runtimes_file_is_fatal(tmp_path):
 def test_a_malformed_runtimes_file_is_fatal(tmp_path):
     import pytest
 
-    from api.services.runtimes import RuntimeConfigError
+    from api.services.builder.runtimes import RuntimeConfigError
 
     f = tmp_path / "runtimes.yaml"
     f.write_text("runtimes:\n  - versions: ['3.13']\n")  # no `name`
@@ -57,7 +57,7 @@ def test_startup_fails_when_the_runtimes_file_is_missing(monkeypatch, tmp_path):
 
     from api.core.config import get_settings
     from api.dependencies import get_runtimes
-    from api.services.runtimes import RuntimeConfigError
+    from api.services.builder.runtimes import RuntimeConfigError
 
     monkeypatch.setenv("SERVERLESS_RUNTIMES_FILE", str(tmp_path / "absent.yaml"))
     get_settings.cache_clear()
@@ -113,8 +113,8 @@ def test_capabilities_track_a_default_change():
 
 def _fn_service(**over):
     """A FunctionService over a registry whose go runtime offers three versions."""
+    from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
     from api.services.function import FunctionService
-    from api.services.runtimes import RuntimeRegistry, RuntimeSpec
 
     kwargs = dict(
         name="go",

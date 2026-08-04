@@ -2,7 +2,7 @@
 
 Pure: every function here takes a Kubernetes object as a plain dict and returns
 a value. Nothing reaches a cluster, which is what separates this module from
-:mod:`api.services.site_read` - that one fetches, this one interprets what was
+:mod:`api.services.sites.site_read` - that one fetches, this one interprets what was
 fetched. It is also why these are the cheapest rules in the service to test:
 hand them a dict, assert on the answer.
 

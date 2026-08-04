@@ -30,9 +30,10 @@ from api.models.common import (
 )
 from api.models.container import ContainerResponse
 from api.models.function import FunctionResponse
-from api.services import ksvc_state, site_apply, site_read
-from api.services import registry as registry_svc
-from api.services import secrets as secret_svc
+from api.services.builder import registry as registry_svc
+from api.services.manifests import secrets as secret_svc
+from api.services.sites import site_apply, site_read
+from api.services.state import ksvc_state
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
 from common.config import RegistryConfig
@@ -187,7 +188,7 @@ class FunctionOffering:
         Folded into the per-site rows too, and for the same reason: while the
         build runs, every site is failing to pull an image that does not exist
         yet, so a row left unfolded would contradict the headline it sits under
-        (see :func:`~api.services.ksvc_state.sites_with_build_status`).
+        (see :func:`~api.services.state.ksvc_state.sites_with_build_status`).
 
         No image is exposed: the built image is an internal artifact, so a client
         reads ``gitRepo``/``branch`` instead. The runtime and version come from

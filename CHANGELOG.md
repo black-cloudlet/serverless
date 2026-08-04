@@ -7,6 +7,31 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- `api/services/` is grouped by responsibility instead of being a flat directory
+  of 22 modules: `manifests/` builds what gets applied, `sites/` talks to the
+  clusters, `state/` interprets what came back, and `builder/` covers the
+  function image build. The workload engine and the two offering services stay
+  at the top level, since they are what the routers hold. Module filenames are
+  unchanged and every import kept its existing local alias, so the diff is moves
+  and import lines - no call site changed. (`builder/`, not `build/`: the latter
+  is gitignored as a Python artifact directory.)
+- The check that a fetched workload belongs to the caller had five copies - the
+  single GET, the stats view, the log snapshot, the update's state load, and the
+  delete. It is one function now, `services.state.ownership.owned_by`. What the
+  copies actually differed in was the *reaction* to a denial (404, or recording
+  the site so the fan-out can tell denied from unreachable), so that stays at
+  each call site; the rule itself does not. A read path added later cannot now
+  be the one that forgets to check the offering label alongside the group.
+- The listing's merge - per-site KSVCs into one summary per workload - moved out
+  of `WorkloadService.list` into `services.state.summaries`. It was already pure
+  dict work with the I/O above it, and its rules are the interesting part: a
+  workload on one site of two reads `Ready` rather than `Degraded`, a site that
+  did not answer is skipped, a running build outranks the KSVC status. Those are
+  now stated against plain dicts instead of fake clusters, and `list` is 63 lines
+  instead of 110. No behaviour change.
+
 ### Added
 
 - `GET /api/v1/groups/{group}/{type}/{name}/stats` - a lightweight endpoint to

@@ -1,7 +1,7 @@
 """The kpack vocabulary: manifests for a build, and how to read its status.
 
 Shared rather than API-local because both halves of the build path speak it -
-the API writes the ``Image`` (:mod:`api.services.kpack_backend`), and the build
+the API writes the ``Image`` (:mod:`api.services.builder.kpack_backend`), and the build
 service reads ``status.latestImage`` back off it (docs/BUILDING.md - Ownership).
 Naming it in one place is what keeps them agreeing on which object is which.
 
@@ -11,7 +11,7 @@ other derived resources, in the workload's own namespace, so they are
 owner-stamped and garbage-collected with it.
 
 The git credential is not here - it is the workload's own ``{workload}-git``
-Secret, which :mod:`api.services.secrets` builds in the shape kpack consumes.
+Secret, which :mod:`api.services.manifests.secrets` builds in the shape kpack consumes.
 """
 
 from __future__ import annotations

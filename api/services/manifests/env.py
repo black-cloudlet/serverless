@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from api.models.common import EnvVar
-from api.services import resources as res
-from api.services.ksvc import ContainerEnv
+from api.services.manifests import resources as res
+from api.services.manifests.ksvc import ContainerEnv
 from common.errors import ValidationError
 from common.labels import workload_labels
 

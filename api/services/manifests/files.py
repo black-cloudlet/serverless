@@ -12,7 +12,7 @@ import base64
 from dataclasses import dataclass, field
 
 from api.models.common import FileMount
-from api.services import resources as res
+from api.services.manifests import resources as res
 from common.errors import ValidationError
 from common.labels import workload_labels
 

@@ -12,7 +12,7 @@ import base64
 import json
 from urllib.parse import urlsplit
 
-from api.services import resources as res
+from api.services.manifests import resources as res
 
 # Data keys of the ``{workload}-git`` basic-auth Secret.
 GIT_USERNAME_KEY = "username"

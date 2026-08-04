@@ -26,8 +26,8 @@ from api.models.info import (
     RuntimeCapability,
     StatusVocabulary,
 )
-from api.services import route as route_svc
-from api.services.ksvc import workload_sizes
+from api.services.manifests import route as route_svc
+from api.services.manifests.ksvc import workload_sizes
 from common.errors import error_catalog
 from common.names import MAX_OBJECT_NAME, object_name
 

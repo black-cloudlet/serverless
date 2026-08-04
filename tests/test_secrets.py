@@ -1,7 +1,7 @@
 import base64
 import json
 
-from api.services.secrets import (
+from api.services.manifests.secrets import (
     GIT_TOKEN_KEY,
     build_git_secret,
     build_pull_secret,

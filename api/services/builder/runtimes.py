@@ -32,7 +32,7 @@ class RuntimeConfigError(RuntimeError):
 class RuntimeSpec(BaseModel):
     """One available runtime, as the chart renders it into the runtimes ConfigMap.
 
-    Every field is read by :class:`~api.services.kpack_backend.KpackBackend`, so this is a
+    Every field is read by :class:`~api.services.builder.kpack_backend.KpackBackend`, so this is a
     contract with the ConfigMap, not a bag of strings. ``extra="allow"`` keeps genuine
     forward-compatibility: an unknown key is preserved, so a newer chart can ship first.
 

@@ -7,7 +7,7 @@ import logging
 import httpx
 import pytest
 
-from api.services.registry import delete_function_repositories
+from api.services.builder.registry import delete_function_repositories
 from common.config import CommonSettings
 from common.names import cache_repository, image_repository
 
@@ -37,7 +37,7 @@ class _Quay:
         return resp
 
 
-_LOGGER = "api.services.registry"
+_LOGGER = "api.services.builder.registry"
 
 
 def _records(caplog):

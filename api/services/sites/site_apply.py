@@ -14,9 +14,9 @@ through ``asyncio.to_thread`` or the deployer's fan-out.
 from __future__ import annotations
 
 from api.models.common import SiteStatus
-from api.services import ksvc_state
-from api.services import resources as res
-from api.services import secrets as secret_svc
+from api.services.manifests import resources as res
+from api.services.manifests import secrets as secret_svc
+from api.services.state import ksvc_state
 from common import kpack
 from common.cluster import Cluster, ResourceKind
 from common.errors import NotFoundError

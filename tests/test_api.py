@@ -208,7 +208,7 @@ async def test_startup_warmup_is_best_effort(monkeypatch):
     """A failing OIDC discovery / cluster connect must not crash startup."""
     from api.core.config import Settings, SiteConfig, SSOConfig
     from api.main import _warmup
-    from api.services.deployer import Deployer
+    from api.services.sites.deployer import Deployer
 
     class _BoomValidator:
         def warmup(self):
