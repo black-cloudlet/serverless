@@ -12,7 +12,7 @@ from api.models.common import (
     Group,
     LogsResponse,
     Name,
-    WorkloadStatusResponse,
+    WorkloadStatsResponse,
     WorkloadSummary,
 )
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
@@ -110,16 +110,14 @@ async def get_container(
     return await svc.get(name, group, user)
 
 
-@router.get("/{name}/status", response_model=WorkloadStatusResponse)
-async def get_container_status(
+@router.get("/{name}/stats", response_model=WorkloadStatsResponse)
+async def get_container_stats(
     group: Group, name: Name, user: CurrentUser, svc: ContainerDep
-) -> WorkloadStatusResponse:
-    """Get only the container's live state: rollup, per-site replicas and usage.
+) -> WorkloadStatsResponse:
+    """Get the container's live state: status, replicas and usage, per site.
 
-    The endpoint to poll. Returns the same ``overallStatus`` as the full GET and
-    the per-site scale and consumption behind it - including a per-pod breakdown
-    of that consumption - and none of the desired-state config, which a client
-    already holds and which cannot change on its own.
+    The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
+    and the live numbers behind it, and none of the desired-state config.
 
     Args:
         group: The owning group (from the request path).
@@ -128,9 +126,9 @@ async def get_container_status(
         svc: The container service (injected).
 
     Returns:
-        The container's live status view.
+        The container's live stats view.
     """
-    return await svc.status(name, group, user)
+    return await svc.stats(name, group, user)
 
 
 @router.get("/{name}/logs", response_model=LogsResponse)

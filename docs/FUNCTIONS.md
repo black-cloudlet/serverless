@@ -141,7 +141,7 @@ source, not images.)
 > `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
 > the source fields) are read from the **local site** (uniform across sites); the
 > per-site `sites[]` status/`replicas` come from fanning out to every site. Live
-> **usage** is not here - see the `/status` endpoint below.
+> **usage** is not here - see the `/stats` endpoint below.
 >
 > **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
 > values and secret file contents come back `null` with `secret: true`; the **git token**
@@ -172,42 +172,30 @@ source, not images.)
 > is on this response and live **usage** is not: measuring usage is a PodMetrics
 > call per site, and the full GET is not the endpoint to poll.
 >
-> **Polling live state: `GET .../{name}/status`.** Everything that changes on its
-> own, and nothing that does not. It returns the same `overallStatus` (for a
-> function including `Building`, since the build is still read), workload-wide
-> `replicas` and `usage` totals, and per site the status, `revision`, `replicas`,
-> `usage` and a per-pod breakdown of that usage:
+> **Polling live state: `GET .../{name}/stats`.** A lightweight view of what
+> changes on its own - the rollup, replica count and resource usage, nothing else:
 >
 > ```json
 > {
->   "name": "image-resizer", "group": "media", "type": "function",
->   "overallStatus": "Ready", "replicas": 3,
+>   "overallStatus": "Ready",
+>   "replicas": 3,
 >   "usage": { "cpu": "210m", "memory": "355Mi" },
->   "build": { "state": "Ready", "message": null },
 >   "sites": [
->     { "site": "central", "status": "Ready", "revision": "image-resizer-00001",
->       "replicas": 2, "usage": { "cpu": "120m", "memory": "180Mi" },
->       "pods": [
->         { "pod": "image-resizer-00001-deployment-7f4c-abcde", "revision": "image-resizer-00001",
->           "usage": { "cpu": "70m", "memory": "95Mi" } },
->         { "pod": "image-resizer-00001-deployment-7f4c-fghij", "revision": "image-resizer-00001",
->           "usage": { "cpu": "50m", "memory": "85Mi" } }
->       ] }
+>     { "site": "central", "status": "Ready", "replicas": 2,
+>       "usage": { "cpu": "120m", "memory": "180Mi" } },
+>     { "site": "south", "status": "Ready", "replicas": 1,
+>       "usage": { "cpu": "90m", "memory": "175Mi" } }
 >   ]
 > }
 > ```
 >
-> Usage is summed over each pod's user container only, never the queue-proxy
-> sidecar, and is `null` when the workload is scaled to zero or the metrics API
-> could not be read. The **totals** are summed from the raw per-site figures, not
-> from the rounded ones on the response, so they will not always equal the sum of
-> what is printed: two pods at 0.5m each each render `"0m"` while their site reads
-> `"1m"`. Render the `usage` field for a total rather than adding up `pods[]`.
-> A total is `null` outright if any site could not be measured - a number missing
-> a whole site still looks authoritative, so there is no partial version of it.
->
-> Everything here is **polled**, not streamed, and `usage` can be no fresher than
-> the cluster's metrics-server scrape interval whatever you do.
+> `overallStatus` matches the full GET's, `Building` included - the build is still
+> read, it is just not a field here. Usage covers each pod's user container only,
+> never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
+> API could not be read. The top-level totals are summed across sites **before**
+> rounding, so they need not equal the sum of the printed per-site figures; and a
+> total is `null` if any site could not be measured, rather than one quietly
+> missing a site. Usage is never fresher than the cluster's metrics-server scrape.
 
 ### Editing a workload: `PUT` request recipes
 
@@ -335,7 +323,7 @@ path (the ksvc fan-out in ARCHITECTURE.md: Multi-Site (Active/Active HA) Design 
 because the build site is always local: if an `Image` exists at all, it exists here.
 
 **As implemented.** `KpackBackend.status` returns `None` when the local site has no `Image`
-- the switchover case above - and `_with_build_status` folds the rest into the rollup:
+- the switchover case above - and `with_build_status` folds the rest into the rollup:
 `Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
 hands the verdict back to the ksvc. The response carries a `build` object
 (`state`/`image`/`message`), so a failed build explains itself instead of surfacing as a
@@ -344,5 +332,24 @@ bare image-pull error. `Building` maps to HTTP `202`, like `Deploying`.
 The first build is the case that motivates the ordering: the ksvc is already applied and is
 failing to pull an image kpack has not pushed yet. Read deployment-first, every new function
 would report `Degraded` for the whole of its first build.
+
+**The rule applies to every surface that reports status, not just the rollup.** Two of them
+used to escape it, and both showed a red failure for a perfectly normal build:
+
+- The **per-site rows**. `sites[]` is read straight off each ksvc, so a response could say
+  `Building` in `overallStatus` and `Failed` - `Unable to fetch image "..."` in the `sites`
+  table directly below it. While a build is in flight a failing site now reports `Building`
+  with `error: null` (`ksvc_state.sites_with_build_status`): that pull failure *is* the
+  running build, not an independent one. Only a **running** build masks anything - a failed
+  build leaves the rows untouched, because then the image genuinely never arrives.
+- The **listing**. `GET .../functions` had no build read at all, so every new function
+  was `Degraded` on the list while being `Building` on its own GET. It now folds the same
+  way, using `BuildBackend.statuses` - one label-selected read of the local site's `Image`s
+  for the whole group, keyed by object name (`{name}-{group}`), overlapped with the ksvc
+  fan-out rather than chained onto it. A listing that cannot read kpack falls back to the
+  ksvc statuses, exactly as a single GET does.
+
+`Building` is therefore a *site* status as well as a workload one, and `GET /info` publishes
+it in both vocabularies so a client hardcodes neither.
 
 ---

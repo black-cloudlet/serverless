@@ -12,7 +12,7 @@ from api.models.common import (
     Group,
     LogsResponse,
     Name,
-    WorkloadStatusResponse,
+    WorkloadStatsResponse,
     WorkloadSummary,
 )
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
@@ -110,17 +110,14 @@ async def get_function(
     return await svc.get(name, group, user)
 
 
-@router.get("/{name}/status", response_model=WorkloadStatusResponse)
-async def get_function_status(
+@router.get("/{name}/stats", response_model=WorkloadStatsResponse)
+async def get_function_stats(
     group: Group, name: Name, user: CurrentUser, svc: FunctionDep
-) -> WorkloadStatusResponse:
-    """Get only the function's live state: rollup, per-site replicas and usage.
+) -> WorkloadStatsResponse:
+    """Get the function's live state: status, replicas and usage, per site.
 
-    The endpoint to poll. Returns the same ``overallStatus`` as the full GET -
-    build state included, so a function still being built reports ``Building`` -
-    and the per-site scale and consumption behind it, with a per-pod breakdown of
-    that consumption. None of the desired-state config: a client already holds it,
-    and it cannot change on its own.
+    The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
+    and the live numbers behind it, and none of the desired-state config.
 
     Args:
         group: The owning group (from the request path).
@@ -129,9 +126,9 @@ async def get_function_status(
         svc: The function service (injected).
 
     Returns:
-        The function's live status view.
+        The function's live stats view.
     """
-    return await svc.status(name, group, user)
+    return await svc.stats(name, group, user)
 
 
 @router.get("/{name}/logs", response_model=LogsResponse)

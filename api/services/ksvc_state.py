@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from api.models.common import BuildStatusView
+from api.models.common import BuildStatusView, SiteStatus
 
 # Israel local time, DST applied from the IANA database. `tzdata` is a
 # dependency so this resolves in slim containers with no system zoneinfo.
@@ -69,6 +69,39 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     if build.state == "Failed":
         return "Degraded"
     return overall
+
+
+def sites_with_build_status(
+    sites: list[SiteStatus], build: BuildStatusView | None
+) -> list[SiteStatus]:
+    """Apply the build-first rule to the per-site rows, not just the rollup.
+
+    :func:`with_build_status` fixes the headline while a build runs, but each site
+    row is read straight off its KSVC - and that KSVC is failing to pull an image
+    kpack has not pushed yet. Left alone the detail view says ``Building`` at the
+    top and ``Failed`` - ``Unable to fetch image ...`` in the sites table
+    immediately below it, which reads as a broken deploy during what is a normal
+    first build.
+
+    So while the build is in flight, a failing site reports ``Building`` and drops
+    the pull error: it is a symptom of the running build, not an independent
+    failure, and the build's own state is on ``build``. Only ``Building`` masks
+    anything - a ``Failed`` build leaves the rows untouched, because then the
+    image genuinely will not arrive and the site is telling the truth.
+
+    Args:
+        sites: The per-site statuses read from the KSVCs.
+        build: The local site's build status, or None if it has no build.
+
+    Returns:
+        The per-site statuses to report.
+    """
+    if build is None or build.state != "Building":
+        return sites
+    return [
+        s.model_copy(update={"status": "Building", "error": None}) if s.status == "Failed" else s
+        for s in sites
+    ]
 
 
 def extract_image(obj: dict) -> str | None:

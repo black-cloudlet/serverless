@@ -32,7 +32,7 @@ spec:
               kubernetes.io/metadata.name: {{ . }}
         {{- end }}
 ---
-# Egress: DNS resolution (openshift-dns on 53).
+# Egress: DNS resolution (openshift-dns).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -49,10 +49,12 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
       ports:
+        {{- range .Values.networkPolicy.dnsPorts }}
         - protocol: UDP
-          port: 53
+          port: {{ . }}
         - protocol: TCP
-          port: 53
+          port: {{ . }}
+        {{- end }}
 ---
 # Egress: the platform API ("our side") and the Knative control plane.
 apiVersion: networking.k8s.io/v1

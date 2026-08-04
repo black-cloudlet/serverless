@@ -34,10 +34,10 @@ from api.models.common import (
     LABEL_OFFERING,
     LogsResponse,
     PodLogs,
+    SiteStats,
     SiteStatus,
-    SiteStatusDetail,
     WorkloadResponse,
-    WorkloadStatusResponse,
+    WorkloadStatsResponse,
     WorkloadSummary,
 )
 from api.services import describe as describe_svc
@@ -677,23 +677,21 @@ class WorkloadService:
         )
         return offering.fetched_response(common, obj, spec, build)
 
-    async def status(
+    async def stats(
         self, offering: Offering, name: str, user: Principal, group: str
-    ) -> WorkloadStatusResponse:
-        """Read only what is live: the rollup, and per-site scale and usage.
+    ) -> WorkloadStatsResponse:
+        """Read a workload's live state: rollup, and per-site replicas and usage.
 
-        The poll counterpart to :meth:`get`, for a client refreshing every few
-        seconds. Same fan-out, same authorization and the same rollup, but none of
-        the desired-state reads - no file ConfigMaps and, above all, no backing
-        Secret. That is the point: the spec changes only when a client changes it,
-        so re-reading secret material on every tick buys nothing.
+        The poll counterpart to :meth:`get`. Same fan-out, authorization and
+        rollup, but none of the desired-state reads - no file ConfigMaps and no
+        backing Secret - so a client refreshing every few seconds is not pulling
+        secret material out of the cluster on a loop for config that only changes
+        when it changes it.
 
-        The build read stays, because it is not decoration. A function's
-        ``overallStatus`` is ``Building`` only because the build says so
-        (:func:`~api.services.ksvc_state.with_build_status`), and this is the
-        endpoint polled during the first build - the exact window where dropping
-        it would report ``Deploying``, then ``Degraded`` once the KSVC starts
-        failing to pull an image that does not exist yet.
+        The build is still read for a function, though it is not reported here:
+        it is what makes a running build ``Building`` instead of the ``Degraded``
+        its unpullable image would otherwise produce (docs/FUNCTIONS.md -
+        Function Status Resolution).
 
         Args:
             offering: The offering being read.
@@ -702,8 +700,7 @@ class WorkloadService:
             group: Owning group.
 
         Returns:
-            The live status view: workload-wide totals, per-site state, and the
-            per-pod usage behind each site's figure.
+            The live stats view.
 
         Raises:
             NotFoundError: If the workload exists on no reachable site.
@@ -713,37 +710,25 @@ class WorkloadService:
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
-        # One KSVC per site, kept only to authorize off (the spec is not read here).
         reps: dict[str, dict] = {}
-        # Raw per-site usage, kept beside the response objects because the workload
-        # total has to be summed from these, not from the rounded figures on them.
+        # Raw, because the workload total is summed from these rather than from
+        # the rounded figures the response carries.
         usage_by_site: dict[str, site_read.SiteUsage] = {}
 
-        def fetch(cluster: Cluster) -> SiteStatusDetail | None:
-            # A 404 means not deployed here, so omit the site rather than fail it;
-            # anything else propagates and keeps a down site visible as Degraded.
+        def fetch(cluster: Cluster) -> SiteStatus | None:
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
-                return None
+                return None  # not deployed here; omit the site rather than fail it
             reps[cluster.site] = obj
             status, revision = ksvc_state.ksvc_status(obj)
-            # Sequential for the reason spelled out in get(): both reads go to the
-            # same cluster, and the concurrency belongs at the fan-out.
+            usage_by_site[cluster.site] = site_read.site_usage(cluster, oname)
             rev = site_read.revision(cluster, revision)
-            site_usage = site_read.site_usage_detail(cluster, oname)
-            usage_by_site[cluster.site] = site_usage
-            error = None
-            if status == "Failed":
-                error = revision_failure_message(rev) or ksvc_failure_message(obj)
-            return SiteStatusDetail(
+            return SiteStatus(
                 site=cluster.site,
                 status=status,
-                revision=revision,
-                error=error,
                 replicas=ksvc_state.revision_replicas(rev),
-                usage=site_usage.total.quantities() if site_usage.total else None,
-                pods=site_usage.pods,
+                error=revision_failure_message(rev) if status == "Failed" else None,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -751,23 +736,10 @@ class WorkloadService:
         statuses = [s for s in results if s is not None]  # drop sites without it
 
         if not reps:
-            # Present on no reachable site. If a site was unreachable we can't be
-            # sure it's absent -> 503; otherwise it's genuinely gone -> 404.
-            preflight.assert_all_sites_checked(statuses, f"get status of workload '{name}'")
+            # If a site was unreachable we can't be sure it's absent -> 503.
+            preflight.assert_all_sites_checked(statuses, f"get stats of workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        # A site that could not be reached never ran `fetch`: the deployer builds
-        # its result, and the deployer deals in SiteStatus. Widen it here, because
-        # the alternative is that one down site fails the whole response with a
-        # 500 - the exact case active/active exists to survive, and the one where
-        # a client most needs to see the site that is still up.
-        statuses = [
-            s if isinstance(s, SiteStatusDetail) else SiteStatusDetail(**s.model_dump())
-            for s in statuses
-        ]
-
-        # Authorize off the local site if it has the workload, else any site that
-        # does - the labels are uniform, so one object answers it.
         obj = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
         labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
         # Hidden as a 404 so the response cannot leak that it exists; the real
@@ -776,7 +748,7 @@ class WorkloadService:
             labels.get(LABEL_OFFERING) != kind
         ):
             logger.debug(
-                "status of %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
+                "stats of %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
                 kind,
                 name,
                 user.username,
@@ -785,26 +757,16 @@ class WorkloadService:
             )
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
-        # status drives the rollup, exactly as on the full GET.
         overall = overall_status_for_sites(statuses)
-        # Read after authorizing, like get() does, so a cross-group probe cannot
-        # spend a cluster read. Folding it in here rather than in the offering:
-        # nothing else in this response is offering-specific, and both paths apply
-        # the one projection, so the two views cannot disagree on Building.
-        build = None
         if offering.has_build:
             build = await asyncio.to_thread(
                 offering.build_status, self.builder, self.deployer.local_cluster(), name, group
             )
             overall = ksvc_state.with_build_status(overall, build)
+            statuses = ksvc_state.sites_with_build_status(statuses, build)
 
-        # The platform-wide totals: what this workload is actually running and
-        # consuming, across sites. Both are null rather than partial when a site
-        # could not answer - a total is a single number a dashboard shows in large
-        # type, and one silently missing a site is worse than no number at all,
-        # because nothing about it looks wrong. The per-site entries stay, so a
-        # client can still show what the reachable sites reported.
+        # Both totals are null rather than partial when a site could not answer:
+        # a single number quietly missing a whole site still reads as authoritative.
         reads = [usage_by_site.get(s.site) for s in statuses]
         usage = None
         if all(r is not None and r.measured for r in reads):
@@ -813,15 +775,19 @@ class WorkloadService:
         if all(s.replicas is not None for s in statuses):
             replicas = sum(s.replicas for s in statuses)
 
-        return WorkloadStatusResponse(
-            name=name,
-            group=group,
-            type=kind,  # type: ignore[arg-type]
+        return WorkloadStatsResponse(
             overallStatus=overall,  # type: ignore[arg-type]
             replicas=replicas,
             usage=usage.quantities() if usage else None,
-            build=build,
-            sites=statuses,
+            sites=[
+                SiteStats(
+                    site=s.site,
+                    status=s.status,
+                    replicas=s.replicas,
+                    usage=u.total.quantities() if u and u.total else None,
+                )
+                for s, u in zip(statuses, reads, strict=True)
+            ],
         )
 
     async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
@@ -990,6 +956,14 @@ class WorkloadService:
         workload reads ``Ready``, not ``Degraded``. An unreachable site is skipped; only
         an all-down fan-out fails the call.
 
+        Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
+        Resolution): a function whose first build is still running has a KSVC that
+        cannot pull its image yet, so a listing that read the KSVC alone showed
+        every new function as ``Degraded`` for the whole of that build. The build
+        states come from one label-selected read of the local site, so the fold
+        costs a single round trip for the entire listing - overlapped with the
+        fan-out, not chained onto it.
+
         Args:
             offering: The offering being listed.
             user: The authenticated caller.
@@ -1009,7 +983,16 @@ class WorkloadService:
         def fetch(cluster: Cluster) -> list[dict]:
             return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
 
-        results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
+        listing = self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
+        # Branching on the declared capability, not on which offering this is: an
+        # offering with no build must not pay for a thread that returns {}.
+        if offering.has_build:
+            builds_read = asyncio.to_thread(
+                offering.build_states, self.builder, self.deployer.local_cluster(), group
+            )
+            results, builds = await asyncio.gather(listing, builds_read)
+        else:
+            results, builds = await listing, {}
         if all(items is None for _, items in results):
             # Same {site, message} shape as aggregate's total-failure; gather_each
             # keeps no per-site error, so message is None.
@@ -1033,7 +1016,15 @@ class WorkloadService:
                 status, _ = ksvc_state.ksvc_status(obj)
                 entry = merged.setdefault(
                     name,
-                    {"host": None, "size": None, "createdAt": None, "sites": [], "statuses": []},
+                    {
+                        # the object name, which is what a build state is keyed by
+                        "oname": oname,
+                        "host": None,
+                        "size": None,
+                        "createdAt": None,
+                        "sites": [],
+                        "statuses": [],
+                    },
                 )
                 entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
                 entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
@@ -1044,7 +1035,9 @@ class WorkloadService:
         summaries = []
         for name, entry in merged.items():
             host = entry["host"] or route_svc.host_for(name, group, self.settings.route_domain)
-            overall = overall_status(entry["statuses"])
+            overall = ksvc_state.with_build_status(
+                overall_status(entry["statuses"]), builds.get(entry["oname"])
+            )
             summaries.append(
                 WorkloadSummary(
                     name=name,

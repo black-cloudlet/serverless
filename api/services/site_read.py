@@ -8,11 +8,10 @@ interesting part, and why it differs per function rather than being uniform:
 * the **kept-values** reads (:func:`secret_data`, :func:`secret_text`) fail loud.
   Returning ``{}`` for a Secret that exists but could not be read would make a
   valid "keep" look unset and fail the update as a 400, losing a stored secret.
-* the **decoration** reads (:func:`revision`, :func:`site_usage_detail`,
+* the **decoration** reads (:func:`revision`, :func:`site_usage`,
   :func:`describe_spec`) are best-effort. A workload whose replica count or live
-  usage could not be fetched still has a status worth returning. ``site_usage_detail``
-  goes one step further and *reports* that it failed (:class:`SiteUsage.measured`),
-  because its caller sums across sites and a silent zero would understate the total.
+  usage could not be fetched still has a status worth returning. ``site_usage``
+  also reports *that* it failed, because its caller sums across sites.
 
 Every function here blocks, and is called through ``asyncio.to_thread`` or the
 deployer's fan-out.
@@ -31,7 +30,6 @@ from api.models.common import (
     ANNOTATION_HOST,
     ANNOTATION_RUNTIME,
     ANNOTATION_RUNTIME_VERSION,
-    PodUsage,
 )
 from api.services import describe as describe_svc
 from api.services import metrics as metrics_svc
@@ -190,32 +188,23 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
 
 @dataclass(frozen=True)
 class SiteUsage:
-    """One site's live usage read: whether it could be taken, and what it showed.
+    """One site's usage read: whether it could be taken, and what it showed.
 
-    ``measured`` is the distinction the rest of the best-effort reads here do not
-    need to make. They degrade to a null field on the site that failed, which is
-    visible. A cross-site *total* is not: summing over a site whose metrics API
-    did not answer produces a smaller number that still looks authoritative, so
-    the workload total needs to know the difference between "nothing running" and
-    "nobody could tell".
-
-    Attributes:
-        measured: False when the metrics API could not be read at all.
-        total: The site's summed usage; None when measured but nothing is running.
-        pods: The per-pod breakdown of ``total``.
+    ``measured`` is what a cross-site total needs and the other best-effort reads
+    here do not: they degrade to a null field on the site that failed, which is
+    visible, while a total summed over a site that did not answer is just a
+    smaller number that still looks authoritative.
     """
 
     measured: bool
     total: metrics_svc.Usage | None
-    pods: list[PodUsage]
 
 
-def site_usage_detail(cluster: Cluster, oname: str) -> SiteUsage:
-    """Best-effort live usage for one site: the total, and its per-pod breakdown.
+def site_usage(cluster: Cluster, oname: str) -> SiteUsage:
+    """Best-effort live cpu/memory summed over one site's running pods.
 
-    One PodMetrics list read projected two ways, so the breakdown costs no round
-    trip beyond what the summed figure already costs. Never raises: an unreadable
-    metrics API must not fail a status that is otherwise worth returning.
+    Never raises: an unreadable metrics API must not fail a status that is
+    otherwise worth returning.
 
     Returns:
         The site's usage, with ``measured=False`` if the read itself failed.
@@ -226,9 +215,5 @@ def site_usage_detail(cluster: Cluster, oname: str) -> SiteUsage:
             label_selector=f"serving.knative.dev/service={oname}",
         )
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-        return SiteUsage(measured=False, total=None, pods=[])
-    return SiteUsage(
-        measured=True,
-        total=metrics_svc.total_usage(items),
-        pods=metrics_svc.pod_usage(items),
-    )
+        return SiteUsage(measured=False, total=None)
+    return SiteUsage(measured=True, total=metrics_svc.total_usage(items))

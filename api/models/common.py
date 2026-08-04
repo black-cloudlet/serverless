@@ -95,7 +95,11 @@ WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded"
 # Per-site values that reach a response. SiteStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
-SITE_STATUSES = ("Ready", "Deploying", "Failed", "Terminating", "Timeout")
+# "Building" appears here for the same reason it appears in WorkloadStatus: while a
+# function's image is still being built, every site's KSVC is failing to pull an
+# image that does not exist yet, and reporting that as "Failed" describes the
+# symptom instead of the cause (docs/FUNCTIONS.md - Function Status Resolution).
+SITE_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -365,41 +369,25 @@ class ResourceUsage(BaseModel):
     memory: str | None = None  # e.g. "180Mi"
 
 
-class PodUsage(BaseModel):
-    """One replica's live consumption, as its share of a site's total.
+class SiteStats(BaseModel):
+    """One site's live state, as the stats view reports it.
 
-    ``usage`` is the same type as the per-site figure it contributes to, so the
-    breakdown and the sum are read the same way and are projected from one parse
-    (:func:`api.services.metrics.pod_usage`) - a site whose pods do not add up to
-    its total would be a bug in one place, not a disagreement between two.
-
-    Attributes:
-        pod: The pod name.
-        revision: The Knative revision the pod belongs to, if labelled - what
-            distinguishes the old replicas from the new ones mid-rollout.
-        usage: This pod's cpu/memory, summed over its user container(s).
-    """
-
-    pod: str
-    revision: str | None = None
-    usage: ResourceUsage
-
-
-class SiteStatusDetail(SiteStatus):
-    """:class:`SiteStatus` plus what it costs a cluster call to measure.
-
-    Only the status view returns this, which is what keeps the PodMetrics read
-    off the full GET entirely. ``usage`` is null when the site is scaled to zero
-    or its metrics API could not be read - the two are told apart at the workload
-    level, where an unmeasured site nulls the total rather than under-reporting it.
+    Not a :class:`SiteStatus`: that one is the full GET's row, and carries the
+    rollout detail (``revision``, ``error``) rather than what a workload is
+    consuming right now.
 
     Attributes:
-        usage: Live cpu/memory summed over this site's running pods.
-        pods: The replicas ``usage`` is the sum of.
+        site: The site name.
+        status: Per-site status (Ready/Building/Deploying/Failed/...).
+        replicas: Running pods at this site, or None if unknown.
+        usage: Live cpu/memory over those pods; None when scaled to zero or the
+            metrics API could not be read.
     """
 
+    site: str
+    status: str
+    replicas: int | None = None
     usage: ResourceUsage | None = None
-    pods: list[PodUsage] = []
 
 
 class WorkloadBase(BaseModel):
@@ -465,46 +453,28 @@ class BuildStatusView(BaseModel):
     message: str | None = None
 
 
-class WorkloadStatusResponse(BaseModel):
-    """Just a workload's live state: the rollup, and per-site scale and usage.
+class WorkloadStatsResponse(BaseModel):
+    """A workload's live state only - the endpoint to poll.
 
-    The poll view. It carries what changes on its own - status, replicas, usage -
-    and none of the desired-state config, which only changes when a client changes
-    it and which it already has from the create response or one full GET. That is
-    what lets it be read every couple of seconds without pulling the backing
-    Secret out of the cluster on a loop.
-
-    One model for both offerings, unlike the full GET: nothing here is
-    offering-specific. ``build`` is a function's state and is null for a
-    container, but it is not optional decoration - a function's ``overallStatus``
-    is only ``Building`` because the build says so
-    (:func:`api.services.ksvc_state.with_build_status`).
+    Carries what changes on its own and none of the desired-state config, which
+    a client already holds and which cannot change unless it changes it. That is
+    what lets this be read every couple of seconds without re-reading the
+    workload's backing Secret on every tick.
 
     Attributes:
-        name: The workload name.
-        group: The owning SSO group.
-        type: function or container.
-        overallStatus: The rollup a client polls on, identical to the full GET's.
-        replicas: Running pods across every site - what the workload is actually
-            scaled to platform-wide. Null if any site's scale is unknown.
-        usage: Cpu/memory across every site, summed from the raw per-site figures
-            rather than the rounded ones. Null if any site could not be measured:
-            a total that silently omits an unreachable site under-reports a
-            workload that is still running there, and this is the number a
-            dashboard puts in large type.
-        build: A function's build state; null for a container, and for a function
-            that has none.
-        sites: Per-site live state, one entry per site that has the workload.
+        overallStatus: The rollup, identical to the full GET's - ``Building``
+            included, since the build is still read even though it is not
+            reported here.
+        replicas: Running pods across every site. None if any site's is unknown.
+        usage: Cpu/memory across every site. None if any site could not be
+            measured, rather than a total quietly missing one.
+        sites: One entry per site that has the workload.
     """
 
-    name: str
-    group: str
-    type: Literal["function", "container"]
     overallStatus: WorkloadStatus
     replicas: int | None = None
     usage: ResourceUsage | None = None
-    build: BuildStatusView | None = None
-    sites: list[SiteStatusDetail] = []
+    sites: list[SiteStats] = []
 
 
 class WorkloadResponse(WorkloadBase):

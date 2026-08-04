@@ -9,38 +9,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
-- `GET /api/v1/groups/{group}/{type}/{name}/status` - a poll target that returns
-  only live state, and now the single home for live usage. Until now a client
-  watching a workload had to call the full GET, which also reads the file
-  ConfigMaps and the backing Secret to rebuild the redacted spec; on a
-  two-second refresh that pulls secret material out of the cluster on a loop for
-  config that only changes when the client changes it. The new endpoint fans out
-  the same way and returns the same `overallStatus`, plus:
-  - **workload-wide `replicas` and `usage` totals** - what the workload is
-    actually running and consuming across sites, which is the number a dashboard
-    shows in large type;
-  - per site the KSVC status, `revision`, `replicas` and `usage`;
-  - a **per-pod breakdown** of each site's usage (`sites[].pods[]`, each carrying
-    `pod`, `revision` and its own `usage`), which costs no extra cluster call
-    because the PodMetrics list already holds it and the old `sum_usage` was
-    collapsing it. The per-replica figures make a hot or about-to-OOM pod
-    visible, and their `revision` separates the old replicas from the new ones
-    mid-rollout.
+- `GET /api/v1/groups/{group}/{type}/{name}/stats` - a lightweight endpoint to
+  poll for live numbers: `overallStatus`, workload-wide `replicas` and `usage`,
+  and the same three per site. Nothing else. Until now a client watching a
+  workload had to call the full GET, which also reads the file ConfigMaps and the
+  backing Secret to rebuild the redacted spec - on a two-second refresh that
+  pulls secret material out of the cluster on a loop for config that only changes
+  when the client changes it.
 
-  Rounding happens once, at the response edge: `metrics.Usage` carries raw floats
-  and everything sums in that, so a site total agrees with its pods and a
-  workload total with its sites. A consequence worth knowing before reading the
-  JSON - **the totals need not equal the sum of the printed parts**: two pods at
-  0.5m each render `"0m"` under a site reading `"1m"`. Render `usage`; never sum
-  `pods[]` client-side. Totals are also **null rather than partial** when any site
-  could not be measured, since a figure quietly missing a whole site still reads
-  as authoritative. The build read is kept for functions: `overallStatus` is
-  `Building` only because the build says so, so dropping it would have reported a
-  normal first build as `Deploying`, then `Degraded` once the KSVC started failing
-  to pull an image that does not exist yet. No new RBAC. Note what this is not:
-  everything is still **polled**. Streaming logs, metrics and replica count over
-  SSE is the follow-up (docs/ARCHITECTURE.md - Open Questions / Future Work), and
-  `usage` can never be fresher than the metrics-server scrape either way.
+  A function's build is still read even though it is not a field here, because
+  that is what makes a running build `Building` instead of the `Degraded` its
+  not-yet-pushed image would otherwise produce - on the rollup and on the per-site
+  rows alike, matching the full GET. Usage sums each pod's user container only,
+  never the queue-proxy sidecar. Totals are summed across sites **before**
+  rounding, so they need not equal the sum of the printed per-site figures, and
+  are `null` if any site could not be measured rather than quietly missing one.
+  No new RBAC. Everything here is still polled; streaming is a separate follow-up
+  (docs/ARCHITECTURE.md - Open Questions / Future Work), and `usage` is never
+  fresher than the metrics-server scrape either way.
 - Function builds cache their layers in the registry rather than in a
   PersistentVolumeClaim. Every kpack `Image` now carries an explicit
   `spec.cache.registry.tag` at `{base}/{group}/{name}_cache`; nothing set
@@ -139,15 +125,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ### Changed
 
 - **Breaking:** the single-workload `GET` no longer returns `sites[].usage`. Live
-  usage moved to the new `/status` endpoint above, which is where a client
-  polling for it should have been looking anyway. This is not a cosmetic move:
-  usage was a PodMetrics list call **per site on every GET**, and a GET is also
-  what a client fetches to render a workload's configuration, where the number
-  was never looked at. Removing it takes one cluster round trip per site off that
-  path. `sites[].replicas` **stays** - it rides along on the Revision read the
-  per-site failure detail already needs, so it costs nothing. Clients reading
-  `sites[].usage` from the GET should call `/status`, which reports it per site,
-  per pod, and as a workload total.
+  usage moved to `/stats`, which is where a client polling for it should be
+  looking. It was a PodMetrics call **per site on every GET**, including the GETs
+  that render a workload's configuration, where the number is never read - so
+  this takes one cluster round trip per site off that path. `sites[].replicas`
+  stays: it rides along on the Revision read the per-site failure detail already
+  needs, so it costs nothing.
 
 - The build contract is renamed for what it contracts: `common/contract.py` ->
   `common/build.py`, the `Builder` protocol -> `BuildBackend`,
@@ -169,15 +152,28 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `LABEL_OFFERING` they are the values of. No behaviour change.
 ### Fixed
 
-- `/status` returned 500 when one site was unreachable - the exact failure
-  active/active exists to absorb, and the moment a client most needs to see the
-  site that is still up. A site that cannot be reached never runs the per-site
-  read: the deployer builds its result, and the deployer deals in `SiteStatus`,
-  not the usage-carrying `SiteStatusDetail` the response declares, so validation
-  rejected the mixed list. The unreachable site's status is now widened into the
-  response instead, and the workload totals go null rather than pretending it
-  contributed nothing.
-
+- DNS was blocked in the workloads namespace on OpenShift: `allow-egress-dns` opened
+  53, but a NetworkPolicy matches the destination pod's port and OpenShift's CoreDNS
+  listens on 5353. New `networkPolicy.dnsPorts`, default `[53, 5353]`.
+- Listing functions reported a normal first build as `Degraded`. The build-first
+  rule (docs/FUNCTIONS.md - Function Status Resolution) was applied only on the
+  single GET, so `GET .../functions` read the KSVC alone - and that KSVC is
+  failing to pull an image kpack has not pushed yet. The list now folds the build
+  state in exactly as the GET does, and the two can no longer disagree about the
+  same function. It costs one extra read for the whole listing, not one per
+  function: `BuildBackend.statuses` label-selects every one of a group's kpack
+  `Image`s from the local site in a single call, overlapped with the site
+  fan-out. A container listing does not make the call at all.
+- A function's per-site rows contradicted its own header while it built: the
+  header said `Building` and the `sites` table directly below said `Failed` -
+  `Unable to fetch image "..."`, which reads as a broken deploy during what is a
+  normal build. While a build is in flight a failing site now reports `Building`
+  with no error, since that pull failure is the running build rather than a
+  second, independent one; the build's own state stays on `build`. Only a
+  *running* build masks anything - a failed build leaves the rows untouched,
+  because then the image genuinely never arrives and the site is telling the
+  truth. `Building` is published in the site-status vocabulary on `/info`
+  alongside the workload one.
 - `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
   the response read `spec.path`, but `WorkloadSpec` never declared the field, so
   `parse_spec`'s `path=` was silently dropped by Pydantic and the read raised

@@ -8,12 +8,10 @@ from api.auth.deps import require_auth
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
 from api.models.common import (
-    BuildStatusView,
-    PodUsage,
     ResourceUsage,
+    SiteStats,
     SiteStatus,
-    SiteStatusDetail,
-    WorkloadStatusResponse,
+    WorkloadStatsResponse,
 )
 from api.models.container import ContainerResponse
 from api.models.function import FunctionResponse
@@ -24,35 +22,18 @@ def _model(kind, **fields):
     return cls(**fields)
 
 
-def _status(kind, name, group, build=None):
-    """A live status view: two replicas at one site, one of them mid-rollout."""
-    return WorkloadStatusResponse(
-        name=name,
-        group=group,
-        type=kind,
-        overallStatus="Building" if build else "Ready",
+def _stats(overall="Ready"):
+    """A live stats view: two replicas at one site."""
+    return WorkloadStatsResponse(
+        overallStatus=overall,
         replicas=2,
         usage=ResourceUsage(cpu="300m", memory="384Mi"),
-        build=build,
         sites=[
-            SiteStatusDetail(
+            SiteStats(
                 site="site-a",
-                status="Ready",
-                revision=f"{name}-{group}-00002",
+                status=overall,
                 replicas=2,
                 usage=ResourceUsage(cpu="300m", memory="384Mi"),
-                pods=[
-                    PodUsage(
-                        pod=f"{name}-{group}-00002-a",
-                        revision=f"{name}-{group}-00002",
-                        usage=ResourceUsage(cpu="100m", memory="128Mi"),
-                    ),
-                    PodUsage(
-                        pod=f"{name}-{group}-00001-b",
-                        revision=f"{name}-{group}-00001",
-                        usage=ResourceUsage(cpu="200m", memory="256Mi"),
-                    ),
-                ],
             )
         ],
     )
@@ -97,8 +78,8 @@ class FakeFunctions:
             "function", name, runtime="python", gitRepo="https://git/x.git", branch="main"
         )
 
-    async def status(self, name, group, user):
-        return _status("function", name, group, build=BuildStatusView(state="Building"))
+    async def stats(self, name, group, user):
+        return _stats("Building")
 
     async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
         from api.models.common import LogsResponse, PodLogs
@@ -140,8 +121,8 @@ class FakeContainers:
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
 
-    async def status(self, name, group, user):
-        return _status("container", name, group)
+    async def stats(self, name, group, user):
+        return _stats()
 
     async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
         from api.models.common import LogsResponse, PodLogs
@@ -407,41 +388,33 @@ def test_get_container_shape(client):
     assert "gitRepo" not in body and "runtime" not in body
 
 
-def test_get_container_status_is_live_state_only(client):
-    r = client.get("/api/v1/groups/team/containers/foo/status")
+def test_get_container_stats_is_live_state_only(client):
+    r = client.get("/api/v1/groups/team/containers/foo/stats")
     assert r.status_code == 200
     body = r.json()
-    assert body["name"] == "foo" and body["type"] == "container"
     assert body["overallStatus"] == "Ready"
-    # workload-wide totals, for the number a dashboard puts in large type
     assert body["replicas"] == 2
     assert body["usage"] == {"cpu": "300m", "memory": "384Mi"}
     site = body["sites"][0]
-    assert site["replicas"] == 2
-    assert site["usage"] == {"cpu": "300m", "memory": "384Mi"}
-    # the per-pod breakdown of that total, each replica tagged with its revision
-    assert [p["pod"] for p in site["pods"]] == ["foo-team-00002-a", "foo-team-00001-b"]
-    assert site["pods"][0]["usage"] == {"cpu": "100m", "memory": "128Mi"}
-    assert site["pods"][1]["revision"] == "foo-team-00001"
-    # none of the desired-state config the full GET carries
-    for field in ("env", "files", "scaling", "image", "registryUsername", "hostname"):
-        assert field not in body
+    assert site == {
+        "site": "site-a",
+        "status": "Ready",
+        "replicas": 2,
+        "usage": {"cpu": "300m", "memory": "384Mi"},
+    }
+    # nothing else: no desired-state config, and no identity echo of the path
+    assert set(body) == {"overallStatus", "replicas", "usage", "sites"}
 
 
-def test_get_function_status_reports_the_build(client):
-    # A function still being built reads Building here exactly as on the full GET;
-    # dropping the build read would have reported Deploying, then Degraded.
-    body = client.get("/api/v1/groups/team/functions/foo/status").json()
+def test_get_function_stats_reports_a_running_build(client):
+    # Building comes from the build read, which stays even though it is not a field
+    body = client.get("/api/v1/groups/team/functions/foo/stats").json()
     assert body["overallStatus"] == "Building"
-    assert body["build"] == {"state": "Building", "message": None}
+    assert body["sites"][0]["status"] == "Building"
 
 
-def test_container_status_carries_no_build(client):
-    assert client.get("/api/v1/groups/team/containers/foo/status").json()["build"] is None
-
-
-def test_status_path_name_validated_at_the_edge(client):
-    assert client.get("/api/v1/groups/team/functions/Bad_Name/status").status_code == 400
+def test_stats_path_name_validated_at_the_edge(client):
+    assert client.get("/api/v1/groups/team/functions/Bad_Name/stats").status_code == 400
 
 
 def test_get_function_logs(client):
