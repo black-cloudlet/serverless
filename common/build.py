@@ -148,16 +148,8 @@ class BuildBackend(Protocol):
     def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
         """Ask for one more build of inputs that have not changed.
 
-        The counterpart to :meth:`plan`, and the only imperative call in this
-        protocol: ``plan`` describes desired state, and re-applying desired state
-        that already matches is by design a no-op no backend rebuilds from. A
-        rebuild request is not a state change - the caller is asking for the same
-        source to be built again, against today's base image and dependencies -
-        so it cannot be expressed as one without putting a nonce in the spec and
-        rebuilding forever.
-
-        Call it *after* applying the plan, so a site that has no build objects
-        gets them (and builds) rather than being triggered into nothing.
+        The only imperative call here - re-applying matching desired state is a
+        no-op no backend rebuilds from. Call it after applying the plan.
 
         Args:
             cluster: The cluster holding the build (always the local site).
@@ -165,9 +157,8 @@ class BuildBackend(Protocol):
             group: The owning group.
 
         Returns:
-            True if a build was triggered. False when there is nothing to
-            trigger yet, which is not a failure: an Image with no build behind it
-            is already about to produce one.
+            True if a build was triggered; False when there is none to trigger
+            yet, which is not a failure - the Image is about to produce one.
         """
         ...
 

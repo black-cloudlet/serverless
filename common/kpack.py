@@ -16,13 +16,8 @@ Secret, which :mod:`api.services.manifests.secrets` builds in the shape kpack co
 
 from __future__ import annotations
 
-# kpack's own vocabulary for an out-of-band rebuild, and for finding what to
-# apply it to. The trigger lives on the latest **Build**, not on the Image:
-# kpack's image reconciler asks whether the last Build carries the annotation
-# and, if so, creates the next one (reason ``TRIGGER``). A new Build inherits
-# the *Image's* annotations, which never carry it, so one trigger produces
-# exactly one build. Putting a nonce on the Image instead would make the
-# desired state impure and rebuild on every apply (see :func:`build_image`).
+# Read by kpack off the latest Build, never the Image (docs/BUILDING.md - What
+# causes a new Build).
 BUILD_TRIGGER_ANNOTATION = "image.kpack.io/additionalBuildNeeded"
 IMAGE_LABEL = "image.kpack.io/image"
 BUILD_NUMBER_LABEL = "image.kpack.io/buildNumber"
@@ -104,10 +99,9 @@ def build_image(
             ``spec.cache``, which is not "no cache" - it takes the kpack
             install's default, a PVC per Image.
         success_history_limit: Successful Builds kpack keeps for this function.
-        failed_history_limit: Failed Builds kpack keeps for this function. Both
-            None omit the fields, which is not "unbounded" but kpack's default
-            of 10 each - and a Build holds its completed pod until it is
-            collected (docs/BUILDING.md - Build history).
+        failed_history_limit: Failed Builds kpack keeps. None omits the fields,
+            which is kpack's default of 10 each, not "unbounded"
+            (docs/BUILDING.md - Build history).
 
     Returns:
         The Image manifest dict.
@@ -128,8 +122,6 @@ def build_image(
     # needs no credential of its own.
     if cache_tag:
         spec["cache"] = {"registry": {"tag": cache_tag}}
-    # Not a nonce: a constant from configuration, identical on every apply, so
-    # it converges like the rest of the spec.
     if success_history_limit is not None:
         spec["successBuildHistoryLimit"] = success_history_limit
     if failed_history_limit is not None:
@@ -150,11 +142,7 @@ def build_image(
 
 
 def _build_number(build: dict) -> int | None:
-    """The build number kpack labelled one ``Build`` with, or None if it has none.
-
-    A label value is a string or nothing, and kpack's is a counter, so testing
-    for digits identifies the ones there is an order over.
-    """
+    """The build number kpack labelled one ``Build`` with, or None if it has none."""
     raw = ((build.get("metadata") or {}).get("labels") or {}).get(BUILD_NUMBER_LABEL)
     if not isinstance(raw, str) or not raw.isdigit():
         return None
@@ -162,19 +150,16 @@ def _build_number(build: dict) -> int | None:
 
 
 def latest_build(builds: list[dict]) -> dict | None:
-    """The most recent ``Build`` of one ``Image``, by kpack's build-number label.
+    """The highest-numbered ``Build`` of one ``Image``, or None if it has none.
 
-    Ordered on the label rather than on the creation timestamp: the timestamp has
-    one-second resolution and kpack numbers builds itself, so the number is both
-    exact and the same ordering kpack's own tooling uses. A Build without a
-    parseable number is skipped rather than guessed at.
+    Ordered on the build number, not the creation timestamp, which has only
+    one-second resolution.
 
     Args:
         builds: The Builds selected by :data:`IMAGE_LABEL` for one Image.
 
     Returns:
-        The highest-numbered Build, or None when there are none - which is the
-        normal state of an Image that has not built yet.
+        The latest Build, or None.
     """
     numbered = [(_build_number(b), b) for b in builds]
     ordered = [(number, build) for number, build in numbered if number is not None]
@@ -184,12 +169,10 @@ def latest_build(builds: list[dict]) -> dict | None:
 
 
 def trigger_patch(at: str) -> dict:
-    """The merge patch that asks kpack for one more build of the current inputs.
+    """The merge patch asking kpack for one more build, for the latest ``Build``.
 
-    Applied to the latest ``Build`` (see :data:`BUILD_TRIGGER_ANNOTATION`). The
-    value is only ever read by a human: kpack tests for the annotation's
-    *presence*, so what it holds is free to be the timestamp that explains, in a
-    ``kubectl describe``, why the next build exists.
+    kpack tests only for the annotation's presence, so the value is free to be
+    the timestamp that explains why the next build exists.
 
     Args:
         at: When the rebuild was asked for.

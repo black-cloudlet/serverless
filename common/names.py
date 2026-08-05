@@ -360,14 +360,9 @@ def image_tag(branch: str) -> str:
 def repository_of(image: str) -> str:
     """The repository half of an image reference - everything but tag and digest.
 
-    ``reg/acme/team/app:main``, ``reg/acme/team/app@sha256:...`` and
-    ``reg/acme/team/app:main@sha256:...`` all reduce to ``reg/acme/team/app``,
-    so two references can be compared for "same place" regardless of which form
-    a build or a digest resolution left behind.
-
-    The tag is split off only after the digest, and only past the last ``/``: a
-    registry host may carry a port (``reg.internal:5000/team/app``), and that
-    colon is not a tag separator.
+    So two references compare equal whatever form a build or a digest
+    resolution left behind. The tag is split off past the last ``/`` only: a
+    host may carry a port, and that colon is not a tag separator.
 
     Args:
         image: An image reference (already validated).

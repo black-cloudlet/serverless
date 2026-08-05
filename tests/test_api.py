@@ -271,7 +271,7 @@ def test_create_container_accepted(client):
 
 
 def test_rebuild_function_accepted_without_a_body(client):
-    """A rebuild carries no inputs: the ones to build with are already stored."""
+    """A rebuild carries no inputs; the ones to build with are already stored."""
     r = client.post("/api/v1/groups/team/functions/orders/rebuild")
 
     assert r.status_code == 202
@@ -284,7 +284,7 @@ def test_rebuild_function_accepted_without_a_body(client):
 
 
 def test_only_functions_can_be_rebuilt(client):
-    """A container is deployed from an image the caller built; there is nothing to build."""
+    """A container is deployed from an image the caller built."""
     assert client.post("/api/v1/groups/team/containers/orders/rebuild").status_code == 404
 
 

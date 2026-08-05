@@ -170,14 +170,11 @@ class FunctionService:
     def _rebuild_request(
         self, name: str, group: str, existing: dict, user: Principal
     ) -> BuildRequest:
-        """Reconstruct the build inputs of a deployed function, for a rebuild.
+        """Reconstruct a deployed function's build inputs, for a rebuild.
 
-        Every input comes back off the workload itself - the KSVC's annotations
-        and the ``{workload}-git`` Secret - which is the same reconstruction a
-        site that has never built the function does after a switchover
-        (docs/BUILDING.md - Reconstruction after switchover). Nothing is taken
-        from the request: a rebuild asks for the *current* definition to be built
-        again, so accepting inputs here would make it an update in disguise.
+        Read off the workload itself, never the request: the KSVC's annotations
+        and the ``{workload}-git`` Secret (docs/BUILDING.md - Reconstruction
+        after switchover).
 
         Args:
             name: The workload name.
@@ -189,8 +186,7 @@ class FunctionService:
             The build request.
 
         Raises:
-            ValidationError: If the stored state cannot describe a build - no
-                token, or missing build metadata.
+            ValidationError: If the stored state cannot describe a build.
         """
         git_url = existing.get("gitUrl")
         branch = existing.get("branch")
@@ -228,9 +224,8 @@ class FunctionService:
     ) -> FunctionResponse:
         """Validate and accept a rebuild request, scheduling the build (202).
 
-        Loads and authorizes the function synchronously, so a missing workload,
-        a missing token or a runtime that has since left the ConfigMap is an
-        immediate 404/400 rather than a background failure nobody sees.
+        Loaded and authorized synchronously, so a missing workload, a missing
+        token or a withdrawn runtime is an immediate 404/400.
 
         Args:
             group: The owning group (from the request path).
@@ -247,8 +242,6 @@ class FunctionService:
         """
         existing = await self._engine.load_existing(name, FUNCTION, user, group)
         req = self._rebuild_request(name, group, existing, user)
-        # A runtime can be removed from the ConfigMap after a function was built
-        # with it; that is a 400 now, not a build that fails minutes later.
         self._assert_runtime(req.runtime, req.version)
         background.add_task(self._engine.run, self.rebuild, group, name, user, existing)
         host = existing.get("host") or self._engine.host_for(name, None, group)
@@ -265,21 +258,17 @@ class FunctionService:
         )
 
     async def rebuild(self, group: str, name: str, user: Principal, existing: dict) -> None:
-        """Build a function's current source again (runs in the background).
+        """Build the function's current source again (runs in the background).
 
-        The image is rebuilt from the same repository, branch and runtime it
-        already has, so this is what picks up a base-image or dependency change,
-        retries a failed build, or gets a pushed commit built now rather than
-        when kpack next polls. Nothing about the workload changes, so the KSVC is
-        not written and the running revision keeps serving until the new digest
-        is rolled out (docs/BUILDING.md - Ownership: API vs Build Service).
+        Nothing about the workload changes, so the KSVC is not written and the
+        running revision keeps serving (docs/FUNCTIONS.md - Rebuilding without
+        changing anything).
 
         Args:
             group: The owning group (from the request path).
             name: The workload name.
             user: The authenticated caller.
-            existing: The workload state preloaded (and authorized) by
-                :meth:`accept_rebuild`.
+            existing: The state preloaded by :meth:`accept_rebuild`.
 
         Raises:
             ValidationError: If the stored state cannot describe a build.
@@ -435,13 +424,9 @@ class FunctionService:
                 user,
             )
             replicated, local = plan.replicated, plan.local
-            # The registry layout is configuration, not a build input, so a change to
-            # it moves where builds are pushed without anything about the function
-            # changing. An update that did not notice would leave the workload
-            # pointing at a repository nothing pushes to again - forever, since every
-            # later comparison is against the same stale value. Compared on the
-            # repository alone: the tag is the branch (already a build input above),
-            # and the deployed value may be a digest a finished build resolved.
+            # A layout change moves where builds are pushed with nothing about the
+            # function changing, so nothing else here would notice
+            # (docs/BUILDING.md - Registry layout).
             moved = repository_of(image) != repository_of(plan.tag)
             # Keep the deployed image otherwise: it may be a digest a finished build
             # resolved, and rewriting it back to the tag spawns a pointless revision.

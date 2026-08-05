@@ -158,12 +158,8 @@ def test_a_refused_delete_is_reported_as_a_warning(monkeypatch, caplog):
 
 
 def test_cleanup_follows_the_repository_prefix_the_build_pushed_under(monkeypatch):
-    """Delete addresses the same path the image reference hangs off, minus the host.
-
-    Derived separately, a layout with `build.builderRepository` set would push to
-    one repository and delete another - leaving every deleted function's content
-    behind while reporting a clean delete.
-    """
+    """Derived separately, a layout with `build.builderRepository` set would push
+    to one repository and delete another."""
     quay = _Quay()
     _run(monkeypatch, quay, _settings(organization="acme", repository="serverless/builders"))
 

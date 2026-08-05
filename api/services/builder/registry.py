@@ -35,8 +35,8 @@ def delete_function_repositories(registry: RegistryConfig, group: str, name: str
     """
     if not registry.can_delete:
         return
-    # The same path the image reference hangs off, minus the host - so the
-    # repository that is deleted is exactly the one that was pushed to.
+    # The path the image reference hangs off, minus the host, so what is deleted
+    # is what was pushed to.
     prefix = f"{registry.path}/" if registry.path else ""
     headers = {"Authorization": f"Bearer {registry.api_token}"}
     try:
