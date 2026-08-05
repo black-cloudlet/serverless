@@ -31,9 +31,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   did not answer is skipped, a running build outranks the KSVC status. Those are
   now stated against plain dicts instead of fake clusters, and `list` is 63 lines
   instead of 110. No behaviour change.
-
-### Changed
-
 - Function images and their build caches now sit under
   `build.builderRepository`, the same root the composed Builder images use:
   `{registry.url}/{registry.organization}/{build.builderRepository}/{group}/{name}`.
