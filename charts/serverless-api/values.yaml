@@ -99,8 +99,13 @@ build:
   store:
     name: serverless-store
 
-  # Builder images land in `{registry base}/{builderRepository}/{name}`. The repo
-  # must exist and be writable by the build ServiceAccount.
+  # The path segment everything the platform builds sits under, so one root
+  # covers both: Builder images at `{registry base}/{builderRepository}/{name}`
+  # and function images at `{registry base}/{builderRepository}/{group}/{name}`
+  # (reaching the API as SERVERLESS_REGISTRY__REPOSITORY). The repo must exist
+  # and be writable by the build ServiceAccount. Changing it on an install that
+  # already has functions is a migration, not a config edit
+  # (docs/BUILDING.md - Registry layout).
   builderRepository: serverless/builders
 
   # Username paired with each caller's git token. GitHub/GitLab PATs ignore it;

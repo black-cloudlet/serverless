@@ -50,6 +50,10 @@ class RegistryConfig(BaseModel):
 
     url: str = "registry.internal"
     organization: str = ""
+    # Path segment between the organization and a function's own {group}/{name},
+    # from the chart's `build.builderRepository` - the same prefix the Builder
+    # images sit under, so everything the platform pushes shares one root.
+    repository: str = ""
     # Quay OAuth token used to delete a deleted function's repositories. Not the
     # push robot - robots cannot call the management API. Absent, cleanup is
     # skipped entirely. docs/BUILDING.md - Registry cleanup on delete.
@@ -68,11 +72,24 @@ class RegistryConfig(BaseModel):
         return bool(self.delete_on_function_delete and self.api_token)
 
     @property
+    def path(self) -> str:
+        """Everything between the host and a function's own ``{group}/{name}``.
+
+        Its own property because two callers need exactly this string and must
+        not derive it separately: the image reference hangs off it, and the
+        repository *delete* addresses Quay by the same path with the host
+        removed (docs/BUILDING.md - Registry cleanup on delete). Either part
+        empty is skipped, so a flat ``{host}/{group}/{name}`` install still
+        produces no leading or doubled slash.
+        """
+        parts = [p.strip("/") for p in (self.organization, self.repository) if p.strip("/")]
+        return "/".join(parts)
+
+    @property
     def base(self) -> str:
-        """Registry host plus organization, the prefix every image ref hangs off."""
+        """Registry host plus :attr:`path`, the prefix every image ref hangs off."""
         url = self.url.strip("/")
-        org = self.organization.strip("/")
-        return f"{url}/{org}" if org else url
+        return f"{url}/{self.path}" if self.path else url
 
 
 class BuildConfig(BaseModel):

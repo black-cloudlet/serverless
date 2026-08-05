@@ -155,3 +155,27 @@ def test_a_refused_delete_is_reported_as_a_warning(monkeypatch, caplog):
     records = _records(caplog)
     assert [r.levelno for r in records] == [logging.WARNING, logging.WARNING]
     assert "not authorized" in records[0].getMessage()
+
+
+def test_cleanup_follows_the_repository_prefix_the_build_pushed_under(monkeypatch):
+    """Delete addresses the same path the image reference hangs off, minus the host.
+
+    Derived separately, a layout with `build.builderRepository` set would push to
+    one repository and delete another - leaving every deleted function's content
+    behind while reporting a clean delete.
+    """
+    quay = _Quay()
+    _run(monkeypatch, quay, _settings(organization="acme", repository="serverless/builders"))
+
+    assert sorted(quay.deleted) == [
+        "acme/serverless/builders/payments/hello",
+        "acme/serverless/builders/payments/hello_cache",
+    ]
+
+
+def test_the_prefix_skips_whichever_half_is_unset(monkeypatch):
+    """A flat install has neither, and must not produce a leading or doubled slash."""
+    quay = _Quay()
+    _run(monkeypatch, quay, _settings(repository="fns"))
+
+    assert sorted(quay.deleted) == ["fns/payments/hello", "fns/payments/hello_cache"]

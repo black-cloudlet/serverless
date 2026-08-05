@@ -40,7 +40,7 @@ the build flow, and what the API owns versus the build service.
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
 | Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
 | Registry cleanup | Function delete **deletes both repositories** through Quay's management API, with a Quay OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
-| Registry layout | `registry.url` + optional `registry.organization`, prefixing every image the chart and the API reference (BUILDING.md: Runtime Versions & Dependencies) |
+| Registry layout | `registry.url` + optional `registry.organization` + `build.builderRepository`, prefixing every image the chart and the API reference. **One** root for the Builders this platform composes and the functions it builds (BUILDING.md: Registry layout) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
 ---
@@ -196,23 +196,45 @@ Whenever a `clusterBuild.stores[].sources[].tag` is bumped, re-check that every 
 
 Registries that namespace their repositories - Harbor projects, Quay and GitLab
 organizations, Artifactory repository keys - need a path segment between the host and
-the repository. `registry.organization` supplies it, and everything derives from the
-pair:
+the repository. `registry.organization` supplies it, `build.builderRepository` adds the
+one everything the platform builds sits under, and the rest derives from those three:
 
 ```
-{registry.url}/{registry.organization}/...          <- the "registry base"
+{registry.url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
 
-  base/{build.builderRepository}/{name}             Builder tags
+  base/{name}                                       Builder tags
   base/{group}/{name}:{branch}                      function images (the API)
   base/{group}/{name}_cache:latest                  build layer cache (BUILDING.md: Build cache)
 ```
 
-Empty organization collapses this to the flat `{host}/{repository}` layout, so existing
-installs are unaffected.
+One value covers the Builders and the functions deliberately: they are pushed by the same
+credential, mirrored together, and cleaned up against the same root, so a second value
+would only be a second thing to keep in step. A function cannot collide with a Builder -
+a Builder is one path component below the base and a function is two.
 
-The stack and store images sit under the same base, but the kpack chart prefixes them
-with its own `clusterBuild.registry` - set that to the identical
-`{registry.url}/{registry.organization}` string:
+Either segment may be empty and is then skipped, so the flat `{host}/{group}/{name}`
+layout still produces no doubled slash. `RegistryConfig.path` is the single derivation:
+the image reference hangs off it and the repository *delete* addresses Quay by the same
+string with the host removed, so the repository that is deleted is the one that was
+pushed to.
+
+**Changing it later is a migration, not a config edit.** The KSVC keeps whatever reference
+it was applied with, so an install that already has functions needs, per function:
+
+1. `POST .../functions/{name}/rebuild` - re-applies the `Image` at the new tag and builds,
+   which is what puts anything in the new repository. A `spec.tag` change alone does not
+   rebuild: kpack's `CONFIG` diff covers source, env, services and resources, not the tag.
+2. any `PUT` - the update path compares the deployed repository against the computed one
+   and adopts the new reference when they differ (an ordinary config-only body will do).
+
+In that order. Reversed, the workload would point at a repository nothing has pushed to
+yet and sit in `Building` until step 1 finished. The old repositories are left behind:
+cleanup addresses the *current* layout, so nothing deletes content under the previous one.
+
+The stack and store images are *mirrored* content rather than something this platform
+builds, so they sit under the organization but **not** under `build.builderRepository`.
+The kpack chart prefixes them with its own `clusterBuild.registry` - set that to
+`{registry.url}/{registry.organization}`:
 
 ```
 {clusterBuild.registry}/...                         <- the kpack chart's prefix
@@ -616,7 +638,7 @@ twice means.
 | Event | Action |
 |-------|--------|
 | Function delete | Nothing to do *in the cluster*: the `Image` and build `ServiceAccount` are owned by the KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
-| Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{group}/{name}` and `{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
+| Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
 | Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
 
@@ -648,9 +670,14 @@ untouched function keeps its existing history until something rebuilds it.
 Deleting a function deletes its image repository and its cache repository outright:
 
 ```
-DELETE /api/v1/repository/{group}/{name}
-DELETE /api/v1/repository/{group}/{name}_cache
+DELETE /api/v1/repository/{registry.organization}/{build.builderRepository}/{group}/{name}
+DELETE /api/v1/repository/{registry.organization}/{build.builderRepository}/{group}/{name}_cache
 ```
+
+The path is `RegistryConfig.path` - the image reference with the host removed - so the
+repository deleted is exactly the one that was pushed to, and a layout change cannot make
+cleanup miss.
+
 
 This is **Quay's management API**, not the distribution API. The distribution API can only
 delete manifests (`DELETE /v2/{repo}/manifests/{digest}`), which reclaims the same bytes but
@@ -676,9 +703,9 @@ The token reaches the API pod through its own `ExternalSecret`
 it the step is skipped, so an install that never adds it is unaffected by the upgrade.
 `registry.deleteOnFunctionDelete: false` switches it off with the token still mounted.
 
-Both repository paths come from `common.names.image_repository` / `cache_repository` - the
-same two functions the build pushes through, so what cleanup deletes cannot drift from what
-was pushed. They sit beside `image_tag` because they are the same kind of rule: the
+Both repository paths come from `common.names.image_repository` / `cache_repository`,
+under `RegistryConfig.path` - the same two functions and the same prefix the build pushes
+through, so what cleanup deletes cannot drift from what was pushed. They sit beside `image_tag` because they are the same kind of rule: the
 repository half of an image reference, where `image_tag` is the tag half. They take only
 the validated `{group}`/`{name}` labels, never request input, and the call runs only for
 the function offering - a container's image was built elsewhere and is not the platform's
@@ -718,7 +745,7 @@ metadata:
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello-payments
 spec:
-  tag: registry.internal/<org>/payments/hello       # {base}/{group}/{name} (BUILDING.md: Runtime Versions & Dependencies)
+  tag: registry.internal/<org>/<repo>/payments/hello  # {base}/{group}/{name} (BUILDING.md: Registry layout)
   builder:
     kind: Builder
     name: python
@@ -729,7 +756,7 @@ spec:
       revision: 9f2c1ab…               # pushed SHA (webhook) or branch
   cache:                               # registry, not a PVC (BUILDING.md: Build cache)
     registry:
-      tag: registry.internal/<org>/payments/hello_cache:latest
+      tag: registry.internal/<org>/<repo>/payments/hello_cache:latest
   build:
     env:
       - { name: BP_CPYTHON_VERSION, value: "3.12" }
@@ -895,7 +922,8 @@ Pulled by the platform chart. Registry `ghcr.io`, repository prefix
 | `paketobuildpacks/python` | `ClusterStore` |
 
 Plus the **composed builder images** this platform *produces* - they are pushed to
-`{registry base}/serverless/builders/<lang>` by the `Builder` objects, so that repository
+`{registry base}/<lang>` by the `Builder` objects (the base already carries
+`build.builderRepository`), so that repository
 must exist and be writable by the build ServiceAccount.
 
 ### Runtime distributions - **not images**

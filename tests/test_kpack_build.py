@@ -426,7 +426,13 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-def _ksvc(image="reg/fn:old", branch="main", path="", version=None, port=None):
+# What a finished build left on the KSVC: a digest, in the repository
+# _RecordingBuilder pushes to. A fake deployed somewhere else would read as a
+# moved registry layout, which is a different test (see Registry layout).
+DEPLOYED = "reg/acme/payments/hello@sha256:" + "c" * 64
+
+
+def _ksvc(image=DEPLOYED, branch="main", path="", version=None, port=None):
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
 
@@ -698,7 +704,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert len(_applied_kind(cluster, "Image")) == 1
     # ...but the running image is untouched: it may be a digest a finished build
     # resolved, and rewriting it back to the tag would spawn a pointless revision
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
@@ -1086,7 +1092,7 @@ async def test_resending_the_same_version_is_not_a_rebuild():
         _principal(),
     )
 
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 # ------------------------------------------- the BuildBackend protocol itself
@@ -1252,7 +1258,7 @@ async def test_changing_only_the_port_does_not_rebuild():
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "site-a",
-        {"hello-payments": _ksvc()},  # deployed at reg/fn:old
+        {"hello-payments": _ksvc()},  # deployed at the digest a build resolved
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
@@ -1269,7 +1275,7 @@ async def test_changing_only_the_port_does_not_rebuild():
     )
 
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert extract_image(ksvc) == "reg/fn:old"  # NOT moved to the build tag
+    assert extract_image(ksvc) == DEPLOYED  # NOT moved to the build tag
     assert _pod_ports(cluster) == [{"containerPort": 9000}]
 
 
@@ -1682,3 +1688,116 @@ def test_the_history_limits_are_the_same_on_every_apply():
     assert first["spec"] == second["spec"]
     assert first["spec"]["successBuildHistoryLimit"] == 3
     assert first["spec"]["failedBuildHistoryLimit"] == 3
+
+
+# --------------------------------------------------------- registry layout
+
+
+def _layout_settings(**registry):
+    base = dict(url="registry.internal", organization="acme")
+    base.update(registry)
+    return _settings(registry=base)
+
+
+def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
+    """One root for everything the platform builds: the Builders and the functions.
+
+    A function cannot collide with a Builder - a Builder is one path component
+    below the base (`base/python`) and a function is two (`base/{group}/{name}`).
+    """
+    builder = _builder(_layout_settings(repository="serverless/builders"))
+
+    assert builder.image_ref(_request()) == (
+        "registry.internal/acme/serverless/builders/payments/hello:main"
+    )
+    assert builder.cache_ref(_request()) == (
+        "registry.internal/acme/serverless/builders/payments/hello_cache:latest"
+    )
+
+
+def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
+    """The prefix is optional, so an install that never sets it is unaffected."""
+    builder = _builder(_layout_settings())
+
+    assert builder.image_ref(_request()) == "registry.internal/acme/payments/hello:main"
+    assert builder.cache_ref(_request()) == "registry.internal/acme/payments/hello_cache:latest"
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("reg/acme/team/app:main", "reg/acme/team/app"),
+        ("reg/acme/team/app@sha256:" + "a" * 64, "reg/acme/team/app"),
+        ("reg/acme/team/app:main@sha256:" + "a" * 64, "reg/acme/team/app"),
+        # the host's port is not a tag separator
+        ("reg.internal:5000/team/app:main", "reg.internal:5000/team/app"),
+        ("reg.internal:5000/team/app", "reg.internal:5000/team/app"),
+    ],
+)
+def test_repository_of_ignores_the_tag_and_the_digest(image, expected):
+    from common.names import repository_of
+
+    assert repository_of(image) == expected
+
+
+async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
+    """The layout is configuration, so nothing about the function marks the move.
+
+    Left unnoticed the workload would point at a repository nothing pushes to,
+    permanently: every later comparison is against the same stale value.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    class _MovedBuilder(_RecordingBuilder):
+        def image_ref(self, req):
+            return "reg/acme/serverless/builders/payments/hello:main"
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        # deployed under the old layout, at a digest a finished build resolved
+        "site-a",
+        {"hello-payments": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
+        secrets={"hello-payments-git": stored},
+    )
+    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+        "payments",
+        "hello",
+        # every build input identical to what is stored: a config-only edit
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert extract_image(ksvc) == "reg/acme/serverless/builders/payments/hello:main"
+
+
+async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest():
+    """The move must be read off the repository alone, never the tag or digest.
+
+    Comparing whole references would make every config edit rewrite a resolved
+    digest back to the branch tag and spawn a revision for nothing.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    digest = "reg/acme/payments/hello@sha256:" + "b" * 64
+
+    class _SameLayout(_RecordingBuilder):
+        def image_ref(self, req):
+            return "reg/acme/payments/hello:main"
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a", {"hello-payments": _ksvc(image=digest)}, secrets={"hello-payments-git": stored}
+    )
+    await _function_service({"site-a": cluster}, _SameLayout()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == digest

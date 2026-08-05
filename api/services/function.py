@@ -12,7 +12,7 @@ from api.services.workloads import ApplyRequest, WorkloadService
 from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError
 from common.labels import OFFERING_FUNCTION, workload_labels
-from common.names import object_name
+from common.names import object_name, repository_of
 
 
 class FunctionService:
@@ -435,9 +435,17 @@ class FunctionService:
                 user,
             )
             replicated, local = plan.replicated, plan.local
+            # The registry layout is configuration, not a build input, so a change to
+            # it moves where builds are pushed without anything about the function
+            # changing. An update that did not notice would leave the workload
+            # pointing at a repository nothing pushes to again - forever, since every
+            # later comparison is against the same stale value. Compared on the
+            # repository alone: the tag is the branch (already a build input above),
+            # and the deployed value may be a digest a finished build resolved.
+            moved = repository_of(image) != repository_of(plan.tag)
             # Keep the deployed image otherwise: it may be a digest a finished build
             # resolved, and rewriting it back to the tag spawns a pointless revision.
-            if build_inputs_changed or token_rotated:
+            if build_inputs_changed or token_rotated or moved:
                 image = plan.tag
 
         body, code = await self._engine.apply_workload(

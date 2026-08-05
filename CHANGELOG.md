@@ -32,6 +32,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   now stated against plain dicts instead of fake clusters, and `list` is 63 lines
   instead of 110. No behaviour change.
 
+### Changed
+
+- Function images and their build caches now sit under
+  `build.builderRepository`, the same root the composed Builder images use:
+  `{registry.url}/{registry.organization}/{build.builderRepository}/{group}/{name}`.
+  One value covers both because they are pushed by the same credential,
+  mirrored together, and cleaned up against the same root; a function cannot
+  collide with a Builder, which is one path component below the base where a
+  function is two. Either prefix may be empty and is skipped, so a flat install
+  is unaffected. `RegistryConfig.path` is now the single derivation of the
+  segment between host and `{group}/{name}` - the image reference hangs off it
+  and the Quay repository delete addresses the same string with the host
+  removed, so cleanup cannot delete a different repository than the build
+  pushed to.
+
+  Changing it on an install that already has functions is a **migration**: the
+  KSVC keeps whatever reference it was applied with. Per function, rebuild first
+  (that is what puts anything in the new repository - a `spec.tag` change alone
+  does not rebuild, since kpack's `CONFIG` diff covers source, env, services and
+  resources but not the tag), then send any `PUT`. The update path now compares
+  the deployed repository against the computed one and adopts the new reference
+  when they differ; without that an untouched function would point at a
+  repository nothing pushes to permanently, because every later comparison is
+  against the same stale value. Compared on the repository alone, so a resolved
+  digest is still never rewritten back to the branch tag. Content under the old
+  layout is left behind - cleanup addresses the current one.
+
 ### Added
 
 - Every kpack `Image` now carries an explicit `successBuildHistoryLimit` /

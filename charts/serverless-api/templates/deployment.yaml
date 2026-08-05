@@ -42,6 +42,12 @@ spec:
               value: {{ .Values.registry.deleteOnFunctionDelete | quote }}
             - name: SERVERLESS_REGISTRY__ORGANIZATION
               value: {{ .Values.registry.organization | quote }}
+            # The Builders' repository is the functions' too, so both sit under
+            # one root (docs/BUILDING.md - Registry layout). Outside the
+            # build.enabled guard below: it also addresses the repository a
+            # deleted function's cleanup removes.
+            - name: SERVERLESS_REGISTRY__REPOSITORY
+              value: {{ .Values.build.builderRepository | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
