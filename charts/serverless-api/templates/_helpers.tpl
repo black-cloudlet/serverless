@@ -111,6 +111,48 @@ no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 {{ dict "runtimes" $out | toYaml }}
 {{- end -}}
 
+{{/*
+The CA-trust env vars a build phase needs, every one pointing at the mounted
+bundle. Rendered into BOTH `initContainers` and `containers` by the CA policy, so
+it lives here rather than being written twice and drifting:
+
+  {{ include "serverless-api.buildCaEnv" $certPath | nindent 18 }}
+
+Why each name is on the list:
+
+  SSL_CERT_FILE        Go's crypto/x509 and OpenSSL (so: the lifecycle, CPython)
+  GIT_SSL_CAINFO       git, which `prepare` clones with
+  NODE_EXTRA_CA_CERTS  appended to Node's built-in roots; npm inherits it
+  PIP_CERT             pip itself (== `pip install --cert`)
+  REQUESTS_CA_BUNDLE   the `requests` vendored inside pip
+  CURL_CA_BUNDLE       also read by that vendored requests, and by curl
+
+pip needs three of its own because it verifies against the **certifi bundle
+vendored inside it** - it reads neither the OS trust store nor SSL_CERT_FILE, so
+mounting the CA is not enough to make it trust an internal index. Go and Node
+need nothing beyond the two above; they read the file directly.
+
+Each of PIP_CERT / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE *replaces* the trust set
+rather than adding to it. Safe here only because the OpenShift bundle is the
+complete store, system roots included (docs/BUILDING.md - Trust: CA Injection);
+a partial bundle would silently cut off every public host.
+*/}}
+{{- define "serverless-api.buildCaEnv" -}}
+{{- $path := . -}}
+- name: SSL_CERT_FILE
+  value: {{ $path | quote }}
+- name: GIT_SSL_CAINFO
+  value: {{ $path | quote }}
+- name: NODE_EXTRA_CA_CERTS
+  value: {{ $path | quote }}
+- name: PIP_CERT
+  value: {{ $path | quote }}
+- name: REQUESTS_CA_BUNDLE
+  value: {{ $path | quote }}
+- name: CURL_CA_BUNDLE
+  value: {{ $path | quote }}
+{{- end -}}
+
 {{/* Fail fast on build config that would render unusable manifests. */}}
 {{- define "serverless-api.validateBuild" -}}
 {{- if .Values.build.enabled -}}
