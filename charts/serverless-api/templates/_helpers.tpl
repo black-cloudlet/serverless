@@ -112,16 +112,10 @@ no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 {{- end -}}
 
 {{/*
-Every ecosystem's CA-trust variable, pointed at the mounted bundle. Rendered into
-BOTH the policy's `initContainers` and `containers`, so it lives here rather than
-being written twice and drifting:
-
-  {{ include "serverless-api.buildCaEnv" $certPath | nindent 18 }}
-
-Go and git and Node read the file (SSL_CERT_FILE, GIT_SSL_CAINFO,
-NODE_EXTRA_CA_CERTS). The three pip names are the non-obvious ones: pip verifies
-against the certifi bundle vendored inside it and reads neither the OS trust
-store nor SSL_CERT_FILE (docs/BUILDING.md - Trust: CA Injection).
+CA-trust env for build pods, pointed at the mounted bundle. Rendered into both the
+policy's `initContainers` and `containers`. pip needs three names of its own: it
+verifies against its vendored certifi, not the OS trust store or SSL_CERT_FILE
+(docs/BUILDING.md - Trust: CA Injection).
 */}}
 {{- define "serverless-api.buildCaEnv" -}}
 {{- $path := . -}}

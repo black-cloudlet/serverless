@@ -12,6 +12,14 @@ image:
 
 replicaCount: 2
 
+# Extra metadata for the API Deployment and its pods. The selector is deliberately
+# left alone - it is immutable once the Deployment exists.
+deployment:
+  labels: {}
+  annotations: {}
+  podLabels: {}
+  podAnnotations: {}
+
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
   api: serverless-api
