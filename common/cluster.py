@@ -173,10 +173,15 @@ class Cluster:
     def patch(self, kind: ResourceKind, name: str, body: dict) -> dict:
         """Merge-patch one field of an existing resource.
 
-        Narrow by design: everything the platform owns is written with
-        :meth:`apply`. This is for the one thing that is not desired state,
-        annotating a kpack ``Build``. Merge patch, not strategic, which custom
-        resources do not support.
+        Deliberately narrow next to :meth:`apply`, which is how everything the
+        platform *owns* is written: a full server-side apply is create-or-update
+        by construction, where a patch 404s on an absent object. This exists for
+        the one thing that is not desired state - annotating a kpack ``Build`` to
+        ask for another build - where composing and applying the whole object
+        would mean owning a resource kpack creates.
+
+        Merge patch, not strategic: strategic merge is unavailable on custom
+        resources.
 
         Args:
             kind: The resource kind to patch.

@@ -197,8 +197,11 @@ class KpackBackend:
     def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
         """Ask kpack for one more build of the function's current inputs.
 
-        Annotates the latest ``Build``, where kpack looks for it, leaving the
-        ``Image`` a pure function of the function definition
+        Patches the annotation onto the latest ``Build``, which is where kpack
+        looks for it (:data:`~common.kpack.BUILD_TRIGGER_ANNOTATION`) and the
+        reason a rebuild leaves the ``Image`` untouched: the desired state stays
+        a pure function of the function definition, so the next ordinary apply
+        neither carries a nonce forward nor drops one and rebuilds again
         (docs/BUILDING.md - Convergence rules).
 
         Args:
@@ -207,13 +210,13 @@ class KpackBackend:
             group: The owning group.
 
         Returns:
-            True if a build was triggered; False when the Image has no build
-            yet - it is about to make one.
+            True if a build was triggered; False when the Image has no build yet
+            - it is about to make one, and there is nothing to annotate.
 
         Raises:
             Exception: If the Builds could not be listed or the patch failed.
-                Not swallowed like a status read: that would be a rebuild that
-                silently never happens.
+                Unlike a status read, this one is the whole point of the call: a
+                swallowed error is a rebuild that silently never happens.
         """
         image_name = kpack.build_object_name(object_name(name, group))
         builds = cluster.get(

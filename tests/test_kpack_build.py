@@ -426,8 +426,9 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-# What a finished build left on the KSVC, in _RecordingBuilder's repository:
-# anywhere else reads as a moved layout, which is a different test.
+# What a finished build left on the KSVC: a digest, in the repository
+# _RecordingBuilder pushes to. A fake deployed somewhere else would read as a
+# moved registry layout, which is a different test (see Registry layout).
 DEPLOYED = "reg/acme/payments/hello@sha256:" + "c" * 64
 
 
@@ -1328,8 +1329,13 @@ class _BuildCluster:
 
 
 def test_the_trigger_annotates_the_latest_build_and_leaves_the_image_alone():
-    """A nonce on the Image would look like a change on every apply and rebuild
-    forever; kpack reads the trigger off the last Build anyway."""
+    """The Image spec stays a pure function of the function definition.
+
+    kpack asks whether the *last Build* carries the annotation, so that is where
+    it goes. A nonce on the Image would look like a change on every apply and
+    rebuild forever under active/active, and dropping it again on the next
+    ordinary PUT would rebuild once more (docs/BUILDING.md - Convergence rules).
+    """
     from common.cluster import ResourceKind
 
     cluster = _BuildCluster([_build_obj(1), _build_obj(2)])
@@ -1439,8 +1445,11 @@ async def _rebuild(svc, group="payments", name="hello"):
 
 
 async def test_rebuild_builds_the_source_the_function_already_has():
-    """No inputs are accepted: annotations for the source, the workload's own
-    Secret for the token - the same reconstruction a switchover needs."""
+    """No inputs are accepted, so they are read back off the workload itself.
+
+    The same reconstruction a site that has never built the function does after a
+    switchover: annotations for the source, the workload's own Secret for the token.
+    """
     cluster = _rebuild_cluster()
     builder = _TriggeringBuilder()
 
@@ -1462,7 +1471,7 @@ async def test_rebuild_builds_the_source_the_function_already_has():
 
 
 async def test_rebuild_applies_the_build_and_then_triggers_it():
-    """Applying first is what makes a site with no Image build at all."""
+    """Order matters: applying first is what makes a site with no Image build at all."""
     from tests.test_auth_and_deployer import _applied_kind
 
     cluster = _rebuild_cluster()
@@ -1476,8 +1485,12 @@ async def test_rebuild_applies_the_build_and_then_triggers_it():
 
 
 async def test_rebuild_never_writes_the_workload():
-    """Nothing about the desired state changes, so the running revision keeps
-    serving the image it already resolved."""
+    """Nothing about the desired state changes, so nothing about it is applied.
+
+    The running revision keeps serving the image it already resolved; the new
+    digest reaches it the way one from any other kpack-started build does
+    (docs/BUILDING.md - Ownership: API vs Build Service).
+    """
     from tests.test_auth_and_deployer import _applied_kind
 
     cluster = _rebuild_cluster()
@@ -1502,8 +1515,12 @@ async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
 
 
 async def test_rebuild_on_a_site_that_runs_no_copy_applies_the_build_unowned():
-    """An ownerReference must name an owner in the same cluster and the KSVC is
-    elsewhere, so `delete` reclaims these by name."""
+    """The build belongs to the local site; the KSVC may not be there at all.
+
+    An ownerReference must name an owner in the same cluster, so there is none to
+    give. ``delete`` reclaims these by name, as it does for a function targeted
+    away from the local site.
+    """
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1578,8 +1595,11 @@ async def test_rebuild_is_accepted_as_pending_with_a_status_url():
 
 
 async def test_a_container_of_the_same_name_cannot_be_rebuilt():
-    """Both offerings share `{name}-{group}`, and the answer must not confirm
-    that something else holds the name - so it is a 404, like every other read."""
+    """``{name}-{group}`` is shared by both offerings, so the object may not be a function.
+
+    Hidden as a 404 rather than refused, matching every other read: the answer
+    must not confirm that something else holds the name.
+    """
     from fastapi import BackgroundTasks
 
     from api.models.common import Scaling
@@ -1606,8 +1626,12 @@ async def test_a_container_of_the_same_name_cannot_be_rebuilt():
 
 
 async def test_rebuild_of_a_workload_with_no_stored_source_is_rejected():
-    """The annotations are the only record of what to build, and a rebuild has no
-    body to supply one - so the caller is told what a PUT needs."""
+    """The annotations are the only record of what to build; without them there is none.
+
+    Nothing can be reconstructed and there is no body to reconstruct it from, so
+    the caller is told which inputs to send on a `PUT` rather than being handed a
+    202 that fails minutes later.
+    """
     from fastapi import BackgroundTasks
 
     from api.models.common import Scaling
@@ -1639,8 +1663,11 @@ async def test_rebuild_of_a_workload_with_no_stored_source_is_rejected():
 
 
 def test_the_image_bounds_its_own_build_history():
-    """Unset is not unbounded but kpack's default of 10 and 10, and a Build owns
-    its pod - 20 completed pods per function."""
+    """Unset is not unbounded: kpack's own default is 10 successful and 10 failed.
+
+    A Build owns its pod, so 20 per function is 20 completed pods per function -
+    invisible at ten functions, the whole namespace at three hundred.
+    """
     settings = _settings(build={"registry_secret": "reg-creds", "success_history_limit": 2})
     image = _by_kind(_manifests(_builder(settings))[1], "Image")
 
@@ -1649,7 +1676,11 @@ def test_the_image_bounds_its_own_build_history():
 
 
 def test_the_history_limits_are_the_same_on_every_apply():
-    """A value that moved per apply would be a nonce kpack rebuilds on."""
+    """A constant from configuration, so it converges like the rest of the spec.
+
+    A value that moved per apply would be a nonce, and kpack would rebuild on it
+    (docs/BUILDING.md - Convergence rules).
+    """
     builder = _builder()
     first = _by_kind(_manifests(builder)[1], "Image")
     second = _by_kind(_manifests(builder)[1], "Image")
@@ -1669,8 +1700,11 @@ def _layout_settings(**registry):
 
 
 def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
-    """One root for the Builders and the functions; a Builder is one path
-    component below the base and a function is two, so they cannot collide."""
+    """One root for everything the platform builds: the Builders and the functions.
+
+    A function cannot collide with a Builder - a Builder is one path component
+    below the base (`base/python`) and a function is two (`base/{group}/{name}`).
+    """
     builder = _builder(_layout_settings(repository="serverless/builders"))
 
     assert builder.image_ref(_request()) == (
@@ -1707,8 +1741,11 @@ def test_repository_of_ignores_the_tag_and_the_digest(image, expected):
 
 
 async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
-    """Nothing about the function marks the move, and left unnoticed it is
-    permanent - every later comparison is against the same stale value."""
+    """The layout is configuration, so nothing about the function marks the move.
+
+    Left unnoticed the workload would point at a repository nothing pushes to,
+    permanently: every later comparison is against the same stale value.
+    """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
@@ -1737,8 +1774,11 @@ async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
 
 
 async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest():
-    """Comparing whole references would rewrite a resolved digest back to the
-    branch tag on every config edit, spawning a revision for nothing."""
+    """The move must be read off the repository alone, never the tag or digest.
+
+    Comparing whole references would make every config edit rewrite a resolved
+    digest back to the branch tag and spawn a revision for nothing.
+    """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster

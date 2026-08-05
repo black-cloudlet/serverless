@@ -134,11 +134,14 @@ def apply_build_objects(
 ) -> None:
     """Apply a function's build objects on their own, outside a workload apply.
 
-    Two callers: the create/update path when the local site runs no copy of the
-    function, and the rebuild path, which never touches the KSVC.
+    Two callers, one shape: the create/update path when the local site is
+    excluded from the function's sites (the build still belongs here), and the
+    rebuild path, which re-declares the build without touching the KSVC.
 
-    Applied UNOWNED without a local KSVC to own them - an ownerReference must
-    name an owner in the same cluster - so nothing cascades and
+    Ownership follows the KSVC, and only ``oname`` can say whether there is one to
+    follow. Without it - or with a KSVC that is genuinely absent here - the
+    manifests are applied UNOWNED, which is not a choice: an ownerReference must
+    name an owner in the same cluster. Nothing then collects them, so
     :func:`delete_build_objects` removes them by name.
 
     Args:

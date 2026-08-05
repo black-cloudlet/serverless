@@ -50,8 +50,9 @@ class RegistryConfig(BaseModel):
 
     url: str = "registry.internal"
     organization: str = ""
-    # From the chart's `build.builderRepository`, so the Builders and the
-    # functions share one root (docs/BUILDING.md - Registry layout).
+    # Path segment between the organization and a function's own {group}/{name},
+    # from the chart's `build.builderRepository` - the same prefix the Builder
+    # images sit under, so everything the platform pushes shares one root.
     repository: str = ""
     # Quay OAuth token used to delete a deleted function's repositories. Not the
     # push robot - robots cannot call the management API. Absent, cleanup is
@@ -74,8 +75,12 @@ class RegistryConfig(BaseModel):
     def path(self) -> str:
         """Everything between the host and a function's own ``{group}/{name}``.
 
-        Shared by the image reference and the Quay repository delete, which
-        addresses the same path with the host removed. An empty part is skipped.
+        Its own property because two callers need exactly this string and must
+        not derive it separately: the image reference hangs off it, and the
+        repository *delete* addresses Quay by the same path with the host
+        removed (docs/BUILDING.md - Registry cleanup on delete). Either part
+        empty is skipped, so a flat ``{host}/{group}/{name}`` install still
+        produces no leading or doubled slash.
         """
         parts = [p.strip("/") for p in (self.organization, self.repository) if p.strip("/")]
         return "/".join(parts)
@@ -97,8 +102,8 @@ class BuildConfig(BaseModel):
     # "inherit" writes no `spec.cache` and takes kpack's default, a PVC per Image.
     # docs/BUILDING.md - Build cache.
     cache: Literal["registry", "inherit"] = "registry"
-    # Set explicitly: unset is kpack's own default of 10 and 10, and each Build
-    # holds a completed pod (docs/BUILDING.md - Build history).
+    # Set explicitly: unset is kpack's default of 10 and 10, and each Build holds
+    # a completed pod (docs/BUILDING.md - Build history).
     success_history_limit: int = Field(default=3, ge=1)
     failed_history_limit: int = Field(default=3, ge=1)
 

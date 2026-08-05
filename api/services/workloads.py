@@ -508,15 +508,23 @@ class WorkloadService:
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
         """Re-declare a workload's build on the local site, then ask for a build.
 
-        The one write here that leaves the KSVC alone, and local-site only: the
-        build site is always the local one (docs/BUILDING.md - Builds are local).
-        Applying before triggering is what makes it self-healing - a site with no
-        Image gets one created and builds from that.
+        The rebuild path, and the one write in the engine that leaves the KSVC
+        alone: nothing about the workload's desired state changes, so a fan-out
+        would apply an identical spec to every site to say "build again" to one
+        of them. The build site is always the local one, whether or not the
+        function runs here (docs/BUILDING.md - Builds are local).
+
+        Applying before triggering is what makes this self-healing rather than
+        merely idempotent: a site that has never built the function - the
+        post-switchover case - gets the Image created here and builds from that,
+        and :meth:`~common.build.BuildBackend.trigger` finds nothing to annotate
+        and says so.
 
         Args:
             name: The workload name.
             group: The owning group.
-            plan: The build plan to apply.
+            plan: The build plan to apply (its git Secret included, so the site
+                that builds can always clone).
 
         Returns:
             True if an existing build was triggered; False if applying the plan
