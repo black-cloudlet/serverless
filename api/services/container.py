@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
@@ -239,11 +241,51 @@ class ContainerService:
                 prev_host=existing.get("host"),
                 kept_env=existing.get("env_values"),
                 kept_files=existing.get("files_values"),
+                pull_stamp=existing.get("pull_stamp"),
             ),
             CONTAINER,
         )
         body.registryUsername = spec.registryUsername
         return body, code
+
+    async def accept_pull(
+        self, group: str, name: str, user: Principal, background
+    ) -> ContainerResponse:
+        """Validate and accept a pull request, scheduling the stamp (202).
+
+        Args:
+            group: The owning group (from the request path).
+            name: The workload name.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the stamp on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+
+        Raises:
+            ValidationError: If the workload runs a digest, which cannot get newer.
+        """
+        existing = await self._engine.load_existing(name, CONTAINER, user, group)
+        image = existing.get("image") or ""
+        if "@sha256:" in image:
+            raise ValidationError(
+                f"container '{name}' runs a digest ({image}); there is no newer image to "
+                "pull. Send a PUT with a tag to track one."
+            )
+        background.add_task(self._engine.run, self.pull, group, name)
+        return self._engine.accepted(
+            CONTAINER, name, group, existing.get("host") or "", image=image
+        )
+
+    async def pull(self, group: str, name: str) -> None:
+        """Cut a revision so Knative re-resolves the tag (runs in the background).
+
+        Args:
+            group: The owning group.
+            name: The workload name.
+        """
+        stamp = datetime.now(UTC).isoformat(timespec="seconds")
+        await self._engine.stamp_pull(name, group, stamp)
 
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
         """Get one container with live per-site status.

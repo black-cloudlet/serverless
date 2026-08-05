@@ -53,6 +53,9 @@ ANNOTATION_GIT_PATH = "serverless.platform/git-path"
 # Names of the injected CA-trust env vars, so read-back can hide them: they
 # are platform defaults, not part of the user's spec.
 ANNOTATION_INJECTED_ENV = "serverless.platform/injected-env"
+# Set by POST .../pull, on the template (what Knative diffs, so it cuts a
+# revision) and the metadata (the copy an update reads back).
+ANNOTATION_PULL_STAMP = "serverless.platform/pull-stamp"
 
 # The injected CA-bundle volume/mount name. An internal handle, filtered out
 # of read-back as it is not part of the user's spec.

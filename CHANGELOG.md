@@ -58,6 +58,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- `POST /api/v1/groups/{group}/containers/{name}/pull` - re-resolve the image
+  tag, with no request body. Knative pins a revision to the digest it resolved
+  when the revision was created, so re-pushing `orders-api:1.4.2` changed
+  nothing: a `PUT` with the same image produced no new revision, and
+  `imagePullPolicy: Always` would re-pull the digest the Deployment is already
+  pinned to. The endpoint writes one annotation - on the pod template, which is
+  what Knative diffs - so it cuts a revision that resolves the tag again, in
+  every site. Nothing else about the workload changes.
+
+  The same value is stamped on the KSVC's own metadata, and re-applied from
+  there on every update: dropping it would itself be a template change and cut a
+  second revision nobody asked for. A digest-pinned container is a `400` - there
+  is nothing newer to pull - and functions have no such endpoint, since their
+  digest reaches the workload through the build controller.
 - Every kpack `Image` now carries an explicit `successBuildHistoryLimit` /
   `failedBuildHistoryLimit`, from the new `build.history.success` /
   `build.history.failed` chart values (both **3**). Nothing set them before,
