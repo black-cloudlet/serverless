@@ -5,15 +5,18 @@ metadata:
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
-    {{- with .Values.deployment.labels }}
+    {{- with .Values.api.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- with .Values.deployment.annotations }}
+  {{- with .Values.api.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.api.replicaCount }}
+  # Deliberately only the two identity labels: a selector is immutable once the
+  # Deployment exists, so `api.podLabels` stays out of it and the pod labels
+  # remain a superset of what it already matches.
   selector:
     matchLabels:
       {{- include "serverless-api.labels" . | nindent 6 }}
@@ -21,23 +24,23 @@ spec:
     metadata:
       labels:
         {{- include "serverless-api.labels" . | nindent 8 }}
-        {{- with .Values.deployment.podLabels }}
+        {{- with .Values.api.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.deployment.podAnnotations }}
+      {{- with .Values.api.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
       containers:
         - name: {{ .Values.name }}
-          image: {{ include "serverless-api.image" . | quote }}
+          image: {{ include "serverless-api.image" (dict "root" $ "spec" .Values.api) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: {{ .Values.service.targetPort }}
+            - containerPort: {{ .Values.api.service.targetPort }}
           env:
             - name: SERVERLESS_PORT
-              value: {{ .Values.service.targetPort | quote }}
+              value: {{ .Values.api.service.targetPort | quote }}
             - name: SERVERLESS_AUTH_ENABLED
               value: "true"
             - name: SERVERLESS_BASE_DOMAIN
@@ -122,13 +125,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ .Values.service.targetPort }}
+              port: {{ .Values.api.service.targetPort }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ .Values.service.targetPort }}
+              port: {{ .Values.api.service.targetPort }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.api.resources | nindent 12 }}
       volumes:
         - name: {{ .Values.certificate.name }}
           secret:

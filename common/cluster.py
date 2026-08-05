@@ -1,20 +1,21 @@
-"""Per-site Kubernetes/OpenShift cluster client (server-side apply, get, delete).
+"""Per-site Kubernetes/OpenShift cluster client (server-side apply, get, watch, delete).
 
-Shared infrastructure: the API and a future builder service both reach a cluster
-the same way (client-cert mTLS, lazy connect), configured from the shared
+Shared infrastructure: the API and the build controller both reach a cluster the
+same way (client-cert mTLS, lazy connect), configured from the shared
 :class:`~common.config.CommonSettings`. ``ResourceKind`` is the registry of GVKs
 the platform operates on.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import Enum
 
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
 from common.config import CommonSettings, SiteConfig
-from common.errors import NotFoundError
+from common.errors import NotFoundError, ValidationError
 
 
 class ResourceKind(Enum):
@@ -170,6 +171,67 @@ class Cluster:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
             raise
 
+    def list_resources(
+        self, kind: ResourceKind, *, label_selector: str | None = None
+    ) -> tuple[list[dict], str | None]:
+        """List a kind together with the collection's ``resourceVersion``.
+
+        The version is what makes a listing resumable: a watch started from it
+        replays every change since, so a control loop can relist and then follow
+        without a gap. :meth:`get` is the same call without it.
+
+        Args:
+            kind: The resource kind to list.
+            label_selector: Label selector to narrow the listing.
+
+        Returns:
+            The objects, and the collection's resourceVersion (None if the
+            server did not report one, which leaves a watch to start from now).
+        """
+        results = self._dynamic_api(kind).get(
+            namespace=self._namespace, label_selector=label_selector, **self._opts
+        )
+        version = getattr(getattr(results, "metadata", None), "resourceVersion", None)
+        return [i.to_dict() for i in results.items], version
+
+    def watch(
+        self,
+        kind: ResourceKind,
+        *,
+        resource_version: str | None = None,
+        label_selector: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> Iterator[tuple[str, dict]]:
+        """Follow changes to a kind, yielding ``(event_type, object)`` as they arrive.
+
+        Blocking, and deliberately finite: ``timeout_seconds`` makes the server
+        close the stream, which ends the iteration. A caller relists and watches
+        again, so every pass starts from a complete picture and an expired
+        ``resource_version`` heals itself instead of stalling the loop.
+
+        The per-request read timeout is NOT applied here - a watch is idle
+        between events by design, and that timeout would tear it down.
+
+        Args:
+            kind: The resource kind to follow.
+            resource_version: Where to resume from, normally the version
+                :meth:`list_resources` returned. None starts from now.
+            label_selector: Label selector to narrow the stream.
+            timeout_seconds: How long the server holds the stream open.
+
+        Yields:
+            ``(event_type, object)`` - ADDED/MODIFIED/DELETED and the object.
+        """
+        stream = self._dynamic_api(kind).watch(
+            namespace=self._namespace,
+            resource_version=resource_version,
+            label_selector=label_selector,
+            timeout=timeout_seconds,
+        )
+        for event in stream:
+            obj = event.get("object")
+            yield str(event.get("type")), obj.to_dict() if hasattr(obj, "to_dict") else (obj or {})
+
     def patch(self, kind: ResourceKind, name: str, body: dict) -> dict:
         """Merge-patch one field of an existing resource.
 
@@ -282,3 +344,47 @@ class Cluster:
             self._api_client_obj.close()
             self._api_client_obj = None
         self._dynamic_client_obj = None
+
+
+def clusters_for(settings: CommonSettings) -> dict[str, Cluster]:
+    """One client per configured site, keyed by site name (connections stay lazy).
+
+    Args:
+        settings: Shared settings carrying the site list.
+
+    Returns:
+        ``{site_name: Cluster}``, empty when no sites are configured.
+    """
+    return {site.name: Cluster(site, settings) for site in settings.sites}
+
+
+def select_local(clusters: dict[str, Cluster], local_site: str | None) -> Cluster:
+    """The cluster this process sits in, from :func:`clusters_for`'s mapping.
+
+    ``local_site`` is matched against the site name first and the cluster name
+    second, so either spelling in the chart resolves. Falls back to the first
+    configured site.
+
+    Shared by both services because both mean the same thing by "local": the API
+    writes builds only here, and the build controller watches only here.
+
+    Args:
+        clusters: The per-site clients.
+        local_site: The configured local site (or cluster) name.
+
+    Returns:
+        The local cluster.
+
+    Raises:
+        ValidationError: If no sites are configured.
+    """
+    if not clusters:
+        raise ValidationError("no sites are configured")
+    if local_site:
+        by_site = clusters.get(local_site)
+        if by_site:
+            return by_site
+        for cluster in clusters.values():
+            if cluster.name == local_site:  # match the cluster name too
+                return cluster
+    return next(iter(clusters.values()))

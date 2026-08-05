@@ -57,7 +57,7 @@ convention = "google"
 "tests/**" = ["E501", "D", "S", "B"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "common*"]
+include = ["api*", "common*", "controller*"]
 
 [tool.setuptools.package-data]
 # Vendored Swagger UI / ReDoc assets served offline (airgapped docs).

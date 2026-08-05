@@ -11,9 +11,13 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY api ./api
 COPY common ./common
+COPY controller ./controller
 RUN pip install .
 
 EXPOSE 8080
 USER 1001
 
+# One image, two entrypoints: the build controller Deployment overrides this
+# with `python -m controller.main` (docs/BUILDING.md - Ownership). Two services
+# built, scanned and released together cannot drift in the library they share.
 ENTRYPOINT ["python", "-m", "api.main"]

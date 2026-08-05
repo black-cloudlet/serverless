@@ -1,9 +1,10 @@
 """Enforce the module layering described in ``common/__init__.py``.
 
-These assertions are about *reach*, not style. A second service - the build
-service in docs/BUILDING.md - Ownership - is meant to reuse the domain and cluster
-layers without inheriting the API's web stack, and nothing else in the suite
-would notice if an innocuous import quietly took that away.
+These assertions are about *reach*, not style. The build controller
+(docs/BUILDING.md - Digest propagation) reuses the domain and cluster layers
+without inheriting the API's web stack, and nothing else in the suite would
+notice if an innocuous import quietly took that away - it would just ship a
+controller carrying a web framework it never serves with.
 """
 
 from __future__ import annotations
@@ -64,6 +65,27 @@ def test_the_cluster_layer_pulls_in_no_web_framework(module):
     assert not (loaded & FRAMEWORKS), (
         f"{module} reaches a web framework; applying manifests does not require serving HTTP"
     )
+
+
+@pytest.mark.parametrize(
+    "module", ["controller.main", "controller.reconciler", "controller.digest"]
+)
+def test_the_build_controller_serves_no_http_and_carries_no_web_framework(module):
+    loaded = _imported_by(module)
+    assert not (loaded & FRAMEWORKS), (
+        f"{module} reaches a web framework; the controller exposes no endpoint and "
+        "should not ship one"
+    )
+
+
+def test_the_build_controller_never_imports_the_api():
+    """The two services are siblings: both use common, neither uses the other."""
+    out = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["grep", "-rn", "-e", "from api", "-e", "import api", "--include=*.py", "controller/"],
+        capture_output=True,
+        text=True,
+    )
+    assert out.stdout == "", f"controller/ imports from api/:\n{out.stdout}"
 
 
 def test_common_never_imports_the_api():

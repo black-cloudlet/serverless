@@ -19,20 +19,42 @@ clash). Call with a dict of the root context and the per-namespace labels:
 {{- end -}}
 
 {{/*
-Fully-qualified container image reference.
+The build controller's object name and selector labels. A distinct
+``app.kubernetes.io/name`` is what keeps the API's Service from selecting the
+controller's pods - the two deployments would otherwise be indistinguishable to
+it, and adding a component label to the API's existing selector is an immutable
+field change that would fail every upgrade in place.
+*/}}
+{{- define "serverless-api.controllerName" -}}
+{{ .Values.name }}-build-controller
+{{- end -}}
 
-The tag falls back to the chart's ``.Chart.AppVersion`` when ``image.tag`` is
-left empty, so a released chart pins the matching image without setting the
-version in two places: CI stamps ``appVersion`` to the git tag on a release (and
-leaves it "latest" on main), and this image tracks it automatically. An optional
-``image.registry`` is prefixed when set.
+{{- define "serverless-api.controllerLabels" -}}
+app.kubernetes.io/name: {{ include "serverless-api.controllerName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Fully-qualified image reference for one deployment. Call with the root context
+and that deployment's values:
+
+  {{ include "serverless-api.image" (dict "root" $ "spec" $.Values.api) }}
+
+Precedence, most specific first: the deployment's own ``repository``/``tag``,
+then the shared ``image`` section, then ``.Chart.AppVersion``. The appVersion
+fallback is what lets a released chart pin its images without the version being
+written in two places: CI stamps ``appVersion`` to the git tag on a release (and
+leaves it "latest" on main). The controller's repository defaults to the API's
+because they are the same image with different entrypoints.
 */}}
 {{- define "serverless-api.image" -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
-{{- with .Values.image.registry -}}
-{{ . }}/{{ $.Values.image.repository }}:{{ $tag }}
+{{- $root := .root -}}
+{{- $repo := .spec.repository | default $root.Values.api.repository -}}
+{{- $tag := .spec.tag | default $root.Values.image.tag | default $root.Chart.AppVersion -}}
+{{- with $root.Values.image.registry -}}
+{{ . }}/{{ $repo }}:{{ $tag }}
 {{- else -}}
-{{ .Values.image.repository }}:{{ $tag }}
+{{ $repo }}:{{ $tag }}
 {{- end -}}
 {{- end -}}
 

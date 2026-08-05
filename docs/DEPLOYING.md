@@ -23,6 +23,7 @@ flowchart LR
     ARGO["ArgoCD"]
     subgraph Cluster["OpenShift - each site (A and B)"]
         DEP["Deployment: serverless-api (active/active)"]
+        BC["Deployment: serverless-api-build-controller"]
         CERT["cert-manager Certificate (ACME)"]
         RBAC["Role / RoleBinding (CN user)"]
         ESOC["ExternalSecret (refs existing ClusterSecretStore)"]
@@ -30,6 +31,7 @@ flowchart LR
     GITAPP --> ARGO
     ARGO -->|renders chart from| GITHELM
     ARGO --> DEP
+    ARGO --> BC
     ARGO --> CERT
     ARGO --> RBAC
     ARGO --> ESOC
@@ -43,7 +45,10 @@ flowchart LR
   namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
   plain `env` on the Deployment), a `serverless-api-runtimes` **`ConfigMap`** holding the
   available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
-  workloads namespace (ARCHITECTURE.md: Networking & Exposure), `Deployment`, `Service`, `Route` (for the API itself, with a
+  workloads namespace (ARCHITECTURE.md: Networking & Exposure), **two `Deployment`s** - the API and the build
+  controller (BUILDING.md: Digest propagation), configured under `api` and `buildController`
+  respectively, sharing the root `image` section for registry and pull policy - a `Service`
+  and `Route` for the API alone (the controller serves nothing, with a
   configurable host/labels/annotations), `Role`/`RoleBinding` (bound to the client-cert CN
   user, in the workloads namespace), cert-manager `Certificate`, **one ESO `ExternalSecret`
   per kind of data** (each its own target Secret, referencing the pre-existing
@@ -94,6 +99,7 @@ serverless-api chart                            one release per cluster/site
 ├── ExternalSecret          ...... the Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
 ├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Chart Topology)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
+├── build-controller Deploy ...... Image watch -> ksvc digest (BUILDING.md: Digest propagation)
 └── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
 ```
 
@@ -156,18 +162,21 @@ ArgoCD, keep the engine in an earlier sync wave than serverless-api.
 
 ## RBAC
 
-The API and build service identities (per ARCHITECTURE.md: Authentication & Authorization, the cert CN user) need, in
-the workloads namespace of every cluster:
+The API and build controller share one identity (per ARCHITECTURE.md: Authentication & Authorization, the cert CN
+user) and one Role. They need, in the workloads namespace of every cluster:
 
 | Resource | Verbs | Used by |
 |----------|-------|---------|
-| `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build service (watch) |
+| `services.knative.dev` | get, list, watch, create, update, patch, delete | API (the workload), build controller (the built digest - BUILDING.md: Digest propagation) |
+| `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build controller (watch) |
 | `builds.kpack.io` | get, list, watch, patch | status resolution (FUNCTIONS.md: Function Status Resolution), log lookup, and the rebuild trigger - an annotation on the latest Build (BUILDING.md: What causes a new Build). Never create or delete: kpack owns their lifecycle |
 | `pods`, `pods/log` | get, list | per-phase build logs (BUILDING.md: Build Flow) |
 | `serviceaccounts` | get, list, create, update, patch, delete | the per-function build account (BUILDING.md: Registry & Git Credentials) |
 
 No second Role and no extra Secret rights: the git Secret is one of the workload's own
-derived Secrets, which this identity already manages.
+derived Secrets, which this identity already manages. The build controller reuses the same
+client certificate rather than minting its own - it is a subset of the API's verbs, on the
+same two resources, in the same namespace.
 
 ### Network policy for build pods
 

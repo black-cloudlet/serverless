@@ -9,6 +9,26 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **BREAKING (chart values):** the chart now renders two Deployments, so the
+  per-deployment values moved into a section each. `replicaCount`, `resources`,
+  `service`, `route`, `deployment.*` and `image.repository`/`image.tag` are now
+  under `api`, and the build controller's equivalents under `buildController`;
+  both take the same `labels`/`annotations` (Deployment) and `podLabels`/
+  `podAnnotations` (pods), and neither touches the selector, which is immutable
+  once the Deployment exists. The root `image`
+  section keeps `registry`, `tag` and `pullPolicy`, so a mirrored install still
+  overrides those once for both. `buildController.repository` is empty by
+  default and falls back to the API's - they are one image with two entrypoints.
+  Existing values files need the keys re-nested; nothing else changed shape.
+- `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
+  They were only ever annotations, but the runtime import meant `common.logging`
+  - which reads the request-id context var from there - pulled a web framework
+  in behind every log line, and so did anything that logged. `common/__init__.py`
+  already claimed logging imported no framework; now it does not. The layering
+  test covers the controller's modules, so this cannot come back silently.
+- `Deployer` no longer has its own copy of "build a client per site" and "which
+  of these is local"; both are `common.cluster.clusters_for` / `select_local`,
+  which the build controller needs to mean exactly the same thing by.
 - `api/services/` is grouped by responsibility instead of being a flat directory
   of 22 modules: `manifests/` builds what gets applied, `sites/` talks to the
   clusters, `state/` interprets what came back, and `builder/` covers the
@@ -58,6 +78,30 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **The build controller** (`controller/`, `python -m controller.main`), a second
+  Deployment that closes the last gap in the build path: a finished build now
+  reaches the running function. It watches kpack `Image` objects in the local
+  cluster and applies each `status.latestImage` to that function's Knative
+  Service in *every* site. Nothing in a request/response path could do this -
+  `STACK` and `BUILDPACK` rebuilds (the CVE patches kpack was chosen for) fire
+  with nobody asking - which is why it is a loop and not an endpoint.
+
+  One pass is a full relist followed by a watch resumed from it, so a dropped
+  stream or an expired `resourceVersion` costs one extra relist rather than a
+  function stuck on an old digest; `buildController.resyncSeconds` (300) is both
+  the watch's lifetime and the relist interval, because they are the same
+  number. It composes no KSVC - the API owns that spec and the controller owns
+  one field of it - so it applies the live object with the image replaced,
+  stripped of the metadata the server owns and of any pinned revision name.
+  Three conditions stop a write: the digest is already deployed, the workload is
+  not a function, or the digest is in a different repository than the KSVC's
+  current reference (an `Image` left under a previous registry layout must not
+  pull a workload backwards). No leader election, by the same convergence rules
+  as every other writer.
+
+  It runs the API's image with a different entrypoint and the same client
+  certificate: one build cannot drift from the other in the library they share,
+  and its verbs are a subset of the Role the API already holds.
 - Every kpack `Image` now carries an explicit `successBuildHistoryLimit` /
   `failedBuildHistoryLimit`, from the new `build.history.success` /
   `build.history.failed` chart values (both **3**). Nothing set them before,

@@ -61,7 +61,7 @@ jobs:
           python-version: ${{ needs.version.outputs.python }}
           cache: pip
       - run: pip install -e ".[dev]"
-      - run: pytest -q --cov=api --cov=common --cov-report=term-missing --cov-fail-under=90
+      - run: pytest -q --cov=api --cov=common --cov=controller --cov-report=term-missing --cov-fail-under=90
 
   security:
     needs: version

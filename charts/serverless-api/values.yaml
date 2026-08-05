@@ -2,23 +2,93 @@ global:
   baseDomain: example.com
   site: example
 
+# Base name for everything the chart creates. The build controller's objects are
+# named `{name}-build-controller`.
 name: serverless-api
 
+# Shared by both deployments, so a mirrored install overrides the registry and
+# the pull policy once. Repository and per-deployment overrides are in `api` and
+# `buildController` below.
 image:
   registry: registry.internal
-  repository: serverless/serverless-api
-  tag: "" 
+  # Empty takes the chart's appVersion, so a released chart pins its own images.
+  tag: ""
   pullPolicy: IfNotPresent
 
-replicaCount: 2
+# The REST API (docs/ARCHITECTURE.md). The only deployment clients reach, hence
+# the Service and Route.
+api:
+  repository: serverless/serverless-api
+  # Overrides image.tag for this deployment only; normally left empty.
+  tag: ""
+  replicaCount: 2
+  # Extra metadata: `labels`/`annotations` on the Deployment, `podLabels`/
+  # `podAnnotations` on its pods (sync waves, scrape hints, cost tags). The
+  # selector is left alone - it is immutable once the Deployment exists.
+  labels: {}
+  annotations: {}
+  podLabels: {}
+  # podAnnotations:
+  #   prometheus.io/scrape: "true"
+  podAnnotations: {}
 
-# Extra metadata for the API Deployment and its pods. The selector is deliberately
-# left alone - it is immutable once the Deployment exists.
-deployment:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  service:
+    portName: http
+    targetPort: 8080
+    port: 80
+
+  # The OpenShift Route exposing the API.
+  route:
+    # -- Defaults to serverless.{global.baseDomain}.
+    host: ""
+    labels: {}
+    # annotations:
+    #   haproxy.router.openshift.io/timeout: 60s
+    annotations: {}
+
+# The build controller: watches kpack Images in THIS cluster and rolls each
+# finished build's digest onto the function's Knative Service in every site
+# (docs/BUILDING.md - Digest propagation). It serves no HTTP, so it has no Service and no
+# Route, and it needs no Route to be reachable - nothing calls it.
+buildController:
+  # Nothing to propagate where kpack is not installed, so `build.enabled: false`
+  # with this on is a render-time error rather than a controller with no read on
+  # `images.kpack.io`.
+  enabled: true
+  # Empty runs the API's image: one build, two entrypoints. Set it only for an
+  # install that publishes the controller as its own image.
+  repository: ""
+  tag: ""
+  # One is enough. More is safe but redundant - replicas converge on the same
+  # desired state rather than racing, which is why there is no leader election
+  # (docs/BUILDING.md - Convergence rules).
+  replicaCount: 1
   labels: {}
   annotations: {}
   podLabels: {}
   podAnnotations: {}
+
+  # A watch and an occasional apply; far lighter than the API.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # How long each watch is held open. It doubles as the full-relist interval:
+  # the stream ending is what starts the next resync, so nothing is missed if an
+  # event is dropped.
+  resyncSeconds: 300
 
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
@@ -338,28 +408,6 @@ externalSecrets:
         - secretKey: SERVERLESS_REGISTRY__API_TOKEN
           key: cloudlet/platforms/serverless
           property: registry-api-token
-
-service:
-  portName: http
-  targetPort: 8080
-  port: 80
-
-# The OpenShift Route exposing the API.
-route:
-  # -- Defaults to the operator-generated host.
-  host: ""
-  labels: {}
-  # annotations:
-  #   haproxy.router.openshift.io/timeout: 60s
-  annotations: {}
-
-resources:
-  requests:
-    cpu: 250m
-    memory: 512Mi
-  limits:
-    cpu: "1"
-    memory: 512Mi
 
 # Default-deny NetworkPolicies for workload pods. Verify the namespace names and
 # CIDRs match your cluster.

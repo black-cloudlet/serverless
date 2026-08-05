@@ -1,7 +1,7 @@
 # Building - kpack + Cloud Native Buildpacks
 
 How source becomes an image: buildpack topology, runtime versions, credentials,
-the build flow, and what the API owns versus the build service.
+the build flow, and what the API owns versus the build controller.
 
 ## Contents
 
@@ -13,6 +13,7 @@ the build flow, and what the API owns versus the build service.
 - [Registry & Git Credentials](#registry--git-credentials)
 - [Build Flow](#build-flow)
 - [Ownership: API vs Build Service](#ownership-api-vs-build-service)
+- [Digest propagation](#digest-propagation)
 - [Active/Active Behaviour](#activeactive-behaviour)
 - [Lifecycle & Cleanup](#lifecycle--cleanup)
 - [Sample Manifests](#sample-manifests)
@@ -32,7 +33,7 @@ the build flow, and what the API owns versus the build service.
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
 | Image CR writer | The **API** (POST / PUT / build / webhook) |
-| Digest propagation | The **build service** watches `status.latestImage` and updates the ksvc in *all* sites |
+| Digest propagation | The **build controller**, its own Deployment, watches `status.latestImage` in the local cluster and applies the ksvc with the new digest to *all* sites (BUILDING.md: Digest propagation) |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
 | Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
@@ -493,7 +494,7 @@ Two components, split by execution model:
 | Component | Path | Responsibility |
 |-----------|------|----------------|
 | **API** | request/response | On POST / PUT / build / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
-| **Build service** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites. |
+| **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites (BUILDING.md: Digest propagation). |
 
 The watch loop does not fit a request/response API, and the shared library already
 anticipates this split (`common/cluster.py`: *"the API and a future builder service both
@@ -540,9 +541,69 @@ back to the tag would spawn a pointless revision.
 composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
 without inventing a spec change (FUNCTIONS.md: Building again without changing anything).
 
-Still to come, and deliberately out of scope for the current implementation: the build
-service's watch loop, and the per-function webhook endpoint that pins a pushed SHA to
-`spec.source.git.revision` (`BuildRequest.revision` already carries it).
+Still to come, and deliberately out of scope for the current implementation: the
+per-function webhook endpoint that pins a pushed SHA to `spec.source.git.revision`
+(`BuildRequest.revision` already carries it).
+
+---
+
+## Digest propagation
+
+The `Image` says what to build; `status.latestImage` says what was built. Nothing in a
+request/response path can observe the second - a `STACK` or `BUILDPACK` rebuild fires with
+nobody asking (BUILDING.md: What causes a new Build) - so a control loop closes the gap.
+
+`controller/` is that loop, in its own Deployment (`{name}-build-controller`), running the
+API's image with a different entrypoint. One image means the two services cannot drift in
+the library they share; separate Deployments mean a watch loop and an HTTP API scale and
+restart on their own terms.
+
+### One pass
+
+```
+list Images (local)  ──►  reconcile each  ──►  watch from that resourceVersion
+      ▲                                              │
+      └──────────────  stream ends (timeout)  ───────┘
+```
+
+Event-driven, without depending on having *seen* every event. A dropped connection or an
+expired `resourceVersion` costs one extra relist, not a function stuck on an old digest.
+`buildController.resyncSeconds` (default 300) is both the watch's lifetime and, therefore,
+the relist interval - one knob, because they are the same number.
+
+Reads are **local only**: a function's `Image` exists in exactly one cluster, the one that
+built it (BUILDING.md: Active/Active Behaviour). Writes go to **every** site, because the
+registry is shared and a site that only runs the workload pulls what this site pushed.
+
+### What it writes
+
+The controller does **not** compose a KSVC. The API owns that spec; the controller owns one
+field of it. So it applies the *live* object with the image replaced - a full server-side
+apply, like every other write path (BUILDING.md: Active/Active Behaviour), of an object
+that has been stripped of the metadata the server owns (`managedFields`, `resourceVersion`,
+`uid`, …) and of any pinned `spec.template.metadata.name`, which Knative would reject.
+
+Three things stop a write, and each is a different mistake:
+
+| Condition | Why it is left alone |
+|---|---|
+| The KSVC already runs that digest | The loop's normal outcome, and why a resync costs nothing |
+| It is not labelled `offering: function` | A container that reused a deleted function's name must not inherit its image |
+| The digest is in another **repository** | The reference is desired state the API writes and only the digest half is the controller's; an `Image` under a previous layout (BUILDING.md: Registry layout) would otherwise pull the workload backwards |
+
+### No leader election
+
+Two replicas - or two sites' controllers reaching the same conclusion - apply the same
+desired state, and a server-side apply of identical content is a no-op that produces no
+Knative revision. Same convergence rules as every other writer (BUILDING.md: Convergence
+rules); `buildController.replicaCount` above 1 is safe, just redundant.
+
+The exception is the **orphaned `Image`** case (BUILDING.md: Accepted consequences). A
+previously-active cluster keeps rebuilding functions it no longer serves, and its
+controller would keep publishing those digests, so the two sites' controllers alternate
+digests and each swap rolls a Knative revision. Repositories match, so the guard above does
+not catch it. The remedy is the one already documented for the orphans themselves - the
+periodic prune (BUILDING.md: Lifecycle & Cleanup) - not a second mechanism here.
 
 ---
 
@@ -1085,14 +1146,11 @@ Either form is attached per build through `spec.build.services`, alongside the C
    their upstream paths (enabling a single `BP_DEPENDENCY_MIRROR`), or must per-dependency
    `dependency-mapping` bindings be generated from each `buildpack.toml`? The former
    removes a regeneration step on every buildpackage bump.
-3. **Build service packaging** - separate Deployment in this chart, or a second container
-   in the API pod? A watch loop and an HTTP API have different scaling and restart
-   characteristics. *Default if undecided: separate Deployment, single replica.*
-4. **Prune cadence** (BUILDING.md: Lifecycle & Cleanup) - periodic reconcile, or triggered explicitly on switchover?
+3. **Prune cadence** (BUILDING.md: Lifecycle & Cleanup) - periodic reconcile, or triggered explicitly on switchover?
    *Default if undecided: periodic.*
-5. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
+4. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
    trees (node_modules, Go module graphs) may need explicit limits.
-6. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
+5. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
    cache repository does not accumulate tags; superseded blobs are the registry's to
    reclaim. Whether the registry's own GC settles this, or the periodic prune has to,
    depends on the registry.
