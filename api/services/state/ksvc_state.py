@@ -1,15 +1,4 @@
-"""Reading state out of Knative objects the caller already holds.
-
-Pure: every function here takes a Kubernetes object as a plain dict and returns
-a value. Nothing reaches a cluster, which is what separates this module from
-:mod:`api.services.sites.site_read` - that one fetches, this one interprets what was
-fetched. It is also why these are the cheapest rules in the service to test:
-hand them a dict, assert on the answer.
-
-The dicts are API responses, so every level is read defensively (:func:`dig`) -
-a Knative object that has not been reconciled yet is missing most of what a
-reconciled one has, and that is normal, not an error.
-"""
+"""Reading state out of Knative objects the caller already holds."""
 
 from __future__ import annotations
 
@@ -28,14 +17,6 @@ def dig(obj: dict, *path: str, default=None):
 
     Replaces the repeated ``(d.get(k, {}) or {})`` chains used to read Kubernetes
     objects defensively.
-
-    Args:
-        obj: The dict to walk.
-        path: The successive keys to follow.
-        default: Returned if any level is missing or not a dict.
-
-    Returns:
-        The nested value, or ``default``.
     """
     cur = obj
     for key in path:
@@ -48,20 +29,7 @@ def dig(obj: dict, *path: str, default=None):
 
 
 def with_build_status(overall: str, build: BuildStatusView | None) -> str:
-    """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md).
-
-    The build is checked FIRST: a function whose image does not exist yet is not
-    broken, but its KSVC is failing to pull one, which would read as ``Degraded`` for
-    a whole normal first build. A failed build is the honest cause of that same
-    symptom, so it does report ``Degraded``, with the reason on ``build.message``.
-
-    Args:
-        overall: The rollup of the per-site KSVC statuses.
-        build: The local site's build status, or None if it has no build.
-
-    Returns:
-        The status to report.
-    """
+    """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md)."""
     if build is None:
         return overall
     if build.state == "Building":
@@ -74,28 +42,7 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
 def sites_with_build_status(
     sites: list[SiteStatus], build: BuildStatusView | None
 ) -> list[SiteStatus]:
-    """Apply the build-first rule to the per-site rows, not just the rollup.
-
-    :func:`with_build_status` fixes the headline while a build runs, but each site
-    row is read straight off its KSVC - and that KSVC is failing to pull an image
-    kpack has not pushed yet. Left alone the detail view says ``Building`` at the
-    top and ``Failed`` - ``Unable to fetch image ...`` in the sites table
-    immediately below it, which reads as a broken deploy during what is a normal
-    first build.
-
-    So while the build is in flight, a failing site reports ``Building`` and drops
-    the pull error: it is a symptom of the running build, not an independent
-    failure, and the build's own state is on ``build``. Only ``Building`` masks
-    anything - a ``Failed`` build leaves the rows untouched, because then the
-    image genuinely will not arrive and the site is telling the truth.
-
-    Args:
-        sites: The per-site statuses read from the KSVCs.
-        build: The local site's build status, or None if it has no build.
-
-    Returns:
-        The per-site statuses to report.
-    """
+    """Apply the build-first rule to the per-site rows, not just the rollup."""
     if build is None or build.state != "Building":
         return sites
     return [
@@ -125,11 +72,7 @@ def creation_time(obj: dict) -> datetime | None:
 
 
 def ksvc_status(obj: dict) -> tuple[str, str | None]:
-    """Map a KSVC's Ready condition to a (status, revision) pair.
-
-    Returns:
-        ``("Ready"|"Failed"|"Deploying"|"Terminating", revision_name_or_None)``.
-    """
+    """Map a KSVC's Ready condition to a (status, revision) pair."""
     status = dig(obj, "status", default={}) or {}
     conditions = status.get("conditions", []) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)
@@ -149,13 +92,7 @@ def ksvc_status(obj: dict) -> tuple[str, str | None]:
 
 
 def ksvc_failure_message(obj: dict) -> str | None:
-    """The Knative Ready condition's failure reason/message, when it failed.
-
-    Returns the human-readable ``message`` (falling back to the ``reason`` code)
-    of a KSVC's ``Ready`` condition when its status is ``False`` - the rollout
-    failure detail (RevisionFailed, image-pull error, ...) to surface as the
-    per-site ``error``. None when Ready isn't False or carries no detail.
-    """
+    """The Knative Ready condition's failure reason/message, when it failed."""
     conditions = dig(obj, "status", "conditions", default=[]) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)
     if not ready or ready.get("status") != "False":
@@ -169,13 +106,7 @@ def revision_replicas(rev: dict | None) -> int | None:
 
 
 def revision_failure_message(rev: dict | None) -> str | None:
-    """The most specific failure detail from a Revision's conditions, if failing.
-
-    A Revision reports the aggregate ``Ready`` condition plus the sub-conditions
-    feeding it. A failing sub-condition names the real cause (image pull, crash,
-    quota), so it is preferred over the generic aggregate; then any failing
-    condition's message, then its reason code.
-    """
+    """The most specific failure detail from a Revision's conditions, if failing."""
     conditions = dig(rev, "status", "conditions", default=[]) or []
     failing = [c for c in conditions if c.get("status") == "False"]
     if not failing:

@@ -1,22 +1,4 @@
-"""Shared workload engine: build manifests once, fan out to all sites.
-
-Offering-agnostic. FunctionService and ContainerService compose this engine and
-add only the offering-specific prep (build-from-Git vs image + pull secret);
-apply, host/absence checks, access control and get/delete all live here.
-
-What lives here is the *orchestration* - which sites to visit, in what order,
-and what a partial answer means. Everything it orchestrates was pulled out to be
-readable and testable on its own:
-
-* :mod:`api.services.manifests` - build what gets applied (pure)
-* :mod:`api.services.sites`     - fan out, and write/read one site
-* :mod:`api.services.state`     - interpret what came back (pure)
-* :mod:`api.services.builder`   - the function image build
-
-The ``assert_*``/``host_for``/``validate_spec`` methods below are thin
-delegations to :mod:`api.services.sites.preflight`, kept on the engine because
-that is the object the offering services and the routers hold.
-"""
+"""Shared workload engine: build manifests once, fan out to all sites."""
 
 from __future__ import annotations
 
@@ -71,12 +53,7 @@ logger = get_logger(__name__)
 
 
 def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
-    """Log a denied read and return the 404 that hides it.
-
-    Denied and absent are the same answer to the caller, so the response cannot
-    leak that the workload exists; the real reason goes to the log, where
-    denied-vs-absent stays debuggable.
-    """
+    """Log a denied read and return the 404 that hides it."""
     labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
     logger.debug(
         "%s %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
@@ -92,53 +69,7 @@ def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -
 
 @dataclass
 class ApplyRequest:
-    """Everything one apply needs, as a value instead of a signature.
-
-    :meth:`WorkloadService.apply_workload` took twenty-five keyword arguments, and
-    the reason it could is that they were the *union* of both offerings' needs -
-    a container passed five dead build-metadata nulls, a function
-    passed a dead pull-secret manifest. Bundling them does not by itself fix
-    that, but it puts the whole input in one place where the offering-specific
-    tail is visible as a group rather than as more parameters.
-
-    Attributes:
-        name: Workload name.
-        group: Owning group.
-        user: The authenticated caller.
-        image: The image (or built tag) to deploy.
-        env: Env vars to resolve onto the workload.
-        files: File mounts to resolve onto the workload.
-        scaling: Autoscaling settings.
-        size: Resource t-shirt size.
-        hostname: Optional custom host; None takes the default.
-        sites: Target site names, or None for all.
-        port: The container port to stamp. Always set - both offerings default
-            it to 8080 rather than leaving it implicit.
-        created: True for a create - enables the absence check and the
-            rollback of a half-applied workload, and picks the success status.
-        pull_secret_name: Name of the image-pull Secret the KSVC references.
-        pull_secret_manifest: The pull Secret to apply, when this offering
-            creates one (a container's; a function's is the chart's).
-        prev_host: The host the workload currently uses (update only); when it
-            differs from the resolved host, the old DomainMapping is retired so
-            the old host doesn't stay claimed.
-        kept_env: Decoded existing env-Secret values, so a secret env var sent
-            without a value keeps its stored value (update only).
-        kept_files: Decoded existing files-Secret values, so a secret file sent
-            without content keeps its stored content (update only).
-        extra_secrets: Owned Secrets applied to every site (the function's git
-            token). Not in the managed prune set, so omitting one keeps the
-            stored copy.
-        local_resources: Owned manifests applied to the local site only (the
-            function's Image and build ServiceAccount). Fanning them out would
-            race two sites to push the same tag.
-        runtime: Function runtime, stamped as an annotation.
-        version: Requested language version, stamped as an annotation. None
-            means the caller took the platform default.
-        git_url: Function source repo, stamped as an annotation.
-        branch: Function source branch, stamped as an annotation.
-        path: Function source sub-directory, stamped as an annotation.
-    """
+    """Everything one apply needs, as a value instead of a signature."""
 
     name: str
     group: str
@@ -172,13 +103,7 @@ class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
     def __init__(self, settings: Settings, deployer: Deployer, builder: BuildBackend):
-        """Initialize the engine.
-
-        Args:
-            settings: Global settings.
-            deployer: The multi-site fan-out helper.
-            builder: The function image build backend.
-        """
+        """Initialize the engine."""
         self.settings = settings
         self.deployer = deployer
         self.builder = builder
@@ -188,10 +113,6 @@ class WorkloadService:
 
         Admins may act for any group. The group is caller-supplied, so this is
         checked on every entry point.
-
-        Args:
-            user: The authenticated caller.
-            group: The group the request targets.
 
         Raises:
             ForbiddenError: If ``user`` is not a member of ``group`` (and not an
@@ -253,18 +174,7 @@ class WorkloadService:
     def accepted(
         self, offering: Offering, name: str, group: str, host: str, **extra
     ) -> WorkloadResponse:
-        """Build the Pending 202 body returned by accept/accept_update.
-
-        Args:
-            offering: The offering being deployed.
-            name: Workload name.
-            group: Owning group.
-            host: The resolved external host.
-            **extra: Offering-specific fields echoed back (secrets redacted).
-
-        Returns:
-            A response with ``overallStatus="Pending"`` and a ``statusUrl``.
-        """
+        """Build the Pending 202 body returned by accept/accept_update."""
         return offering.response_model(
             name=name,
             group=group,
@@ -280,10 +190,6 @@ class WorkloadService:
         """Run background work, logging (not raising) any failure.
 
         Failures surface to the client via status polling, not the caller.
-
-        Args:
-            fn: The coroutine function to run (e.g. create/update).
-            *args: Positional arguments passed to ``fn``.
         """
         try:
             await fn(*args)
@@ -293,25 +199,7 @@ class WorkloadService:
     async def accept_create(
         self, *, offering: Offering, group: str, spec, user: Principal, background, work, **extra
     ) -> WorkloadResponse:
-        """Run a create's synchronous pre-flight, then schedule the deploy (202).
-
-        Shared by both offerings: validate the spec and check the host is free and the
-        name unused, so bad input or a conflict is an immediate 400/403/409/503, then
-        queue the deploy and return the Pending 202.
-
-        Args:
-            offering: The offering being created.
-            group: The owning group (from the request path).
-            spec: The create request (carries name/sites/hostname/env/files).
-            user: The authenticated caller.
-            background: FastAPI background tasks to schedule the deploy on.
-            work: The offering's background create coroutine, run as
-                ``work(group, spec, user)``.
-            **extra: Offering-specific fields echoed onto the accepted body.
-
-        Returns:
-            A Pending response with a ``statusUrl`` to poll.
-        """
+        """Run a create's synchronous pre-flight, then schedule the deploy (202)."""
         self.assert_group(user, group)
         targets = self.deployer.resolve_targets(spec.sites)
         host = self.host_for(spec.name, spec.hostname, group)
@@ -337,30 +225,7 @@ class WorkloadService:
         pre_check=None,
         **extra,
     ) -> WorkloadResponse:
-        """Run an update's synchronous pre-flight, then schedule the deploy (202).
-
-        Loads and authorizes the existing workload, validates the spec, and - since the
-        host can change on update - checks the new host is free or already this
-        workload's, all synchronously. The loaded state is passed through so the
-        background work need not re-fetch it.
-
-        Args:
-            offering: The offering being updated.
-            group: The owning group (from the request path).
-            name: The workload name.
-            spec: The update request.
-            user: The authenticated caller.
-            background: FastAPI background tasks to schedule the deploy on.
-            work: The offering's background update coroutine, run as
-                ``work(group, name, spec, user, existing)``.
-            pre_check: Optional offering-specific ``(spec, existing) -> None``
-                validation run against the loaded state, so a check that needs the
-                stored state (e.g. a registry-username change) is a synchronous 400.
-            **extra: Offering-specific fields echoed onto the accepted body.
-
-        Returns:
-            A Pending response with a ``statusUrl`` to poll.
-        """
+        """Run an update's synchronous pre-flight, then schedule the deploy (202)."""
         existing = await self.load_existing(name, offering, user, group)
         if pre_check is not None:
             pre_check(spec, existing)  # offering-specific sync validation (may 4xx)
@@ -385,20 +250,7 @@ class WorkloadService:
     async def apply_workload(
         self, req: ApplyRequest, offering: Offering
     ) -> tuple[WorkloadResponse, int]:
-        """Build the manifests once and apply the workload to every target site.
-
-        Applies the KSVC, its derived resources (owned via ownerReferences), and
-        the DomainMapping to each site, pruning backing objects the new spec no
-        longer references. Offering-agnostic: what differs between a function and
-        a container is asked of ``offering``, never branched on here.
-
-        Args:
-            req: The apply request (see :class:`ApplyRequest`).
-            offering: The offering being deployed.
-
-        Returns:
-            The response body and HTTP status code.
-        """
+        """Build the manifests once and apply the workload to every target site."""
         self.assert_group(req.user, req.group)
         oname = object_name(req.name, req.group)
         targets = self.deployer.resolve_targets(req.sites)
@@ -506,22 +358,7 @@ class WorkloadService:
         return offering.applied_response(common, req), status_code_for(overall, created=req.created)
 
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
-        """Re-declare a workload's build on the local site, then ask for a build.
-
-        The one write here that leaves the KSVC alone, and local-site only: the
-        build site is always the local one (docs/BUILDING.md - Builds are local).
-        Applying before triggering is what makes it self-healing - a site with no
-        Image gets one created and builds from that.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            plan: The build plan to apply.
-
-        Returns:
-            True if an existing build was triggered; False if applying the plan
-            is itself what starts the build.
-        """
+        """Re-declare a workload's build on the local site, then ask for a build."""
         cluster = self.deployer.local_cluster()
         oname = object_name(name, group)
         manifests = list(plan.replicated) + list(plan.local)
@@ -539,16 +376,6 @@ class WorkloadService:
 
         Reads from whichever site has the workload; a down site is never reported
         as a missing workload.
-
-        Args:
-            name: The workload name.
-            offering: The expected offering; another one's workload of the same
-                name is hidden as a 404 rather than loaded.
-            user: The authenticated caller.
-            group: The owning group.
-
-        Returns:
-            A dict with the image and carried-forward build/pull metadata.
 
         Raises:
             NotFoundError: If it doesn't exist or isn't this offering/group.
@@ -602,15 +429,6 @@ class WorkloadService:
 
         Fans out to all sites; a site that returns a clean 404 is omitted, while
         an unreachable site stays visible and degrades the rollup.
-
-        Args:
-            offering: The offering being read.
-            name: Workload name.
-            user: The authenticated caller.
-            group: Owning group.
-
-        Returns:
-            The full single-workload response.
 
         Raises:
             NotFoundError: If the workload exists on no reachable site.
@@ -714,26 +532,6 @@ class WorkloadService:
     ) -> WorkloadStatsResponse:
         """Read a workload's live state: rollup, and per-site replicas and usage.
 
-        The poll counterpart to :meth:`get`. Same fan-out, authorization and
-        rollup, but none of the desired-state reads - no file ConfigMaps and no
-        backing Secret - so a client refreshing every few seconds is not pulling
-        secret material out of the cluster on a loop for config that only changes
-        when it changes it.
-
-        The build is still read for a function, though it is not reported here:
-        it is what makes a running build ``Building`` instead of the ``Degraded``
-        its unpullable image would otherwise produce (docs/FUNCTIONS.md -
-        Function Status Resolution).
-
-        Args:
-            offering: The offering being read.
-            name: Workload name.
-            user: The authenticated caller.
-            group: Owning group.
-
-        Returns:
-            The live stats view.
-
         Raises:
             NotFoundError: If the workload exists on no reachable site.
             ServiceUnavailableError: If it can't be confirmed absent because a
@@ -811,12 +609,6 @@ class WorkloadService:
 
     async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
         """Delete a workload from every site; GC cascades its derived resources.
-
-        Args:
-            offering: The offering being deleted.
-            name: Workload name.
-            user: The authenticated caller.
-            group: Owning group.
 
         Raises:
             NotFoundError: If the workload exists on no site, or the caller may
@@ -898,22 +690,6 @@ class WorkloadService:
     ) -> LogsResponse:
         """Snapshot the workload's pod logs from the local site only.
 
-        Single-site and point-in-time: reads the running pods on the current
-        cluster (Kubernetes keeps no log buffer beyond the node). A workload
-        deployed here but scaled to zero returns an empty ``pods`` list.
-
-        Args:
-            offering: The offering being read.
-            name: Workload name.
-            user: The authenticated caller.
-            group: Owning group.
-            container: The pod container to read (e.g. the user-container).
-            since_seconds: Only logs newer than this many seconds, if set.
-            limit_bytes: Cap on the bytes read per pod, if set.
-
-        Returns:
-            The workload's per-pod logs from the local site.
-
         Raises:
             NotFoundError: If the workload isn't on the local site or the caller
                 can't access it (hidden as 404, matching GET).
@@ -962,28 +738,6 @@ class WorkloadService:
         self, offering: Offering, user: Principal, group: str, sort: str = "name"
     ) -> list[WorkloadSummary]:
         """Summarize every workload of this offering owned by ``group``.
-
-        Fans out to all sites and merges best-effort: a workload's ``sites`` lists only
-        those that returned it, and its rollup covers just those, so a single-site
-        workload reads ``Ready``, not ``Degraded``. An unreachable site is skipped; only
-        an all-down fan-out fails the call.
-
-        Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
-        Resolution): a function whose first build is still running has a KSVC that
-        cannot pull its image yet, so a listing that read the KSVC alone showed
-        every new function as ``Degraded`` for the whole of that build. The build
-        states come from one label-selected read of the local site, so the fold
-        costs a single round trip for the entire listing - overlapped with the
-        fan-out, not chained onto it.
-
-        Args:
-            offering: The offering being listed.
-            user: The authenticated caller.
-            group: The owning group.
-            sort: Sort key, "name" or "createdAt" (default "name").
-
-        Returns:
-            The per-workload summaries.
 
         Raises:
             SiteTotalFailure: If every site is unreachable.

@@ -1,13 +1,4 @@
-"""Static admin API-key auth (opaque ``Authorization: Bearer``).
-
-For admin automation that cannot do OIDC, the API accepts a static key in the
-same ``Authorization: Bearer`` header (docs/ARCHITECTURE.md). The caller sends
-the raw token, sourced from Vault via ESO.
-
-The incoming token is matched against the configured key with
-``hmac.compare_digest``, a **constant-time** comparison, so verification doesn't
-leak how many leading characters matched through timing.
-"""
+"""Static admin API-key auth (opaque ``Authorization: Bearer``)."""
 
 from __future__ import annotations
 
@@ -19,13 +10,6 @@ def verify_admin_key(token: str, admin_api_key: str) -> bool:
 
     An empty configured key disables key auth entirely (returns ``False`` for
     every token).
-
-    Args:
-        token: The bearer token from the Authorization header.
-        admin_api_key: The configured admin key; empty disables key auth.
-
-    Returns:
-        True if ``token`` matches ``admin_api_key``.
     """
     if not token or not admin_api_key:
         return False

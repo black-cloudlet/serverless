@@ -112,11 +112,6 @@ class EnvVar(BaseModel):
 
     With ``secret: true`` the API stores the value in a Kubernetes Secret and the
     container reads it via a secretKeyRef (the value is never inline on the KSVC).
-
-    ``value`` is optional only for a secret var: a secret entry with ``value:
-    null`` means "keep the stored value" on update (the redacted read - ``secret:
-    true, value: null`` - can be sent straight back). A non-secret var always
-    needs a value, and a brand-new secret needs one too (there is nothing to keep).
     """
 
     name: str
@@ -132,17 +127,7 @@ class EnvVar(BaseModel):
 
 
 class FileMount(BaseModel):
-    """An inline file to load into the workload at ``mountPath``.
-
-    The API stores the content in the workload's shared ConfigMap (or Secret when
-    ``secret: true``) - one ConfigMap and one Secret per workload - and mounts
-    each file at its ``mountPath`` via ``subPath``.
-
-    A secret file may omit both content fields, meaning "keep the stored content"
-    on update (the redacted read - ``secret: true, content: null`` - can be sent
-    straight back). A non-secret file always needs exactly one content field, and
-    supplying both is always rejected.
-    """
+    """An inline file to load into the workload at ``mountPath``."""
 
     mountPath: str
     content: str | None = None
@@ -157,14 +142,7 @@ class FileMount(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
-        """Validate the content fields (exactly one, or none only for a secret keep).
-
-        Whether ``contentBase64`` decodes is a property of the field, so it is
-        settled here rather than in the service layer. It has to be: the accept
-        path echoes the submitted spec back (``describe.redact_files``) as an
-        argument expression, which runs *before* the service-layer validation, so
-        a check further in would be reached too late to answer with a 400.
-        """
+        """Validate the content fields (exactly one, or none only for a secret keep)."""
         if self.content is not None and self.contentBase64 is not None:
             raise ValueError("file accepts at most one of 'content' or 'contentBase64'")
         if self.keep and not self.secret:
@@ -190,17 +168,7 @@ class FileMount(BaseModel):
 
 
 class Scaling(BaseModel):
-    """Autoscaling settings: replica bounds, the metric, and its target.
-
-    Attributes:
-        minScale: Minimum replicas (0 allows scale-to-zero for KPA metrics).
-        maxScale: Maximum replicas.
-        metric: The signal the autoscaler scales on (concurrency/rps/cpu/memory).
-        target: Target value for the metric; None uses a metric-aware default.
-        scaleDownDelay: How long the autoscaler waits before scaling a revision
-            down (e.g. "30s", "5m", "1h"); None leaves the Knative default.
-            Smooths bursty traffic by avoiding rapid scale-down/up churn.
-    """
+    """Autoscaling settings: replica bounds, the metric, and its target."""
 
     minScale: int = Field(0, ge=0)
     maxScale: int = Field(3, ge=1)
@@ -210,23 +178,14 @@ class Scaling(BaseModel):
 
     @property
     def effective_target(self) -> int:
-        """The target value to apply, defaulting by metric when unset.
-
-        Returns:
-            ``target`` if set, else the KPA/HPA default for the metric.
-        """
+        """The target value to apply, defaulting by metric when unset."""
         if self.target is not None:
             return self.target
         return _KPA_TARGET_DEFAULT if self.metric in _KPA_METRICS else _HPA_TARGET_DEFAULT
 
     @classmethod
     def capabilities(cls) -> "ScalingCapabilities":
-        """Project the per-metric scaling rules for the public /info endpoint.
-
-        Derived from the same constants the validator enforces (``_KPA_METRICS``,
-        the target defaults/bounds, the duration cap), so the advertised
-        capabilities can't drift from what a create request will accept.
-        """
+        """Project the per-metric scaling rules for the public /info endpoint."""
         metrics = []
         for name in get_args(ScalingMetric):
             is_kpa = name in _KPA_METRICS
@@ -291,14 +250,7 @@ class Scaling(BaseModel):
 
 
 class MetricTarget(BaseModel):
-    """The target bounds for one autoscaling metric (public capability).
-
-    Attributes:
-        default: The target applied when the client omits one.
-        min: The smallest accepted target.
-        max: The largest accepted target, or None when unbounded (KPA metrics).
-        unit: What the target counts (e.g. "percent", "concurrentRequests").
-    """
+    """The target bounds for one autoscaling metric (public capability)."""
 
     default: int
     min: int
@@ -307,14 +259,7 @@ class MetricTarget(BaseModel):
 
 
 class MetricCapability(BaseModel):
-    """One autoscaling metric's client-facing rules.
-
-    Attributes:
-        name: The metric name (concurrency/rps/cpu/memory).
-        minScaleFloor: The smallest allowed ``minScale`` (0 means scale-to-zero
-            is permitted; 1 means it isn't).
-        target: The metric's target bounds and unit.
-    """
+    """One autoscaling metric's client-facing rules."""
 
     name: str
     minScaleFloor: int
@@ -339,21 +284,7 @@ class ScalingCapabilities(BaseModel):
 
 
 class SiteStatus(BaseModel):
-    """The deploy/health state of a workload at a single site.
-
-    Carries no live usage: measuring it is a cluster call of its own, and this is
-    on the full GET, which is not the endpoint to poll. ``replicas`` stays because
-    it is free - it comes off the Revision read that the per-site failure detail
-    needs anyway. Usage lives on :class:`SiteStatusDetail`, which only the status
-    view returns.
-
-    Attributes:
-        site: The site name.
-        status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
-        revision: The Knative revision the site is serving, if known.
-        error: The failure message when the site errored, else None.
-        replicas: Running pods at this site (None if unknown).
-    """
+    """The deploy/health state of a workload at a single site."""
 
     site: str
     status: str
@@ -370,19 +301,7 @@ class ResourceUsage(BaseModel):
 
 
 class SiteStats(BaseModel):
-    """One site's live state, as the stats view reports it.
-
-    Not a :class:`SiteStatus`: that one is the full GET's row, and carries the
-    rollout detail (``revision``, ``error``) rather than what a workload is
-    consuming right now.
-
-    Attributes:
-        site: The site name.
-        status: Per-site status (Ready/Building/Deploying/Failed/...).
-        replicas: Running pods at this site, or None if unknown.
-        usage: Live cpu/memory over those pods; None when scaled to zero or the
-            metrics API could not be read.
-    """
+    """One site's live state, as the stats view reports it."""
 
     site: str
     status: str
@@ -438,38 +357,14 @@ class FileView(BaseModel):
 
 
 class BuildStatusView(BaseModel):
-    """A function's image build state, read from the local site's kpack Image.
-
-    State and reason only. The built image stays internal - a function's client
-    deals in source, not images - so it is on :class:`common.build.BuildStatus`,
-    which the build service reads, and never on the response.
-
-    Attributes:
-        state: Building / Ready / Failed / Unknown.
-        message: Why the build failed, when it did.
-    """
+    """A function's image build state, read from the local site's kpack Image."""
 
     state: str
     message: str | None = None
 
 
 class WorkloadStatsResponse(BaseModel):
-    """A workload's live state only - the endpoint to poll.
-
-    Carries what changes on its own and none of the desired-state config, which
-    a client already holds and which cannot change unless it changes it. That is
-    what lets this be read every couple of seconds without re-reading the
-    workload's backing Secret on every tick.
-
-    Attributes:
-        overallStatus: The rollup, identical to the full GET's - ``Building``
-            included, since the build is still read even though it is not
-            reported here.
-        replicas: Running pods across every site. None if any site's is unknown.
-        usage: Cpu/memory across every site. None if any site could not be
-            measured, rather than a total quietly missing one.
-        sites: One entry per site that has the workload.
-    """
+    """A workload's live state only - the endpoint to poll."""
 
     overallStatus: WorkloadStatus
     replicas: int | None = None
@@ -478,12 +373,7 @@ class WorkloadStatsResponse(BaseModel):
 
 
 class WorkloadResponse(WorkloadBase):
-    """Full single-workload view: identity, live per-site status, and config.
-
-    Identity, live per-site status, and the desired-state config common to both
-    offerings (secrets redacted). FunctionResponse and ContainerResponse subclass
-    this, so a response mirrors the create body of its offering.
-    """
+    """Full single-workload view: identity, live per-site status, and config."""
 
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
@@ -494,14 +384,7 @@ class WorkloadResponse(WorkloadBase):
 
 
 class PodLogs(BaseModel):
-    """The current log snapshot of one workload pod's container.
-
-    Attributes:
-        pod: The pod name.
-        container: The container the log was read from.
-        revision: The Knative revision the pod belongs to, if labelled.
-        logs: The log text as the node currently holds it (timestamped).
-    """
+    """The current log snapshot of one workload pod's container."""
 
     pod: str
     container: str
@@ -510,12 +393,7 @@ class PodLogs(BaseModel):
 
 
 class LogsResponse(BaseModel):
-    """A workload's pod logs from the local site (a point-in-time snapshot).
-
-    Logs are node-local and ephemeral: only the running pods on the current site
-    are read, and their history is bounded by the node's log rotation. Empty
-    ``pods`` means the workload is deployed here but scaled to zero.
-    """
+    """A workload's pod logs from the local site (a point-in-time snapshot)."""
 
     name: str
     group: str

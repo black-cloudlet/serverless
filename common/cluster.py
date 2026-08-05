@@ -1,10 +1,4 @@
-"""Per-site Kubernetes/OpenShift cluster client (server-side apply, get, delete).
-
-Shared infrastructure: the API and a future builder service both reach a cluster
-the same way (client-cert mTLS, lazy connect), configured from the shared
-:class:`~common.config.CommonSettings`. ``ResourceKind`` is the registry of GVKs
-the platform operates on.
-"""
+"""Per-site Kubernetes/OpenShift cluster client (server-side apply, get, delete)."""
 
 from __future__ import annotations
 
@@ -45,12 +39,6 @@ class ResourceKind(Enum):
     def from_kind(cls, kind: str) -> "ResourceKind":
         """Map a manifest's ``kind`` string (e.g. "Secret") to its ResourceKind.
 
-        Args:
-            kind: The PascalCase kind string.
-
-        Returns:
-            The matching ResourceKind.
-
         Raises:
             ValueError: If no member has that kind.
         """
@@ -68,13 +56,7 @@ class Cluster:
     """
 
     def __init__(self, site_config: SiteConfig, settings: CommonSettings):
-        """Configure the client for one site (the connection stays lazy).
-
-        Args:
-            site_config: The site's name and cluster identifiers.
-            settings: Shared connection settings (namespace, TLS material, base
-                domain, timeouts).
-        """
+        """Configure the client for one site (the connection stays lazy)."""
         self.site: str = site_config.name
         self.name: str = site_config.cluster
         self._namespace: str = settings.workloads_namespace
@@ -122,14 +104,7 @@ class Cluster:
         _ = self._dynamic_client
 
     def apply(self, manifest: dict) -> list[dict]:
-        """Server-side apply a manifest (create-or-update), forcing conflicts.
-
-        Args:
-            manifest: The resource manifest dict to apply.
-
-        Returns:
-            The applied object(s) as dicts (including server-assigned fields).
-        """
+        """Server-side apply a manifest (create-or-update), forcing conflicts."""
         results = utils.create_from_dict(
             self._api_client,
             manifest,
@@ -145,14 +120,6 @@ class Cluster:
         self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None
     ) -> dict | list[dict]:
         """Get a resource by name, or list a kind by label selector.
-
-        Args:
-            kind: The resource kind to fetch.
-            name: The object name for a single get; None to list.
-            label_selector: Label selector for the list form.
-
-        Returns:
-            The object dict (named get) or a list of object dicts (list form).
 
         Raises:
             NotFoundError: If a named get returns a 404. Other errors propagate.
@@ -172,19 +139,6 @@ class Cluster:
 
     def patch(self, kind: ResourceKind, name: str, body: dict) -> dict:
         """Merge-patch one field of an existing resource.
-
-        Narrow by design: everything the platform owns is written with
-        :meth:`apply`. This is for the one thing that is not desired state,
-        annotating a kpack ``Build``. Merge patch, not strategic, which custom
-        resources do not support.
-
-        Args:
-            kind: The resource kind to patch.
-            name: The object name.
-            body: The merge patch (only the fields being changed).
-
-        Returns:
-            The patched object.
 
         Raises:
             NotFoundError: If the resource does not exist (404). Other errors
@@ -208,10 +162,6 @@ class Cluster:
     def delete(self, kind: ResourceKind, name: str) -> None:
         """Delete a resource by name.
 
-        Args:
-            kind: The resource kind to delete.
-            name: The object name.
-
         Raises:
             NotFoundError: If the resource is already absent (404). Other errors
                 propagate, so callers can tell "already gone" from a real failure.
@@ -233,20 +183,6 @@ class Cluster:
         limit_bytes: int | None = None,
     ) -> str:
         """Read a snapshot of one pod container's current log.
-
-        Uses CoreV1Api directly - the dynamic client can't read the ``log``
-        subresource. The returned text is whatever the node currently holds for
-        the container (Kubernetes keeps no ring buffer beyond the node's rotated
-        log file); it is not a live stream.
-
-        Args:
-            pod: The pod name.
-            container: The container to read (e.g. the Knative user-container).
-            since_seconds: Only return logs newer than this many seconds, if set.
-            limit_bytes: Cap the number of bytes returned, if set.
-
-        Returns:
-            The log text.
 
         Raises:
             NotFoundError: If the pod is gone (404). Other errors propagate.

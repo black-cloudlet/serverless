@@ -1,10 +1,4 @@
-"""Ownership labels stamped on every managed resource (shared by all services).
-
-The label *keys* and the ``managed-by`` value are the platform's identity
-convention: the API stamps them on every workload and on everything derived from
-it - config Secrets, the DomainMapping, the kpack build objects - so anything the
-platform creates is attributable and selectable the same way.
-"""
+"""Ownership labels stamped on every managed resource (shared by all services)."""
 
 from __future__ import annotations
 
@@ -24,16 +18,7 @@ OFFERING_CONTAINER = "container"
 
 
 def ownership_labels(group: str, owner: str, offering: str | None = None) -> dict[str, str]:
-    """Build the ownership/management labels stamped on every resource.
-
-    Args:
-        group: The owning group.
-        owner: The creating username.
-        offering: The offering ("function"/"container"), when applicable.
-
-    Returns:
-        The label dict (group, managed-by, owner, and offering when given).
-    """
+    """Build the ownership/management labels stamped on every resource."""
     labels = {
         LABEL_GROUP: group,
         LABEL_MANAGED_BY: MANAGED_BY_VALUE,
@@ -47,21 +32,7 @@ def ownership_labels(group: str, owner: str, offering: str | None = None) -> dic
 def workload_labels(
     group: str, owner: str, workload: str, offering: str | None = None
 ) -> dict[str, str]:
-    """Ownership labels plus the workload (function/container) name.
-
-    Every resource the API creates for a function/container carries both the SSO
-    group and the workload name so it is unambiguously attributable and
-    selectable.
-
-    Args:
-        group: The owning group.
-        owner: The creating username.
-        workload: The object name (``{name}-{group}``).
-        offering: The offering, when applicable.
-
-    Returns:
-        The label dict including the workload label.
-    """
+    """Ownership labels plus the workload (function/container) name."""
     labels = ownership_labels(group, owner, offering)
     labels[LABEL_WORKLOAD] = workload
     return labels

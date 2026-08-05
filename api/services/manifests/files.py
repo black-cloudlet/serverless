@@ -1,10 +1,4 @@
-"""Resolve a workload's ``files`` into at most one ConfigMap + one Secret.
-
-All non-secret files are aggregated into a single ``{workload}-files`` ConfigMap
-and all secret files into a single ``{workload}-files`` Secret, one key per file.
-Each file is mounted at its ``mountPath`` via ``subPath`` (so it appears as a
-single file, not a directory). Pure functions - no cluster access.
-"""
+"""Resolve a workload's ``files`` into at most one ConfigMap + one Secret."""
 
 from __future__ import annotations
 
@@ -34,12 +28,7 @@ class VolumeSpec:
 
 @dataclass
 class ResolvedFiles:
-    """Resolved file mounts: the volume specs plus their backing objects.
-
-    Attributes:
-        volumes: One VolumeSpec per file mount.
-        backing: The backing manifests (at most one ConfigMap + one Secret).
-    """
+    """Resolved file mounts: the volume specs plus their backing objects."""
 
     volumes: list[VolumeSpec] = field(default_factory=list)
     backing: list[dict] = field(default_factory=list)  # at most one CM + one Secret
@@ -64,27 +53,6 @@ def resolve_files(
     kept: dict[str, bytes] | None = None,
 ) -> ResolvedFiles:
     """Resolve file mounts into volume specs and backing ConfigMap/Secret.
-
-    Non-secret files aggregate into one ConfigMap and secret files into one Secret,
-    both named ``{workload}-files``, each mounted via subPath. A secret file sent
-    without content is filled from ``kept``, so a redacted read can be sent back.
-
-    Content is carried as **bytes** throughout. A file is a byte string, not text:
-    ``contentBase64`` exists so a caller can mount a keystore or a DER certificate,
-    and decoding those to ``str`` on the way in only to re-encode on the way out
-    cannot round-trip (it raises on the first non-UTF-8 byte). The backing builders
-    take bytes and choose the right Kubernetes field.
-
-    Args:
-        workload: The object name (``{name}-{group}``).
-        group: Owning group (for labels).
-        owner: Username (for labels).
-        files: The submitted file mounts.
-        kept: Existing files-Secret content (key -> raw bytes) to fall back on
-            for a secret file sent without content. Empty on create.
-
-    Returns:
-        The resolved volumes and backing manifests.
 
     Raises:
         ValidationError: On a duplicate mount-path key, invalid base64 content, or a

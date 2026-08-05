@@ -19,36 +19,12 @@ class FunctionService:
     """Function-specific orchestration; delegates the shared work to WorkloadService."""
 
     def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry):
-        """Initialize the service.
-
-        Args:
-            engine: The shared workload engine doing the cross-site work.
-            runtimes: The available-runtimes registry. Required rather than
-                defaulted: reaching for the process-wide registry here would
-                make the service depend on module state that only the DI layer
-                should own, and would put api.dependencies and this module in an
-                import cycle.
-        """
+        """Initialize the service."""
         self._engine = engine
         self._runtimes = runtimes
 
     def _assert_runtime(self, runtime: str, version: str | None = None) -> None:
         """Reject an unknown/unbuildable runtime or version (400, before the 202).
-
-        Checking that it maps to a Builder - not just that it exists - is what
-        turns a mounted-ConfigMap problem into an immediate, accurate 400. Left
-        to the build path it would surface minutes later as a failed background
-        deploy, which reads like a broken build rather than broken configuration.
-
-        The version is checked against the same ``versions`` list ``/info``
-        advertises, so what a client is offered and what a create accepts cannot
-        disagree. Airgapped that is not a formality: only the advertised versions
-        are mirrored, so an unlisted one has no toolchain to download and would
-        fail deep inside the build.
-
-        Args:
-            runtime: The requested runtime.
-            version: The requested language version, or None for the default.
 
         Raises:
             ValidationError: If ``runtime`` isn't available, names no Builder, or
@@ -81,19 +57,7 @@ class FunctionService:
             )
 
     def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
-        """The owned manifests that declare the build, and the tag they push to.
-
-        Includes the workload's ``{workload}-git`` Secret: one Secret serves both
-        the API (reading the token back on a later edit) and kpack (cloning with
-        it), because the build runs in the workload's own namespace.
-
-        Args:
-            req: The build request.
-            user: The authenticated caller, for the ownership labels.
-
-        Returns:
-            The build plan.
-        """
+        """The owned manifests that declare the build, and the tag they push to."""
         oname = object_name(req.name, req.group)
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
         return self._engine.builder.plan(req, labels)
@@ -118,17 +82,7 @@ class FunctionService:
     async def accept(
         self, group: str, spec: FunctionCreate, user: Principal, background
     ) -> FunctionResponse:
-        """Validate and accept a create request, scheduling the build+deploy (202).
-
-        Args:
-            group: The owning group (from the request path).
-            spec: The function create request.
-            user: The authenticated caller.
-            background: FastAPI background tasks to schedule the build+deploy on.
-
-        Returns:
-            A Pending response with a ``statusUrl`` to poll.
-        """
+        """Validate and accept a create request, scheduling the build+deploy (202)."""
         self._assert_runtime(spec.runtime, spec.version)
         return await self._engine.accept_create(
             offering=FUNCTION,
@@ -143,18 +97,7 @@ class FunctionService:
     async def accept_update(
         self, group: str, name: str, spec: FunctionUpdate, user: Principal, background
     ) -> FunctionResponse:
-        """Validate and accept an update request, scheduling the deploy (202).
-
-        Args:
-            group: The owning group (from the request path).
-            name: The workload name.
-            spec: The function update request.
-            user: The authenticated caller.
-            background: FastAPI background tasks to schedule the deploy on.
-
-        Returns:
-            A Pending response with a ``statusUrl`` to poll.
-        """
+        """Validate and accept an update request, scheduling the deploy (202)."""
         self._assert_runtime(spec.runtime, spec.version)
         return await self._engine.accept_update(
             offering=FUNCTION,
@@ -171,19 +114,6 @@ class FunctionService:
         self, name: str, group: str, existing: dict, user: Principal
     ) -> BuildRequest:
         """Reconstruct a deployed function's build inputs, for a rebuild.
-
-        Read off the workload itself, never the request: the KSVC's annotations
-        and the ``{workload}-git`` Secret (docs/BUILDING.md - Reconstruction
-        after switchover).
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            existing: The state loaded by ``load_existing``.
-            user: The authenticated caller, stamped as the build's owner.
-
-        Returns:
-            The build request.
 
         Raises:
             ValidationError: If the stored state cannot describe a build.
@@ -227,15 +157,6 @@ class FunctionService:
         Loaded and authorized synchronously, so a missing workload, a missing
         token or a withdrawn runtime is an immediate 404/400.
 
-        Args:
-            group: The owning group (from the request path).
-            name: The workload name.
-            user: The authenticated caller.
-            background: FastAPI background tasks to schedule the build on.
-
-        Returns:
-            A Pending response with a ``statusUrl`` to poll.
-
         Raises:
             NotFoundError: If no such function exists (or it isn't the caller's).
             ValidationError: If the stored state cannot describe a build.
@@ -260,16 +181,6 @@ class FunctionService:
     async def rebuild(self, group: str, name: str, user: Principal, existing: dict) -> None:
         """Build the function's current source again (runs in the background).
 
-        Nothing about the workload changes, so the KSVC is not written and the
-        running revision keeps serving (docs/FUNCTIONS.md - Rebuilding without
-        changing anything).
-
-        Args:
-            group: The owning group (from the request path).
-            name: The workload name.
-            user: The authenticated caller.
-            existing: The state preloaded by :meth:`accept_rebuild`.
-
         Raises:
             ValidationError: If the stored state cannot describe a build.
             ServiceUnavailableError: If the build pipeline is unavailable.
@@ -281,14 +192,6 @@ class FunctionService:
         self, group: str, spec: FunctionCreate, user: Principal
     ) -> tuple[FunctionResponse, int]:
         """Build from Git and deploy a new function (runs in the background).
-
-        Args:
-            group: The owning group (from the request path).
-            spec: The function create request.
-            user: The authenticated caller.
-
-        Returns:
-            The response body and HTTP status code.
 
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
@@ -352,17 +255,6 @@ class FunctionService:
         existing: dict | None = None,
     ) -> tuple[FunctionResponse, int]:
         """Apply an update to a function, rebuilding on a build-input or token change.
-
-        Args:
-            group: The owning group (from the request path).
-            name: The workload name.
-            spec: The function update request.
-            user: The authenticated caller.
-            existing: The workload state preloaded by accept_update, if any; a
-                fresh fetch is done when None.
-
-        Returns:
-            The response body and HTTP status code.
 
         Raises:
             ValidationError: If a rebuild is needed but no token was supplied and
@@ -468,29 +360,11 @@ class FunctionService:
         return body, code
 
     async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
-        """Get one function with live per-site status.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The full single-function response.
-        """
+        """Get one function with live per-site status."""
         return await self._engine.get(FUNCTION, name, user, group)
 
     async def stats(self, name: str, group: str, user: Principal) -> WorkloadStatsResponse:
-        """Read the function's live state (the poll view).
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The rollup plus per-site replicas and usage.
-        """
+        """Read the function's live state (the poll view)."""
         return await self._engine.stats(FUNCTION, name, user, group)
 
     async def logs(
@@ -503,19 +377,7 @@ class FunctionService:
         since_seconds: int | None,
         limit_bytes: int | None,
     ) -> LogsResponse:
-        """Snapshot the function's pod logs from the current site.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            container: The pod container to read.
-            since_seconds: Only logs newer than this, if set.
-            limit_bytes: Cap on bytes read per pod, if set.
-
-        Returns:
-            The function's per-pod logs from the local site.
-        """
+        """Snapshot the function's pod logs from the current site."""
         return await self._engine.logs(
             FUNCTION,
             name,
@@ -527,24 +389,9 @@ class FunctionService:
         )
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        """List the group's functions.
-
-        Args:
-            group: The owning group.
-            user: The authenticated caller.
-            sort: Sort key, "name" or "createdAt".
-
-        Returns:
-            The per-workload summaries.
-        """
+        """List the group's functions."""
         return await self._engine.list(FUNCTION, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
-        """Delete a function and its derived resources.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-        """
+        """Delete a function and its derived resources."""
         await self._engine.delete(FUNCTION, name, user, group)

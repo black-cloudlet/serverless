@@ -28,18 +28,7 @@ async def create_container(
     svc: ContainerDep,
     background: BackgroundTasks,
 ) -> ContainerResponse:
-    """Create a container (202): validate synchronously, deploy in the background.
-
-    Args:
-        group: The owning group (from the request path).
-        spec: The container create request.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-        background: FastAPI background tasks (injected).
-
-    Returns:
-        A Pending response with a ``statusUrl`` to poll for the deploy outcome.
-    """
+    """Create a container (202): validate synchronously, deploy in the background."""
     return await svc.accept(group, spec, user, background)
 
 
@@ -52,19 +41,7 @@ async def update_container(
     svc: ContainerDep,
     background: BackgroundTasks,
 ) -> ContainerResponse:
-    """Update a container (202): full replace of the mutable spec, applied async.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        spec: The container update request.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-        background: FastAPI background tasks (injected).
-
-    Returns:
-        A Pending response with a ``statusUrl`` to poll.
-    """
+    """Update a container (202): full replace of the mutable spec, applied async."""
     return await svc.accept_update(group, name, spec, user, background)
 
 
@@ -75,17 +52,7 @@ async def list_containers(
     svc: ContainerDep,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    """List general info for every container the group owns (merged across sites).
-
-    Args:
-        group: The owning group (from the request path).
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-        sort: Sort key, "name" or "createdAt".
-
-    Returns:
-        The per-workload summaries.
-    """
+    """List general info for every container the group owns (merged across sites)."""
     return await svc.list(group, user, sort)
 
 
@@ -97,15 +64,6 @@ async def get_container(
 
     This is the poll target advertised as ``statusUrl`` on the 202 accept
     response.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-
-    Returns:
-        The full single-container response.
     """
     return await svc.get(name, group, user)
 
@@ -118,15 +76,6 @@ async def get_container_stats(
 
     The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
     and the live numbers behind it, and none of the desired-state config.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-
-    Returns:
-        The container's live stats view.
     """
     return await svc.stats(name, group, user)
 
@@ -145,18 +94,6 @@ async def get_container_logs(
 
     Point-in-time (not streamed) and local-site only; a scaled-to-zero workload
     returns no pods.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-        container: The pod container to read (default the user-container).
-        sinceSeconds: Only return logs newer than this many seconds.
-        limitBytes: Cap the bytes read per pod.
-
-    Returns:
-        The container's per-pod logs from the local site.
     """
     return await svc.logs(
         name, group, user, container=container, since_seconds=sinceSeconds, limit_bytes=limitBytes
@@ -165,12 +102,5 @@ async def get_container_logs(
 
 @router.delete("/{name}", status_code=204)
 async def delete_container(group: Group, name: Name, user: CurrentUser, svc: ContainerDep) -> None:
-    """Delete a container and its derived resources (204).
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-    """
+    """Delete a container and its derived resources (204)."""
     await svc.delete(name, group, user)

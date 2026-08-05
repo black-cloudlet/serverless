@@ -1,13 +1,4 @@
-"""Parse and aggregate live resource usage from the metrics API (PodMetrics).
-
-``metrics.k8s.io`` reports per-container usage as Kubernetes *quantity* strings
-(e.g. cpu ``"1234567n"``, memory ``"123456Ki"``). We sum across all containers
-of all the workload's pods into one figure per site.
-
-Figures are carried as :class:`Usage` - raw floats - and rounded only at the
-edge, so a per-site total can be summed again into a workload total without
-drifting from the sites it covers.
-"""
+"""Parse and aggregate live resource usage from the metrics API (PodMetrics)."""
 
 from __future__ import annotations
 
@@ -52,26 +43,12 @@ def _parse(quantity: str, units: dict[str, float]) -> float:
 
 
 def parse_cpu_millicores(quantity: str) -> float:
-    """Parse a Kubernetes CPU quantity (e.g. ``250m``, ``1``) into millicores.
-
-    Args:
-        quantity: The CPU quantity string.
-
-    Returns:
-        The value in millicores.
-    """
+    """Parse a Kubernetes CPU quantity (e.g. ``250m``, ``1``) into millicores."""
     return _parse(quantity, _CPU_UNITS)
 
 
 def parse_memory_bytes(quantity: str) -> float:
-    """Parse a Kubernetes memory quantity (e.g. ``512Mi``, ``1Gi``) into bytes.
-
-    Args:
-        quantity: The memory quantity string.
-
-    Returns:
-        The value in bytes.
-    """
+    """Parse a Kubernetes memory quantity (e.g. ``512Mi``, ``1Gi``) into bytes."""
     return _parse(quantity, _MEM_UNITS)
 
 
@@ -111,14 +88,7 @@ def total(usages: Iterable[Usage]) -> Usage | None:
 
 
 def total_usage(pod_metrics: list[dict]) -> Usage | None:
-    """Sum cpu/memory over every pod's user container(s), ignoring queue-proxy.
-
-    Args:
-        pod_metrics: PodMetrics items for the workload's pods.
-
-    Returns:
-        The site's usage, or None if nothing reported (e.g. scaled to zero).
-    """
+    """Sum cpu/memory over every pod's user container(s), ignoring queue-proxy."""
     cpu_milli = 0.0
     mem_bytes = 0.0
     seen = False

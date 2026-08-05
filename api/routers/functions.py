@@ -28,18 +28,7 @@ async def create_function(
     svc: FunctionDep,
     background: BackgroundTasks,
 ) -> FunctionResponse:
-    """Create a function (202): validate synchronously, build and deploy async.
-
-    Args:
-        group: The owning group (from the request path).
-        spec: The function create request.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-        background: FastAPI background tasks (injected).
-
-    Returns:
-        A Pending response with a ``statusUrl`` to poll for the deploy outcome.
-    """
+    """Create a function (202): validate synchronously, build and deploy async."""
     return await svc.accept(group, spec, user, background)
 
 
@@ -52,19 +41,7 @@ async def update_function(
     svc: FunctionDep,
     background: BackgroundTasks,
 ) -> FunctionResponse:
-    """Update a function (202): full replace of the mutable spec, applied async.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        spec: The function update request.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-        background: FastAPI background tasks (injected).
-
-    Returns:
-        A Pending response with a ``statusUrl`` to poll.
-    """
+    """Update a function (202): full replace of the mutable spec, applied async."""
     return await svc.accept_update(group, name, spec, user, background)
 
 
@@ -79,16 +56,6 @@ async def rebuild_function(
     """Rebuild a function from its current source (202), no body.
 
     The build inputs are the stored ones; the workload's spec is untouched.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-        background: FastAPI background tasks (injected).
-
-    Returns:
-        A Pending response with a ``statusUrl`` to poll for the build outcome.
     """
     return await svc.accept_rebuild(group, name, user, background)
 
@@ -100,17 +67,7 @@ async def list_functions(
     svc: FunctionDep,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    """List general info for every function the group owns (merged across sites).
-
-    Args:
-        group: The owning group (from the request path).
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-        sort: Sort key, "name" or "createdAt".
-
-    Returns:
-        The per-workload summaries.
-    """
+    """List general info for every function the group owns (merged across sites)."""
     return await svc.list(group, user, sort)
 
 
@@ -122,15 +79,6 @@ async def get_function(
 
     This is the poll target advertised as ``statusUrl`` on the 202 accept
     response.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-
-    Returns:
-        The full single-function response.
     """
     return await svc.get(name, group, user)
 
@@ -143,15 +91,6 @@ async def get_function_stats(
 
     The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
     and the live numbers behind it, and none of the desired-state config.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-
-    Returns:
-        The function's live stats view.
     """
     return await svc.stats(name, group, user)
 
@@ -170,18 +109,6 @@ async def get_function_logs(
 
     Point-in-time (not streamed) and local-site only; a scaled-to-zero workload
     returns no pods.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-        container: The pod container to read (default the user-container).
-        sinceSeconds: Only return logs newer than this many seconds.
-        limitBytes: Cap the bytes read per pod.
-
-    Returns:
-        The function's per-pod logs from the local site.
     """
     return await svc.logs(
         name, group, user, container=container, since_seconds=sinceSeconds, limit_bytes=limitBytes
@@ -190,12 +117,5 @@ async def get_function_logs(
 
 @router.delete("/{name}", status_code=204)
 async def delete_function(group: Group, name: Name, user: CurrentUser, svc: FunctionDep) -> None:
-    """Delete a function and its derived resources (204).
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The function service (injected).
-    """
+    """Delete a function and its derived resources (204)."""
     await svc.delete(name, group, user)

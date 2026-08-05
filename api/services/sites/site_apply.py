@@ -1,12 +1,5 @@
 """Writing one workload into one site, and the ordering that keeps it safe.
 
-The fan-out lives in :class:`~api.services.workloads.WorkloadService`; what
-happens *inside* a single site lives here, because the ordering constraints are
-local to one cluster and each has a failure it exists to prevent - a stale
-Secret outliving the spec that dropped it, an orphaned resource whose owner was
-never applied, a half-built create holding a name. They are stated on
-:func:`apply_to_site`, next to the code that has to honour them.
-
 Every function here runs off the event loop (blocking cluster I/O) and is called
 through ``asyncio.to_thread`` or the deployer's fan-out.
 """
@@ -39,42 +32,16 @@ def apply_to_site(
 ) -> SiteStatus:
     """Apply one workload to a single site, fail-closed (runs in a thread).
 
-    Order matters for the no-stale-secret guarantee:
-
-    1. **Prune first**, before anything goes live, so the new spec never runs
-       beside a stale Secret/ConfigMap leaking old values.
-
-    2. **KSVC, then owner-stamped backing, then DomainMapping.** The KSVC apply
-       returns the UID the ownerReferences need, so nothing is orphaned.
-
-    3. **Roll back a failed create, never a failed update.** A half-applied
-       create is deleted so it does not hold the name and host; an update is
-       left serving its last-good revision and self-heals on retry.
-
-    4. **Retire the old host last** (update only), so it keeps serving until
-       the new mapping is live, and survives a failure above.
-
-    Args:
-        cluster: The target site's cluster client.
-        oname: The object name (``{name}-{group}``).
-        ksvc: The Knative Service manifest.
-        backing: The derived backing manifests (env/files Secret/ConfigMap).
-        pull_secret_manifest: The image-pull Secret manifest, if any.
-        mapping: The DomainMapping manifest.
-        to_prune: ``(ResourceKind, name)`` pairs to remove first.
-        created: True for a create (enables rollback of the new KSVC on a
-            mid-apply failure); False for an update (no destructive rollback).
-        prev_host: The host the workload currently uses; when it differs from
-            this apply's host, the old DomainMapping is retired after the new
-            one is live (update only).
-
-    Returns:
-        The per-site status.
+    The order is the contract: prune, then KSVC, then owner-stamped backing and
+    the DomainMapping, then retire the old host. Each step depends on the one
+    before it - see the comments at each.
 
     Raises:
         Exception: Any non-404 prune/apply error, surfaced as a per-site
             failure by the fan-out.
     """
+    # Before anything goes live, so the new spec never runs beside a stale
+    # Secret/ConfigMap leaking old values.
     for pkind, pname in to_prune:
         try:
             cluster.delete(pkind, pname)
@@ -137,16 +104,6 @@ def apply_build_objects(
     Two callers: the create/update path when the local site runs no copy of the
     function, and the rebuild path, which never touches the KSVC.
 
-    Applied UNOWNED without a local KSVC to own them - an ownerReference must
-    name an owner in the same cluster - so nothing cascades and
-    :func:`delete_build_objects` removes them by name.
-
-    Args:
-        cluster: The local site's cluster client.
-        manifests: The git Secret, build ServiceAccount and Image.
-        oname: The object name (``{name}-{group}``) to own them, when this site
-            may be running the workload; None to apply unowned.
-
     Raises:
         Exception: Any apply error. Failing here means the image would never
             be built, so it is surfaced rather than leaving a function whose
@@ -165,17 +122,8 @@ def apply_build_objects(
 def delete_build_objects(cluster: Cluster, oname: str) -> None:
     """Remove a function's build objects from the local site, by name.
 
-    The build always runs here, and when the function is deployed elsewhere these
-    are unowned, so nothing cascades and a leftover Image would keep rebuilding a
-    deleted function. When the local site does run it, the KSVC delete already
-    cascaded and each call is a no-op 404.
-
     Best-effort: the KSVC is gone by now either way, and failing the delete
     over a build object would report a workload as undeleted when it is.
-
-    Args:
-        cluster: The local site's cluster client.
-        oname: The object name (``{name}-{group}``).
     """
     build_name = kpack.build_object_name(oname)
     for kind, obj in (

@@ -1,10 +1,4 @@
-"""Read a deployed KSVC back into the desired-state spec the user submitted.
-
-Pure functions (no cluster access). Everything here is recoverable from the KSVC
-itself except non-secret file contents, which the caller supplies via
-``configmaps`` (one extra read). Secret material - secret env values, secret file
-contents, registry creds - is deliberately never reconstructed.
-"""
+"""Read a deployed KSVC back into the desired-state spec the user submitted."""
 
 from __future__ import annotations
 
@@ -25,33 +19,14 @@ from api.models.common import (
 
 
 def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
-    """Convert submitted env to response views, dropping secret values.
-
-    Args:
-        env: The submitted env vars.
-
-    Returns:
-        Views with secret values set to None.
-    """
+    """Convert submitted env to response views, dropping secret values."""
     return [
         EnvVarView(name=e.name, value=None if e.secret else e.value, secret=e.secret) for e in env
     ]
 
 
 def redact_files(files: list[FileMount]) -> list[FileView]:
-    """Convert submitted files to response views, dropping secret contents.
-
-    ``content`` is a JSON string, so a non-secret file whose bytes are not UTF-8 (a
-    keystore, a DER certificate) reads back as None - the same as a secret file.
-    Returning it re-encoded would be inventing a text form the file does not have,
-    and the caller already holds what they sent.
-
-    Args:
-        files: The submitted file mounts.
-
-    Returns:
-        Views with secret and non-text file contents set to None.
-    """
+    """Convert submitted files to response views, dropping secret contents."""
     out: list[FileView] = []
     for f in files:
         content: str | None = None
@@ -93,31 +68,13 @@ def _meta_annotations(ksvc: dict) -> dict:
 
 
 def pull_secret_name(ksvc: dict) -> str | None:
-    """The imagePullSecret name referenced by the pod, or None (public image).
-
-    Args:
-        ksvc: The Knative Service object.
-
-    Returns:
-        The pull-secret name, or None.
-    """
+    """The imagePullSecret name referenced by the pod, or None (public image)."""
     secrets = _pod_spec(ksvc).get("imagePullSecrets") or []
     return secrets[0].get("name") if secrets else None
 
 
 def container_port(ksvc: dict) -> int | None:
-    """The explicit ``containerPort`` the user container declares, or None.
-
-    None means no port was stamped, so the workload runs on Knative's default
-    (the injected ``PORT``, 8080). Only the first declared port is read - Knative
-    permits a single container port.
-
-    Args:
-        ksvc: The Knative Service object.
-
-    Returns:
-        The declared container port, or None.
-    """
+    """The explicit ``containerPort`` the user container declares, or None."""
     ports = _container(ksvc).get("ports") or []
     if not ports:
         return None
@@ -130,12 +87,6 @@ def configmap_refs(ksvc: dict) -> set[str]:
 
     So the caller can fetch them to fill in ``content``. Excludes the platform CA
     volume.
-
-    Args:
-        ksvc: The Knative Service object.
-
-    Returns:
-        The set of backing ConfigMap names.
     """
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     names: set[str] = set()
@@ -177,12 +128,7 @@ def _injected_env_names(ksvc: dict) -> set[str]:
 
 
 def _env(ksvc: dict) -> list[EnvVarView]:
-    """Read back the container env as views (secretKeyRef values redacted).
-
-    Platform-injected CA-trust defaults are omitted - they aren't part of the
-    user's spec. A var the user set themselves is never injected, so it is never
-    listed as injected and reads back normally.
-    """
+    """Read back the container env as views (secretKeyRef values redacted)."""
     injected = _injected_env_names(ksvc)
     out: list[EnvVarView] = []
     for e in _container(ksvc).get("env") or []:
@@ -228,16 +174,7 @@ def parse_spec(
     configmaps: dict[str, dict] | None = None,
     registry_username: str | None = None,
 ) -> WorkloadSpec:
-    """Reconstruct the redacted desired-state spec from a KSVC and its ConfigMaps.
-
-    Args:
-        ksvc: The Knative Service object.
-        configmaps: Fetched file ConfigMaps keyed by name, for non-secret content.
-        registry_username: The pull-secret username, if read (token never shown).
-
-    Returns:
-        The reconstructed :class:`WorkloadSpec` with secrets redacted.
-    """
+    """Reconstruct the redacted desired-state spec from a KSVC and its ConfigMaps."""
     configmaps = configmaps or {}
     meta = _meta_annotations(ksvc)
     return WorkloadSpec(

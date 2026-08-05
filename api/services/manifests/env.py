@@ -1,9 +1,4 @@
-"""Resolve a workload's ``env`` into container env + a backing Secret.
-
-Plain entries stay inline. Entries marked ``secret: true`` have their value moved
-into a single per-workload Kubernetes Secret (``{workload}-env``); the container
-then reads them via a secretKeyRef so values never appear inline on the KSVC.
-"""
+"""Resolve a workload's ``env`` into container env + a backing Secret."""
 
 from __future__ import annotations
 
@@ -18,12 +13,7 @@ from common.labels import workload_labels
 
 @dataclass
 class ResolvedEnv:
-    """Resolved env: container entries plus the backing Secret, if any.
-
-    Attributes:
-        env: The resolved container env entries (inline or secretKeyRef).
-        backing: The ``{workload}-env`` Secret manifest(s) to create, if any.
-    """
+    """Resolved env: container entries plus the backing Secret, if any."""
 
     env: list[ContainerEnv]  # resolved container env entries
     backing: list[dict] = field(default_factory=list)  # Secret manifest(s) to create
@@ -42,22 +32,6 @@ def resolve_env(
     kept: dict[str, str] | None = None,
 ) -> ResolvedEnv:
     """Resolve env vars into container entries and a backing Secret.
-
-    Plain entries stay inline; ``secret: true`` values move into the
-    ``{workload}-env`` Secret and are read via a secretKeyRef. A secret entry with
-    ``value: None`` keeps its stored value: it is filled from ``kept`` (the decoded
-    existing env Secret), so a redacted read can be sent straight back on update.
-
-    Args:
-        workload: The object name (``{name}-{group}``).
-        group: Owning group (for labels).
-        owner: Username (for labels).
-        env: The submitted env vars.
-        kept: Decoded existing env-Secret values (name -> value) to fall back on
-            for a secret var sent without a value. Empty on create.
-
-    Returns:
-        The resolved container env and the backing Secret (if any).
 
     Raises:
         ValidationError: If two env vars share a name, or a secret var is sent with

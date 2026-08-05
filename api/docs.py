@@ -1,9 +1,4 @@
-"""SSO login wiring for Swagger UI (API-specific; airgap docs live in common.web).
-
-Lets Swagger UI's "Authorize" obtain an SSO token via Auth Code + PKCE. This is
-documentation/UI only - ``require_auth`` still enforces at runtime. The offline
-Swagger/ReDoc serving is shared and lives in :func:`common.web.mount_offline_docs`.
-"""
+"""SSO login wiring for Swagger UI (API-specific; airgap docs live in common.web)."""
 
 from __future__ import annotations
 
@@ -14,16 +9,7 @@ from api.core.config import SSOConfig
 
 
 def wire_sso_login(app: FastAPI, sso: SSOConfig) -> None:
-    """Let Swagger UI's "Authorize" log in via SSO (Auth Code + PKCE).
-
-    Adds an OAuth2 scheme to the OpenAPI and points Swagger's OAuth at the public
-    client id. Documentation only - ``require_auth`` still enforces at runtime, so
-    the ServiceNow flow is unaffected. PKCE means no secret.
-
-    Args:
-        app: The FastAPI application.
-        sso: The SSO config (issuer-derived endpoints + the Swagger client id).
-    """
+    """Let Swagger UI's "Authorize" log in via SSO (Auth Code + PKCE)."""
 
     def custom_openapi() -> dict:
         if app.openapi_schema:

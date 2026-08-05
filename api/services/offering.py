@@ -1,21 +1,4 @@
-"""What differs between a function and a container, in one place.
-
-:class:`~api.services.workloads.WorkloadService` calls itself offering-agnostic,
-and this is what makes that true. It used to be aspirational: seven ``if offering
-== "function"`` branches were spread through the engine - picking a response
-class (three times), pruning a container's pull Secret, reading a function's git
-token, folding in its build status, and deleting its build objects. Adding a
-third offering meant finding all seven.
-
-They are now the members of :class:`Offering`, implemented once per offering and
-passed to the engine per call. The engine is a process-wide singleton shared by
-both offerings (``api.dependencies.get_workload_service``), which is exactly why
-the offering travels as an argument rather than being held as state.
-
-Implementations are stateless policy - no cluster clients, no settings - so
-:data:`FUNCTION` and :data:`CONTAINER` are module singletons. Everything they
-need to touch a cluster is handed to them by the caller.
-"""
+"""What differs between a function and a container, in one place."""
 
 from __future__ import annotations
 
@@ -45,20 +28,7 @@ if TYPE_CHECKING:  # a type hint only - importing it at runtime would be a cycle
 
 @dataclass(frozen=True)
 class DeleteContext:
-    """What :meth:`Offering.after_delete` may need, so the protocol takes one value.
-
-    An offering is stateless policy, so everything it touches is handed to it.
-    Cleanup outgrew ``(cluster, oname)`` once it reached past the cluster: the
-    registry is addressed by ``{group}/{name}``, not by the object name, and it
-    needs settings an offering does not hold.
-
-    Attributes:
-        cluster: The local site, where the build objects are.
-        oname: The object name (``{name}-{group}``).
-        name: The workload name.
-        group: The owning group.
-        registry: Registry settings, for deleting the repositories by name.
-    """
+    """What :meth:`Offering.after_delete` may need, so the protocol takes one value."""
 
     cluster: Cluster
     oname: str
@@ -82,24 +52,11 @@ class Offering(Protocol):
 
     @property
     def has_build(self) -> bool:
-        """Whether this offering builds its image, so a read must fetch build state.
-
-        Declared rather than inferred, so the engine can skip the build read
-        entirely instead of calling :meth:`build_status` just to be handed None -
-        that read runs in its own thread on every GET.
-        """
+        """Whether this offering builds its image, so a read must fetch build state."""
         ...
 
     def applied_response(self, common: dict, req: ApplyRequest) -> WorkloadResponse:
-        """Shape the response for a workload just applied, from what was submitted.
-
-        Args:
-            common: The offering-agnostic response fields the engine assembled.
-            req: The apply request, carrying the offering's own submitted fields.
-
-        Returns:
-            The offering's response body.
-        """
+        """Shape the response for a workload just applied, from what was submitted."""
         ...
 
     def fetched_response(
@@ -109,15 +66,6 @@ class Offering(Protocol):
 
         Distinct from :meth:`applied_response` because the values come from
         elsewhere: the stored object and its parsed spec, not the request.
-
-        Args:
-            common: The offering-agnostic response fields the engine assembled.
-            obj: The KSVC read back from a representative site.
-            spec: The parsed, redacted desired-state spec.
-            build: The build status, when the offering has one.
-
-        Returns:
-            The offering's response body.
         """
         ...
 
@@ -152,12 +100,7 @@ class Offering(Protocol):
     def build_states(
         self, builder: BuildBackend, cluster: Cluster, group: str
     ) -> dict[str, BuildStatusView]:
-        """Build states for a whole group's listing, keyed by object name.
-
-        The listing counterpart of :meth:`build_status`: one read for every
-        workload in the group, so a list does not pay a round trip per function.
-        Empty for an offering with no build.
-        """
+        """Build states for a whole group's listing, keyed by object name."""
         ...
 
 
@@ -183,18 +126,7 @@ class FunctionOffering:
     def fetched_response(
         self, common: dict, obj: dict, spec, build: BuildStatusView | None
     ) -> WorkloadResponse:
-        """The function response, with the build folded into the status rollup.
-
-        Folded into the per-site rows too, and for the same reason: while the
-        build runs, every site is failing to pull an image that does not exist
-        yet, so a row left unfolded would contradict the headline it sits under
-        (see :func:`~api.services.state.ksvc_state.sites_with_build_status`).
-
-        No image is exposed: the built image is an internal artifact, so a client
-        reads ``gitRepo``/``branch`` instead. The runtime and version come from
-        the KSVC's annotations rather than the spec - they are build inputs, not
-        anything visible in the running container.
-        """
+        """The function response, with the build folded into the status rollup."""
         annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
         return FunctionResponse(
             **{
@@ -212,13 +144,7 @@ class FunctionOffering:
         )
 
     def managed_secrets(self, oname: str) -> set[tuple[ResourceKind, str]]:
-        """None. A function's git Secret is carried forward, never pruned.
-
-        It is applied on every site so any of them can rebuild after a switchover
-        (docs/BUILDING.md - Active/Active), and an update that omits the token
-        keeps the stored copy - so pruning it would destroy the only thing that
-        can rebuild the function.
-        """
+        """None. A function's git Secret is carried forward, never pruned."""
         return set()
 
     def read_extra_state(self, cluster: Cluster, oname: str) -> dict:
@@ -227,13 +153,7 @@ class FunctionOffering:
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
 
     def after_delete(self, ctx: DeleteContext) -> None:
-        """Remove the build objects, then the repositories the build pushed to.
-
-        Two kinds of leftover. The build objects are in a cluster but unowned on a
-        site that never ran the function, so nothing cascades to them. The registry
-        has no owner at all - no Kubernetes object references a repository - so it
-        is deleted by name (docs/BUILDING.md - Registry cleanup on delete).
-        """
+        """Remove the build objects, then the repositories the build pushed to."""
         site_apply.delete_build_objects(ctx.cluster, ctx.oname)
         registry_svc.delete_function_repositories(ctx.registry, ctx.group, ctx.name)
 
@@ -241,11 +161,6 @@ class FunctionOffering:
         self, builder: BuildBackend, cluster: Cluster, name: str, group: str
     ) -> BuildStatusView | None:
         """The function's build state from the local site, or None if it has none.
-
-        One site builds and it is always the local one (docs/BUILDING.md), including
-        for a function deployed only elsewhere - so the Image is here whenever it
-        exists anywhere, and a cross-site fan-out would add latency to every GET for
-        something that cannot be found anywhere else.
 
         Never an error: a function whose image already exists must still report its
         KSVC status when the build backend cannot be read.

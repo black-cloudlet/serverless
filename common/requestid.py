@@ -1,14 +1,4 @@
-"""Per-request correlation id: adopt an inbound ``X-Request-ID`` or mint one.
-
-Shared web infra - the API (and the future builder) want the same request
-correlation. OpenShift's router already stamps an ``X-Request-ID`` on every
-proxied request; we adopt it when present (so the id matches the router/ingress
-logs end to end) and generate a UUID otherwise. The id is exposed three ways:
-
-- ``request.state.request_id`` - for handlers, e.g. the error envelope;
-- the ``X-Request-ID`` response header - echoed back to the caller;
-- a context var - so log records can carry it (see ``common.logging``).
-"""
+"""Per-request correlation id: adopt an inbound ``X-Request-ID`` or mint one."""
 
 from __future__ import annotations
 
@@ -49,11 +39,7 @@ class RequestIDMiddleware:
     """
 
     def __init__(self, app: ASGIApp) -> None:
-        """Wrap the downstream ASGI app.
-
-        Args:
-            app: The next ASGI application in the stack.
-        """
+        """Wrap the downstream ASGI app."""
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

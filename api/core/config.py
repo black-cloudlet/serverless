@@ -1,9 +1,4 @@
-"""API service settings.
-
-Environment-driven; in production the values come from Vault via the External
-Secrets Operator. The connection identity is shared and lives in
-:mod:`common.config`; this module adds the API's own fields.
-"""
+"""API service settings."""
 
 from __future__ import annotations
 

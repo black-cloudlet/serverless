@@ -70,18 +70,7 @@ def _base(settings: Settings) -> dict:
 async def get_container_info(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ContainerInfoResponse:
-    """Return static container capabilities for dynamic UI rendering.
-
-    Public (no auth) and config/code-derived (no cluster calls): the shared
-    platform options plus the container-specific ``port`` rules a client needs to
-    build a create form.
-
-    Args:
-        settings: Global settings (injected).
-
-    Returns:
-        The container info document.
-    """
+    """Return static container capabilities for dynamic UI rendering."""
     return ContainerInfoResponse(
         **_base(settings),
         port=_port_rules(),
@@ -93,19 +82,7 @@ async def get_function_info(
     settings: Annotated[Settings, Depends(get_settings)],
     runtimes: RuntimesDep,
 ) -> FunctionInfoResponse:
-    """Return static function capabilities for dynamic UI rendering.
-
-    Public (no auth) and config/code-derived (no cluster calls): the shared
-    platform options plus the function-specific ``runtimes`` a client needs to
-    build a create form.
-
-    Args:
-        settings: Global settings (injected).
-        runtimes: The available runtimes registry (injected).
-
-    Returns:
-        The function info document.
-    """
+    """Return static function capabilities for dynamic UI rendering."""
     return FunctionInfoResponse(
         **_base(settings),
         port=_port_rules(),

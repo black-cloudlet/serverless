@@ -25,12 +25,7 @@ from api.models.common import (
 
 
 class FunctionCreate(BaseModel):
-    """Request body to create a function from source (built into an image).
-
-    The owning group comes from the request path, not the body. ``runtime`` is a
-    free string here: the valid set is data (a ConfigMap), so it is checked against
-    the live registry in the service layer rather than as a fixed enum.
-    """
+    """Request body to create a function from source (built into an image)."""
 
     name: Name
     gitRepo: GitUrl
@@ -57,13 +52,7 @@ class FunctionCreate(BaseModel):
 
 
 class FunctionUpdate(BaseModel):
-    """Replace the mutable spec: the body is the full desired state.
-
-    Mirrors ``ContainerUpdate``: non-secret fields are replaced, so ``gitRepo`` and
-    ``runtime`` are required as on create. Only the git token is keep-on-omit; it is
-    stored and reused unless the client sends a new one, which rotates it. A rebuild
-    happens only when a build input changes or the token rotates.
-    """
+    """Replace the mutable spec: the body is the full desired state."""
 
     gitRepo: GitUrl
     branch: Branch = "main"

@@ -24,12 +24,6 @@ def get_validator() -> TokenValidator:
 def _bearer_token(request: Request) -> str:
     """Extract the raw bearer token from the Authorization header.
 
-    Args:
-        request: The incoming request.
-
-    Returns:
-        The token (the part after ``Bearer ``).
-
     Raises:
         UnauthenticatedError: If the header is missing or malformed.
     """
@@ -46,18 +40,6 @@ def require_auth(
     validator: Annotated[TokenValidator, Depends(get_validator)],
 ) -> Principal:
     """Validate the bearer token and return the Principal.
-
-    A structural JWT is validated as an OIDC token; an opaque token is matched
-    against the admin API key. When ``auth_enabled`` is false (local dev only) a
-    synthetic admin principal is returned so the API is usable without a live SSO.
-
-    Args:
-        request: The incoming request (carries the Authorization header).
-        settings: Application settings (auth toggle, admin key, SSO config).
-        validator: The OIDC token validator.
-
-    Returns:
-        The authenticated :class:`Principal`.
 
     Raises:
         UnauthenticatedError: If the token is missing/malformed or unrecognized.
