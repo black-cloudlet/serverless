@@ -1801,3 +1801,101 @@ async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest()
     )
 
     assert extract_image(_applied_kind(cluster, "Service")[0]) == digest
+
+
+# --------------------------------------------------------- rebuild edge cases
+
+
+async def test_stored_inputs_that_no_longer_validate_are_a_400_not_a_500():
+    """Rebuild is the only path building a BuildRequest from stored state.
+
+    A hand-edited annotation, or a rule tightened since the function was created,
+    fails the dataclass's own validation. Untranslated that reaches the catch-all
+    handler as a 500 with a fixed message, hiding an actionable problem.
+    """
+    from fastapi import BackgroundTasks
+
+    from api.models.common import ANNOTATION_GIT_PATH
+    from common.errors import ValidationError
+
+    ksvc = _deployed_ksvc()
+    ksvc["metadata"]["annotations"][ANNOTATION_GIT_PATH] = "../etc"
+    cluster = _rebuild_cluster(existing={"hello-payments": ksvc})
+    svc = _rebuild_service({"site-a": cluster}, _TriggeringBuilder())
+
+    with pytest.raises(ValidationError, match="stored build inputs are not valid"):
+        await svc.accept_rebuild("payments", "hello", _principal(), BackgroundTasks())
+
+
+async def test_a_second_rebuild_annotates_whatever_build_is_latest_by_then():
+    """Two requests are two builds - asking twice is what asking twice means.
+
+    The trigger is read off the latest Build, so the second request must find the
+    one kpack created for the first, not re-annotate a Build it has moved past.
+    """
+    cluster = _rebuild_cluster()
+    builder = _builder()
+
+    assert builder.trigger(cluster, "hello", "payments") is True
+    cluster._builds.append(_build_obj(2))  # kpack made one from that trigger
+    assert builder.trigger(cluster, "hello", "payments") is True
+
+    assert [name for _, name, _ in cluster.patched] == [
+        "fn-hello-payments-build-1",
+        "fn-hello-payments-build-2",
+    ]
+
+
+def test_the_history_limit_never_prunes_the_build_the_trigger_needs():
+    """The two features interact: a rebuild annotates the latest retained Build.
+
+    A limit of zero would leave nothing to annotate and make every rebuild a
+    silent no-op, so the floor is one rather than a free-form integer.
+    """
+    import pydantic
+
+    from common.config import BuildConfig
+
+    with pytest.raises(pydantic.ValidationError):
+        BuildConfig(success_history_limit=0)
+    assert BuildConfig(success_history_limit=1).success_history_limit == 1
+
+
+async def test_rebuild_is_refused_for_a_group_the_caller_is_not_in():
+    """Authorization is the engine's, and it runs before anything is read."""
+    from fastapi import BackgroundTasks
+
+    from api.auth.claims import Principal
+    from common.errors import ForbiddenError
+
+    svc = _rebuild_service({"site-a": _rebuild_cluster()}, _TriggeringBuilder())
+    outsider = Principal(subject="u", username="mallory", groups=["other"])
+
+    with pytest.raises(ForbiddenError):
+        await svc.accept_rebuild("payments", "hello", outsider, BackgroundTasks())
+
+
+async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202():
+    """The 202 is already sent, so the failure belongs in the log and the status.
+
+    `run` is what swallows it; letting it escape would crash the background task
+    and lose the reason with it.
+    """
+    from fastapi import BackgroundTasks
+
+    class _DownLocal(_RebuildCluster):
+        def apply(self, manifest):
+            raise RuntimeError("site down")
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _DownLocal(
+        existing={"hello-payments": _deployed_ksvc()},
+        secrets={"hello-payments-git": stored},
+        builds=[_build_obj(1)],
+    )
+    svc = _rebuild_service({"site-a": cluster}, _TriggeringBuilder())
+
+    background = BackgroundTasks()
+    body = await svc.accept_rebuild("payments", "hello", _principal(), background)
+    assert body.overallStatus == "Pending"
+    await background()  # must not raise

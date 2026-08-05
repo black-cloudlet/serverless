@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError as PydanticValidationError
+
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
@@ -211,17 +213,28 @@ class FunctionService:
                 "cannot rebuild: no git token is stored for this function; "
                 "send one with a PUT instead"
             )
-        return BuildRequest(
-            name=name,
-            group=group,
-            git_url=git_url,
-            branch=branch,
-            path=existing.get("path") or "",
-            git_token=token,
-            runtime=runtime,
-            version=existing.get("version"),
-            owner=user.username,
-        )
+        # The only path that builds a BuildRequest out of stored state rather than
+        # a validated request body, so it is the only one where the dataclass's own
+        # validation can fail. Untranslated that is a 500 for a hand-edited
+        # annotation, or for a rule tightened since the function was created.
+        try:
+            return BuildRequest(
+                name=name,
+                group=group,
+                git_url=git_url,
+                branch=branch,
+                path=existing.get("path") or "",
+                git_token=token,
+                runtime=runtime,
+                version=existing.get("version"),
+                owner=user.username,
+            )
+        except PydanticValidationError as exc:
+            fields = ", ".join(sorted({str(e["loc"][0]) for e in exc.errors() if e.get("loc")}))
+            raise ValidationError(
+                f"cannot rebuild: the stored build inputs are not valid ({fields}); "
+                "send them with a PUT instead"
+            ) from exc
 
     async def accept_rebuild(
         self, group: str, name: str, user: Principal, background

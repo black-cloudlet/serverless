@@ -87,6 +87,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   are synchronous `400`s; a container of the same name is a `404`, like every
   other read. The response is the same `Pending` 202 with the same `statusUrl`.
 
+  Stored inputs that no longer validate - a hand-edited annotation, or a rule
+  tightened since the function was created - are a `400` naming the fields,
+  not the `500` the catch-all handler would otherwise render. Rebuild is the
+  only path that builds a `BuildRequest` out of stored state rather than a
+  validated request body, so it is the only one where that can happen.
+
   The trigger is an annotation on the latest kpack `Build`, never on the
   `Image`: kpack reads it there, and a nonce in the `Image` spec would look like
   a change to every apply (rebuilding forever under active/active) and would be
