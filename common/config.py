@@ -1,4 +1,9 @@
-"""Settings shared by every service (api, builder, …)."""
+"""Settings shared by every service (api, builder, …).
+
+The connection identity - sites, client cert, CA bundle, registry, timeouts - is
+the same for any service that talks to the clusters, so it lives here. Each
+service subclasses it and adds its own fields.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +14,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SiteConfig(BaseModel):
-    """Connection profile for one site."""
+    """Connection profile for one site.
+
+    A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
+    *cluster* (e.g. ``central-0``) whose API server is derived as
+    ``https://api.{cluster}.{base_domain}:6443``. The client certificate, CA
+    bundle, and workloads namespace are global (the same in every cluster).
+    """
 
     name: str
     cluster: str
 
 
 class CABundleConfig(BaseModel):
-    """The OpenShift-injected trusted CA bundle ConfigMap."""
+    """The OpenShift-injected trusted CA bundle ConfigMap.
+
+    OpenShift populates a ConfigMap labelled
+    ``config.openshift.io/inject-trusted-cabundle: "true"`` with the cluster's
+    trusted CAs. It is mounted into the service and every workload, and is the same
+    everywhere, so the Kubernetes client verifies API servers with it too.
+    """
 
     config_map: str = "ca-bundle"
     key: str = "ca-bundle.crt"
@@ -126,7 +143,14 @@ class CommonSettings(BaseSettings):
         return f"{self.client_cert_dir.rstrip('/')}/tls.key"
 
     def site(self, name: str) -> SiteConfig | None:
-        """Return the configured site with ``name``, or None if there isn't one."""
+        """Return the configured site with ``name``, or None if there isn't one.
+
+        Args:
+            name: The site name to look up.
+
+        Returns:
+            The matching :class:`SiteConfig`, or None.
+        """
         return next((z for z in self.sites if z.name == name), None)
 
     @property

@@ -1,5 +1,10 @@
 """Shared FastAPI web bits: health probes, offline API docs, error handlers.
 
+Every service exposes ``/healthz`` and ``/readyz``, serves its OpenAPI docs from
+vendored assets (no CDN, for airgap), and renders :mod:`common.errors` into the
+same response envelope. Service-specific concerns (e.g. the API's SSO
+"Authorize" wiring) stay in that service.
+
 This is the one place in ``common`` that requires FastAPI, which is what lets
 the rest of it be imported by a service that serves no HTTP.
 """
@@ -34,18 +39,35 @@ health_router = APIRouter(tags=["health"])
 
 @health_router.get("/healthz")
 async def healthz() -> dict:
-    """Liveness probe reporting the process is up."""
+    """Liveness probe reporting the process is up.
+
+    Returns:
+        A constant ``{"status": "ok"}`` body.
+    """
     return {"status": "ok"}
 
 
 @health_router.get("/readyz")
 async def readyz() -> dict:
-    """Readiness probe reporting the app is ready to serve."""
+    """Readiness probe reporting the app is ready to serve.
+
+    Returns:
+        A constant ``{"status": "ready"}`` body.
+    """
     return {"status": "ready"}
 
 
 def mount_offline_docs(app: FastAPI) -> None:
-    """Serve Swagger UI and ReDoc from vendored assets (no CDN, for airgap)."""
+    """Serve Swagger UI and ReDoc from vendored assets (no CDN, for airgap).
+
+    FastAPI's ``/docs`` and ``/redoc`` load assets from the jsdelivr CDN, unreachable
+    in an airgapped cluster. Build the app with ``docs_url=None``/``redoc_url=None``;
+    this mounts the vendored assets and re-adds the routes pointing at them. ReDoc's
+    Google Fonts request is disabled for the same reason.
+
+    Args:
+        app: The FastAPI application to attach the offline docs to.
+    """
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
     @app.get("/docs", include_in_schema=False)
@@ -82,7 +104,18 @@ def _envelope(
     details: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build the standard error response body."""
+    """Build the standard error response body.
+
+    Args:
+        status: The numeric HTTP status code (also the response status).
+        code: The machine-readable error code.
+        message: The human-readable message.
+        details: Optional structured details.
+        request_id: Optional correlation id.
+
+    Returns:
+        The error envelope dict.
+    """
     return {
         "error": {
             "status": status,
@@ -95,7 +128,18 @@ def _envelope(
 
 
 def _code_for_status(status: int) -> str:
-    """A machine-readable code for a bare HTTP status (e.g. 404 -> ``NOT_FOUND``)."""
+    """A machine-readable code for a bare HTTP status (e.g. 404 -> ``NOT_FOUND``).
+
+    Framework HTTP errors (unknown route, wrong method, ...) have no domain code,
+    so derive one from the status name; fall back to ``HTTP_ERROR`` for a
+    non-standard status.
+
+    Args:
+        status: The HTTP status code.
+
+    Returns:
+        The derived error code.
+    """
     try:
         return HTTPStatus(status).name
     except ValueError:
@@ -103,12 +147,29 @@ def _code_for_status(status: int) -> str:
 
 
 def _request_id_of(request: Request) -> str:
-    """The request's correlation id, preferring the copy stamped on the scope."""
+    """The request's correlation id, preferring the copy stamped on the scope.
+
+    The context var is reset as the request unwinds, and the catch-all handler
+    runs *outside* the middleware that sets it - Starlette puts
+    ``ServerErrorMiddleware`` outermost, so by the time it is reached the var is
+    already back to ``"-"``. The scope's state survives that unwinding, which is
+    why :class:`~common.requestid.RequestIDMiddleware` also exposes the id there.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The correlation id, or ``"-"`` if there is none.
+    """
     return getattr(request.state, "request_id", None) or get_request_id()
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Register handlers rendering domain/HTTP errors as the standard envelope."""
+    """Register handlers rendering domain/HTTP errors as the standard envelope.
+
+    Args:
+        app: The FastAPI application to attach the handlers to.
+    """
 
     @app.exception_handler(APIError)
     async def _api_error(request: Request, exc: APIError) -> JSONResponse:
@@ -148,7 +209,20 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
-        """Render anything unanticipated as the same envelope as everything else."""
+        """Render anything unanticipated as the same envelope as everything else.
+
+        Without this, Starlette serves an unhandled exception as plain-text
+        "Internal Server Error": no ``error`` object, so a client parsing the
+        envelope this API publishes on ``/info`` breaks inside its own error
+        path, and no correlation id, so the report cannot be tied back to the
+        traceback. A 500 is precisely the response a caller most needs to be able
+        to report.
+
+        The message is a fixed string. An exception's own text routinely carries
+        internal hostnames, object names or secret material, and the caller here
+        is by definition seeing something the service did not anticipate - the
+        detail belongs in the log, which carries the same id.
+        """
         request_id = _request_id_of(request)
         # Stamped explicitly: by now the request has unwound and the context var
         # the log filter normally reads is back to "-", so without this the one

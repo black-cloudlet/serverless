@@ -1,4 +1,14 @@
-"""Registry cleanup: deleting the repositories a deleted function leaves behind."""
+"""Registry cleanup: deleting the repositories a deleted function leaves behind.
+
+Nothing in the cluster owns registry content, so a function's images and its
+build cache (docs/BUILDING.md - Build cache) outlive the KSVC that produced
+them. This deletes both repositories when the function is deleted.
+
+Quay's management API, ``DELETE /api/v1/repository/{namespace}/{repository}``,
+which removes the repository itself rather than only its manifests. That is a
+Quay-specific call and needs a Quay OAuth token: robot accounts are registry
+credentials and cannot authenticate here (docs/BUILDING.md - Registry cleanup on delete).
+"""
 
 from __future__ import annotations
 
@@ -12,7 +22,17 @@ logger = get_logger(__name__)
 
 
 def delete_function_repositories(registry: RegistryConfig, group: str, name: str) -> None:
-    """Delete a function's image and cache repositories."""
+    """Delete a function's image and cache repositories.
+
+    Best-effort and never raises: the workload is already gone platform-wide by
+    the time this runs, and failing a delete over leftover registry content
+    would report a function as undeleted when it is not.
+
+    Args:
+        registry: Registry settings, carrying the host and the API token.
+        group: The owning group.
+        name: The workload name.
+    """
     if not registry.can_delete:
         return
     # The path the image reference hangs off, minus the host, so what is deleted
@@ -28,7 +48,18 @@ def delete_function_repositories(registry: RegistryConfig, group: str, name: str
 
 
 def _delete_repository(client: httpx.Client, headers: dict, repo: str) -> None:
-    """Delete one repository."""
+    """Delete one repository.
+
+    The outcomes are read off httpx rather than compared against literals:
+    ``is_success`` is the whole 2xx class, which is what "deleted" means here.
+    Quay answers a repository delete with 204, but listing the codes we happen
+    to have seen would quietly log a successful 200 as a failure.
+
+    Args:
+        client: The registry HTTP client.
+        headers: Authorization headers carrying the OAuth token.
+        repo: The ``{namespace}/{repository}`` path the Quay route expects.
+    """
     resp = client.delete(f"/api/v1/repository/{repo}", headers=headers)
     if resp.is_success:
         logger.info("deleted registry repository '%s'", repo)

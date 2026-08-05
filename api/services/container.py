@@ -18,7 +18,11 @@ class ContainerService:
     """Container-specific orchestration; delegates the shared work to WorkloadService."""
 
     def __init__(self, engine: WorkloadService):
-        """Initialize the service."""
+        """Initialize the service.
+
+        Args:
+            engine: The shared workload engine doing the cross-site work.
+        """
         self._engine = engine
 
     def _echo(self, spec) -> dict:
@@ -35,7 +39,17 @@ class ContainerService:
     async def accept(
         self, group: str, spec: ContainerCreate, user: Principal, background
     ) -> ContainerResponse:
-        """Validate and accept a create request, scheduling the deploy (202)."""
+        """Validate and accept a create request, scheduling the deploy (202).
+
+        Args:
+            group: The owning group (from the request path).
+            spec: The container create request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
         return await self._engine.accept_create(
             offering=CONTAINER,
             group=group,
@@ -50,7 +64,18 @@ class ContainerService:
     async def accept_update(
         self, group: str, name: str, spec: ContainerUpdate, user: Principal, background
     ) -> ContainerResponse:
-        """Validate and accept an update request, scheduling the deploy (202)."""
+        """Validate and accept an update request, scheduling the deploy (202).
+
+        Args:
+            group: The owning group (from the request path).
+            name: The workload name.
+            spec: The container update request.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the deploy on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+        """
         return await self._engine.accept_update(
             offering=CONTAINER,
             group=group,
@@ -66,7 +91,13 @@ class ContainerService:
 
     @staticmethod
     def _check_registry_change(spec: ContainerUpdate, existing: dict) -> None:
-        """Reject a registry-username change made without a token (synchronous 400)."""
+        """Reject a registry-username change made without a token (synchronous 400).
+
+        A username with no token is a keep - it must match the stored username. A
+        different one can't rotate the credential (there's no token to write), so
+        it's rejected rather than silently ignored. Only enforced when the stored
+        username is known; if it couldn't be read we fall through to carry-forward.
+        """
         stored = existing.get("registry_username")
         if (
             spec.registryToken is None
@@ -86,6 +117,14 @@ class ContainerService:
 
         Builds the pull secret (if registry creds were given) and applies the
         workload to all target sites.
+
+        Args:
+            group: The owning group (from the request path).
+            spec: The container create request.
+            user: The authenticated caller.
+
+        Returns:
+            The response body and HTTP status code.
         """
         oname = object_name(spec.name, group)
         # Registry creds are optional (public image -> no pull secret).
@@ -134,7 +173,19 @@ class ContainerService:
         user: Principal,
         existing: dict | None = None,
     ) -> tuple[ContainerResponse, int]:
-        """Apply an update to a container (runs in the background after accept)."""
+        """Apply an update to a container (runs in the background after accept).
+
+        Args:
+            group: The owning group (from the request path).
+            name: The workload name.
+            spec: The container update request.
+            user: The authenticated caller.
+            existing: The workload state preloaded by accept_update, if any; a
+                fresh fetch is done when None.
+
+        Returns:
+            The response body and HTTP status code.
+        """
         oname = object_name(name, group)
         # accept_update already fetched (and authorized) this; reuse it to avoid a
         # second multi-site fanout. Falls back to a fresh fetch for direct callers.
@@ -195,11 +246,29 @@ class ContainerService:
         return body, code
 
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
-        """Get one container with live per-site status."""
+        """Get one container with live per-site status.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The full single-container response.
+        """
         return await self._engine.get(CONTAINER, name, user, group)
 
     async def stats(self, name: str, group: str, user: Principal) -> WorkloadStatsResponse:
-        """Read the container's live state (the poll view)."""
+        """Read the container's live state (the poll view).
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The rollup plus per-site replicas and usage.
+        """
         return await self._engine.stats(CONTAINER, name, user, group)
 
     async def logs(
@@ -212,7 +281,19 @@ class ContainerService:
         since_seconds: int | None,
         limit_bytes: int | None,
     ) -> LogsResponse:
-        """Snapshot the container's pod logs from the current site."""
+        """Snapshot the container's pod logs from the current site.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            container: The pod container to read.
+            since_seconds: Only logs newer than this, if set.
+            limit_bytes: Cap on bytes read per pod, if set.
+
+        Returns:
+            The container's per-pod logs from the local site.
+        """
         return await self._engine.logs(
             CONTAINER,
             name,
@@ -224,9 +305,24 @@ class ContainerService:
         )
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        """List the group's containers."""
+        """List the group's containers.
+
+        Args:
+            group: The owning group.
+            user: The authenticated caller.
+            sort: Sort key, "name" or "createdAt".
+
+        Returns:
+            The per-workload summaries.
+        """
         return await self._engine.list(CONTAINER, user, group, sort)
 
     async def delete(self, name: str, group: str, user: Principal) -> None:
-        """Delete a container and its derived resources."""
+        """Delete a container and its derived resources.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+        """
         await self._engine.delete(CONTAINER, name, user, group)

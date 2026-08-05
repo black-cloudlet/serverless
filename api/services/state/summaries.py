@@ -1,4 +1,14 @@
-"""Merge a group's per-site KSVC listings into one summary per workload."""
+"""Merge a group's per-site KSVC listings into one summary per workload.
+
+Pure, like :mod:`api.services.state.ksvc_state`: it takes what the fan-out already
+fetched and returns the response objects. The listing's I/O - the fan-out and
+the build-state read - stays in the engine, so the merge rules that decide what
+a workload deployed to one site of two reads as are testable with plain dicts.
+
+The merge is deliberately partial-tolerant. A site that did not answer is simply
+absent from the input, and a workload's rollup covers only the sites that did
+return it, so a single-site workload reads ``Ready`` rather than ``Degraded``.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +37,21 @@ def merge(
     route_domain: str,
     sort: str = "name",
 ) -> list[WorkloadSummary]:
-    """One summary per workload, merged across the sites that returned it."""
+    """One summary per workload, merged across the sites that returned it.
+
+    Args:
+        results: ``(site, ksvcs_or_None)`` per site; None means it did not answer.
+        group: The owning group.
+        offering: The offering being listed ("function"/"container").
+        builds: Build states keyed by object name, for the build-first rollup.
+            Empty for an offering with no build.
+        route_domain: Used to derive a host for a workload whose KSVC carries no
+            host annotation.
+        sort: "name" or "createdAt".
+
+    Returns:
+        The sorted summaries.
+    """
     suffix = f"-{group}"
     merged: dict[str, dict] = {}
     for site, items in results:

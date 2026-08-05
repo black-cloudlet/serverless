@@ -1,5 +1,15 @@
 """The kpack vocabulary: manifests for a build, and how to read its status.
 
+Shared rather than API-local because both halves of the build path speak it -
+the API writes the ``Image`` (:mod:`api.services.builder.kpack_backend`), and the build
+service reads ``status.latestImage`` back off it (docs/BUILDING.md - Ownership).
+Naming it in one place is what keeps them agreeing on which object is which.
+
+Pure: no I/O and no framework, so it sits in the domain layer beside
+:mod:`common.build`. The caller applies the manifests alongside the KSVC's
+other derived resources, in the workload's own namespace, so they are
+owner-stamped and garbage-collected with it.
+
 The git credential is not here - it is the workload's own ``{workload}-git``
 Secret, which :mod:`api.services.manifests.secrets` builds in the shape kpack consumes.
 """
@@ -25,7 +35,22 @@ def build_object_name(workload: str) -> str:
 def build_service_account(
     name: str, labels: dict[str, str], git_secret: str, registry_secret: str
 ) -> dict:
-    """Build the per-function build ServiceAccount."""
+    """Build the per-function build ServiceAccount.
+
+    Per function, not shared: each function's git token comes from its own caller, so
+    a shared account would let one tenant's build authenticate as another. The
+    registry credential is platform-wide and appears in both lists - ``secrets`` to
+    push the built image, ``imagePullSecrets`` to pull the builder.
+
+    Args:
+        name: The ServiceAccount name.
+        labels: Labels to stamp on it.
+        git_secret: The workload's basic-auth git Secret.
+        registry_secret: The shared registry dockerconfigjson Secret.
+
+    Returns:
+        The ServiceAccount manifest dict.
+    """
     return {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
@@ -51,7 +76,36 @@ def build_image(
     success_history_limit: int | None = None,
     failed_history_limit: int | None = None,
 ) -> dict:
-    """Build the kpack ``Image`` CR for one function."""
+    """Build the kpack ``Image`` CR for one function.
+
+    Server-side applied on every create and update, which is what makes it safe under
+    active/active: the spec is a pure function of the request, so concurrent applies
+    converge. ``creationTime`` is never set - it is a nonce that would make every
+    apply look like a change and rebuild forever.
+
+    Args:
+        name: The Image name (``fn-{workload}``).
+        labels: Labels to stamp on it.
+        tag: Where the built image is pushed.
+        builder: Name of the namespaced Builder to build with.
+        service_account: The per-function build ServiceAccount.
+        git_url: Source repository URL.
+        revision: Branch or commit SHA to build.
+        sub_path: Directory within the clone to build; "" builds the root.
+        env: Build-time environment (runtime version, package index URLs, the
+            dependency mirror).
+        resources: Requests/limits for the build pod.
+        cache_tag: Registry reference to cache build layers in. None omits
+            ``spec.cache``, which is not "no cache" - it takes the kpack
+            install's default, a PVC per Image.
+        success_history_limit: Successful Builds kpack keeps for this function.
+        failed_history_limit: Failed Builds kpack keeps. None omits the fields,
+            which is kpack's default of 10 each, not "unbounded"
+            (docs/BUILDING.md - Build history).
+
+    Returns:
+        The Image manifest dict.
+    """
     spec: dict = {
         "tag": tag,
         # Namespace omitted: kpack resolves a namespaced Builder in the Image's
@@ -100,6 +154,12 @@ def latest_build(builds: list[dict]) -> dict | None:
 
     Ordered on the build number, not the creation timestamp, which has only
     one-second resolution.
+
+    Args:
+        builds: The Builds selected by :data:`IMAGE_LABEL` for one Image.
+
+    Returns:
+        The latest Build, or None.
     """
     numbered = [(_build_number(b), b) for b in builds]
     ordered = [(number, build) for number, build in numbered if number is not None]
@@ -113,12 +173,34 @@ def trigger_patch(at: str) -> dict:
 
     kpack tests only for the annotation's presence, so the value is free to be
     the timestamp that explains why the next build exists.
+
+    Args:
+        at: When the rebuild was asked for.
+
+    Returns:
+        The patch body.
     """
     return {"metadata": {"annotations": {BUILD_TRIGGER_ANNOTATION: at}}}
 
 
 def build_status(image: dict | None) -> tuple[str, str | None, str | None]:
-    """Reduce an ``Image``'s status to ``(state, latest_image, message)``."""
+    """Reduce an ``Image``'s status to ``(state, latest_image, message)``.
+
+    kpack reports progress on the ``Ready`` condition: ``True`` once the latest build
+    succeeded, ``False`` on failure, ``Unknown`` while running. ``latestImage`` is the
+    last *successful* digest, so it can be set while a newer build fails - the state,
+    not the image, says whether the function is current.
+
+    Args:
+        image: The Image object, or None when there is none.
+
+    Returns:
+        ``state`` is one of ``Building``/``Ready``/``Failed``, or ``Unknown``
+        only when there is no Image at all - an Image that exists but has not
+        been reconciled yet is ``Building``, not ``Unknown``;
+        ``latest_image`` is the last successful digest when known; ``message``
+        is the condition message on failure.
+    """
     if image is None:
         return "Unknown", None, None
     status = image.get("status") or {}

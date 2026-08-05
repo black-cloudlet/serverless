@@ -17,12 +17,32 @@ class Principal(BaseModel):
     is_admin: bool = False
 
     def can_access_group(self, group: str) -> bool:
-        """Whether the principal may act for ``group``."""
+        """Whether the principal may act for ``group``.
+
+        Args:
+            group: The group to check.
+
+        Returns:
+            True if the principal is an admin or a member of ``group``.
+        """
         return self.is_admin or group in self.groups
 
 
 def principal_from_claims(claims: dict, config: SSOConfig) -> Principal:
-    """Build a Principal from validated OIDC token claims."""
+    """Build a Principal from validated OIDC token claims.
+
+    Normalizes group names (strips the Keycloak "/" and ``ggd-<digits>`` prefixes,
+    lowercases, folds "_" to "-") and marks the caller an admin if any group is in
+    the configured admin groups. Request-supplied groups go through the same
+    normalization, so membership checks compare canonical forms on both sides.
+
+    Args:
+        claims: The validated JWT claims.
+        config: The SSO configuration (groups claim, admin groups).
+
+    Returns:
+        The resolved :class:`Principal`.
+    """
     groups = claims.get(config.groups_claim, []) or []
     if isinstance(groups, str):
         groups = [groups]

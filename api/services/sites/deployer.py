@@ -1,4 +1,9 @@
-"""Multi-site fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Site)."""
+"""Multi-site fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Site).
+
+Every deploy is applied to all target sites concurrently; results are aggregated
+into a single response. Partial failure -> Degraded (HTTP 207); total failure ->
+HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +26,12 @@ class Deployer:
     """Owns the per-site cluster clients and runs work across them concurrently."""
 
     def __init__(self, settings: Settings):
-        """Build one cluster client per configured site (connections stay lazy)."""
+        """Build one cluster client per configured site (connections stay lazy).
+
+        Args:
+            settings: Global settings; only the per-site timeout, local site, and
+                the built Clusters are retained.
+        """
         self._op_timeout = settings.site_op_timeout
         self._local_site = settings.local_site
 
@@ -36,6 +46,14 @@ class Deployer:
 
     def local_cluster(self) -> Cluster:
         """The cluster this API instance sits in.
+
+        Selected by config ``local_site`` (matched by site name then cluster
+        name), falling back to the first configured site. Used for reads of data
+        that is uniform across sites (active/active), to avoid a cross-cluster
+        round trip.
+
+        Returns:
+            The local cluster.
 
         Raises:
             ValidationError: If no sites are configured.
@@ -58,6 +76,12 @@ class Deployer:
     def resolve_targets(self, requested: list[str] | None) -> list[Cluster]:
         """Resolve the clusters to act on for a request.
 
+        Args:
+            requested: Explicit site names, or None for all configured sites.
+
+        Returns:
+            The target clusters.
+
         Raises:
             ValidationError: If no sites are configured or a name is unknown.
         """
@@ -78,6 +102,13 @@ class Deployer:
 
         Each call runs in a thread with a timeout; a site that times out or raises
         yields a ``SiteStatus`` with ``error`` set rather than aborting the others.
+
+        Args:
+            targets: The clusters to run on.
+            fn: The per-site operation returning a SiteStatus.
+
+        Returns:
+            One SiteStatus per target.
         """
 
         async def run(cluster: Cluster) -> SiteStatus:
@@ -103,7 +134,19 @@ class Deployer:
     async def gather_each(
         self, targets: list[Cluster], fn: Callable[[Cluster], object]
     ) -> list[tuple[str, object | None]]:
-        """Run ``fn`` on each target concurrently, returning ``[(site, result)]``."""
+        """Run ``fn`` on each target concurrently, returning ``[(site, result)]``.
+
+        A site whose call fails or times out yields ``(site, None)`` instead of
+        aborting the whole fan-out - for reads (e.g. listings) where a down site
+        should be skipped, not fatal.
+
+        Args:
+            targets: The clusters to run on.
+            fn: The per-site read returning any result.
+
+        Returns:
+            One ``(site, result_or_None)`` tuple per target.
+        """
 
         async def run(cluster: Cluster) -> tuple[str, object | None]:
             try:
@@ -121,6 +164,16 @@ class Deployer:
 def aggregate(statuses: list[SiteStatus]) -> str:
     """Overall status for the create/update path.
 
+    Raises SiteTotalFailure when every site failed; otherwise delegates the rollup
+    to overall_status, mapping an unreachable site to ``Failed``. One definition of
+    the rollup, shared with the read paths, so the two cannot drift.
+
+    Args:
+        statuses: The per-site results of the apply fan-out.
+
+    Returns:
+        The overall status (Ready/Deploying/Degraded).
+
     Raises:
         SiteTotalFailure: If every site failed.
     """
@@ -137,12 +190,30 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
 
     Single projection shared by the create path (aggregate) and the GET read path
     so the two can't drift.
+
+    Args:
+        statuses: The per-site statuses.
+
+    Returns:
+        The overall status (Ready/Deploying/Degraded).
     """
     return overall_status([s.status if s.error is None else "Failed" for s in statuses])
 
 
 def overall_status(statuses: list[str]) -> str:
-    """Collapse per-site KSVC statuses into one overall status (GET / list)."""
+    """Collapse per-site KSVC statuses into one overall status (GET / list).
+
+    A ``Failed`` site makes the deployment ``Degraded``; a ``Terminating`` one makes
+    it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
+    ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
+    site ahead, NOT a failure. That is what stops a false ``Degraded`` while coming up.
+
+    Args:
+        statuses: The per-site status strings.
+
+    Returns:
+        The overall status (Ready/Deploying/Degraded/Terminating).
+    """
     if not statuses:
         return "Degraded"
     if any(s == "Failed" for s in statuses):
@@ -155,7 +226,15 @@ def overall_status(statuses: list[str]) -> str:
 
 
 def status_code_for(overall: str, created: bool) -> int:
-    """Map an overall status to an HTTP status code."""
+    """Map an overall status to an HTTP status code.
+
+    Args:
+        overall: The rolled-up status (Ready/Deploying/Degraded).
+        created: Whether the call created a new workload (vs updated one).
+
+    Returns:
+        207 for Degraded, 202 for Deploying/Building, 201 for a create, else 200.
+    """
     if overall == "Degraded":
         return 207
     if overall in ("Deploying", "Building"):

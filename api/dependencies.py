@@ -18,7 +18,12 @@ from api.services.workloads import WorkloadService
 
 @lru_cache
 def get_runtimes() -> RuntimeRegistry:
-    """The cached runtime registry, read once from the mounted ConfigMap."""
+    """The cached runtime registry, read once from the mounted ConfigMap.
+
+    Raises on a missing or unusable file (see ``load_runtimes``); ``api.main``
+    calls it during startup so that surfaces as a failed pod rather than a 500
+    on the first function request.
+    """
     return load_runtimes(get_settings().runtimes_file)
 
 

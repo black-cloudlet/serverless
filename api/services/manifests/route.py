@@ -1,4 +1,10 @@
-"""Workload external exposure via a Knative DomainMapping."""
+"""Workload external exposure via a Knative DomainMapping.
+
+We never create OpenShift Routes by hand - the Serverless Operator creates one
+per Knative ingress. To expose a custom, cluster-independent host we create a
+``DomainMapping`` (identical in both clusters) and the operator provisions the
+Route. A wildcard DNS record forwards to the active site.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +33,16 @@ def build_domain_mapping(
     """Build a DomainMapping binding ``host`` to the workload's KSVC.
 
     The Serverless Operator creates the OpenShift Route for it.
+
+    Args:
+        name: The object name of the workload (KSVC) to bind to.
+        group: Owning group (for labels).
+        owner: Creating username (for labels).
+        offering: The offering (for labels).
+        host: The external host (and the DomainMapping's name).
+
+    Returns:
+        The DomainMapping manifest dict.
     """
     return {
         "apiVersion": DOMAIN_MAPPING_API,

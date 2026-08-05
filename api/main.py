@@ -32,7 +32,12 @@ async def _warm(label: str, fn, timeout: float) -> None:
 
 
 async def _warmup(settings: Settings, deployer: Deployer) -> None:
-    """Warm the one-time caches (OIDC discovery, cluster connections) at startup."""
+    """Warm the one-time caches (OIDC discovery, cluster connections) at startup.
+
+    Best-effort: makes the first request fast and surfaces misconfig in the logs
+    now. A down dependency is logged, not fatal - it is retried lazily on first
+    use, preserving active/active startup.
+    """
     timeout = settings.cluster_connect_timeout + settings.cluster_read_timeout
     tasks = []
     if settings.auth_enabled:
@@ -50,6 +55,9 @@ async def lifespan(app: FastAPI):
 
     Everything before the ``yield`` runs on startup; everything after runs on
     shutdown.
+
+    Args:
+        app: The FastAPI application (provided by the framework).
     """
     # Local config, not a remote dependency: retrying cannot fix it, and an API
     # without it would accept functions it can never build.
@@ -63,7 +71,11 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Build and configure the FastAPI application."""
+    """Build and configure the FastAPI application.
+
+    Returns:
+        The application with logging, CORS, error handlers, and routers wired.
+    """
     configure_logging()
     settings = get_settings()
 

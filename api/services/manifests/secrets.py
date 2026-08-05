@@ -1,4 +1,10 @@
-"""Pure builders/decoders for the credential Secrets a workload owns."""
+"""Pure builders/decoders for the credential Secrets a workload owns.
+
+Covers the imagePullSecret built from customer registry credentials and the
+``{workload}-git`` Secret holding a function's token so a later edit can rebuild
+without it being re-sent. Values are never returned on read - only the update
+path reads them back, to preserve a redacted "keep" field.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +23,18 @@ GIT_ANNOTATION = "kpack.io/git"
 
 
 def registry_of(image: str) -> str:
-    """The registry host an image reference points at, used to key its pull secret."""
+    """The registry host an image reference points at, used to key its pull secret.
+
+    The org runs several registries, so this comes from the client's image, not our
+    platform registry. Falls back to Docker Hub when the reference names no registry.
+    The first path segment counts as a host only if it looks like one.
+
+    Args:
+        image: The image reference (e.g. ``reg.example.com/team/app:tag``).
+
+    Returns:
+        The registry host, or ``"docker.io"`` when none is explicit.
+    """
     first = image.split("/", 1)[0]
     if "/" in image and ("." in first or ":" in first or first == "localhost"):
         return first
@@ -36,7 +53,18 @@ def build_pull_secret(
     username: str,
     token: str,
 ) -> dict:
-    """Build a dockerconfigjson image-pull Secret for one registry."""
+    """Build a dockerconfigjson image-pull Secret for one registry.
+
+    Args:
+        name: The Secret name.
+        labels: Labels to stamp on it.
+        registry: The registry host the credentials are scoped to.
+        username: The registry username.
+        token: The registry password/token.
+
+    Returns:
+        The pull-secret manifest dict.
+    """
     auth = base64.b64encode(f"{username}:{token}".encode()).decode("ascii")
     dockercfg = {"auths": {registry: {"username": username, "password": token, "auth": auth}}}
     encoded = base64.b64encode(json.dumps(dockercfg).encode()).decode("ascii")
@@ -53,12 +81,29 @@ def registry_username(secret: dict) -> str | None:
     """Decode the registry username from a dockerconfigjson Secret.
 
     Shown on read (like a secret's name); the token is never returned to clients.
+
+    Args:
+        secret: The dockerconfigjson Secret object.
+
+    Returns:
+        The username, or None if it can't be read.
     """
     return _registry_field(secret, "username")
 
 
 def registry_token(secret: dict) -> str | None:
-    """Decode the registry password/token from a dockerconfigjson Secret."""
+    """Decode the registry password/token from a dockerconfigjson Secret.
+
+    Internal use only (never returned to clients): the update path reads it back to
+    re-materialize the pull secret against the current image's registry when the
+    caller keeps the credential (token omitted).
+
+    Args:
+        secret: The dockerconfigjson Secret object.
+
+    Returns:
+        The password/token, or None if it can't be read.
+    """
     return _registry_field(secret, "password")
 
 
@@ -89,7 +134,25 @@ def build_git_secret(
     git_url: str = "",
     username: str = "x-access-token",
 ) -> dict:
-    """Build the ``kubernetes.io/basic-auth`` Secret holding a function's git token."""
+    """Build the ``kubernetes.io/basic-auth`` Secret holding a function's git token.
+
+    One Secret serves both readers: the API reads it back to rebuild without the
+    token being re-supplied, and kpack clones with it - which is why it is basic-auth
+    carrying ``kpack.io/git``, the only shape kpack reads. One object is possible
+    only because builds run in the workload's own namespace.
+
+    Args:
+        name: The Secret name (``{workload}-git``).
+        labels: Labels to stamp on it.
+        token: The git token to store, as the basic-auth password.
+        git_url: Source repository, reduced to scheme+host for the annotation.
+            Omitted for a token stored outside a build context.
+        username: Username paired with the token. GitHub and GitLab PATs accept
+            any value; providers that check it need the real one.
+
+    Returns:
+        The Secret manifest dict.
+    """
     secret = res.build_secret(
         name,
         labels,
@@ -106,6 +169,12 @@ def git_credential_host(git_url: str) -> str:
 
     kpack compares this annotation against the repository URL to pick a
     credential, so it must be scheme and host only - no path, no userinfo.
+
+    Args:
+        git_url: The repository URL.
+
+    Returns:
+        ``{scheme}://{host}``; the input unchanged if it has no scheme to split.
     """
     parts = urlsplit(git_url)
     if not parts.scheme or not parts.netloc:

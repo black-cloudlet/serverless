@@ -1,7 +1,17 @@
 """Reading a workload's stored and live state back out of a site.
 
-The kept-values reads fail loud - a ``{}`` for a Secret that exists would make a
-valid "keep" look unset and lose it. The decoration reads are best-effort.
+The counterpart to :mod:`api.services.sites.site_apply`: everything here fetches from
+one cluster and nothing writes. It is separate from :mod:`api.services.state.ksvc_state`
+because these calls do I/O - which is what makes their error handling the
+interesting part, and why it differs per function rather than being uniform:
+
+* the **kept-values** reads (:func:`secret_data`, :func:`secret_text`) fail loud.
+  Returning ``{}`` for a Secret that exists but could not be read would make a
+  valid "keep" look unset and fail the update as a 400, losing a stored secret.
+* the **decoration** reads (:func:`revision`, :func:`site_usage`,
+  :func:`describe_spec`) are best-effort. A workload whose replica count or live
+  usage could not be fetched still has a status worth returning. ``site_usage``
+  also reports *that* it failed, because its caller sums across sites.
 
 Every function here blocks, and is called through ``asyncio.to_thread`` or the
 deployer's fan-out.
@@ -35,7 +45,23 @@ if TYPE_CHECKING:  # a type hint only - offering imports this module at runtime
 
 
 def existing_state(obj: dict, cluster: Cluster, offering: Offering, oname: str) -> dict:
-    """Read an existing workload's carried-forward state + backing secret values."""
+    """Read an existing workload's carried-forward state + backing secret values.
+
+    Runs off the event loop (blocking cluster reads). ``env_values``/
+    ``files_values`` back the keep-on-write path (fail loud on a transient read;
+    see :func:`secret_data`). The pull-secret read is best-effort: a failure just
+    degrades a registry keep to carrying the existing secret forward.
+
+    Args:
+        obj: The workload's KSVC, already fetched.
+        cluster: The site to read the backing Secrets from.
+        offering: The offering, for whatever it carries that this doesn't
+            (:meth:`~api.services.offering.Offering.read_extra_state`).
+        oname: The object name (``{name}-{group}``).
+
+    Returns:
+        The carried-forward state.
+    """
     ann = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
     ps_name = describe_svc.pull_secret_name(obj)
     state = {
@@ -71,6 +97,15 @@ def existing_state(obj: dict, cluster: Cluster, offering: Offering, oname: str) 
 def secret_data(cluster: Cluster, name: str) -> dict[str, bytes]:
     """Raw ``data`` of a Secret (base64 -> bytes); ``{}`` if it doesn't exist.
 
+    Bytes, not text: a secret file may hold a keystore or a DER certificate, and
+    decoding that to ``str`` here would either raise or produce something that
+    cannot be re-encoded when the keep is written back.
+
+    Used by the update path so a redacted "keep" field echoed back is preserved. A
+    genuine 404 means no stored values (``{}``). Any other error must NOT be
+    swallowed: ``{}`` would make a valid keep look unset and fail it as a 400, so it
+    surfaces as a 503 and the update is retried rather than losing a secret.
+
     Raises:
         ServiceUnavailableError: If the Secret exists but couldn't be read.
     """
@@ -92,7 +127,13 @@ def secret_data(cluster: Cluster, name: str) -> dict[str, bytes]:
 
 
 def secret_text(cluster: Cluster, name: str) -> dict[str, str]:
-    """:func:`secret_data` as text, for the values that genuinely are text."""
+    """:func:`secret_data` as text, for the values that genuinely are text.
+
+    Env values and the git token become a container env var and an HTTP basic-auth
+    password, both of which are strings by definition. A stored value that is not
+    valid UTF-8 could not have been written through this API, so it is skipped
+    rather than guessed at.
+    """
     out: dict[str, str] = {}
     for key, raw in secret_data(cluster, name).items():
         try:
@@ -103,7 +144,12 @@ def secret_text(cluster: Cluster, name: str) -> dict[str, str]:
 
 
 def describe_spec(cluster: Cluster, obj: dict):
-    """Read the desired-state spec (secrets redacted) from a KSVC."""
+    """Read the desired-state spec (secrets redacted) from a KSVC.
+
+    Fetches the file ConfigMap(s) for non-secret file contents and the pull
+    secret for the registry username (never the token). Best-effort: a failed
+    read just leaves the corresponding field null.
+    """
     configmaps: dict[str, dict] = {}
     for cm_name in describe_svc.configmap_refs(obj):
         try:
@@ -123,7 +169,15 @@ def describe_spec(cluster: Cluster, obj: dict):
 
 
 def revision(cluster: Cluster, name: str | None) -> dict | None:
-    """Best-effort fetch of the Knative Revision the KSVC points at."""
+    """Best-effort fetch of the Knative Revision the KSVC points at.
+
+    The Revision carries both the autoscaler's live scale and the specific
+    rollout-failure conditions, so a single read feeds both the replica count
+    and the per-site error detail.
+
+    Returns:
+        The Revision object, or None if it has no revision yet or can't be read.
+    """
     if not name:
         return None
     try:
@@ -134,7 +188,13 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
 
 @dataclass(frozen=True)
 class SiteUsage:
-    """One site's usage read: whether it could be taken, and what it showed."""
+    """One site's usage read: whether it could be taken, and what it showed.
+
+    ``measured`` is what a cross-site total needs and the other best-effort reads
+    here do not: they degrade to a null field on the site that failed, which is
+    visible, while a total summed over a site that did not answer is just a
+    smaller number that still looks authoritative.
+    """
 
     measured: bool
     total: metrics_svc.Usage | None
@@ -145,6 +205,9 @@ def site_usage(cluster: Cluster, oname: str) -> SiteUsage:
 
     Never raises: an unreadable metrics API must not fail a status that is
     otherwise worth returning.
+
+    Returns:
+        The site's usage, with ``measured=False`` if the read itself failed.
     """
     try:
         items = cluster.get(

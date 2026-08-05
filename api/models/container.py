@@ -59,7 +59,12 @@ class ContainerCreate(BaseModel):
 
 
 class ContainerUpdate(BaseModel):
-    """Replace the mutable spec: the body is the full desired state."""
+    """Replace the mutable spec: the body is the full desired state.
+
+    Non-secret fields are replaced, so ``image`` is required as on create and
+    ``port`` returns to its default when omitted. Only redacted secret material is
+    keep-on-omit - it cannot be read back, so omitting it keeps what is stored.
+    """
 
     image: ImageRef
     # Registry creds: username+token rotates, username-only keeps, neither removes

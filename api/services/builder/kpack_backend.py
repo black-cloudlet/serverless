@@ -1,4 +1,23 @@
-"""Function builds, driven by kpack ``Image`` CRs (docs/BUILDING.md - Ownership)."""
+"""Function builds, driven by kpack ``Image`` CRs (docs/BUILDING.md - Ownership).
+
+The API does not run builds; it declares them. Each create/update emits the
+function's git Secret, build ServiceAccount and ``Image`` alongside the KSVC's
+other derived resources, and kpack does the rest: clone, detect, build with
+Cloud Native Buildpacks, push to the internal registry.
+
+They are owned resources of the workload, in its own namespace, so the KSVC's
+ownerReference garbage-collects them. That co-location is also why a function
+needs only ONE git Secret: kpack reads the workload's own ``{workload}-git``.
+
+Declaring is not completing, so ``plan`` returns the deterministic tag the
+build will push to. Callers deploy against that tag and read progress back
+through :meth:`KpackBackend.status` - the reason a just-created function reports
+``Building`` rather than ``Ready`` (docs/FUNCTIONS.md - Function Status Resolution).
+
+This is the in-process implementation of :class:`common.build.BuildBackend`;
+``Builder`` throughout this module means kpack's own ``Builder`` CR, never the
+protocol.
+"""
 
 from __future__ import annotations
 
@@ -28,28 +47,75 @@ class KpackBackend:
     """Emits the kpack manifests for a function build and reads their state."""
 
     def __init__(self, settings: CommonSettings, runtimes: RuntimeRegistry):
-        """Initialize the backend."""
+        """Initialize the backend.
+
+        Args:
+            settings: Shared settings (registry, build credentials).
+            runtimes: Resolves a runtime to its kpack Builder and build environment.
+        """
         self._registry = settings.registry
         self._build = settings.build
         self._runtimes = runtimes
 
     @property
     def pull_secret(self) -> str | None:
-        """The registry Secret a built function's KSVC pulls its image with."""
+        """The registry Secret a built function's KSVC pulls its image with.
+
+        The same credential kpack pushes with - one image, one registry, one
+        credential - so a function never needs registry details from the caller.
+        None when unset, so the KSVC does not reference a Secret that the chart
+        never created.
+        """
         return self._build.registry_secret or None
 
     def image_ref(self, req: BuildRequest) -> str:
-        """The image reference a build pushes to (deterministic, no cluster call)."""
+        """The image reference a build pushes to (deterministic, no cluster call).
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The fully-qualified image reference.
+        """
         return image_reference(self._registry.base, req)
 
     def cache_ref(self, req: BuildRequest) -> str | None:
-        """Where this build caches its layers, or None to leave it to kpack."""
+        """Where this build caches its layers, or None to leave it to kpack.
+
+        Args:
+            req: The build request.
+
+        Returns:
+            The registry cache reference, or None when ``build.cache`` is
+            ``inherit`` and the Image should carry no ``spec.cache``.
+        """
         if self._build.cache != "registry":
             return None
         return cache_reference(self._registry.base, req)
 
     def _runtime_config(self, runtime: str, version: str | None = None) -> tuple[str, list[dict]]:
         """Resolve a runtime (and optional version) to ``(builder, build_env)``.
+
+        The runtimes file is rendered by the chart with each entry's build
+        environment already merged (shared env, dependency mirror, per-runtime
+        overrides), so nothing is composed here beyond pinning the version.
+
+        The version variable is **always** written when the runtime names one,
+        including when the caller asked for nothing. Leaving it unset would hand
+        the choice to the buildpack's own default, which moves when the
+        buildpackage is upgraded - so an untouched function could silently
+        rebuild on a different language version, and airgapped it could ask for a
+        toolchain that was never mirrored. Precedence is caller, then an explicit
+        ``buildEnv`` pin, then the platform default: a caller can only choose from
+        the list the operator advertised, so an operator who wants no choice
+        leaves ``versions`` empty and the request is rejected before here.
+
+        Args:
+            runtime: The requested runtime name.
+            version: The requested language version, or None for the default.
+
+        Returns:
+            The Builder name and the build env list.
 
         Raises:
             ValidationError: If the runtime is unknown or names no Builder.
@@ -79,6 +145,17 @@ class KpackBackend:
 
         Pure - no cluster call - so the caller can apply them in the same pass as
         the KSVC's other derived resources and have them owner-stamped.
+
+        The git Secret is ``replicated``, the Image and ServiceAccount are not. Only one
+        site builds, but EVERY site must be able to: nothing can recover a token whose
+        only copy was on the site that went away.
+
+        Args:
+            req: The build request.
+            labels: Ownership labels to stamp on each manifest.
+
+        Returns:
+            The build plan; ``local`` is in dependency order.
 
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
@@ -120,6 +197,19 @@ class KpackBackend:
     def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
         """Ask kpack for one more build of the function's current inputs.
 
+        Annotates the latest ``Build``, where kpack looks for it, leaving the
+        ``Image`` a pure function of the function definition
+        (docs/BUILDING.md - Convergence rules).
+
+        Args:
+            cluster: The cluster holding the Image (always the local site).
+            name: The workload name.
+            group: The owning group.
+
+        Returns:
+            True if a build was triggered; False when the Image has no build
+            yet - it is about to make one.
+
         Raises:
             Exception: If the Builds could not be listed or the patch failed.
                 Not swallowed like a status read: that would be a rebuild that
@@ -152,7 +242,19 @@ class KpackBackend:
         return True
 
     def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
-        """Read a function's build state from one cluster."""
+        """Read a function's build state from one cluster.
+
+        Args:
+            cluster: The cluster to read (normally the local site).
+            name: The workload name.
+            group: The owning group.
+
+        Returns:
+            The build status, or None when the function has no Image on this
+            cluster - which is the normal case for a site that has never built
+            it, and must fall through to the KSVC status rather than read as a
+            failure (docs/FUNCTIONS.md - Function Status Resolution).
+        """
         image_name = kpack.build_object_name(object_name(name, group))
         try:
             image = cluster.get(ResourceKind.KPACK_IMAGE, image_name)
@@ -167,8 +269,21 @@ class KpackBackend:
     def statuses(self, cluster: Cluster, group: str) -> dict[str, BuildStatus]:
         """Read every function build state a group has on one cluster, in one call.
 
+        Keyed by the ``workload`` label - the object name ``{name}-{group}`` -
+        because that is what the Image carries and what the caller already has
+        from the KSVC it is annotating. The Image's own name (``fn-{workload}``)
+        is an implementation detail of this module.
+
         Never an error: a listing that could not read kpack falls through to the
         KSVC statuses, exactly as :meth:`status` does for a single workload.
+
+        Args:
+            cluster: The cluster to read (normally the local site).
+            group: The owning group.
+
+        Returns:
+            ``{object_name: BuildStatus}``; empty when the group has no builds or
+            kpack could not be read.
         """
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={OFFERING_FUNCTION}"
         try:

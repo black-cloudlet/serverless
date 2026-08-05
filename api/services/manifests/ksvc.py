@@ -84,6 +84,9 @@ def _volumes(volumes: list[VolumeSpec]) -> tuple[list[dict], list[dict]]:
 
     Multiple files share one ConfigMap/Secret volume; each volume is declared once
     but gets a mount (with its own subPath) per file.
+
+    Returns:
+        A ``(volumes, mounts)`` tuple of manifest fragments.
     """
     vols: dict[str, dict] = {}
     mounts: list[dict] = []
@@ -131,6 +134,34 @@ def build_ksvc(
 
     Assembles labels/annotations, the autoscaling config, container env/volumes,
     resource sizing, the optional pull secret, and the trusted-CA mount.
+
+    Args:
+        name: The object name (``{name}-{group}``).
+        group: Owning group.
+        owner: Creating username.
+        image: The image (or digest) to run.
+        offering: "function" or "container".
+        host: The external host (stamped as an annotation).
+        env: Resolved container env entries.
+        volumes: Resolved file volume specs.
+        scaling: Autoscaling settings.
+        size: Resource t-shirt size.
+        port: Container port to stamp; None uses Knative's default (8080).
+        pull_secret: Image pull secret name, if any.
+        runtime: Function runtime annotation, if any.
+        version: Requested language version annotation, if any. Absent means the
+            caller took the platform default (see services.kpack_backend).
+        git_url: Function source repo annotation, if any.
+        branch: Function source branch annotation, if any.
+        path: Function source sub-directory annotation, if any.
+        ca_config_map: Trusted-CA ConfigMap to mount, if configured.
+        ca_mount_path: Mount path for the trusted CA, if configured.
+        ca_file: Absolute path to the CA file inside the pod; when the CA is
+            mounted, the CA-trust env vars (see ``CA_ENV_VARS``) default to it for
+            any name the caller didn't set.
+
+    Returns:
+        The KSVC manifest dict.
     """
     annotations = {
         "autoscaling.knative.dev/min-scale": str(scaling.minScale),

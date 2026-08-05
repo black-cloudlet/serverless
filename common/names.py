@@ -1,5 +1,9 @@
 """Name validation and normalisation shared by every service.
 
+These live in ``common``, not the API's request models, because the same rules
+bound what reaches a cluster: a name becomes an object name, a group part of an
+image repository, a branch an image tag. Everything constructing those must agree.
+
 ``api.models.common`` re-exports the ``Annotated`` types, so request models and
 query params keep importing them from there.
 """
@@ -52,12 +56,34 @@ MAX_OBJECT_NAME = 63
 
 
 def normalize_group(group: str) -> str:
-    """Normalize a group name to its bare, DNS-safe form."""
+    """Normalize a group name to its bare, DNS-safe form.
+
+    Strips the Keycloak "/" prefix, lowercases, strips a leading ``ggd-<1-4 digits>-``
+    prefix, then folds "_" to "-", so "/ggd-1234-platforms", "Platforms" and "My_Team"
+    each land on one canonical group. Applied to both the token's groups and a
+    request-supplied one, so membership compares like with like.
+
+    Lowercasing runs *before* the prefix strip so an upper-case prefix
+    ("GGD-1234-Team") is still recognized, and before the "_" fold so neither
+    rule can mask the other.
+
+    Args:
+        group: The raw group name.
+
+    Returns:
+        The normalized group name.
+    """
     return _GGD_PREFIX.sub("", group.lstrip("/").lower()).translate(_UNDERSCORE)
 
 
 def validate_name(name: str) -> str:
     """Validate a workload name as a DNS-1123 label.
+
+    Args:
+        name: The candidate workload name.
+
+    Returns:
+        The name unchanged.
 
     Raises:
         ValueError: If it isn't a DNS-1123 label of at most 63 characters.
@@ -75,6 +101,12 @@ def validate_group(group: str) -> str:
     Normalization runs first, so a ``ggd-<digits>-`` prefix, "_" separators and
     upper case are accepted on input; the check applies to the normalized form.
 
+    Args:
+        group: The candidate group name.
+
+    Returns:
+        The normalized group name.
+
     Raises:
         ValueError: If the normalized form isn't a DNS-1123 label of at most 63
             characters.
@@ -91,6 +123,16 @@ def validate_group(group: str) -> str:
 def validate_hostname(host: str) -> str:
     """Validate a custom hostname as a DNS-1123 label or a lowercase FQDN.
 
+    Either a single DNS-1123 label (the platform base domain is appended by the
+    API) or a full lowercase FQDN. That the FQDN sits under the platform base
+    domain is enforced in the service layer, where the base domain is known.
+
+    Args:
+        host: The candidate hostname.
+
+    Returns:
+        The host unchanged.
+
     Raises:
         ValueError: If it is neither a DNS-1123 label nor a valid lowercase FQDN.
     """
@@ -101,6 +143,22 @@ def validate_hostname(host: str) -> str:
 
 def validate_git_url(url: str) -> str:
     """Validate a source repository URL as http(s) with a host and no userinfo.
+
+    The clone authenticates with a basic-auth Secret, which only applies over
+    http(s). An scp-style ref has no scheme, so it becomes a ``kpack.io/git``
+    annotation kpack cannot match, failing as an auth error nowhere near its cause.
+    An empty URL passes every downstream check and fails the same way.
+
+    Embedded credentials are rejected rather than stripped: the URL is written
+    verbatim to ``Image.spec.source.git.url``, so a password in it would sit in
+    plaintext on an object with much wider read access than the Secret. The
+    token belongs in the Secret, which is where the caller already sends it.
+
+    Args:
+        url: The repository URL.
+
+    Returns:
+        The URL unchanged.
 
     Raises:
         ValueError: If it is not an http(s) URL with a host, or carries userinfo.
@@ -119,6 +177,29 @@ def validate_git_url(url: str) -> str:
 
 def validate_image_ref(image: str) -> str:
     """Validate a container image reference the caller wants deployed.
+
+    The value is written verbatim to ``containers[0].image`` and is parsed by
+    :func:`api.services.manifests.secrets.registry_of` to key the pull secret, so an
+    unusable reference passes every check here and surfaces minutes later as a
+    bare ``ErrImagePull`` on a revision - the failure mode the other validators
+    in this module exist to prevent.
+
+    Enforces the OCI distribution grammar: an optional ``domain[:port]``, one or
+    more lowercase path components, and an optional ``:tag`` and/or
+    ``@algorithm:hex`` digest. Surrounding whitespace is stripped (a value pasted
+    from a console usually carries some); whitespace *inside* is rejected, since
+    a reference cannot contain any and its presence means the field holds
+    something other than an image.
+
+    A reference with no tag is accepted and means ``:latest``, as it does
+    everywhere else - that it is a poor thing to deploy is a policy question,
+    not a well-formedness one.
+
+    Args:
+        image: The image reference.
+
+    Returns:
+        The reference, stripped of surrounding whitespace.
 
     Raises:
         ValueError: If it is empty or not a well-formed reference.
@@ -140,6 +221,21 @@ def validate_image_ref(image: str) -> str:
 def validate_branch(branch: str) -> str:
     """Validate a git branch name.
 
+    Deliberately permissive about ``/``, which is ordinary in a branch name and
+    is kept verbatim as the git revision. It is only the derived image tag that
+    cannot hold one, and :func:`image_tag` handles that separately - rejecting
+    ``feature/login`` here would ban a naming convention most repositories use.
+
+    Rejects what git itself rejects and what would be unsafe downstream: empty
+    or whitespace-only, whitespace or control characters anywhere, a leading
+    ``-`` (reads as a flag), and the sequences git forbids in a ref.
+
+    Args:
+        branch: The candidate branch name.
+
+    Returns:
+        The branch unchanged.
+
     Raises:
         ValueError: If it isn't a usable git ref.
     """
@@ -159,6 +255,16 @@ def validate_branch(branch: str) -> str:
 def validate_source_path(path: str) -> str:
     """Validate the directory inside the repository that holds the application.
 
+    Surrounding ``/`` are stripped rather than rejected, so "/src" and "src"
+    name the same directory. ".." is refused: kpack resolves the path inside the
+    clone, and escaping it would build something other than the repository.
+
+    Args:
+        path: A repository-relative directory; "" is the repository root.
+
+    Returns:
+        The path without surrounding "/", or "" for the root.
+
     Raises:
         ValueError: If it escapes the repository or holds whitespace, a
             backslash, or an empty segment.
@@ -176,12 +282,36 @@ def validate_source_path(path: str) -> str:
 
 
 def object_name(name: str, group: str) -> str:
-    """The cluster name of a workload and everything derived from it."""
+    """The cluster name of a workload and everything derived from it.
+
+    ``{name}-{group}`` is the platform's primary key: the KSVC, its config Secrets,
+    its git Secret and its kpack Image all hang off it, and a service starting from
+    an Image has to get back to the KSVC. Written once, here.
+
+    Args:
+        name: The workload name.
+        group: The owning group.
+
+    Returns:
+        The derived object name.
+    """
     return f"{name}-{group}"
 
 
 def validate_object_name(name: str, group: str) -> str:
     """Check that ``{name}-{group}`` still fits where it has to be written.
+
+    Each half is a legal DNS-1123 label, but the primary key is their concatenation,
+    and that becomes the KSVC name and the first label of the host. Both are capped
+    at 63, so two 63-character halves are individually valid and produce a
+    127-character name the cluster rejects. The pair has to be checked as a pair.
+
+    Args:
+        name: The workload name.
+        group: The owning group.
+
+    Returns:
+        The derived object name.
 
     Raises:
         ValueError: If the pair exceeds 63 characters together.
@@ -200,10 +330,26 @@ def validate_object_name(name: str, group: str) -> str:
 def image_tag(branch: str) -> str:
     """Reduce a branch name to a legal OCI tag.
 
-    A projection, not the branch: ``feature/login`` pushes to ``feature-login``
-    and collides with a branch of that name. The revision is never rewritten, so
-    the build still compiles the ref that was asked for. Never empty - a branch
-    with no ASCII at all falls back to a digest of itself.
+    A git branch may contain ``/``; an OCI tag may not, and must start with an
+    alphanumeric or ``_``. So the tag is a *projection* of the branch, not the
+    branch itself - ``feature/login`` builds from that exact ref but pushes to
+    ``feature-login``.
+
+    Two branches differing only in replaced characters collide on one tag
+    (``feature/login`` and ``feature-login``). Accepted: the alternative is a tag
+    nobody can read in a registry listing. The revision is never rewritten, so a
+    build always compiles the branch that was asked for.
+
+    A branch can also project to *nothing*: git refs are UTF-8, so one with no ASCII
+    is legal and every character of it is replaced. The empty tag would make the
+    reference ``repo:``, so those fall back to a digest of the branch - unreadable,
+    but deterministic, which is what convergence needs.
+
+    Args:
+        branch: The branch name (already validated).
+
+    Returns:
+        The tag to push to, never empty.
     """
     tag = _TAG_UNSAFE.sub("-", branch).lstrip(".-")[:_TAG_MAX]
     if not tag:
@@ -212,7 +358,18 @@ def image_tag(branch: str) -> str:
 
 
 def repository_of(image: str) -> str:
-    """The repository half of an image reference - everything but tag and digest."""
+    """The repository half of an image reference - everything but tag and digest.
+
+    So two references compare equal whatever form a build or a digest
+    resolution left behind. The tag is split off past the last ``/`` only: a
+    host may carry a port, and that colon is not a tag separator.
+
+    Args:
+        image: An image reference (already validated).
+
+    Returns:
+        The repository, including host.
+    """
     repo = image.split("@", 1)[0]
     head, sep, tail = repo.rpartition("/")
     return f"{head}{sep}{tail.split(':', 1)[0]}" if sep else repo.split(":", 1)[0]
@@ -221,8 +378,19 @@ def repository_of(image: str) -> str:
 def image_repository(group: str, name: str) -> str:
     """The repository a function's images are pushed to: ``{group}/{name}``.
 
+    The other half of an image reference from :func:`image_tag`, and here for the
+    same reason: it is a naming rule, and the code that pushes to a repository and
+    the code that deletes one must agree on it exactly.
+
     No projection needed, unlike the tag. Both parts are DNS-1123 labels, already
     a subset of what an OCI path component allows, so there is nothing to rewrite.
+
+    Args:
+        group: The owning group.
+        name: The workload name.
+
+    Returns:
+        The repository path, below the registry base.
     """
     return f"{group}/{name}"
 
@@ -230,15 +398,41 @@ def image_repository(group: str, name: str) -> str:
 def cache_repository(group: str, name: str) -> str:
     """The repository a function's build cache is pushed to: ``{group}/{name}_cache``.
 
-    The ``_`` is load-bearing: a name is a DNS-1123 label, so no function can be
-    named ``{name}_cache``. A reserved tag would not be safe the same way - a
-    branch named ``cache`` projects to exactly that.
+    The ``_`` is what makes a collision with the image repository impossible
+    rather than unlikely: a name is a DNS-1123 label admitting only ``[a-z0-9-]``,
+    so no function can be named ``{name}_cache``. A reserved *tag* in the image
+    repository would not be safe the same way - a branch named ``cache`` projects
+    to exactly that tag (:func:`image_tag`) - and neither would a nested
+    ``{name}/cache`` path, which adds a repository level that Quay accepts only
+    with extended repository names enabled.
+
+    Args:
+        group: The owning group.
+        name: The workload name.
+
+    Returns:
+        The cache repository path, below the registry base.
     """
     return f"{image_repository(group, name)}{CACHE_SUFFIX}"
 
 
 def _schema(description: str, example: str, **fields) -> WithJsonSchema:
-    """Describe a validated string for OpenAPI, without constraining it."""
+    """Describe a validated string for OpenAPI, without constraining it.
+
+    ``WithJsonSchema`` documents; it does not validate. That is the point: a real
+    ``pattern`` runs BEFORE the AfterValidator, so it would reject "My_Team"
+    before :func:`normalize_group` could canonicalise it, and "/src" before
+    :func:`validate_source_path` could strip it. The validator stays the only
+    authority; this is what a client generates code from.
+
+    Args:
+        description: What the field means, shown in the generated client.
+        example: A value that passes.
+        **fields: Extra JSON Schema keys (``pattern``, ``maxLength``, ...).
+
+    Returns:
+        The schema annotation to add to an ``Annotated`` chain.
+    """
     return WithJsonSchema(
         {"type": "string", "description": description, "examples": [example], **fields}
     )

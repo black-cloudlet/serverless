@@ -1,4 +1,13 @@
-"""Domain errors raised by any service (docs/ARCHITECTURE.md - REST API)."""
+"""Domain errors raised by any service (docs/ARCHITECTURE.md - REST API).
+
+Deliberately free of any web framework: these are raised deep in the service and
+cluster layers, so importing one must not drag FastAPI into a process that
+serves no HTTP - a build service raising ``NotFoundError`` should not need it.
+
+``status_code`` and ``code`` stay here as plain data. They are how an error
+describes itself, not how it is served; the FastAPI handlers that turn them into
+a response envelope live in :mod:`common.web`.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +21,12 @@ class APIError(Exception):
     code: str = "INTERNAL"
 
     def __init__(self, message: str, details: list[dict[str, Any]] | None = None):
-        """Initialize the error."""
+        """Initialize the error.
+
+        Args:
+            message: Human-readable error message.
+            details: Optional structured details (e.g. per-site failures).
+        """
         super().__init__(message)
         self.message = message
         self.details = details or []
@@ -68,7 +82,21 @@ class ServiceUnavailableError(APIError):
 
 
 def error_catalog() -> list[tuple[str, int]]:
-    """Every ``(code, status)`` an error envelope can carry, sorted by status."""
+    """Every ``(code, status)`` an error envelope can carry, sorted by status.
+
+    Walked off the subclasses rather than listed, so an error added here is
+    published without a second edit - a hand-kept list is exactly what goes
+    stale. Framework HTTP errors (404 on an unknown route, 405) are not here:
+    they derive their code from the status in :mod:`common.web`.
+
+    The base class is included, not just its subclasses: nothing raises a bare
+    ``APIError``, but :mod:`common.web`'s catch-all handler renders any
+    unanticipated exception with its ``INTERNAL``/500, so that pair is a real
+    thing a client can receive and has to be published like the rest.
+
+    Returns:
+        ``(code, status_code)`` pairs, deduplicated.
+    """
     seen: dict[str, int] = {APIError.code: APIError.status_code}
 
     def walk(cls: type[APIError]) -> None:

@@ -16,7 +16,14 @@ logger = get_logger(__name__)
 
 
 def looks_like_jwt(token: str) -> bool:
-    """True if the bearer token is structurally a JWT (vs an opaque API key)."""
+    """True if the bearer token is structurally a JWT (vs an opaque API key).
+
+    Args:
+        token: The bearer token to inspect.
+
+    Returns:
+        True if the token parses as a JWT header.
+    """
     if not isinstance(token, str) or not token:
         return False
     try:
@@ -27,10 +34,20 @@ def looks_like_jwt(token: str) -> bool:
 
 
 class TokenValidator:
-    """Validates SSO-issued JWTs offline against cached JWKS."""
+    """Validates SSO-issued JWTs offline against cached JWKS.
+
+    The JWKS URI is resolved once from the OIDC ``.well-known`` discovery
+    document; a single :class:`PyJWKClient` is then built and reused. It caches
+    the JWK set (``jwks_cache_seconds``), so steady-state requests verify
+    tokens without any round trip to the IdP.
+    """
 
     def __init__(self, config: SSOConfig):
-        """Initialize the validator; discovery is deferred until first use."""
+        """Initialize the validator; discovery is deferred until first use.
+
+        Args:
+            config: The SSO configuration (issuer, audience, discovery URL, ...).
+        """
         self._config = config
         self._jwk_client: PyJWKClient | None = None
         self._lock = threading.Lock()
@@ -40,7 +57,11 @@ class TokenValidator:
         self._client()
 
     def _client(self) -> PyJWKClient:
-        """Return the cached JWK client, resolving discovery once under a lock."""
+        """Return the cached JWK client, resolving discovery once under a lock.
+
+        Returns:
+            The shared :class:`PyJWKClient`.
+        """
         # The lock keeps concurrent first requests from each running discovery.
         if self._jwk_client is None:
             with self._lock:
@@ -55,6 +76,9 @@ class TokenValidator:
 
     def _discover_jwks_uri(self) -> str:
         """Fetch the OIDC discovery document and return its ``jwks_uri``.
+
+        Returns:
+            The JWKS URI from the discovery document.
 
         Raises:
             ServiceUnavailableError: If discovery fails or lacks ``jwks_uri``.
@@ -72,6 +96,12 @@ class TokenValidator:
 
     def validate(self, token: str) -> dict:
         """Verify a JWT against the cached JWKS and return its claims.
+
+        Args:
+            token: The JWT bearer token.
+
+        Returns:
+            The decoded token claims.
 
         Raises:
             UnauthenticatedError: If the token is invalid, expired, or untrusted.
