@@ -31,10 +31,10 @@ the build flow, and what the API owns versus the build service.
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
-| Image CR writer | The **API** (POST / PUT / rebuild / webhook) |
+| Image CR writer | The **API** (POST / PUT / build / webhook) |
 | Digest propagation | The **build service** watches `status.latestImage` and updates the ksvc in *all* sites |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
-| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../rebuild` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
+| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
@@ -221,7 +221,7 @@ pushed to.
 **Changing it later is a migration, not a config edit.** The KSVC keeps whatever reference
 it was applied with, so an install that already has functions needs, per function:
 
-1. `POST .../functions/{name}/rebuild` - re-applies the `Image` at the new tag and builds,
+1. `POST .../functions/{name}/build` - re-applies the `Image` at the new tag and builds,
    which is what puts anything in the new repository. A `spec.tag` change alone does not
    rebuild: kpack's `CONFIG` diff covers source, env, services and resources, not the tag.
 2. any `PUT` - the update path compares the deployed repository against the computed one
@@ -466,7 +466,7 @@ actionable error.
 |--------|---------|------------------|
 | `CONFIG` | `spec` changed | PUT that changes runtime, version or env |
 | `COMMIT` | resolved source SHA changed | the per-function **webhook** |
-| `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/rebuild` |
+| `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/build` |
 | `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
 | `STACK` | the Stack run image was updated | **CVE patch** - often a fast *rebase* |
 
@@ -492,7 +492,7 @@ Two components, split by execution model:
 
 | Component | Path | Responsibility |
 |-----------|------|----------------|
-| **API** | request/response | On POST / PUT / rebuild / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
+| **API** | request/response | On POST / PUT / build / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
 | **Build service** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites. |
 
 The watch loop does not fit a request/response API, and the shared library already
@@ -536,9 +536,9 @@ self-healing (BUILDING.md: Active/Active Behaviour). An update that changes noth
 exactly as it is: that image may be a digest a finished build resolved, and rewriting it
 back to the tag would spawn a pointless revision.
 
-`POST .../functions/{name}/rebuild` is the manual half of that: it re-applies the same
+`POST .../functions/{name}/build` is the manual half of that: it re-applies the same
 composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
-without inventing a spec change (FUNCTIONS.md: Rebuilding without changing anything).
+without inventing a spec change (FUNCTIONS.md: Building again without changing anything).
 
 Still to come, and deliberately out of scope for the current implementation: the build
 service's watch loop, and the per-function webhook endpoint that pins a pushed SHA to
@@ -564,10 +564,10 @@ create-or-update by construction**. Every path therefore composes the *complete*
 |------|-----------|
 | POST | compose -> apply -> creates |
 | PUT | compose -> apply -> **creates if missing**, else updates |
-| rebuild | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
+| build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
 
-The rebuild applies *before* it triggers, and that ordering is what makes it self-healing
+The build applies *before* it triggers, and that ordering is what makes it self-healing
 rather than merely idempotent: on a site that has never built the function the apply
 creates the `Image`, which builds on its own, and there is no `Build` to annotate - so the
 trigger finds nothing and says so instead of failing. It is also the one write path that
@@ -654,7 +654,7 @@ own default of **10 and 10**, so **20 `Build`s and 20 completed pods per functio
 invisible at ten functions and is the whole namespace at three hundred: `oc get pods`
 stops being usable, and every controller that lists pods pays for them. Anything that
 re-triggers builds without a user - `STACK`/`BUILDPACK` CVE rebuilds, and now
-`POST .../rebuild` - fills that history faster than edits do.
+`POST .../build` - fills that history faster than edits do.
 
 Failed builds keep their own quota because their pods are the only place the per-phase
 build log exists (BUILDING.md: Inside the build pod); dropping the limit to 1 would mean a

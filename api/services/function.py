@@ -82,7 +82,7 @@ class FunctionService:
                 f"available versions: {', '.join(spec.versions)}"
             )
 
-    def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
+    def _plan(self, req: BuildRequest, user: Principal) -> BuildPlan:
         """The owned manifests that declare the build, and the tag they push to.
 
         Includes the workload's ``{workload}-git`` Secret: one Secret serves both
@@ -169,7 +169,7 @@ class FunctionService:
             **self._echo(spec),
         )
 
-    def _rebuild_request(
+    def _build_request(
         self, name: str, group: str, existing: dict, user: Principal
     ) -> BuildRequest:
         """Reconstruct the build inputs of a deployed function, for a rebuild.
@@ -236,7 +236,7 @@ class FunctionService:
                 "send them with a PUT instead"
             ) from exc
 
-    async def accept_rebuild(
+    async def accept_build(
         self, group: str, name: str, user: Principal, background
     ) -> FunctionResponse:
         """Validate and accept a rebuild request, scheduling the build (202).
@@ -259,11 +259,11 @@ class FunctionService:
             ValidationError: If the stored state cannot describe a build.
         """
         existing = await self._engine.load_existing(name, FUNCTION, user, group)
-        req = self._rebuild_request(name, group, existing, user)
+        req = self._build_request(name, group, existing, user)
         # A runtime can be removed from the ConfigMap after a function was built
         # with it; that is a 400 now, not a build that fails minutes later.
         self._assert_runtime(req.runtime, req.version)
-        background.add_task(self._engine.run, self.rebuild, group, name, user, existing)
+        background.add_task(self._engine.run, self.build, group, name, user, existing)
         host = existing.get("host") or self._engine.host_for(name, None, group)
         return self._engine.accepted(
             FUNCTION,
@@ -277,7 +277,7 @@ class FunctionService:
             path=req.path,
         )
 
-    async def rebuild(self, group: str, name: str, user: Principal, existing: dict) -> None:
+    async def build(self, group: str, name: str, user: Principal, existing: dict) -> None:
         """Build a function's current source again (runs in the background).
 
         The image is rebuilt from the same repository, branch and runtime it
@@ -292,14 +292,14 @@ class FunctionService:
             name: The workload name.
             user: The authenticated caller.
             existing: The workload state preloaded (and authorized) by
-                :meth:`accept_rebuild`.
+                :meth:`accept_build`.
 
         Raises:
             ValidationError: If the stored state cannot describe a build.
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        req = self._rebuild_request(name, group, existing, user)
-        await self._engine.apply_build(name, group, self._build(req, user))
+        req = self._build_request(name, group, existing, user)
+        await self._engine.apply_build(name, group, self._plan(req, user))
 
     async def create(
         self, group: str, spec: FunctionCreate, user: Principal
@@ -317,7 +317,7 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        plan = self._build(
+        plan = self._plan(
             BuildRequest(
                 name=spec.name,
                 group=group,
@@ -433,7 +433,7 @@ class FunctionService:
         if token is not None:
             # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
             # not rebuild from, but it recreates a missing Image after a switchover.
-            plan = self._build(
+            plan = self._plan(
                 BuildRequest(
                     name=name,
                     group=group,

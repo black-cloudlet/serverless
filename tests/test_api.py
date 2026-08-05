@@ -73,7 +73,7 @@ class FakeFunctions:
     async def accept_update(self, group, name, spec, user, background):
         return _accepted("function", name, group)
 
-    async def accept_rebuild(self, group, name, user, background):
+    async def accept_build(self, group, name, user, background):
         return _accepted("function", name, group, runtime="python", branch="main")
 
     async def get(self, name, group, user):
@@ -270,9 +270,9 @@ def test_create_container_accepted(client):
     assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
 
 
-def test_rebuild_function_accepted_without_a_body(client):
+def test_build_function_accepted_without_a_body(client):
     """A rebuild carries no inputs: the ones to build with are already stored."""
-    r = client.post("/api/v1/groups/team/functions/orders/rebuild")
+    r = client.post("/api/v1/groups/team/functions/orders/build")
 
     assert r.status_code == 202
     body = r.json()
@@ -283,13 +283,13 @@ def test_rebuild_function_accepted_without_a_body(client):
     assert body["runtime"] == "python" and body["branch"] == "main"
 
 
-def test_only_functions_can_be_rebuilt(client):
+def test_only_functions_can_be_built(client):
     """A container is deployed from an image the caller built; there is nothing to build."""
-    assert client.post("/api/v1/groups/team/containers/orders/rebuild").status_code == 404
+    assert client.post("/api/v1/groups/team/containers/orders/build").status_code == 404
 
 
-def test_rebuild_path_name_validated_at_the_edge(client):
-    assert client.post("/api/v1/groups/team/functions/Bad_Name/rebuild").status_code == 400
+def test_build_path_name_validated_at_the_edge(client):
+    assert client.post("/api/v1/groups/team/functions/Bad_Name/build").status_code == 400
 
 
 def test_create_container_validation_error(client):

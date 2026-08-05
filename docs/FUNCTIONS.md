@@ -7,7 +7,7 @@ what functions share with containers is ARCHITECTURE.md.
 
 - [Overview](#overview)
 - [API - create & update](#api---create--update)
-- [Rebuilding without changing anything](#rebuilding-without-changing-anything)
+- [Building again without changing anything](#building-again-without-changing-anything)
 - [Function Status Resolution](#function-status-resolution)
 
 ## Overview
@@ -273,7 +273,7 @@ re-keyed to the new image's registry):
 { "gitToken": "ghp_new-token" }
 ```
 
-## Rebuilding without changing anything
+## Building again without changing anything
 
 A `PUT` rebuilds only when a build **input** changes (or the token rotates), because
 re-applying an unchanged spec is a no-op kpack does not build from. That leaves the
@@ -281,7 +281,7 @@ opposite need unserved: build the *same* definition again, against today's base 
 dependencies. That is a `POST`, and it takes **no body**:
 
 ```
-POST /api/v1/groups/{group}/functions/{name}/rebuild   ->   202 Accepted
+POST /api/v1/groups/{group}/functions/{name}/build   ->   202 Accepted
 ```
 
 Every input comes back off the workload itself - `gitRepo`, `branch`, `path`, `runtime`

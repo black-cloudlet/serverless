@@ -68,8 +68,8 @@ async def update_function(
     return await svc.accept_update(group, name, spec, user, background)
 
 
-@router.post("/{name}/rebuild", response_model=FunctionResponse, status_code=202)
-async def rebuild_function(
+@router.post("/{name}/build", response_model=FunctionResponse, status_code=202)
+async def build_function(
     group: Group,
     name: Name,
     user: CurrentUser,
@@ -93,7 +93,7 @@ async def rebuild_function(
     Returns:
         A Pending response with a ``statusUrl`` to poll for the build outcome.
     """
-    return await svc.accept_rebuild(group, name, user, background)
+    return await svc.accept_build(group, name, user, background)
 
 
 @router.get("", response_model=list[WorkloadSummary])

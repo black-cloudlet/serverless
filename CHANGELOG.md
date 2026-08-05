@@ -68,7 +68,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   per-phase build log exists. The limits are a constant from configuration, so
   they converge like the rest of the spec; lowering them takes effect per
   function on its next build, since kpack prunes when it creates a `Build`.
-- `POST /api/v1/groups/{group}/functions/{name}/rebuild` - build a function's
+- `POST /api/v1/groups/{group}/functions/{name}/build` - build a function's
   current source again, with no request body. Until now the only way to rebuild
   was to change a build input: a `PUT` re-applies the `Image` on every call, but
   an unchanged spec is a no-op kpack does not build from, so picking up a patched
