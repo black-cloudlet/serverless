@@ -35,7 +35,9 @@ def delete_function_repositories(registry: RegistryConfig, group: str, name: str
     """
     if not registry.can_delete:
         return
-    prefix = f"{registry.organization.strip('/')}/" if registry.organization.strip("/") else ""
+    # The same path the image reference hangs off, minus the host - so the
+    # repository that is deleted is exactly the one that was pushed to.
+    prefix = f"{registry.path}/" if registry.path else ""
     headers = {"Authorization": f"Bearer {registry.api_token}"}
     try:
         with httpx.Client(base_url=registry.api_url, timeout=registry.timeout) as client:

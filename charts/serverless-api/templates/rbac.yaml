@@ -39,12 +39,14 @@ rules:
   - apiGroups: ["kpack.io"]
     resources: ["images"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Builds are read-only: GET reports build state before falling through to the
-  # KSVC status, and their pods carry the per-phase build logs
+  # Builds are read, plus one write the API never creates or deletes: an explicit
+  # rebuild annotates the latest Build, which is where kpack looks for it
+  # (docs/BUILDING.md - What causes a new Build). Reads back the build state for
+  # a GET, and their pods carry the per-phase build logs
   # (docs/FUNCTIONS.md - Function Status Resolution).
   - apiGroups: ["kpack.io"]
     resources: ["builds"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
   # Per-function build account: that function's git Secret + the registry cred
   # (docs/BUILDING.md - Registry & Git Credentials).
   - apiGroups: [""]

@@ -426,7 +426,13 @@ def test_building_is_a_non_terminal_poll_state():
 # --------------------------------------------------- create / update paths
 
 
-def _ksvc(image="reg/fn:old", branch="main", path="", version=None, port=None):
+# What a finished build left on the KSVC: a digest, in the repository
+# _RecordingBuilder pushes to. A fake deployed somewhere else would read as a
+# moved registry layout, which is a different test (see Registry layout).
+DEPLOYED = "reg/acme/payments/hello@sha256:" + "c" * 64
+
+
+def _ksvc(image=DEPLOYED, branch="main", path="", version=None, port=None):
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
 
@@ -698,7 +704,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert len(_applied_kind(cluster, "Image")) == 1
     # ...but the running image is untouched: it may be a digest a finished build
     # resolved, and rewriting it back to the tag would spawn a pointless revision
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
@@ -1086,7 +1092,7 @@ async def test_resending_the_same_version_is_not_a_rebuild():
         _principal(),
     )
 
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/fn:old"
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 # ------------------------------------------- the BuildBackend protocol itself
@@ -1252,7 +1258,7 @@ async def test_changing_only_the_port_does_not_rebuild():
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "site-a",
-        {"hello-payments": _ksvc()},  # deployed at reg/fn:old
+        {"hello-payments": _ksvc()},  # deployed at the digest a build resolved
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
@@ -1269,5 +1275,627 @@ async def test_changing_only_the_port_does_not_rebuild():
     )
 
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert extract_image(ksvc) == "reg/fn:old"  # NOT moved to the build tag
+    assert extract_image(ksvc) == DEPLOYED  # NOT moved to the build tag
     assert _pod_ports(cluster) == [{"containerPort": 9000}]
+
+
+# -------------------------------------------------------------------- build
+
+
+def _build_obj(number, image="fn-hello-payments"):
+    return {
+        "apiVersion": "kpack.io/v1alpha2",
+        "kind": "Build",
+        "metadata": {
+            "name": f"{image}-build-{number}",
+            "labels": {
+                kpack.IMAGE_LABEL: image,
+                kpack.BUILD_NUMBER_LABEL: str(number),
+            },
+        },
+    }
+
+
+def test_latest_build_orders_on_the_number_not_the_string():
+    # "10" sorts before "9" as text, and the annotation only counts on the Build
+    # kpack actually looks at - so a text order would trigger nothing at all
+    builds = [_build_obj(9), _build_obj(10), _build_obj(2)]
+
+    assert kpack.latest_build(builds)["metadata"]["name"] == "fn-hello-payments-build-10"
+    assert kpack.latest_build([]) is None
+    # an object that is not one of kpack's numbered Builds gives no ordering key
+    assert kpack.latest_build([{"metadata": {"labels": {}}}]) is None
+
+
+class _BuildCluster:
+    """Serves a function's kpack Builds and records what was patched onto them."""
+
+    def __init__(self, builds, site="site-a"):
+        self.site = site
+        self.name = site
+        self._builds = list(builds)
+        self.patched = []
+
+    def get(self, kind, name=None, label_selector=None, namespace=None):
+        from common.cluster import ResourceKind
+
+        assert kind == ResourceKind.KPACK_BUILD
+        assert label_selector == f"{kpack.IMAGE_LABEL}=fn-hello-payments"
+        return list(self._builds)
+
+    def patch(self, kind, name, body):
+        self.patched.append((kind, name, body))
+        return {}
+
+
+def test_the_trigger_annotates_the_latest_build_and_leaves_the_image_alone():
+    """The Image spec stays a pure function of the function definition.
+
+    kpack asks whether the *last Build* carries the annotation, so that is where
+    it goes. A nonce on the Image would look like a change on every apply and
+    rebuild forever under active/active, and dropping it again on the next
+    ordinary PUT would rebuild once more (docs/BUILDING.md - Convergence rules).
+    """
+    from common.cluster import ResourceKind
+
+    cluster = _BuildCluster([_build_obj(1), _build_obj(2)])
+
+    assert _builder().trigger(cluster, "hello", "payments") is True
+
+    kind, name, body = cluster.patched[0]
+    assert (kind, name) == (ResourceKind.KPACK_BUILD, "fn-hello-payments-build-2")
+    assert kpack.BUILD_TRIGGER_ANNOTATION in body["metadata"]["annotations"]
+    assert len(cluster.patched) == 1  # one request, one build
+
+
+def test_triggering_an_image_that_has_never_built_is_not_a_failure():
+    """Applying the Image is itself what starts that build; there is nothing to annotate."""
+    cluster = _BuildCluster([])
+
+    assert _builder().trigger(cluster, "hello", "payments") is False
+    assert cluster.patched == []
+
+
+class _RebuildCluster:
+    """An _ApplyCluster that also serves kpack Builds and records patches."""
+
+    def __init__(self, existing, secrets=None, builds=(), site="site-a"):
+        from tests.test_auth_and_deployer import _ApplyCluster
+
+        self._inner = _ApplyCluster(site, existing, secrets)
+        self._builds = list(builds)
+        self.patched = []
+        self.site = site
+        self.name = site
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)  # applied/deleted/apply/delete
+
+    def get(self, kind, name=None, label_selector=None, namespace=None):
+        from common.cluster import ResourceKind
+
+        if kind == ResourceKind.KPACK_BUILD:
+            return list(self._builds)
+        return self._inner.get(kind, name, label_selector, namespace)
+
+    def patch(self, kind, name, body):
+        self.patched.append((kind, name, body))
+        return {}
+
+
+def _deployed_ksvc(**over):
+    """A KSVC as a cluster hands it back: with the uid an ownerReference needs."""
+    ksvc = _ksvc(**over)
+    ksvc["metadata"] = {**ksvc["metadata"], "uid": "uid-hello-payments"}
+    return ksvc
+
+
+def _build_cluster(**over):
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    kwargs = dict(
+        existing={
+            "hello-payments": _deployed_ksvc(branch="release", path="services/api", version="3.11")
+        },
+        secrets={"hello-payments-git": stored},
+        builds=[_build_obj(1)],
+    )
+    kwargs.update(over)
+    return _RebuildCluster(**kwargs)
+
+
+class _TriggeringBuilder(_RecordingBuilder):
+    """A _RecordingBuilder that also records the trigger the engine asks for."""
+
+    def __init__(self, state=None):
+        super().__init__(state)
+        self.triggered = []
+
+    def trigger(self, cluster, name, group):
+        self.triggered.append((cluster.site, name, group))
+        return True
+
+
+def _build_service(clusters, builder, runtimes=None, **kwargs):
+    """A FunctionService whose runtime offers versions, as a deployed one has."""
+    from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
+    from api.services.function import FunctionService
+    from tests.test_auth_and_deployer import _workload_service
+
+    registry = runtimes or RuntimeRegistry(
+        [
+            RuntimeSpec(
+                name="python",
+                builder="python",
+                versionEnv="BP_CPYTHON_VERSION",
+                defaultVersion="3.12",
+                versions=["3.11", "3.12"],
+            )
+        ]
+    )
+    return FunctionService(_workload_service(clusters, builder=builder, **kwargs), registry)
+
+
+async def _run_build(svc, group="payments", name="hello"):
+    from fastapi import BackgroundTasks
+
+    background = BackgroundTasks()
+    body = await svc.accept_build(group, name, _principal(), background)
+    await background()  # the 202 is returned first; this is the work behind it
+    return body
+
+
+async def test_build_builds_the_source_the_function_already_has():
+    """No inputs are accepted, so they are read back off the workload itself.
+
+    The same reconstruction a site that has never built the function does after a
+    switchover: annotations for the source, the workload's own Secret for the token.
+    """
+    cluster = _build_cluster()
+    builder = _TriggeringBuilder()
+
+    await _run_build(_build_service({"site-a": cluster}, builder))
+
+    assert builder.calls == 1
+    req = builder.reqs[0]
+    assert req.git_url == "https://git.internal/payments/hello.git"
+    assert (req.branch, req.path, req.runtime, req.version) == (
+        "release",
+        "services/api",
+        "python",
+        "3.11",
+    )
+    # never re-supplied by the caller: a rebuild takes no body at all
+    assert req.git_token == "ghp_stored"
+    # the branch head, not a pinned commit - pinning one is the webhook's job
+    assert req.revision is None and req.build_revision == "release"
+
+
+async def test_build_applies_the_build_and_then_triggers_it():
+    """Order matters: applying first is what makes a site with no Image build at all."""
+    from tests.test_auth_and_deployer import _applied_kind
+
+    cluster = _build_cluster()
+    builder = _TriggeringBuilder()
+
+    await _run_build(_build_service({"site-a": cluster}, builder))
+
+    assert len(_applied_kind(cluster, "Image")) == 1
+    assert len(_git_secrets(cluster)) == 1  # the site that clones needs the token
+    assert builder.triggered == [("site-a", "hello", "payments")]
+
+
+async def test_build_never_writes_the_workload():
+    """Nothing about the desired state changes, so nothing about it is applied.
+
+    The running revision keeps serving the image it already resolved; the new
+    digest reaches it the way one from any other kpack-started build does
+    (docs/BUILDING.md - Ownership: API vs Build Service).
+    """
+    from tests.test_auth_and_deployer import _applied_kind
+
+    cluster = _build_cluster()
+
+    await _run_build(_build_service({"site-a": cluster}, _TriggeringBuilder()))
+
+    assert _applied_kind(cluster, "Service") == []
+    assert _applied_kind(cluster, "DomainMapping") == []
+    assert cluster.deleted == []  # and nothing is pruned out from under it
+
+
+async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
+    """Re-applying them unowned would strand an Image that rebuilds a deleted function."""
+    from tests.test_auth_and_deployer import _applied_kind
+
+    cluster = _build_cluster()
+
+    await _run_build(_build_service({"site-a": cluster}, _TriggeringBuilder()))
+
+    owners = _applied_kind(cluster, "Image")[0]["metadata"]["ownerReferences"]
+    assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
+
+
+async def test_build_on_a_site_that_runs_no_copy_applies_the_build_unowned():
+    """The build belongs to the local site; the KSVC may not be there at all.
+
+    An ownerReference must name an owner in the same cluster, so there is none to
+    give. ``delete`` reclaims these by name, as it does for a function targeted
+    away from the local site.
+    """
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    local = _RebuildCluster(existing={}, secrets={"hello-payments-git": stored}, builds=[])
+    # the token is on every site, which is what lets any of them build
+    # (docs/BUILDING.md - Active/Active Behaviour)
+    remote = _ApplyCluster(
+        "site-b", {"hello-payments": _deployed_ksvc()}, secrets={"hello-payments-git": stored}
+    )
+    svc = _build_service(
+        {"site-a": local, "site-b": remote}, _TriggeringBuilder(), local_site="site-a"
+    )
+
+    await _run_build(svc)
+
+    image = _applied_kind(local, "Image")[0]
+    assert "ownerReferences" not in image["metadata"]
+    assert _applied_kind(remote, "Image") == []  # one site builds, and it is the local one
+
+
+async def test_build_without_a_stored_token_is_rejected_before_the_202():
+    """Nothing can clone without it, and a rebuild has no body to supply one in."""
+    from fastapi import BackgroundTasks
+
+    from common.errors import ValidationError
+
+    cluster = _build_cluster(secrets={})  # the git Secret is gone
+    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    background = BackgroundTasks()
+
+    with pytest.raises(ValidationError, match="no git token is stored"):
+        await svc.accept_build("payments", "hello", _principal(), background)
+    assert background.tasks == []  # nothing was scheduled behind a 202
+
+
+async def test_build_of_a_runtime_that_left_the_configmap_is_rejected_before_the_202():
+    """A 400 now, not a build that fails minutes later and reads as a broken build."""
+    from fastapi import BackgroundTasks
+
+    from common.errors import ValidationError
+    from tests.conftest import runtime_registry
+
+    cluster = _build_cluster()
+    # the function was built with "python"; the platform now offers only "go"
+    svc = _build_service(
+        {"site-a": cluster}, _TriggeringBuilder(), runtimes=runtime_registry(names=("go",))
+    )
+
+    with pytest.raises(ValidationError, match="unsupported runtime"):
+        await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
+
+
+async def test_build_is_accepted_as_pending_with_a_status_url():
+    """Same 202 contract as create and update, so a client polls one place."""
+    from fastapi import BackgroundTasks
+
+    cluster = _build_cluster()
+    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+
+    body = await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
+
+    assert body.overallStatus == "Pending"
+    assert body.statusUrl == "/api/v1/groups/payments/functions/hello"
+    # the inputs it will build, echoed back - the request sent none of its own
+    assert (body.runtime, body.branch, body.path, body.version) == (
+        "python",
+        "release",
+        "services/api",
+        "3.11",
+    )
+    assert body.hostname == "hello-payments.ex.com"  # the host it already serves on
+
+
+async def test_a_container_of_the_same_name_cannot_be_rebuilt():
+    """``{name}-{group}`` is shared by both offerings, so the object may not be a function.
+
+    Hidden as a 404 rather than refused, matching every other read: the answer
+    must not confirm that something else holds the name.
+    """
+    from fastapi import BackgroundTasks
+
+    from api.models.common import Scaling
+    from api.services.manifests.ksvc import build_ksvc
+    from common.errors import NotFoundError
+
+    container = build_ksvc(
+        name="hello-payments",
+        group="payments",
+        owner="alice",
+        image="reg/x:1",
+        offering="container",
+        host="hello-payments.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+    cluster = _build_cluster(existing={"hello-payments": container})
+    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+
+    with pytest.raises(NotFoundError):
+        await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
+
+
+async def test_build_of_a_workload_with_no_stored_source_is_rejected():
+    """The annotations are the only record of what to build; without them there is none.
+
+    Nothing can be reconstructed and there is no body to reconstruct it from, so
+    the caller is told which inputs to send on a `PUT` rather than being handed a
+    202 that fails minutes later.
+    """
+    from fastapi import BackgroundTasks
+
+    from api.models.common import Scaling
+    from api.services.manifests.ksvc import build_ksvc
+    from common.errors import ValidationError
+
+    unstamped = build_ksvc(  # a function KSVC carrying no build metadata
+        name="hello-payments",
+        group="payments",
+        owner="alice",
+        image="reg/fn:old",
+        offering="function",
+        host="hello-payments.ex.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+    )
+    cluster = _build_cluster(existing={"hello-payments": unstamped})
+    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    background = BackgroundTasks()
+
+    with pytest.raises(ValidationError, match="gitRepo, branch, runtime"):
+        await svc.accept_build("payments", "hello", _principal(), background)
+    assert background.tasks == []
+
+
+# ----------------------------------------------------------- build history
+
+
+def test_the_image_bounds_its_own_build_history():
+    """Unset is not unbounded: kpack's own default is 10 successful and 10 failed.
+
+    A Build owns its pod, so 20 per function is 20 completed pods per function -
+    invisible at ten functions, the whole namespace at three hundred.
+    """
+    settings = _settings(build={"registry_secret": "reg-creds", "success_history_limit": 2})
+    image = _by_kind(_manifests(_builder(settings))[1], "Image")
+
+    assert image["spec"]["successBuildHistoryLimit"] == 2
+    assert image["spec"]["failedBuildHistoryLimit"] == 3  # the default, kept
+
+
+def test_the_history_limits_are_the_same_on_every_apply():
+    """A constant from configuration, so it converges like the rest of the spec.
+
+    A value that moved per apply would be a nonce, and kpack would rebuild on it
+    (docs/BUILDING.md - Convergence rules).
+    """
+    builder = _builder()
+    first = _by_kind(_manifests(builder)[1], "Image")
+    second = _by_kind(_manifests(builder)[1], "Image")
+
+    assert first["spec"] == second["spec"]
+    assert first["spec"]["successBuildHistoryLimit"] == 3
+    assert first["spec"]["failedBuildHistoryLimit"] == 3
+
+
+# --------------------------------------------------------- registry layout
+
+
+def _layout_settings(**registry):
+    base = dict(url="registry.internal", organization="acme")
+    base.update(registry)
+    return _settings(registry=base)
+
+
+def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
+    """One root for everything the platform builds: the Builders and the functions.
+
+    A function cannot collide with a Builder - a Builder is one path component
+    below the base (`base/python`) and a function is two (`base/{group}/{name}`).
+    """
+    builder = _builder(_layout_settings(repository="serverless/builders"))
+
+    assert builder.image_ref(_request()) == (
+        "registry.internal/acme/serverless/builders/payments/hello:main"
+    )
+    assert builder.cache_ref(_request()) == (
+        "registry.internal/acme/serverless/builders/payments/hello_cache:latest"
+    )
+
+
+def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
+    """The prefix is optional, so an install that never sets it is unaffected."""
+    builder = _builder(_layout_settings())
+
+    assert builder.image_ref(_request()) == "registry.internal/acme/payments/hello:main"
+    assert builder.cache_ref(_request()) == "registry.internal/acme/payments/hello_cache:latest"
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("reg/acme/team/app:main", "reg/acme/team/app"),
+        ("reg/acme/team/app@sha256:" + "a" * 64, "reg/acme/team/app"),
+        ("reg/acme/team/app:main@sha256:" + "a" * 64, "reg/acme/team/app"),
+        # the host's port is not a tag separator
+        ("reg.internal:5000/team/app:main", "reg.internal:5000/team/app"),
+        ("reg.internal:5000/team/app", "reg.internal:5000/team/app"),
+    ],
+)
+def test_repository_of_ignores_the_tag_and_the_digest(image, expected):
+    from common.names import repository_of
+
+    assert repository_of(image) == expected
+
+
+async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
+    """The layout is configuration, so nothing about the function marks the move.
+
+    Left unnoticed the workload would point at a repository nothing pushes to,
+    permanently: every later comparison is against the same stale value.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    class _MovedBuilder(_RecordingBuilder):
+        def image_ref(self, req):
+            return "reg/acme/serverless/builders/payments/hello:main"
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        # deployed under the old layout, at a digest a finished build resolved
+        "site-a",
+        {"hello-payments": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
+        secrets={"hello-payments-git": stored},
+    )
+    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+        "payments",
+        "hello",
+        # every build input identical to what is stored: a config-only edit
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    ksvc = _applied_kind(cluster, "Service")[0]
+    assert extract_image(ksvc) == "reg/acme/serverless/builders/payments/hello:main"
+
+
+async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest():
+    """The move must be read off the repository alone, never the tag or digest.
+
+    Comparing whole references would make every config edit rewrite a resolved
+    digest back to the branch tag and spawn a revision for nothing.
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    digest = "reg/acme/payments/hello@sha256:" + "b" * 64
+
+    class _SameLayout(_RecordingBuilder):
+        def image_ref(self, req):
+            return "reg/acme/payments/hello:main"
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a", {"hello-payments": _ksvc(image=digest)}, secrets={"hello-payments-git": stored}
+    )
+    await _function_service({"site-a": cluster}, _SameLayout()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == digest
+
+
+# ----------------------------------------------------------- build edge cases
+
+
+async def test_stored_inputs_that_no_longer_validate_are_a_400_not_a_500():
+    """Rebuild is the only path building a BuildRequest from stored state.
+
+    A hand-edited annotation, or a rule tightened since the function was created,
+    fails the dataclass's own validation. Untranslated that reaches the catch-all
+    handler as a 500 with a fixed message, hiding an actionable problem.
+    """
+    from fastapi import BackgroundTasks
+
+    from api.models.common import ANNOTATION_GIT_PATH
+    from common.errors import ValidationError
+
+    ksvc = _deployed_ksvc()
+    ksvc["metadata"]["annotations"][ANNOTATION_GIT_PATH] = "../etc"
+    cluster = _build_cluster(existing={"hello-payments": ksvc})
+    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+
+    with pytest.raises(ValidationError, match="stored build inputs are not valid"):
+        await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
+
+
+async def test_a_second_rebuild_annotates_whatever_build_is_latest_by_then():
+    """Two requests are two builds - asking twice is what asking twice means.
+
+    The trigger is read off the latest Build, so the second request must find the
+    one kpack created for the first, not re-annotate a Build it has moved past.
+    """
+    cluster = _build_cluster()
+    builder = _builder()
+
+    assert builder.trigger(cluster, "hello", "payments") is True
+    cluster._builds.append(_build_obj(2))  # kpack made one from that trigger
+    assert builder.trigger(cluster, "hello", "payments") is True
+
+    assert [name for _, name, _ in cluster.patched] == [
+        "fn-hello-payments-build-1",
+        "fn-hello-payments-build-2",
+    ]
+
+
+def test_the_history_limit_never_prunes_the_build_the_trigger_needs():
+    """The two features interact: a rebuild annotates the latest retained Build.
+
+    A limit of zero would leave nothing to annotate and make every rebuild a
+    silent no-op, so the floor is one rather than a free-form integer.
+    """
+    import pydantic
+
+    from common.config import BuildConfig
+
+    with pytest.raises(pydantic.ValidationError):
+        BuildConfig(success_history_limit=0)
+    assert BuildConfig(success_history_limit=1).success_history_limit == 1
+
+
+async def test_build_is_refused_for_a_group_the_caller_is_not_in():
+    """Authorization is the engine's, and it runs before anything is read."""
+    from fastapi import BackgroundTasks
+
+    from api.auth.claims import Principal
+    from common.errors import ForbiddenError
+
+    svc = _build_service({"site-a": _build_cluster()}, _TriggeringBuilder())
+    outsider = Principal(subject="u", username="mallory", groups=["other"])
+
+    with pytest.raises(ForbiddenError):
+        await svc.accept_build("payments", "hello", outsider, BackgroundTasks())
+
+
+async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202():
+    """The 202 is already sent, so the failure belongs in the log and the status.
+
+    `run` is what swallows it; letting it escape would crash the background task
+    and lose the reason with it.
+    """
+    from fastapi import BackgroundTasks
+
+    class _DownLocal(_RebuildCluster):
+        def apply(self, manifest):
+            raise RuntimeError("site down")
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _DownLocal(
+        existing={"hello-payments": _deployed_ksvc()},
+        secrets={"hello-payments-git": stored},
+        builds=[_build_obj(1)],
+    )
+    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+
+    background = BackgroundTasks()
+    body = await svc.accept_build("payments", "hello", _principal(), background)
+    assert body.overallStatus == "Pending"
+    await background()  # must not raise

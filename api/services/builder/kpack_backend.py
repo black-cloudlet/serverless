@@ -21,6 +21,8 @@ protocol.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from api.services.builder.runtimes import RuntimeRegistry
 from api.services.manifests import secrets as secret_svc
 from common import kpack
@@ -186,9 +188,61 @@ class KpackBackend:
                     env=env,
                     resources=self._build.resources,
                     cache_tag=self.cache_ref(req),
+                    success_history_limit=self._build.success_history_limit,
+                    failed_history_limit=self._build.failed_history_limit,
                 ),
             ],
         )
+
+    def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
+        """Ask kpack for one more build of the function's current inputs.
+
+        Patches the annotation onto the latest ``Build``, which is where kpack
+        looks for it (:data:`~common.kpack.BUILD_TRIGGER_ANNOTATION`) and the
+        reason a rebuild leaves the ``Image`` untouched: the desired state stays
+        a pure function of the function definition, so the next ordinary apply
+        neither carries a nonce forward nor drops one and rebuilds again
+        (docs/BUILDING.md - Convergence rules).
+
+        Args:
+            cluster: The cluster holding the Image (always the local site).
+            name: The workload name.
+            group: The owning group.
+
+        Returns:
+            True if a build was triggered; False when the Image has no build yet
+            - it is about to make one, and there is nothing to annotate.
+
+        Raises:
+            Exception: If the Builds could not be listed or the patch failed.
+                Unlike a status read, this one is the whole point of the call: a
+                swallowed error is a rebuild that silently never happens.
+        """
+        image_name = kpack.build_object_name(object_name(name, group))
+        builds = cluster.get(
+            ResourceKind.KPACK_BUILD, label_selector=f"{kpack.IMAGE_LABEL}={image_name}"
+        )
+        latest = kpack.latest_build(builds)
+        if latest is None:
+            logger.info(
+                "no build to trigger for Image '%s' on %s; it has one coming",
+                image_name,
+                cluster.site,
+            )
+            return False
+        build_name = (latest.get("metadata") or {}).get("name")
+        cluster.patch(
+            ResourceKind.KPACK_BUILD,
+            build_name,
+            kpack.trigger_patch(datetime.now(UTC).isoformat(timespec="seconds")),
+        )
+        logger.info(
+            "triggered a rebuild of Image '%s' on %s via build '%s'",
+            image_name,
+            cluster.site,
+            build_name,
+        )
+        return True
 
     def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
         """Read a function's build state from one cluster.

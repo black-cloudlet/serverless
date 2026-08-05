@@ -31,9 +31,77 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   did not answer is skipped, a running build outranks the KSVC status. Those are
   now stated against plain dicts instead of fake clusters, and `list` is 63 lines
   instead of 110. No behaviour change.
+- Function images and their build caches now sit under
+  `build.builderRepository`, the same root the composed Builder images use:
+  `{registry.url}/{registry.organization}/{build.builderRepository}/{group}/{name}`.
+  One value covers both because they are pushed by the same credential,
+  mirrored together, and cleaned up against the same root; a function cannot
+  collide with a Builder, which is one path component below the base where a
+  function is two. Either prefix may be empty and is skipped, so a flat install
+  is unaffected. `RegistryConfig.path` is now the single derivation of the
+  segment between host and `{group}/{name}` - the image reference hangs off it
+  and the Quay repository delete addresses the same string with the host
+  removed, so cleanup cannot delete a different repository than the build
+  pushed to.
+
+  Changing it on an install that already has functions is a **migration**: the
+  KSVC keeps whatever reference it was applied with. Per function, rebuild first
+  (that is what puts anything in the new repository - a `spec.tag` change alone
+  does not rebuild, since kpack's `CONFIG` diff covers source, env, services and
+  resources but not the tag), then send any `PUT`. The update path now compares
+  the deployed repository against the computed one and adopts the new reference
+  when they differ; without that an untouched function would point at a
+  repository nothing pushes to permanently, because every later comparison is
+  against the same stale value. Compared on the repository alone, so a resolved
+  digest is still never rewritten back to the branch tag. Content under the old
+  layout is left behind - cleanup addresses the current one.
 
 ### Added
 
+- Every kpack `Image` now carries an explicit `successBuildHistoryLimit` /
+  `failedBuildHistoryLimit`, from the new `build.history.success` /
+  `build.history.failed` chart values (both **3**). Nothing set them before,
+  which was not "unbounded" but kpack's own default of 10 and 10 - 20 `Build`
+  objects per function, each holding a completed pod until it is collected. That
+  is invisible at ten functions and is the whole namespace at three hundred.
+  Failed builds keep their own quota because their pods are the only place the
+  per-phase build log exists. The limits are a constant from configuration, so
+  they converge like the rest of the spec; lowering them takes effect per
+  function on its next build, since kpack prunes when it creates a `Build`.
+- `POST /api/v1/groups/{group}/functions/{name}/build` - build a function's
+  current source again, with no request body. Until now the only way to rebuild
+  was to change a build input: a `PUT` re-applies the `Image` on every call, but
+  an unchanged spec is a no-op kpack does not build from, so picking up a patched
+  base image, retrying a failed build, or building a commit before kpack next
+  re-resolves the branch meant editing something that did not need editing.
+
+  Every input is read back off the workload - `gitRepo`/`branch`/`path`/
+  `runtime`/`version` from the KSVC's annotations, the token from the
+  `{workload}-git` Secret - which is the same reconstruction a site that has
+  never built the function does after a switchover. Nothing is accepted from the
+  request: a rebuild that took inputs would be a `PUT` in disguise. Missing
+  stored inputs, no stored token, or a runtime that has since left the ConfigMap
+  are synchronous `400`s; a container of the same name is a `404`, like every
+  other read. The response is the same `Pending` 202 with the same `statusUrl`.
+
+  Stored inputs that no longer validate - a hand-edited annotation, or a rule
+  tightened since the function was created - are a `400` naming the fields,
+  not the `500` the catch-all handler would otherwise render. Rebuild is the
+  only path that builds a `BuildRequest` out of stored state rather than a
+  validated request body, so it is the only one where that can happen.
+
+  The trigger is an annotation on the latest kpack `Build`, never on the
+  `Image`: kpack reads it there, and a nonce in the `Image` spec would look like
+  a change to every apply (rebuilding forever under active/active) and would be
+  dropped again by the next ordinary `PUT`, rebuilding once more. So the desired
+  state stays a pure function of the function definition, and the `Image` apply
+  that precedes the trigger keeps the path self-healing: a site that has never
+  built the function gets the `Image` created and builds from that, with no
+  `Build` to annotate. It is also the only function write that leaves the KSVC
+  alone - the workload does not change, so no revision is spawned and the
+  running one keeps serving until the new digest is rolled out. New RBAC: `patch`
+  on `builds.kpack.io` (still never create or delete - kpack owns their
+  lifecycle).
 - `GET /api/v1/groups/{group}/{type}/{name}/stats` - a lightweight endpoint to
   poll for live numbers: `overallStatus`, workload-wide `replicas` and `usage`,
   and the same three per site. Nothing else. Until now a client watching a

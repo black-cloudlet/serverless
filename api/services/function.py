@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError as PydanticValidationError
+
 from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
@@ -12,7 +14,7 @@ from api.services.workloads import ApplyRequest, WorkloadService
 from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError
 from common.labels import OFFERING_FUNCTION, workload_labels
-from common.names import object_name
+from common.names import object_name, repository_of
 
 
 class FunctionService:
@@ -80,7 +82,7 @@ class FunctionService:
                 f"available versions: {', '.join(spec.versions)}"
             )
 
-    def _build(self, req: BuildRequest, user: Principal) -> BuildPlan:
+    def _plan(self, req: BuildRequest, user: Principal) -> BuildPlan:
         """The owned manifests that declare the build, and the tag they push to.
 
         Includes the workload's ``{workload}-git`` Secret: one Secret serves both
@@ -167,6 +169,138 @@ class FunctionService:
             **self._echo(spec),
         )
 
+    def _build_request(
+        self, name: str, group: str, existing: dict, user: Principal
+    ) -> BuildRequest:
+        """Reconstruct the build inputs of a deployed function, for a rebuild.
+
+        Every input comes back off the workload itself - the KSVC's annotations
+        and the ``{workload}-git`` Secret - which is the same reconstruction a
+        site that has never built the function does after a switchover
+        (docs/BUILDING.md - Reconstruction after switchover). Nothing is taken
+        from the request: a rebuild asks for the *current* definition to be built
+        again, so accepting inputs here would make it an update in disguise.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            existing: The state loaded by ``load_existing``.
+            user: The authenticated caller, stamped as the build's owner.
+
+        Returns:
+            The build request.
+
+        Raises:
+            ValidationError: If the stored state cannot describe a build - no
+                token, or missing build metadata.
+        """
+        git_url = existing.get("gitUrl")
+        branch = existing.get("branch")
+        runtime = existing.get("runtime")
+        missing = [
+            field
+            for field, value in (("gitRepo", git_url), ("branch", branch), ("runtime", runtime))
+            if not value
+        ]
+        if missing:
+            raise ValidationError(
+                f"cannot rebuild: the function has no stored {', '.join(missing)}; "
+                "send the build inputs with a PUT instead"
+            )
+        token = existing.get("git_token")
+        if not token:
+            raise ValidationError(
+                "cannot rebuild: no git token is stored for this function; "
+                "send one with a PUT instead"
+            )
+        # The only path that builds a BuildRequest out of stored state rather than
+        # a validated request body, so it is the only one where the dataclass's own
+        # validation can fail. Untranslated that is a 500 for a hand-edited
+        # annotation, or for a rule tightened since the function was created.
+        try:
+            return BuildRequest(
+                name=name,
+                group=group,
+                git_url=git_url,
+                branch=branch,
+                path=existing.get("path") or "",
+                git_token=token,
+                runtime=runtime,
+                version=existing.get("version"),
+                owner=user.username,
+            )
+        except PydanticValidationError as exc:
+            fields = ", ".join(sorted({str(e["loc"][0]) for e in exc.errors() if e.get("loc")}))
+            raise ValidationError(
+                f"cannot rebuild: the stored build inputs are not valid ({fields}); "
+                "send them with a PUT instead"
+            ) from exc
+
+    async def accept_build(
+        self, group: str, name: str, user: Principal, background
+    ) -> FunctionResponse:
+        """Validate and accept a rebuild request, scheduling the build (202).
+
+        Loads and authorizes the function synchronously, so a missing workload,
+        a missing token or a runtime that has since left the ConfigMap is an
+        immediate 404/400 rather than a background failure nobody sees.
+
+        Args:
+            group: The owning group (from the request path).
+            name: The workload name.
+            user: The authenticated caller.
+            background: FastAPI background tasks to schedule the build on.
+
+        Returns:
+            A Pending response with a ``statusUrl`` to poll.
+
+        Raises:
+            NotFoundError: If no such function exists (or it isn't the caller's).
+            ValidationError: If the stored state cannot describe a build.
+        """
+        existing = await self._engine.load_existing(name, FUNCTION, user, group)
+        req = self._build_request(name, group, existing, user)
+        # A runtime can be removed from the ConfigMap after a function was built
+        # with it; that is a 400 now, not a build that fails minutes later.
+        self._assert_runtime(req.runtime, req.version)
+        background.add_task(self._engine.run, self.build, group, name, user, existing)
+        host = existing.get("host") or self._engine.host_for(name, None, group)
+        return self._engine.accepted(
+            FUNCTION,
+            name,
+            group,
+            host,
+            runtime=req.runtime,
+            version=req.version,
+            gitRepo=req.git_url,
+            branch=req.branch,
+            path=req.path,
+        )
+
+    async def build(self, group: str, name: str, user: Principal, existing: dict) -> None:
+        """Build a function's current source again (runs in the background).
+
+        The image is rebuilt from the same repository, branch and runtime it
+        already has, so this is what picks up a base-image or dependency change,
+        retries a failed build, or gets a pushed commit built now rather than
+        when kpack next polls. Nothing about the workload changes, so the KSVC is
+        not written and the running revision keeps serving until the new digest
+        is rolled out (docs/BUILDING.md - Ownership: API vs Build Service).
+
+        Args:
+            group: The owning group (from the request path).
+            name: The workload name.
+            user: The authenticated caller.
+            existing: The workload state preloaded (and authorized) by
+                :meth:`accept_build`.
+
+        Raises:
+            ValidationError: If the stored state cannot describe a build.
+            ServiceUnavailableError: If the build pipeline is unavailable.
+        """
+        req = self._build_request(name, group, existing, user)
+        await self._engine.apply_build(name, group, self._plan(req, user))
+
     async def create(
         self, group: str, spec: FunctionCreate, user: Principal
     ) -> tuple[FunctionResponse, int]:
@@ -183,7 +317,7 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        plan = self._build(
+        plan = self._plan(
             BuildRequest(
                 name=spec.name,
                 group=group,
@@ -299,7 +433,7 @@ class FunctionService:
         if token is not None:
             # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
             # not rebuild from, but it recreates a missing Image after a switchover.
-            plan = self._build(
+            plan = self._plan(
                 BuildRequest(
                     name=name,
                     group=group,
@@ -314,9 +448,13 @@ class FunctionService:
                 user,
             )
             replicated, local = plan.replicated, plan.local
+            # A layout change moves where builds are pushed with nothing about the
+            # function changing, so nothing else here would notice. Repository only:
+            # the deployed value may be a digest (docs/BUILDING.md - Registry layout).
+            moved = repository_of(image) != repository_of(plan.tag)
             # Keep the deployed image otherwise: it may be a digest a finished build
             # resolved, and rewriting it back to the tag spawns a pointless revision.
-            if build_inputs_changed or token_rotated:
+            if build_inputs_changed or token_rotated or moved:
                 image = plan.tag
 
         body, code = await self._engine.apply_workload(

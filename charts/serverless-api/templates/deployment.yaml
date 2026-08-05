@@ -42,6 +42,12 @@ spec:
               value: {{ .Values.registry.deleteOnFunctionDelete | quote }}
             - name: SERVERLESS_REGISTRY__ORGANIZATION
               value: {{ .Values.registry.organization | quote }}
+            # The Builders' repository is the functions' too, so both sit under
+            # one root (docs/BUILDING.md - Registry layout). Outside the
+            # build.enabled guard below: it also addresses the repository a
+            # deleted function's cleanup removes.
+            - name: SERVERLESS_REGISTRY__REPOSITORY
+              value: {{ .Values.build.builderRepository | quote }}
             - name: SERVERLESS_SSO__ISSUER
               value: {{ .Values.sso.issuer | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
@@ -71,6 +77,10 @@ spec:
               value: {{ .Values.build.resources | toJson | quote }}
             - name: SERVERLESS_BUILD__CACHE
               value: {{ .Values.build.cache | quote }}
+            - name: SERVERLESS_BUILD__SUCCESS_HISTORY_LIMIT
+              value: {{ .Values.build.history.success | quote }}
+            - name: SERVERLESS_BUILD__FAILED_HISTORY_LIMIT
+              value: {{ .Values.build.history.failed | quote }}
             {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}

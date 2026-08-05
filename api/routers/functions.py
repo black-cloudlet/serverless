@@ -68,6 +68,34 @@ async def update_function(
     return await svc.accept_update(group, name, spec, user, background)
 
 
+@router.post("/{name}/build", response_model=FunctionResponse, status_code=202)
+async def build_function(
+    group: Group,
+    name: Name,
+    user: CurrentUser,
+    svc: FunctionDep,
+    background: BackgroundTasks,
+) -> FunctionResponse:
+    """Rebuild a function from its current source (202), no body.
+
+    The build inputs are the ones already stored - repository, branch, path,
+    runtime, version and the saved git token - so this rebuilds the same
+    definition against today's base image and dependencies. Nothing about the
+    workload's spec changes and the running revision keeps serving.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller (injected).
+        svc: The function service (injected).
+        background: FastAPI background tasks (injected).
+
+    Returns:
+        A Pending response with a ``statusUrl`` to poll for the build outcome.
+    """
+    return await svc.accept_build(group, name, user, background)
+
+
 @router.get("", response_model=list[WorkloadSummary])
 async def list_functions(
     group: Group,

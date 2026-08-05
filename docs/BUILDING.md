@@ -31,16 +31,16 @@ the build flow, and what the API owns versus the build service.
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
-| Image CR writer | The **API** (POST / PUT / webhook) |
+| Image CR writer | The **API** (POST / PUT / build / webhook) |
 | Digest propagation | The **build service** watches `status.latestImage` and updates the ksvc in *all* sites |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
-| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent) |
+| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
 | Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
 | Registry cleanup | Function delete **deletes both repositories** through Quay's management API, with a Quay OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
-| Registry layout | `registry.url` + optional `registry.organization`, prefixing every image the chart and the API reference (BUILDING.md: Runtime Versions & Dependencies) |
+| Registry layout | `registry.url` + optional `registry.organization` + `build.builderRepository`, prefixing every image the chart and the API reference. **One** root for the Builders this platform composes and the functions it builds (BUILDING.md: Registry layout) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
 ---
@@ -196,23 +196,45 @@ Whenever a `clusterBuild.stores[].sources[].tag` is bumped, re-check that every 
 
 Registries that namespace their repositories - Harbor projects, Quay and GitLab
 organizations, Artifactory repository keys - need a path segment between the host and
-the repository. `registry.organization` supplies it, and everything derives from the
-pair:
+the repository. `registry.organization` supplies it, `build.builderRepository` adds the
+one everything the platform builds sits under, and the rest derives from those three:
 
 ```
-{registry.url}/{registry.organization}/...          <- the "registry base"
+{registry.url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
 
-  base/{build.builderRepository}/{name}             Builder tags
+  base/{name}                                       Builder tags
   base/{group}/{name}:{branch}                      function images (the API)
   base/{group}/{name}_cache:latest                  build layer cache (BUILDING.md: Build cache)
 ```
 
-Empty organization collapses this to the flat `{host}/{repository}` layout, so existing
-installs are unaffected.
+One value covers the Builders and the functions deliberately: they are pushed by the same
+credential, mirrored together, and cleaned up against the same root, so a second value
+would only be a second thing to keep in step. A function cannot collide with a Builder -
+a Builder is one path component below the base and a function is two.
 
-The stack and store images sit under the same base, but the kpack chart prefixes them
-with its own `clusterBuild.registry` - set that to the identical
-`{registry.url}/{registry.organization}` string:
+Either segment may be empty and is then skipped, so the flat `{host}/{group}/{name}`
+layout still produces no doubled slash. `RegistryConfig.path` is the single derivation:
+the image reference hangs off it and the repository *delete* addresses Quay by the same
+string with the host removed, so the repository that is deleted is the one that was
+pushed to.
+
+**Changing it later is a migration, not a config edit.** The KSVC keeps whatever reference
+it was applied with, so an install that already has functions needs, per function:
+
+1. `POST .../functions/{name}/build` - re-applies the `Image` at the new tag and builds,
+   which is what puts anything in the new repository. A `spec.tag` change alone does not
+   rebuild: kpack's `CONFIG` diff covers source, env, services and resources, not the tag.
+2. any `PUT` - the update path compares the deployed repository against the computed one
+   and adopts the new reference when they differ (an ordinary config-only body will do).
+
+In that order. Reversed, the workload would point at a repository nothing has pushed to
+yet and sit in `Building` until step 1 finished. The old repositories are left behind:
+cleanup addresses the *current* layout, so nothing deletes content under the previous one.
+
+The stack and store images are *mirrored* content rather than something this platform
+builds, so they sit under the organization but **not** under `build.builderRepository`.
+The kpack chart prefixes them with its own `clusterBuild.registry` - set that to
+`{registry.url}/{registry.organization}`:
 
 ```
 {clusterBuild.registry}/...                         <- the kpack chart's prefix
@@ -444,11 +466,23 @@ actionable error.
 |--------|---------|------------------|
 | `CONFIG` | `spec` changed | PUT that changes runtime, version or env |
 | `COMMIT` | resolved source SHA changed | the per-function **webhook** |
+| `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/build` |
 | `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
 | `STACK` | the Stack run image was updated | **CVE patch** - often a fast *rebase* |
 
-The last two fire with **no user action**. Digest propagation must therefore be
+`BUILDPACK` and `STACK` fire with **no user action**. Digest propagation must therefore be
 event-driven (BUILDING.md: Ownership: API vs Build Service), not only triggered by API writes.
+
+`TRIGGER` is the one reason that is imperative rather than a state change, and it is why
+the explicit rebuild exists: nothing about the function changed, so there is no desired
+state to write that would produce a build. kpack looks for the annotation on the **latest
+`Build`**, not on the `Image` - the next `Build` inherits the *Image's* annotations, which
+never carry it, so one request produces exactly one build and no loop.
+
+> **Never put the trigger on the `Image`.** It is a nonce, and the `Image` spec is a pure
+> function of the function definition (BUILDING.md: Convergence rules). On the `Image` it
+> would look like a change to every apply, and the next ordinary `PUT` - which composes the
+> spec from the request, without it - would drop it and build once more.
 
 ---
 
@@ -458,7 +492,7 @@ Two components, split by execution model:
 
 | Component | Path | Responsibility |
 |-----------|------|----------------|
-| **API** | request/response | On POST / PUT / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
+| **API** | request/response | On POST / PUT / build / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
 | **Build service** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites. |
 
 The watch loop does not fit a request/response API, and the shared library already
@@ -502,6 +536,10 @@ self-healing (BUILDING.md: Active/Active Behaviour). An update that changes noth
 exactly as it is: that image may be a digest a finished build resolved, and rewriting it
 back to the tag would spawn a pointless revision.
 
+`POST .../functions/{name}/build` is the manual half of that: it re-applies the same
+composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
+without inventing a spec change (FUNCTIONS.md: Building again without changing anything).
+
 Still to come, and deliberately out of scope for the current implementation: the build
 service's watch loop, and the per-function webhook endpoint that pins a pushed SHA to
 `spec.source.git.revision` (`BuildRequest.revision` already carries it).
@@ -526,7 +564,15 @@ create-or-update by construction**. Every path therefore composes the *complete*
 |------|-----------|
 | POST | compose -> apply -> creates |
 | PUT | compose -> apply -> **creates if missing**, else updates |
+| build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
+
+The build applies *before* it triggers, and that ordering is what makes it self-healing
+rather than merely idempotent: on a site that has never built the function the apply
+creates the `Image`, which builds on its own, and there is no `Build` to annotate - so the
+trigger finds nothing and says so instead of failing. It is also the one write path that
+leaves the `KSVC` alone: the function's desired state does not change, so there is nothing
+to fan out to the other sites, and only the local site (which builds) is touched.
 
 > **Never use a targeted patch** (e.g. patching only `spec.source.git.revision`). It
 > returns 404 when the object is absent - precisely the post-switchover case this design
@@ -565,6 +611,15 @@ definition. Duplicate builds come from nonces, not from concurrency:
 With these, two instances applying the same desired state produce one object and kpack
 creates **one** build - no lease or leader election is required.
 
+The explicit rebuild is not an exception to rule 4, because it is not a write of desired
+state: the `Image` it applies is composed the same way every other path composes it, and
+the trigger annotation goes on the latest `Build` afterwards. The nonce rule is about state
+that gets *re-applied* - a value in the `Image` spec is asserted again on every write, so a
+timestamp there rebuilds forever. An annotation on one `Build` is asserted once. Two
+instances handling one rebuild request would patch the same `Build` and kpack would still
+create one build; two clients asking twice **should** get two builds, which is what asking
+twice means.
+
 ### Accepted consequences
 
 - **A post-switchover write rebuilds.** The new cluster has no `Image`, so the first
@@ -583,21 +638,46 @@ creates **one** build - no lease or leader election is required.
 | Event | Action |
 |-------|--------|
 | Function delete | Nothing to do *in the cluster*: the `Image` and build `ServiceAccount` are owned by the KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
-| Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{group}/{name}` and `{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
+| Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
 | Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
 
-Build history is bounded per `Image` by `spec.successBuildHistoryLimit` /
-`spec.failedBuildHistoryLimit`; kpack garbage-collects older `Build` objects and their pods.
+### Build history
+
+Every `Image` carries an explicit `spec.successBuildHistoryLimit` /
+`spec.failedBuildHistoryLimit`, from `build.history.success` / `build.history.failed`
+(default **3** and **3**). kpack garbage-collects older `Build` objects, and a `Build` owns
+its pod, so collecting one takes its completed pod with it.
+
+They are set rather than left out, because "left out" is not "unbounded" - it is kpack's
+own default of **10 and 10**, so **20 `Build`s and 20 completed pods per function**. That is
+invisible at ten functions and is the whole namespace at three hundred: `oc get pods`
+stops being usable, and every controller that lists pods pays for them. Anything that
+re-triggers builds without a user - `STACK`/`BUILDPACK` CVE rebuilds, and now
+`POST .../build` - fills that history faster than edits do.
+
+Failed builds keep their own quota because their pods are the only place the per-phase
+build log exists (BUILDING.md: Inside the build pod); dropping the limit to 1 would mean a
+second failure erases the evidence of the first.
+
+The limits are a constant from configuration, identical on every apply, so they converge
+like the rest of the spec (BUILDING.md: Convergence rules). Lowering them takes effect on
+each function's next build, not at once - kpack prunes when it creates a `Build`, so an
+untouched function keeps its existing history until something rebuilds it.
 
 ### Registry cleanup on delete
 
 Deleting a function deletes its image repository and its cache repository outright:
 
 ```
-DELETE /api/v1/repository/{group}/{name}
-DELETE /api/v1/repository/{group}/{name}_cache
+DELETE /api/v1/repository/{registry.organization}/{build.builderRepository}/{group}/{name}
+DELETE /api/v1/repository/{registry.organization}/{build.builderRepository}/{group}/{name}_cache
 ```
+
+The path is `RegistryConfig.path` - the image reference with the host removed - so the
+repository deleted is exactly the one that was pushed to, and a layout change cannot make
+cleanup miss.
+
 
 This is **Quay's management API**, not the distribution API. The distribution API can only
 delete manifests (`DELETE /v2/{repo}/manifests/{digest}`), which reclaims the same bytes but
@@ -623,9 +703,9 @@ The token reaches the API pod through its own `ExternalSecret`
 it the step is skipped, so an install that never adds it is unaffected by the upgrade.
 `registry.deleteOnFunctionDelete: false` switches it off with the token still mounted.
 
-Both repository paths come from `common.names.image_repository` / `cache_repository` - the
-same two functions the build pushes through, so what cleanup deletes cannot drift from what
-was pushed. They sit beside `image_tag` because they are the same kind of rule: the
+Both repository paths come from `common.names.image_repository` / `cache_repository`,
+under `RegistryConfig.path` - the same two functions and the same prefix the build pushes
+through, so what cleanup deletes cannot drift from what was pushed. They sit beside `image_tag` because they are the same kind of rule: the
 repository half of an image reference, where `image_tag` is the tag half. They take only
 the validated `{group}`/`{name}` labels, never request input, and the call runs only for
 the function offering - a container's image was built elsewhere and is not the platform's
@@ -665,7 +745,7 @@ metadata:
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello-payments
 spec:
-  tag: registry.internal/<org>/payments/hello       # {base}/{group}/{name} (BUILDING.md: Runtime Versions & Dependencies)
+  tag: registry.internal/<org>/<repo>/payments/hello  # {base}/{group}/{name} (BUILDING.md: Registry layout)
   builder:
     kind: Builder
     name: python
@@ -676,7 +756,7 @@ spec:
       revision: 9f2c1ab…               # pushed SHA (webhook) or branch
   cache:                               # registry, not a PVC (BUILDING.md: Build cache)
     registry:
-      tag: registry.internal/<org>/payments/hello_cache:latest
+      tag: registry.internal/<org>/<repo>/payments/hello_cache:latest
   build:
     env:
       - { name: BP_CPYTHON_VERSION, value: "3.12" }
@@ -842,7 +922,8 @@ Pulled by the platform chart. Registry `ghcr.io`, repository prefix
 | `paketobuildpacks/python` | `ClusterStore` |
 
 Plus the **composed builder images** this platform *produces* - they are pushed to
-`{registry base}/serverless/builders/<lang>` by the `Builder` objects, so that repository
+`{registry base}/<lang>` by the `Builder` objects (the base already carries
+`build.builderRepository`), so that repository
 must exist and be writable by the build ServiceAccount.
 
 ### Runtime distributions - **not images**

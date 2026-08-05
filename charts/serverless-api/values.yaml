@@ -99,8 +99,13 @@ build:
   store:
     name: serverless-store
 
-  # Builder images land in `{registry base}/{builderRepository}/{name}`. The repo
-  # must exist and be writable by the build ServiceAccount.
+  # The path segment everything the platform builds sits under, so one root
+  # covers both: Builder images at `{registry base}/{builderRepository}/{name}`
+  # and function images at `{registry base}/{builderRepository}/{group}/{name}`
+  # (reaching the API as SERVERLESS_REGISTRY__REPOSITORY). The repo must exist
+  # and be writable by the build ServiceAccount. Changing it on an install that
+  # already has functions is a migration, not a config edit
+  # (docs/BUILDING.md - Registry layout).
   builderRepository: serverless/builders
 
   # Username paired with each caller's git token. GitHub/GitLab PATs ignore it;
@@ -174,6 +179,17 @@ build:
   # `inherit`, taking kpack's default of a PVC per function.
   # docs/BUILDING.md - Build cache.
   cache: registry
+
+  # Builds kpack keeps per function, successful and failed counted separately.
+  # Each one holds its completed pod until it is collected, so the namespace
+  # carries `(success + failed) x functions` pods at worst. Left unset these are
+  # kpack's own defaults - 10 and 10, i.e. 20 per function - which is a few
+  # thousand pods across a few hundred functions. Failed builds are worth
+  # keeping a couple of: their pods hold the per-phase logs.
+  # docs/BUILDING.md - Build history.
+  history:
+    success: 3
+    failed: 3
 
   # Build pod requests/limits. A build is far heavier than the function it
   # produces; without these it is BestEffort and evicted first under pressure.
