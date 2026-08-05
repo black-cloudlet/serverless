@@ -865,13 +865,49 @@ spec:
                 env:
                   - { name: SSL_CERT_FILE,        value: /etc/serverless/ca/ca-bundle.crt }
                   - { name: GIT_SSL_CAINFO,       value: /etc/serverless/ca/ca-bundle.crt }
-                  - { name: PIP_CERT,             value: /etc/serverless/ca/ca-bundle.crt }
                   - { name: NODE_EXTRA_CA_CERTS,  value: /etc/serverless/ca/ca-bundle.crt }
+                  - { name: PIP_CERT,             value: /etc/serverless/ca/ca-bundle.crt }
+                  - { name: REQUESTS_CA_BUNDLE,   value: /etc/serverless/ca/ca-bundle.crt }
+                  - { name: CURL_CA_BUNDLE,       value: /etc/serverless/ca/ca-bundle.crt }
             containers:
               - (name): "*"
                 volumeMounts:
                   - { name: internal-ca, mountPath: /etc/serverless/ca, readOnly: true }
+                env:   # the same six - `serverless-api.buildCaEnv` renders both lists
 ```
+
+### Why pip needs three variables of its own
+
+Mounting the bundle is enough for Go, git and Node: Go's `crypto/x509` and OpenSSL read
+`SSL_CERT_FILE`, git reads `GIT_SSL_CAINFO`, and Node appends `NODE_EXTRA_CA_CERTS` to its
+built-in roots (npm inherits that). **pip reads none of them.** It verifies against the
+`certifi` bundle vendored inside the pip package - public roots only - and consults neither
+the OS trust store nor `SSL_CERT_FILE`. So an internal PyPI index fails with
+`CERTIFICATE_VERIFY_FAILED` no matter where the CA is mounted, and the failure is easy to
+misread: pip cannot fetch the simple index, so it reports the requirement as
+`(from versions: none)` and then `No matching distribution found` - which looks like a
+missing package rather than a TLS problem.
+
+`PIP_CERT` (pip itself), plus `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` (its vendored
+`requests`), are what actually redirect it.
+
+> This is also why the same `pip install` succeeds on a RHEL host: Red Hat patches its
+> packaged pip to de-vendor certifi and use the system trust store, so an internal CA in
+> `/etc/pki/ca-trust/source/anchors/` is picked up with no configuration. The jammy build
+> image runs upstream pip, which is unpatched.
+
+Note that those three **replace** the trust set rather than adding to it, unlike
+`NODE_EXTRA_CA_CERTS`. That is safe only because the OpenShift bundle is the complete
+store, system roots included; a partial bundle would silently cut off every public host.
+
+**Do not mount the bundle over `/etc/ssl/certs`.** A ConfigMap volume replaces the whole
+directory, so on the jammy build image `/etc/ssl/certs/ca-certificates.crt` - the target of
+the `/usr/lib/ssl/cert.pem` symlink OpenSSL actually reads - becomes a dangling link, and
+the hashed `c_rehash` symlinks its CApath needs are gone too. Python ends up with an empty
+trust store while Go still works, because Go falls back to scanning every file in that
+directory. The result is a build that gets *further* than an unmounted one and fails in a
+place that looks unrelated. `build.caInjection.mountPath` defaults to `/etc/serverless/ca`
+for this reason.
 
 ---
 

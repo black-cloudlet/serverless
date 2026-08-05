@@ -111,6 +111,28 @@ no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 {{ dict "runtimes" $out | toYaml }}
 {{- end -}}
 
+{{/*
+CA-trust env for build pods, pointed at the mounted bundle. Rendered into both the
+policy's `initContainers` and `containers`. pip needs three names of its own: it
+verifies against its vendored certifi, not the OS trust store or SSL_CERT_FILE
+(docs/BUILDING.md - Trust: CA Injection).
+*/}}
+{{- define "serverless-api.buildCaEnv" -}}
+{{- $path := . -}}
+- name: SSL_CERT_FILE
+  value: {{ $path | quote }}
+- name: GIT_SSL_CAINFO
+  value: {{ $path | quote }}
+- name: NODE_EXTRA_CA_CERTS
+  value: {{ $path | quote }}
+- name: PIP_CERT
+  value: {{ $path | quote }}
+- name: REQUESTS_CA_BUNDLE
+  value: {{ $path | quote }}
+- name: CURL_CA_BUNDLE
+  value: {{ $path | quote }}
+{{- end -}}
+
 {{/* Fail fast on build config that would render unusable manifests. */}}
 {{- define "serverless-api.validateBuild" -}}
 {{- if .Values.build.enabled -}}
