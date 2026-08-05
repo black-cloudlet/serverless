@@ -85,6 +85,13 @@ class BuildConfig(BaseModel):
     # "inherit" writes no `spec.cache` and takes kpack's default, a PVC per Image.
     # docs/BUILDING.md - Build cache.
     cache: Literal["registry", "inherit"] = "registry"
+    # How many Builds kpack keeps per function, successful and failed counted
+    # separately. Set explicitly because the alternative is not "unset" but
+    # kpack's own default of 10 and 10 - up to 20 Build objects, each holding a
+    # completed pod, per function. Multiplied by a few hundred functions that is
+    # the whole namespace (docs/BUILDING.md - Build history).
+    success_history_limit: int = Field(default=3, ge=1)
+    failed_history_limit: int = Field(default=3, ge=1)
 
 
 class CommonSettings(BaseSettings):

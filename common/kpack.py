@@ -78,6 +78,8 @@ def build_image(
     env: list[dict[str, str]] | None = None,
     resources: dict | None = None,
     cache_tag: str | None = None,
+    success_history_limit: int | None = None,
+    failed_history_limit: int | None = None,
 ) -> dict:
     """Build the kpack ``Image`` CR for one function.
 
@@ -101,6 +103,11 @@ def build_image(
         cache_tag: Registry reference to cache build layers in. None omits
             ``spec.cache``, which is not "no cache" - it takes the kpack
             install's default, a PVC per Image.
+        success_history_limit: Successful Builds kpack keeps for this function.
+        failed_history_limit: Failed Builds kpack keeps for this function. Both
+            None omit the fields, which is not "unbounded" but kpack's default
+            of 10 each - and a Build holds its completed pod until it is
+            collected (docs/BUILDING.md - Build history).
 
     Returns:
         The Image manifest dict.
@@ -121,6 +128,12 @@ def build_image(
     # needs no credential of its own.
     if cache_tag:
         spec["cache"] = {"registry": {"tag": cache_tag}}
+    # Not a nonce: a constant from configuration, identical on every apply, so
+    # it converges like the rest of the spec.
+    if success_history_limit is not None:
+        spec["successBuildHistoryLimit"] = success_history_limit
+    if failed_history_limit is not None:
+        spec["failedBuildHistoryLimit"] = failed_history_limit
     build: dict = {}
     if env:
         build["env"] = [dict(e) for e in env]

@@ -34,6 +34,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Every kpack `Image` now carries an explicit `successBuildHistoryLimit` /
+  `failedBuildHistoryLimit`, from the new `build.history.success` /
+  `build.history.failed` chart values (both **3**). Nothing set them before,
+  which was not "unbounded" but kpack's own default of 10 and 10 - 20 `Build`
+  objects per function, each holding a completed pod until it is collected. That
+  is invisible at ten functions and is the whole namespace at three hundred.
+  Failed builds keep their own quota because their pods are the only place the
+  per-phase build log exists. The limits are a constant from configuration, so
+  they converge like the rest of the spec; lowering them takes effect per
+  function on its next build, since kpack prunes when it creates a `Build`.
 - `POST /api/v1/groups/{group}/functions/{name}/rebuild` - build a function's
   current source again, with no request body. Until now the only way to rebuild
   was to change a build input: a `PUT` re-applies the `Image` on every call, but

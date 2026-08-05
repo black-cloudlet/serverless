@@ -1651,3 +1651,34 @@ async def test_rebuild_of_a_workload_with_no_stored_source_is_rejected():
     with pytest.raises(ValidationError, match="gitRepo, branch, runtime"):
         await svc.accept_rebuild("payments", "hello", _principal(), background)
     assert background.tasks == []
+
+
+# ----------------------------------------------------------- build history
+
+
+def test_the_image_bounds_its_own_build_history():
+    """Unset is not unbounded: kpack's own default is 10 successful and 10 failed.
+
+    A Build owns its pod, so 20 per function is 20 completed pods per function -
+    invisible at ten functions, the whole namespace at three hundred.
+    """
+    settings = _settings(build={"registry_secret": "reg-creds", "success_history_limit": 2})
+    image = _by_kind(_manifests(_builder(settings))[1], "Image")
+
+    assert image["spec"]["successBuildHistoryLimit"] == 2
+    assert image["spec"]["failedBuildHistoryLimit"] == 3  # the default, kept
+
+
+def test_the_history_limits_are_the_same_on_every_apply():
+    """A constant from configuration, so it converges like the rest of the spec.
+
+    A value that moved per apply would be a nonce, and kpack would rebuild on it
+    (docs/BUILDING.md - Convergence rules).
+    """
+    builder = _builder()
+    first = _by_kind(_manifests(builder)[1], "Image")
+    second = _by_kind(_manifests(builder)[1], "Image")
+
+    assert first["spec"] == second["spec"]
+    assert first["spec"]["successBuildHistoryLimit"] == 3
+    assert first["spec"]["failedBuildHistoryLimit"] == 3

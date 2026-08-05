@@ -620,8 +620,28 @@ twice means.
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
 | Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
 
-Build history is bounded per `Image` by `spec.successBuildHistoryLimit` /
-`spec.failedBuildHistoryLimit`; kpack garbage-collects older `Build` objects and their pods.
+### Build history
+
+Every `Image` carries an explicit `spec.successBuildHistoryLimit` /
+`spec.failedBuildHistoryLimit`, from `build.history.success` / `build.history.failed`
+(default **3** and **3**). kpack garbage-collects older `Build` objects, and a `Build` owns
+its pod, so collecting one takes its completed pod with it.
+
+They are set rather than left out, because "left out" is not "unbounded" - it is kpack's
+own default of **10 and 10**, so **20 `Build`s and 20 completed pods per function**. That is
+invisible at ten functions and is the whole namespace at three hundred: `oc get pods`
+stops being usable, and every controller that lists pods pays for them. Anything that
+re-triggers builds without a user - `STACK`/`BUILDPACK` CVE rebuilds, and now
+`POST .../rebuild` - fills that history faster than edits do.
+
+Failed builds keep their own quota because their pods are the only place the per-phase
+build log exists (BUILDING.md: Inside the build pod); dropping the limit to 1 would mean a
+second failure erases the evidence of the first.
+
+The limits are a constant from configuration, identical on every apply, so they converge
+like the rest of the spec (BUILDING.md: Convergence rules). Lowering them takes effect on
+each function's next build, not at once - kpack prunes when it creates a `Build`, so an
+untouched function keeps its existing history until something rebuilds it.
 
 ### Registry cleanup on delete
 

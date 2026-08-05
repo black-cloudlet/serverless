@@ -188,6 +188,8 @@ class KpackBackend:
                     env=env,
                     resources=self._build.resources,
                     cache_tag=self.cache_ref(req),
+                    success_history_limit=self._build.success_history_limit,
+                    failed_history_limit=self._build.failed_history_limit,
                 ),
             ],
         )

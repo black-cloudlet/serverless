@@ -71,6 +71,10 @@ spec:
               value: {{ .Values.build.resources | toJson | quote }}
             - name: SERVERLESS_BUILD__CACHE
               value: {{ .Values.build.cache | quote }}
+            - name: SERVERLESS_BUILD__SUCCESS_HISTORY_LIMIT
+              value: {{ .Values.build.history.success | quote }}
+            - name: SERVERLESS_BUILD__FAILED_HISTORY_LIMIT
+              value: {{ .Values.build.history.failed | quote }}
             {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}

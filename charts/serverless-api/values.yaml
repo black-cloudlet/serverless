@@ -175,6 +175,17 @@ build:
   # docs/BUILDING.md - Build cache.
   cache: registry
 
+  # Builds kpack keeps per function, successful and failed counted separately.
+  # Each one holds its completed pod until it is collected, so the namespace
+  # carries `(success + failed) x functions` pods at worst. Left unset these are
+  # kpack's own defaults - 10 and 10, i.e. 20 per function - which is a few
+  # thousand pods across a few hundred functions. Failed builds are worth
+  # keeping a couple of: their pods hold the per-phase logs.
+  # docs/BUILDING.md - Build history.
+  history:
+    success: 3
+    failed: 3
+
   # Build pod requests/limits. A build is far heavier than the function it
   # produces; without these it is BestEffort and evicted first under pressure.
   resources:
