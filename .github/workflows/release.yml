@@ -177,7 +177,10 @@ jobs:
           cat > notes.md <<EOF
           ## Artifacts
 
-          - **Image:** \`ghcr.io/${REPO_LC}/api:${VERSION}\`
+          - **Image:** \`ghcr.io/${REPO_LC}/api:${VERSION}\` - both services:
+            \`python -m api.main\` (the default entrypoint) and
+            \`python -m controller.main\` (the build controller, which the chart
+            selects with a \`command\` override)
           - **Chart:** \`oci://ghcr.io/${{ github.repository_owner }}/charts/serverless-api:${VERSION}\`
 
           Both are cosign-signed (keyless) and carry an SBOM.

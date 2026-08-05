@@ -127,6 +127,17 @@ jobs:
           tags: serverless-api:scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # One image, two entrypoints (docs/BUILDING.md - Digest propagation), and
+      # the chart names the second one as a `command` override. Nothing else in
+      # the suite would notice a controller left out of the COPY or a module
+      # path that no longer resolves - the API would still start, and the
+      # failure would surface as a CrashLoopBackOff after deploy.
+      - name: Both entrypoints resolve in the image
+        run: |
+          docker run --rm --entrypoint python serverless-api:scan \
+            -c "import controller.main as m; assert callable(m.run)"
+          docker run --rm --entrypoint python serverless-api:scan \
+            -c "import api.main as m; assert m.app"
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
       # even when nothing in our code changed. The python:3.13-slim base is
