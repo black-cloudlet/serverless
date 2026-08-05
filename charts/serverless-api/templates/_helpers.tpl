@@ -112,30 +112,16 @@ no merge logic. Precedence, lowest first: commonEnv, dependencyMirror, buildEnv.
 {{- end -}}
 
 {{/*
-The CA-trust env vars a build phase needs, every one pointing at the mounted
-bundle. Rendered into BOTH `initContainers` and `containers` by the CA policy, so
-it lives here rather than being written twice and drifting:
+Every ecosystem's CA-trust variable, pointed at the mounted bundle. Rendered into
+BOTH the policy's `initContainers` and `containers`, so it lives here rather than
+being written twice and drifting:
 
   {{ include "serverless-api.buildCaEnv" $certPath | nindent 18 }}
 
-Why each name is on the list:
-
-  SSL_CERT_FILE        Go's crypto/x509 and OpenSSL (so: the lifecycle, CPython)
-  GIT_SSL_CAINFO       git, which `prepare` clones with
-  NODE_EXTRA_CA_CERTS  appended to Node's built-in roots; npm inherits it
-  PIP_CERT             pip itself (== `pip install --cert`)
-  REQUESTS_CA_BUNDLE   the `requests` vendored inside pip
-  CURL_CA_BUNDLE       also read by that vendored requests, and by curl
-
-pip needs three of its own because it verifies against the **certifi bundle
-vendored inside it** - it reads neither the OS trust store nor SSL_CERT_FILE, so
-mounting the CA is not enough to make it trust an internal index. Go and Node
-need nothing beyond the two above; they read the file directly.
-
-Each of PIP_CERT / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE *replaces* the trust set
-rather than adding to it. Safe here only because the OpenShift bundle is the
-complete store, system roots included (docs/BUILDING.md - Trust: CA Injection);
-a partial bundle would silently cut off every public host.
+Go and git and Node read the file (SSL_CERT_FILE, GIT_SSL_CAINFO,
+NODE_EXTRA_CA_CERTS). The three pip names are the non-obvious ones: pip verifies
+against the certifi bundle vendored inside it and reads neither the OS trust
+store nor SSL_CERT_FILE (docs/BUILDING.md - Trust: CA Injection).
 */}}
 {{- define "serverless-api.buildCaEnv" -}}
 {{- $path := . -}}
