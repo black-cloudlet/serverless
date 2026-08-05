@@ -1,17 +1,9 @@
 """The control loop: watch local kpack Images, roll their digests out everywhere.
 
-One pass is a full relist followed by a watch resumed from it, so the loop is
-event-driven without depending on having seen every event - a dropped stream or
-an expired ``resourceVersion`` costs one extra relist, not a stalled function.
-
-Reads are **local only**. The `Image` for a function exists in exactly one
-cluster, the one that built it (docs/BUILDING.md - Active/Active Behaviour), and
-that is this one. Writes go to **every** site: the registry is shared, so a site
-that only runs the workload pulls what this site pushed.
-
-No leader election. Two replicas, or the two sites' controllers seeing the same
-digest, apply the same desired state, and a server-side apply of identical
-content is a no-op that produces no Knative revision.
+Reads are local - a function's Image exists only in the cluster that built it -
+and writes go to every site, which share the registry. One pass relists and then
+watches from that point, so nothing is lost when a stream drops. No leader
+election (docs/BUILDING.md - Digest propagation).
 """
 
 from __future__ import annotations
@@ -32,8 +24,7 @@ from controller.digest import needs_image, with_image
 
 logger = get_logger(__name__)
 
-# Only this platform's function builds. A kpack install is shared infrastructure
-# and may carry Images nothing here owns.
+# A kpack install is shared; it may carry Images that are not this platform's.
 IMAGE_SELECTOR = f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE},{LABEL_OFFERING}={OFFERING_FUNCTION}"
 
 
@@ -47,8 +38,7 @@ class Reconciler:
             settings: Shared settings (sites, local site, TLS material).
 
         Raises:
-            ValidationError: If no sites are configured - the loop would have
-                nothing to watch and nowhere to write.
+            ValidationError: If no sites are configured.
         """
         self._clusters = clusters_for(settings)
         self._local = select_local(self._clusters, settings.local_site)
@@ -67,8 +57,8 @@ class Reconciler:
         """Reconcile every Image once, and return where a watch should resume.
 
         Returns:
-            The listing's resourceVersion, or None to have the watch start from
-            now (which is safe: the relist just reconciled everything).
+            The listing's resourceVersion, or None to watch from now - safe,
+            since the relist just reconciled everything.
         """
         images, version = self._local.list_resources(
             ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR
@@ -96,9 +86,8 @@ class Reconciler:
     def reconcile(self, image: dict) -> None:
         """Roll one Image's last successful digest onto its function, everywhere.
 
-        ``latestImage`` is the last *successful* build, so a function whose newest
-        build failed keeps serving the one before it - the right outcome, and the
-        reason the Image's ready state is not consulted here.
+        ``latestImage`` is the last *successful* build, so the ready state is
+        not consulted: a failed newest build leaves the previous digest serving.
 
         Args:
             image: The kpack Image object.
@@ -113,8 +102,7 @@ class Reconciler:
     def _roll_out(self, cluster: Cluster, workload: str, digest: str) -> bool:
         """Apply the digest to one site's KSVC, if that is what it needs.
 
-        Per-site failures are logged, never raised: one unreachable site must not
-        stop the others, and the next resync retries anyway.
+        Per-site failures are logged, not raised; the next resync retries.
 
         Args:
             cluster: The site to write to.

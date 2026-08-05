@@ -2,13 +2,10 @@
 {{- if not .Values.build.enabled }}
 {{- fail "serverless-api: buildController.enabled needs build.enabled - without it the chart grants no read on images.kpack.io and the controller has nothing to watch." }}
 {{- end }}
-# Watches kpack Images in THIS cluster and applies each finished build's digest
-# to the function's Knative Service in every site (docs/BUILDING.md - Ownership).
-#
-# No Service and no Route: it serves no HTTP, and nothing calls it. It runs as
-# the same client-cert user as the API, whose Role in the workloads namespace
-# already grants exactly what it needs - read Images, write Services
-# (docs/DEPLOYING.md - RBAC).
+# Watches kpack Images here and applies each finished digest to the function's
+# Knative Service in every site (docs/BUILDING.md - Digest propagation). No
+# Service and no Route: it serves no HTTP. Runs as the API's client-cert user,
+# whose Role already covers it (docs/DEPLOYING.md - RBAC).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,7 +46,7 @@ spec:
           env:
             - name: SERVERLESS_BASE_DOMAIN
               value: {{ .Values.global.baseDomain | quote }}
-            # Which site holds the Images to watch. Writes go to every site.
+            # The site whose Images it watches; writes go to every site.
             - name: SERVERLESS_LOCAL_SITE
               value: {{ .Values.global.site | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE
@@ -69,7 +66,7 @@ spec:
             - name: REQUESTS_CA_BUNDLE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
-            # The same sites list the API reads; the fan-out is the same set.
+            # The same sites list the API reads.
             - configMapRef:
                 name: "{{ .Values.name }}-sites"
           volumeMounts:
@@ -79,8 +76,7 @@ spec:
             - name: {{ .Values.caBundle.name }}
               mountPath: {{ .Values.caBundle.mountPath }}
               readOnly: true
-          # No probes: there is no endpoint to probe. A crash-looping process is
-          # already restarted, and a stalled watch ends at `resyncSeconds`.
+          # No probes: no endpoint to probe, and a stalled watch ends at resyncSeconds.
           resources:
             {{- toYaml .Values.buildController.resources | nindent 12 }}
       volumes:

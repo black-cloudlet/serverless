@@ -176,17 +176,16 @@ class Cluster:
     ) -> tuple[list[dict], str | None]:
         """List a kind together with the collection's ``resourceVersion``.
 
-        The version is what makes a listing resumable: a watch started from it
-        replays every change since, so a control loop can relist and then follow
-        without a gap. :meth:`get` is the same call without it.
+        The version is what makes the listing resumable: a watch started from it
+        replays everything since, so relist-then-follow has no gap.
 
         Args:
             kind: The resource kind to list.
             label_selector: Label selector to narrow the listing.
 
         Returns:
-            The objects, and the collection's resourceVersion (None if the
-            server did not report one, which leaves a watch to start from now).
+            The objects, and the resourceVersion (None if the server reported
+            none, leaving a watch to start from now).
         """
         results = self._dynamic_api(kind).get(
             namespace=self._namespace, label_selector=label_selector, **self._opts
@@ -204,13 +203,10 @@ class Cluster:
     ) -> Iterator[tuple[str, dict]]:
         """Follow changes to a kind, yielding ``(event_type, object)`` as they arrive.
 
-        Blocking, and deliberately finite: ``timeout_seconds`` makes the server
-        close the stream, which ends the iteration. A caller relists and watches
-        again, so every pass starts from a complete picture and an expired
-        ``resource_version`` heals itself instead of stalling the loop.
-
-        The per-request read timeout is NOT applied here - a watch is idle
-        between events by design, and that timeout would tear it down.
+        Blocking, and deliberately finite: ``timeout_seconds`` closes the stream
+        and ends the iteration, so a caller relists and an expired
+        ``resource_version`` heals itself. The per-request read timeout is not
+        applied - a watch is idle between events by design.
 
         Args:
             kind: The resource kind to follow.
@@ -361,12 +357,9 @@ def clusters_for(settings: CommonSettings) -> dict[str, Cluster]:
 def select_local(clusters: dict[str, Cluster], local_site: str | None) -> Cluster:
     """The cluster this process sits in, from :func:`clusters_for`'s mapping.
 
-    ``local_site`` is matched against the site name first and the cluster name
-    second, so either spelling in the chart resolves. Falls back to the first
-    configured site.
-
-    Shared by both services because both mean the same thing by "local": the API
-    writes builds only here, and the build controller watches only here.
+    Matched on the site name first, then the cluster name, so either spelling in
+    the chart resolves; falls back to the first site. Shared, because the API
+    and the controller mean the same thing by "local".
 
     Args:
         clusters: The per-site clients.

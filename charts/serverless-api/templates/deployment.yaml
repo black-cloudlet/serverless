@@ -14,9 +14,7 @@ metadata:
   {{- end }}
 spec:
   replicas: {{ .Values.api.replicaCount }}
-  # Deliberately only the two identity labels: a selector is immutable once the
-  # Deployment exists, so `api.podLabels` stays out of it and the pod labels
-  # remain a superset of what it already matches.
+  # The two identity labels only: a selector is immutable once it exists.
   selector:
     matchLabels:
       {{- include "serverless-api.labels" . | nindent 6 }}

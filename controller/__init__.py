@@ -1,11 +1,8 @@
 """Build controller - rolls each finished kpack build onto the function it built.
 
-The second of the platform's two services (docs/BUILDING.md - Ownership). The
-API composes desired state in a request; this watches for a build to *finish*
-and propagates its digest, which no request/response path can observe: a
-``STACK`` or ``BUILDPACK`` rebuild fires with nobody asking.
-
-It serves no HTTP and reaches only the domain and cluster layers of ``common``.
+The platform's second service (docs/BUILDING.md - Digest propagation): a watch
+loop, because a `STACK` or `BUILDPACK` rebuild finishes with nobody asking. It
+serves no HTTP and takes only the domain and cluster layers of ``common``.
 """
 
 from importlib.metadata import PackageNotFoundError, version

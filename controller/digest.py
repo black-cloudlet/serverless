@@ -1,12 +1,8 @@
 """Rewriting a read-back Knative Service to run a newly built digest.
 
-Pure - no cluster call, no framework - so the rules that decide *whether* a
-digest belongs on a workload are testable on plain dicts.
-
-The controller does not compose a KSVC. The API owns that spec; the controller
-owns one field of it, and everything else must survive the round trip untouched.
-So the object it applies is the live one, edited - which is why most of this
-module is about making a read-back object safe to send back.
+The API owns the KSVC spec; the controller owns one field of it, so what it
+applies is the live object edited, not a composed one. Pure dict work
+(docs/BUILDING.md - What it writes).
 """
 
 from __future__ import annotations
@@ -16,9 +12,7 @@ import copy
 from common.labels import LABEL_OFFERING, OFFERING_FUNCTION
 from common.names import repository_of
 
-# Server-owned metadata that comes back on a read. `managedFields` is the one
-# the API server rejects outright; the rest would just be asserted back as if
-# they were desired state.
+# Comes back on a read; `managedFields` is rejected outright on the way in.
 _SERVER_METADATA = (
     "creationTimestamp",
     "generation",
@@ -37,10 +31,7 @@ def _containers(ksvc: dict) -> list[dict]:
 
 
 def deployed_image(ksvc: dict) -> str | None:
-    """The image the workload runs, or None if unreadable.
-
-    The first container, which for anything this platform writes is the only
-    one (:func:`api.services.manifests.ksvc.build_ksvc`).
+    """The first container's image, the only one this platform writes.
 
     Args:
         ksvc: The Knative Service object.
@@ -55,16 +46,8 @@ def deployed_image(ksvc: dict) -> str | None:
 def needs_image(ksvc: dict, image: str) -> bool:
     """Whether ``image`` should replace what this KSVC currently runs.
 
-    Three ways the answer is no, and each is a different mistake to avoid:
-
-    - it already runs it - the loop's normal outcome, and the reason a resync
-      costs nothing;
-    - it is not a function - an Image's digest has no business on a container
-      offering that happens to have reused a deleted function's name;
-    - it is a different repository - the KSVC's reference is desired state the
-      API writes, and only the digest half is the controller's to supply. After
-      a registry-layout change (docs/BUILDING.md - Registry layout) an `Image`
-      left under the old layout would otherwise pull the workload backwards.
+    No if it already runs it, if it is not a function, or if the repository
+    differs - the API writes that half (docs/BUILDING.md - What it writes).
 
     Args:
         ksvc: The live Knative Service object.
@@ -102,10 +85,7 @@ def with_image(ksvc: dict, image: str) -> dict:
     annotations.pop(_CLIENT_APPLY_ANNOTATION, None)
 
     template = (out.get("spec") or {}).get("template") or {}
-    # A pinned revision name would make this apply fail: Knative rejects a
-    # template whose name is unchanged while its content is not. Nothing the API
-    # writes sets one, so dropping it costs nothing and removes the one way a
-    # hand-edited KSVC could wedge the loop.
+    # Knative rejects a template whose name is unchanged while its content is not.
     (template.get("metadata") or {}).pop("name", None)
     containers = _containers(out)
     if containers:

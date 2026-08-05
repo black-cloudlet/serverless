@@ -1,8 +1,4 @@
-"""Build controller settings.
-
-The connection identity - sites, client cert, CA bundle, timeouts - is shared
-and lives in :mod:`common.config`; this module adds the loop's own pacing.
-"""
+"""Build controller settings: the shared connection identity plus the loop's pacing."""
 
 from __future__ import annotations
 
@@ -18,12 +14,10 @@ class ControllerSettings(CommonSettings):
 
     app_name: str = "serverless-build-controller"
 
-    # How long the server holds each watch open. It doubles as the resync
-    # interval: the stream ending is what sends the loop back through a full
-    # relist, so one value paces both (docs/BUILDING.md - Digest propagation).
+    # How long each watch is held open, and so also the relist interval - the
+    # stream ending is what starts the next resync.
     resync_seconds: int = Field(default=300, gt=0)
-    # Applied only when a resync itself fails - a watch that ends is routine and
-    # is followed immediately by another relist.
+    # Only for a pass that raised; a watch that merely ended resyncs at once.
     error_backoff_seconds: float = Field(default=5.0, ge=0)
 
 

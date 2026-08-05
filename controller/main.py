@@ -13,12 +13,7 @@ logger = get_logger(__name__)
 
 
 def _terminate(signum: int, _frame) -> None:
-    """Turn SIGTERM/SIGINT into a SystemExit the blocking watch can unwind on.
-
-    Raising is what makes it prompt. A handler that only set a flag would not be
-    noticed until the next event or the watch timeout, which is minutes away and
-    past the pod's grace period.
-    """
+    """Raise, so the blocking watch unwinds now rather than at its timeout."""
     logger.info("received signal %s, shutting down", signum)
     raise SystemExit(0)
 
@@ -26,9 +21,8 @@ def _terminate(signum: int, _frame) -> None:
 def loop(reconciler: Reconciler, settings: ControllerSettings) -> None:
     """Resync and follow, forever.
 
-    A watch that ends is the normal case (its timeout expired) and leads
-    straight into the next resync. A resync that *fails* is not, so it backs off
-    - otherwise an unreachable cluster would spin.
+    A watch ending is routine and leads straight into the next resync; a pass
+    that *raises* backs off, so an unreachable cluster does not spin.
 
     Args:
         reconciler: The loop's work.

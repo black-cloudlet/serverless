@@ -22,9 +22,8 @@ api:
   # Overrides image.tag for this deployment only; normally left empty.
   tag: ""
   replicaCount: 2
-  # Extra metadata: `labels`/`annotations` on the Deployment, `podLabels`/
-  # `podAnnotations` on its pods (sync waves, scrape hints, cost tags). The
-  # selector is left alone - it is immutable once the Deployment exists.
+  # `labels`/`annotations` on the Deployment, `podLabels`/`podAnnotations` on
+  # its pods. The selector is left alone - immutable once it exists.
   labels: {}
   annotations: {}
   podLabels: {}
@@ -54,22 +53,19 @@ api:
     #   haproxy.router.openshift.io/timeout: 60s
     annotations: {}
 
-# The build controller: watches kpack Images in THIS cluster and rolls each
-# finished build's digest onto the function's Knative Service in every site
-# (docs/BUILDING.md - Digest propagation). It serves no HTTP, so it has no Service and no
-# Route, and it needs no Route to be reachable - nothing calls it.
+# Rolls each finished build's digest onto the function's Knative Service in
+# every site (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no
+# Service and no Route.
 buildController:
-  # Nothing to propagate where kpack is not installed, so `build.enabled: false`
-  # with this on is a render-time error rather than a controller with no read on
-  # `images.kpack.io`.
+  # `build.enabled: false` with this on is a render-time error: the chart would
+  # grant no read on images.kpack.io.
   enabled: true
   # Empty runs the API's image: one build, two entrypoints. Set it only for an
   # install that publishes the controller as its own image.
   repository: ""
   tag: ""
-  # One is enough. More is safe but redundant - replicas converge on the same
-  # desired state rather than racing, which is why there is no leader election
-  # (docs/BUILDING.md - Convergence rules).
+  # More is safe but redundant: replicas converge rather than race, which is why
+  # there is no leader election (docs/BUILDING.md - Convergence rules).
   replicaCount: 1
   labels: {}
   annotations: {}
@@ -85,9 +81,7 @@ buildController:
       cpu: 500m
       memory: 256Mi
 
-  # How long each watch is held open. It doubles as the full-relist interval:
-  # the stream ending is what starts the next resync, so nothing is missed if an
-  # event is dropped.
+  # How long each watch is held open, and so also the full-relist interval.
   resyncSeconds: 300
 
 namespaces:

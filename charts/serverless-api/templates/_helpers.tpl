@@ -20,10 +20,8 @@ clash). Call with a dict of the root context and the per-namespace labels:
 
 {{/*
 The build controller's object name and selector labels. A distinct
-``app.kubernetes.io/name`` is what keeps the API's Service from selecting the
-controller's pods - the two deployments would otherwise be indistinguishable to
-it, and adding a component label to the API's existing selector is an immutable
-field change that would fail every upgrade in place.
+``app.kubernetes.io/name`` keeps the API's Service from selecting its pods;
+adding a component label to the API's own selector would fail every upgrade.
 */}}
 {{- define "serverless-api.controllerName" -}}
 {{ .Values.name }}-build-controller
@@ -41,11 +39,10 @@ and that deployment's values:
   {{ include "serverless-api.image" (dict "root" $ "spec" $.Values.api) }}
 
 Precedence, most specific first: the deployment's own ``repository``/``tag``,
-then the shared ``image`` section, then ``.Chart.AppVersion``. The appVersion
-fallback is what lets a released chart pin its images without the version being
-written in two places: CI stamps ``appVersion`` to the git tag on a release (and
-leaves it "latest" on main). The controller's repository defaults to the API's
-because they are the same image with different entrypoints.
+the shared ``image`` section, then ``.Chart.AppVersion`` - which CI stamps on a
+release, so a released chart pins its images without a second version to keep in
+step. The controller's repository defaults to the API's: one image, two
+entrypoints.
 */}}
 {{- define "serverless-api.image" -}}
 {{- $root := .root -}}
