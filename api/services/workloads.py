@@ -57,7 +57,7 @@ from api.services.state import ksvc_state, ownership
 from api.services.state import metrics as metrics_svc
 from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
-from common.build import BuildBackend
+from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
     ForbiddenError,
@@ -504,6 +504,41 @@ class WorkloadService:
             createdAt=datetime.now(ISRAEL_TZ) if req.created else None,
         )
         return offering.applied_response(common, req), status_code_for(overall, created=req.created)
+
+    async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
+        """Re-declare a workload's build on the local site, then ask for a build.
+
+        The rebuild path, and the one write in the engine that leaves the KSVC
+        alone: nothing about the workload's desired state changes, so a fan-out
+        would apply an identical spec to every site to say "build again" to one
+        of them. The build site is always the local one, whether or not the
+        function runs here (docs/BUILDING.md - Builds are local).
+
+        Applying before triggering is what makes this self-healing rather than
+        merely idempotent: a site that has never built the function - the
+        post-switchover case - gets the Image created here and builds from that,
+        and :meth:`~common.build.BuildBackend.trigger` finds nothing to annotate
+        and says so.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            plan: The build plan to apply (its git Secret included, so the site
+                that builds can always clone).
+
+        Returns:
+            True if an existing build was triggered; False if applying the plan
+            is itself what starts the build.
+        """
+        cluster = self.deployer.local_cluster()
+        oname = object_name(name, group)
+        manifests = list(plan.replicated) + list(plan.local)
+
+        def work() -> bool:
+            site_apply.apply_build_objects(cluster, manifests, oname=oname)
+            return self.builder.trigger(cluster, name, group)
+
+        return await asyncio.to_thread(work)
 
     async def load_existing(
         self, name: str, offering: Offering, user: Principal, group: str

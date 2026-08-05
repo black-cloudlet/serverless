@@ -16,6 +16,17 @@ Secret, which :mod:`api.services.manifests.secrets` builds in the shape kpack co
 
 from __future__ import annotations
 
+# kpack's own vocabulary for an out-of-band rebuild, and for finding what to
+# apply it to. The trigger lives on the latest **Build**, not on the Image:
+# kpack's image reconciler asks whether the last Build carries the annotation
+# and, if so, creates the next one (reason ``TRIGGER``). A new Build inherits
+# the *Image's* annotations, which never carry it, so one trigger produces
+# exactly one build. Putting a nonce on the Image instead would make the
+# desired state impure and rebuild on every apply (see :func:`build_image`).
+BUILD_TRIGGER_ANNOTATION = "image.kpack.io/additionalBuildNeeded"
+IMAGE_LABEL = "image.kpack.io/image"
+BUILD_NUMBER_LABEL = "image.kpack.io/buildNumber"
+
 
 def build_object_name(workload: str) -> str:
     """Name shared by a function's Image and build ServiceAccount: ``fn-{workload}``.
@@ -123,6 +134,57 @@ def build_image(
         "metadata": {"name": name, "labels": dict(labels)},
         "spec": spec,
     }
+
+
+def _build_number(build: dict) -> int | None:
+    """The build number kpack labelled one ``Build`` with, or None if it has none.
+
+    A label value is a string or nothing, and kpack's is a counter, so testing
+    for digits identifies the ones there is an order over.
+    """
+    raw = ((build.get("metadata") or {}).get("labels") or {}).get(BUILD_NUMBER_LABEL)
+    if not isinstance(raw, str) or not raw.isdigit():
+        return None
+    return int(raw)
+
+
+def latest_build(builds: list[dict]) -> dict | None:
+    """The most recent ``Build`` of one ``Image``, by kpack's build-number label.
+
+    Ordered on the label rather than on the creation timestamp: the timestamp has
+    one-second resolution and kpack numbers builds itself, so the number is both
+    exact and the same ordering kpack's own tooling uses. A Build without a
+    parseable number is skipped rather than guessed at.
+
+    Args:
+        builds: The Builds selected by :data:`IMAGE_LABEL` for one Image.
+
+    Returns:
+        The highest-numbered Build, or None when there are none - which is the
+        normal state of an Image that has not built yet.
+    """
+    numbered = [(_build_number(b), b) for b in builds]
+    ordered = [(number, build) for number, build in numbered if number is not None]
+    if not ordered:
+        return None
+    return max(ordered, key=lambda pair: pair[0])[1]
+
+
+def trigger_patch(at: str) -> dict:
+    """The merge patch that asks kpack for one more build of the current inputs.
+
+    Applied to the latest ``Build`` (see :data:`BUILD_TRIGGER_ANNOTATION`). The
+    value is only ever read by a human: kpack tests for the annotation's
+    *presence*, so what it holds is free to be the timestamp that explains, in a
+    ``kubectl describe``, why the next build exists.
+
+    Args:
+        at: When the rebuild was asked for.
+
+    Returns:
+        The patch body.
+    """
+    return {"metadata": {"annotations": {BUILD_TRIGGER_ANNOTATION: at}}}
 
 
 def build_status(image: dict | None) -> tuple[str, str | None, str | None]:

@@ -31,10 +31,10 @@ the build flow, and what the API owns versus the build service.
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
-| Image CR writer | The **API** (POST / PUT / webhook) |
+| Image CR writer | The **API** (POST / PUT / rebuild / webhook) |
 | Digest propagation | The **build service** watches `status.latestImage` and updates the ksvc in *all* sites |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
-| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent) |
+| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../rebuild` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
@@ -444,11 +444,23 @@ actionable error.
 |--------|---------|------------------|
 | `CONFIG` | `spec` changed | PUT that changes runtime, version or env |
 | `COMMIT` | resolved source SHA changed | the per-function **webhook** |
+| `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/rebuild` |
 | `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
 | `STACK` | the Stack run image was updated | **CVE patch** - often a fast *rebase* |
 
-The last two fire with **no user action**. Digest propagation must therefore be
+`BUILDPACK` and `STACK` fire with **no user action**. Digest propagation must therefore be
 event-driven (BUILDING.md: Ownership: API vs Build Service), not only triggered by API writes.
+
+`TRIGGER` is the one reason that is imperative rather than a state change, and it is why
+the explicit rebuild exists: nothing about the function changed, so there is no desired
+state to write that would produce a build. kpack looks for the annotation on the **latest
+`Build`**, not on the `Image` - the next `Build` inherits the *Image's* annotations, which
+never carry it, so one request produces exactly one build and no loop.
+
+> **Never put the trigger on the `Image`.** It is a nonce, and the `Image` spec is a pure
+> function of the function definition (BUILDING.md: Convergence rules). On the `Image` it
+> would look like a change to every apply, and the next ordinary `PUT` - which composes the
+> spec from the request, without it - would drop it and build once more.
 
 ---
 
@@ -458,7 +470,7 @@ Two components, split by execution model:
 
 | Component | Path | Responsibility |
 |-----------|------|----------------|
-| **API** | request/response | On POST / PUT / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
+| **API** | request/response | On POST / PUT / rebuild / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
 | **Build service** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites. |
 
 The watch loop does not fit a request/response API, and the shared library already
@@ -502,6 +514,10 @@ self-healing (BUILDING.md: Active/Active Behaviour). An update that changes noth
 exactly as it is: that image may be a digest a finished build resolved, and rewriting it
 back to the tag would spawn a pointless revision.
 
+`POST .../functions/{name}/rebuild` is the manual half of that: it re-applies the same
+composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
+without inventing a spec change (FUNCTIONS.md: Rebuilding without changing anything).
+
 Still to come, and deliberately out of scope for the current implementation: the build
 service's watch loop, and the per-function webhook endpoint that pins a pushed SHA to
 `spec.source.git.revision` (`BuildRequest.revision` already carries it).
@@ -526,7 +542,15 @@ create-or-update by construction**. Every path therefore composes the *complete*
 |------|-----------|
 | POST | compose -> apply -> creates |
 | PUT | compose -> apply -> **creates if missing**, else updates |
+| rebuild | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
+
+The rebuild applies *before* it triggers, and that ordering is what makes it self-healing
+rather than merely idempotent: on a site that has never built the function the apply
+creates the `Image`, which builds on its own, and there is no `Build` to annotate - so the
+trigger finds nothing and says so instead of failing. It is also the one write path that
+leaves the `KSVC` alone: the function's desired state does not change, so there is nothing
+to fan out to the other sites, and only the local site (which builds) is touched.
 
 > **Never use a targeted patch** (e.g. patching only `spec.source.git.revision`). It
 > returns 404 when the object is absent - precisely the post-switchover case this design
@@ -564,6 +588,15 @@ definition. Duplicate builds come from nonces, not from concurrency:
 
 With these, two instances applying the same desired state produce one object and kpack
 creates **one** build - no lease or leader election is required.
+
+The explicit rebuild is not an exception to rule 4, because it is not a write of desired
+state: the `Image` it applies is composed the same way every other path composes it, and
+the trigger annotation goes on the latest `Build` afterwards. The nonce rule is about state
+that gets *re-applied* - a value in the `Image` spec is asserted again on every write, so a
+timestamp there rebuilds forever. An annotation on one `Build` is asserted once. Two
+instances handling one rebuild request would patch the same `Build` and kpack would still
+create one build; two clients asking twice **should** get two builds, which is what asking
+twice means.
 
 ### Accepted consequences
 

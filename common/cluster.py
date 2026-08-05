@@ -170,6 +170,46 @@ class Cluster:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
             raise
 
+    def patch(self, kind: ResourceKind, name: str, body: dict) -> dict:
+        """Merge-patch one field of an existing resource.
+
+        Deliberately narrow next to :meth:`apply`, which is how everything the
+        platform *owns* is written: a full server-side apply is create-or-update
+        by construction, where a patch 404s on an absent object. This exists for
+        the one thing that is not desired state - annotating a kpack ``Build`` to
+        ask for another build - where composing and applying the whole object
+        would mean owning a resource kpack creates.
+
+        Merge patch, not strategic: strategic merge is unavailable on custom
+        resources.
+
+        Args:
+            kind: The resource kind to patch.
+            name: The object name.
+            body: The merge patch (only the fields being changed).
+
+        Returns:
+            The patched object.
+
+        Raises:
+            NotFoundError: If the resource does not exist (404). Other errors
+                propagate.
+        """
+        dynamic_api = self._dynamic_api(kind)
+        try:
+            patched = dynamic_api.patch(
+                name=name,
+                namespace=self._namespace,
+                body=body,
+                content_type="application/merge-patch+json",
+                **self._opts,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
+            raise
+        return patched.to_dict()
+
     def delete(self, kind: ResourceKind, name: str) -> None:
         """Delete a resource by name.
 

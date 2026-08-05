@@ -162,7 +162,7 @@ the workloads namespace of every cluster:
 | Resource | Verbs | Used by |
 |----------|-------|---------|
 | `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build service (watch) |
-| `builds.kpack.io` | get, list, watch | status resolution (FUNCTIONS.md: Function Status Resolution), log lookup |
+| `builds.kpack.io` | get, list, watch, patch | status resolution (FUNCTIONS.md: Function Status Resolution), log lookup, and the rebuild trigger - an annotation on the latest Build (BUILDING.md: What causes a new Build). Never create or delete: kpack owns their lifecycle |
 | `pods`, `pods/log` | get, list | per-phase build logs (BUILDING.md: Build Flow) |
 | `serviceaccounts` | get, list, create, update, patch, delete | the per-function build account (BUILDING.md: Registry & Git Credentials) |
 

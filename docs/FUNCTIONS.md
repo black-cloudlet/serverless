@@ -7,6 +7,7 @@ what functions share with containers is ARCHITECTURE.md.
 
 - [Overview](#overview)
 - [API - create & update](#api---create--update)
+- [Rebuilding without changing anything](#rebuilding-without-changing-anything)
 - [Function Status Resolution](#function-status-resolution)
 
 ## Overview
@@ -271,6 +272,47 @@ re-keyed to the new image's registry):
 ```json
 { "gitToken": "ghp_new-token" }
 ```
+
+## Rebuilding without changing anything
+
+A `PUT` rebuilds only when a build **input** changes (or the token rotates), because
+re-applying an unchanged spec is a no-op kpack does not build from. That leaves the
+opposite need unserved: build the *same* definition again, against today's base image and
+dependencies. That is a `POST`, and it takes **no body**:
+
+```
+POST /api/v1/groups/{group}/functions/{name}/rebuild   ->   202 Accepted
+```
+
+Every input comes back off the workload itself - `gitRepo`, `branch`, `path`, `runtime`
+and `version` from the KSVC's annotations, the token from the `{workload}-git` Secret -
+which is the same reconstruction a site that has never built the function does after a
+switchover (BUILDING.md: Reconstruction after switchover). Nothing is accepted from the
+request: a rebuild that took inputs would be a `PUT` in disguise.
+
+Use it to:
+
+- pick up a **base-image or buildpack** change on a function nobody is editing (kpack does
+  this on its own for `STACK`/`BUILDPACK` updates; this is the on-demand version);
+- **retry a failed build** without inventing a spec change to force one;
+- build a **pushed commit now** rather than when kpack next re-resolves the branch.
+
+The response is the same `Pending` 202 as create and update, with the same `statusUrl`, so
+a client polls one place: `GET .../functions/{name}` reports `build.state` as `Building`
+and then `Ready` or `Failed`.
+
+What it deliberately does **not** do:
+
+| | |
+|---|---|
+| Touch the workload | Nothing about the desired state changes, so no KSVC is applied and no revision is spawned. The running revision keeps serving its current digest until the new one is rolled out (BUILDING.md: Ownership: API vs Build Service) - as for any build kpack starts on its own. |
+| Take a commit SHA | Pinning the exact commit that was pushed is the webhook's job (`BuildRequest.revision`); a rebuild builds the branch head, which is what create and update do. |
+| Change the spec | Send a `PUT` for that. A rebuild is the one function write that carries no desired state at all. |
+
+**Errors.** `404` if there is no such function (including a *container* of the same name -
+`{name}-{group}` is shared by both offerings). `400` if there is nothing to build with: no
+stored git token (send one with a `PUT`), or a `runtime` that has since been removed from
+the runtimes ConfigMap. Both are decided synchronously, before the `202`.
 
 And `GET /api/v1/groups/team/functions` to list the group's functions - general
 info only (no live usage/replicas; use the single-workload GET for those):

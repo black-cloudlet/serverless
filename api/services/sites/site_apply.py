@@ -129,28 +129,40 @@ def apply_to_site(
     return SiteStatus(site=cluster.site, status=status, revision=revision)
 
 
-def apply_build_objects(cluster: Cluster, manifests: list[dict]) -> None:
-    """Apply a function's build objects to a site that runs no copy of it.
+def apply_build_objects(
+    cluster: Cluster, manifests: list[dict], *, oname: str | None = None
+) -> None:
+    """Apply a function's build objects on their own, outside a workload apply.
 
-    Only reached when the local site is excluded from the function's sites.
-    The build still belongs here, so the git Secret, build ServiceAccount and
-    Image are applied on their own.
+    Two callers, one shape: the create/update path when the local site is
+    excluded from the function's sites (the build still belongs here), and the
+    rebuild path, which re-declares the build without touching the KSVC.
 
-    Applied UNOWNED, which is not a choice: an ownerReference must name an owner in
-    the same cluster and the KSVC that would be it was never applied here. Nothing
-    collects them, so :func:`delete_build_objects` removes them by name.
+    Ownership follows the KSVC, and only ``oname`` can say whether there is one to
+    follow. Without it - or with a KSVC that is genuinely absent here - the
+    manifests are applied UNOWNED, which is not a choice: an ownerReference must
+    name an owner in the same cluster. Nothing then collects them, so
+    :func:`delete_build_objects` removes them by name.
 
     Args:
         cluster: The local site's cluster client.
         manifests: The git Secret, build ServiceAccount and Image.
+        oname: The object name (``{name}-{group}``) to own them, when this site
+            may be running the workload; None to apply unowned.
 
     Raises:
         Exception: Any apply error. Failing here means the image would never
             be built, so it is surfaced rather than leaving a function whose
             tag nothing ever pushes.
     """
+    owner = None
+    if oname is not None:
+        try:
+            owner = res.owner_reference(cluster.get(ResourceKind.KNATIVE_SERVICE, oname))
+        except NotFoundError:
+            owner = None  # deployed elsewhere; the build is still ours to declare
     for manifest in manifests:
-        cluster.apply(manifest)
+        cluster.apply(res.with_owner(manifest, owner))
 
 
 def delete_build_objects(cluster: Cluster, oname: str) -> None:
