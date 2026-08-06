@@ -486,7 +486,9 @@ class _RecordingBuilder:
                     "apiVersion": "kpack.io/v1alpha2",
                     "kind": "Image",
                     "metadata": {"name": "fn-hello-payments", "labels": dict(labels)},
-                    "spec": {},
+                    # A real tag: the engine compares it against the deployed
+                    # Image's, since kpack makes spec.tag immutable.
+                    "spec": {"tag": self.image_ref(req)},
                 }
             ],
         )
@@ -707,7 +709,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
-async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
+async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     """path is a build input: a different directory is a different application."""
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
@@ -732,8 +734,11 @@ async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
     )
 
     assert builder.reqs[0].path == "services/worker"
-    # a config-only update keeps the running image; this one must not
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    # The build is re-declared, but the workload keeps the digest it is serving:
+    # the tag still resolves to that same digest until the build lands, so
+    # writing it would cut a revision of identical code. The controller supplies
+    # the new digest (docs/BUILDING.md - Digest propagation).
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 async def test_update_without_any_token_emits_no_build():
@@ -758,7 +763,7 @@ async def test_update_without_any_token_emits_no_build():
     assert _applied_kind(cluster, "Image") == []
 
 
-async def test_branch_change_moves_the_deployment_to_the_new_tag():
+async def test_a_branch_change_rebuilds_without_disturbing_the_running_image():
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
@@ -777,7 +782,9 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
         _principal(),
     )
     assert builder.calls == 1
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+    # A branch change re-tags where the build pushes, but the running digest is
+    # untouched until that build finishes and the controller rolls it out.
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 # ------------------------------------------------------- request validation
@@ -1009,7 +1016,7 @@ def test_a_runtime_naming_no_version_env_gets_none_invented():
     assert not [e for e in env if e["name"].startswith("BP_")]
 
 
-async def test_changing_the_version_rebuilds_and_moves_the_image():
+async def test_changing_the_version_rebuilds_but_leaves_the_running_image():
     """The language version is a build input like branch or path."""
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
@@ -1034,11 +1041,10 @@ async def test_changing_the_version_rebuilds_and_moves_the_image():
     )
 
     assert builder.reqs[0].version == "3.12"
-    # a config-only update keeps the running image; a version change must not
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
-async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuilds():
+async def test_omitting_the_version_returns_to_the_default_and_rebuilds():
     """`version` is replaced, not kept - like branch and runtime, unlike gitToken.
 
     So a PUT that drops it is a deliberate "give me the platform default", and
@@ -1063,7 +1069,7 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     )
 
     assert builder.reqs[0].version is None  # -> the builder pins defaultVersion
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 async def test_resending_the_same_version_is_not_a_rebuild():
@@ -1715,6 +1721,72 @@ def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
     )
 
 
+async def test_a_created_function_is_deployed_at_the_branch_tag():
+    """The one path that writes the image: `{registry base}/{group}/{name}:{branch}`.
+
+    There is nothing to keep on a create, and no digest exists yet - the KSVC
+    reads Building until the build pushes one and the controller rolls it out.
+    """
+    from api.models.function import FunctionCreate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).create(
+        "payments",
+        FunctionCreate(
+            name="hello",
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            gitToken="ghp_x",
+        ),
+        _principal(),
+    )
+
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+
+
+async def test_no_api_path_writes_the_image_after_the_create():
+    """The controller is the only writer once the function exists.
+
+    Every shape of update at once, because the rule is what keeps a revision
+    from being cut for code already running, and it is one forgotten branch away
+    from coming back. The build path is covered separately - it writes no KSVC
+    at all (test_build_never_writes_the_workload).
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+
+    def _site():
+        return _ApplyCluster(
+            "site-a",
+            {"hello-payments": _ksvc(image=DEPLOYED)},
+            secrets={"hello-payments-git": stored},
+        )
+
+    # a config-only edit, a rebuild-triggering edit, and a rotated token
+    for spec in (
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git", runtime="python", branch="release"
+        ),
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            gitToken="ghp_rotated",
+        ),
+    ):
+        cluster = _site()
+        await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+            "payments", "hello", spec, _principal()
+        )
+        assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
+
+
 def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
     """The prefix is optional, so an install that never sets it is unaffected."""
     builder = _builder(_layout_settings())
@@ -1723,28 +1795,12 @@ def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
     assert builder.cache_ref(_request()) == "registry.internal/acme/payments/hello_cache:latest"
 
 
-@pytest.mark.parametrize(
-    ("image", "expected"),
-    [
-        ("reg/acme/team/app:main", "reg/acme/team/app"),
-        ("reg/acme/team/app@sha256:" + "a" * 64, "reg/acme/team/app"),
-        ("reg/acme/team/app:main@sha256:" + "a" * 64, "reg/acme/team/app"),
-        # the host's port is not a tag separator
-        ("reg.internal:5000/team/app:main", "reg.internal:5000/team/app"),
-        ("reg.internal:5000/team/app", "reg.internal:5000/team/app"),
-    ],
-)
-def test_repository_of_ignores_the_tag_and_the_digest(image, expected):
-    from common.names import repository_of
+async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
+    """The update moves where the build pushes; the controller moves the workload.
 
-    assert repository_of(image) == expected
-
-
-async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
-    """The layout is configuration, so nothing about the function marks the move.
-
-    Left unnoticed the workload would point at a repository nothing pushes to,
-    permanently: every later comparison is against the same stale value.
+    An update writes the image on no path at all now, so the move reaches the
+    running function the same way every other build does - as a digest, once
+    kpack has actually pushed one there.
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
@@ -1761,7 +1817,8 @@ async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
         {"hello-payments": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
         secrets={"hello-payments-git": stored},
     )
-    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+    builder = _MovedBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
         "payments",
         "hello",
         # every build input identical to what is stored: a config-only edit
@@ -1769,8 +1826,13 @@ async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
         _principal(),
     )
 
+    # The build is re-declared at the new repository...
+    assert builder.calls == 1
+    assert builder.image_ref(None) == "reg/acme/serverless/builders/payments/hello:main"
+    # ...and the workload stays on the old one until a build actually pushes to
+    # the new one and the controller rolls that digest out.
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert extract_image(ksvc) == "reg/acme/serverless/builders/payments/hello:main"
+    assert extract_image(ksvc) == "reg/acme/payments/hello@sha256:" + "a" * 64
 
 
 async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest():
@@ -1899,3 +1961,131 @@ async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202(
     body = await svc.accept_build("payments", "hello", _principal(), background)
     assert body.overallStatus == "Pending"
     await background()  # must not raise
+
+
+# ------------------------------------------------- re-tagging a moved Image
+
+
+from common.cluster import ResourceKind  # noqa: E402
+
+
+def _kpack_image(tag):
+    return {
+        "apiVersion": "kpack.io/v1alpha2",
+        "kind": "Image",
+        "metadata": {"name": "fn-hello-payments"},
+        "spec": {"tag": tag},
+    }
+
+
+def _reclaimed(monkeypatch):
+    """Capture what the Quay reclaim was asked to delete, without any HTTP."""
+    from api.services import workloads as workloads_svc
+
+    calls = []
+    monkeypatch.setattr(
+        workloads_svc.registry_svc,
+        "reclaim_moved_repositories",
+        lambda registry, previous: calls.append(previous),
+    )
+    return calls
+
+
+async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
+    """kpack makes spec.tag immutable, so a moved one cannot be applied over.
+
+    Left as an apply it is rejected at admission - which wedges every later
+    write to the function, not only the layout change that caused it.
+    """
+    from api.models.function import FunctionUpdate
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(image=DEPLOYED)},
+        secrets={"hello-payments-git": stored},
+        images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+    )
+    reclaimed = _reclaimed(monkeypatch)
+
+    class _MovedBuilder(_RecordingBuilder):
+        def image_ref(self, req):
+            return "reg/acme/serverless/builders/payments/hello:main"
+
+    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
+    applied = _applied_kind(cluster, "Image")[0]
+    assert applied["spec"]["tag"] == "reg/acme/serverless/builders/payments/hello:main"
+    # and the repositories the old tag pushed to are handed back
+    assert reclaimed == ["reg/acme/payments/hello:main"]
+
+
+async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
+    """The normal case, and what the comparison buys - one GET, no churn."""
+    from api.models.function import FunctionUpdate
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(image=DEPLOYED)},
+        secrets={"hello-payments-git": stored},
+        images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+    )
+    reclaimed = _reclaimed(monkeypatch)
+
+    await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") not in cluster.deleted
+    assert reclaimed == []
+
+
+async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
+    """The create path: there is nothing to replace, and nothing to reclaim."""
+    from api.models.function import FunctionCreate
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    reclaimed = _reclaimed(monkeypatch)
+
+    await _function_service({"site-a": cluster}, _RecordingBuilder()).create(
+        "payments",
+        FunctionCreate(
+            name="hello",
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            gitToken="ghp_x",
+        ),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") not in cluster.deleted
+    assert reclaimed == []
+
+
+async def test_the_build_endpoint_re_tags_too(monkeypatch):
+    """It applies the same composed Image, so it hits the same immutable field."""
+    cluster = _build_cluster()
+    cluster._inner._images = {"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")}
+    reclaimed = _reclaimed(monkeypatch)
+
+    class _MovedTriggering(_TriggeringBuilder):
+        def image_ref(self, req):
+            return "reg/acme/serverless/builders/payments/hello:main"
+
+    await _run_build(_build_service({"site-a": cluster}, _MovedTriggering()))
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
+    assert reclaimed == ["reg/acme/payments/hello:main"]

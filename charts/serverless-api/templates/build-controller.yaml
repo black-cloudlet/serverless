@@ -1,0 +1,89 @@
+{{- if .Values.buildController.enabled }}
+{{- if not .Values.build.enabled }}
+{{- fail "serverless-api: buildController.enabled needs build.enabled - without it the chart grants no read on images.kpack.io and the controller has nothing to watch." }}
+{{- end }}
+# Watches kpack Images here and applies each finished digest to the function's
+# Knative Service in every site (docs/BUILDING.md - Digest propagation). No
+# Service and no Route: it serves no HTTP. Runs as the API's client-cert user,
+# whose Role already covers it (docs/DEPLOYING.md - RBAC).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "serverless-api.controllerName" . }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.controllerLabels" . | nindent 4 }}
+    {{- with .Values.buildController.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.buildController.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.buildController.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "serverless-api.controllerLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "serverless-api.controllerLabels" . | nindent 8 }}
+        {{- with .Values.buildController.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.buildController.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      containers:
+        - name: {{ include "serverless-api.controllerName" . }}
+          image: {{ include "serverless-api.image" (dict "root" $ "spec" .Values.buildController) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: SERVERLESS_BASE_DOMAIN
+              value: {{ .Values.global.baseDomain | quote }}
+            # The site whose Images it watches; writes go to every site.
+            - name: SERVERLESS_LOCAL_SITE
+              value: {{ .Values.global.site | quote }}
+            - name: SERVERLESS_WORKLOADS_NAMESPACE
+              value: {{ .Values.namespaces.workloads | quote }}
+            - name: SERVERLESS_RESYNC_SECONDS
+              value: {{ .Values.buildController.resyncSeconds | quote }}
+            - name: SERVERLESS_PRUNE_ORPHANS
+              value: {{ .Values.buildController.pruneOrphans | quote }}
+            - name: SERVERLESS_CLIENT_CERT_DIR
+              value: {{ .Values.certificate.mountPath | quote }}
+            - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
+              value: {{ .Values.caBundle.name | quote }}
+            - name: SERVERLESS_CA_BUNDLE__KEY
+              value: {{ .Values.caBundle.key | quote }}
+            - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
+              value: {{ .Values.caBundle.mountPath | quote }}
+            - name: SSL_CERT_FILE
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+            - name: REQUESTS_CA_BUNDLE
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+          envFrom:
+            # The same sites list the API reads.
+            - configMapRef:
+                name: "{{ .Values.name }}-sites"
+          volumeMounts:
+            - name: {{ .Values.certificate.name }}
+              mountPath: {{ .Values.certificate.mountPath }}
+              readOnly: true
+            - name: {{ .Values.caBundle.name }}
+              mountPath: {{ .Values.caBundle.mountPath }}
+              readOnly: true
+          # No probes: no endpoint to probe, and a stalled watch ends at resyncSeconds.
+          resources:
+            {{- toYaml .Values.buildController.resources | nindent 12 }}
+      volumes:
+        - name: {{ .Values.certificate.name }}
+          secret:
+            secretName: {{ .Values.certificate.name }}
+        - name: {{ .Values.caBundle.name }}
+          configMap:
+            name: {{ .Values.caBundle.name }}
+{{- end }}

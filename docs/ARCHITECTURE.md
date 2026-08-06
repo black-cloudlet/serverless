@@ -106,6 +106,7 @@ flowchart TB
 
     subgraph ZA["Site central - cluster central-0"]
         APIA["FastAPI API (active/active)"]
+        BCA["build-controller<br/>Image watch → ksvc digest"]
         KNA["Knative Serving<br/>(workloads namespace)"]
         RTA["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
         ESOA["ESO ExternalSecret"]
@@ -115,6 +116,7 @@ flowchart TB
 
     subgraph ZB["Site south - cluster south-0"]
         APIB["FastAPI API (active/active)"]
+        BCB["build-controller<br/>Image watch → ksvc digest"]
         KNB["Knative Serving<br/>(workloads namespace)"]
         RTB["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
         ESOB["ESO ExternalSecret"]
@@ -131,6 +133,10 @@ flowchart TB
     APIA -->|"create KSVC + Route (mTLS client cert)"| KNA
     APIA -->|"create KSVC + Route (mTLS client cert)"| KNB
     APIA -->|"pull/push images"| REG
+    BCA -->|"built digest → ksvc, both sites"| KNA
+    BCA --> KNB
+    BCB --> KNA
+    BCB --> KNB
     KNA --> REG
     KNB --> REG
 
@@ -790,11 +796,16 @@ Serverless/
 │   │       ├── kpack_backend.py     # api-side BuildBackend (KpackBackend; future RemoteBackend)
 │   │       ├── runtimes.py          # available-runtimes registry (mounted ConfigMap)
 │   │       └── registry.py          # reclaim the repositories a build pushed to
-├── common/                          # shared by api + (future) builder service
+├── controller/                      # the build controller (python -m controller.main)
+│   ├── main.py                      # entrypoint: signals + the resync/watch loop
+│   ├── config.py                    # ControllerSettings(CommonSettings) + loop pacing
+│   ├── reconciler.py                # watch local Images -> apply the digest to every site
+│   └── digest.py                    # which digests belong on a ksvc, and how to re-apply it
+├── common/                          # shared by api + controller
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
-│   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build-service domain
-│   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the builder)
+│   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build domain
+│   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the controller)
 │   ├── names.py                     # name/branch rules + object_name - the {name}-{group} primary key
 │   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
 │   ├── labels.py                    # ownership label keys + workload_labels
@@ -805,14 +816,15 @@ Serverless/
 ├── charts/
 │   └── serverless-api/
 │       ├── Chart.yaml
-│       ├── values.yaml              # site profiles, image refs, SSO, registry
+│       ├── values.yaml              # api / buildController sections, shared image, SSO, registry
 │       └── templates/
 │           ├── namespaces.yaml      # serverless-api + serverless-workloads (ArgoCD Delete=false,Prune=false)
 │           ├── ca-bundle.yaml       # inject-trusted-cabundle ConfigMap in both namespaces
 │           ├── configmap.yaml       # sites data (SERVERLESS_SITES) -> loaded as an env var
 │           ├── runtimes-configmap.yaml # available runtimes, mounted as a YAML file
 │           ├── networkpolicy.yaml   # default-deny + allow-* for the workloads namespace
-│           ├── deployment.yaml
+│           ├── deployment.yaml      # the API
+│           ├── build-controller.yaml # the build controller (no Service, no Route)
 │           ├── service.yaml
 │           ├── route.yaml           # API Route (host/labels/annotations configurable)
 │           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site; incl. pods/log)

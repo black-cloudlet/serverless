@@ -1,0 +1,30 @@
+"""Build controller settings: the shared connection identity plus the loop's pacing."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import Field
+
+from common.config import CommonSettings
+
+
+class ControllerSettings(CommonSettings):
+    """Controller settings: the shared connection settings plus the loop's own."""
+
+    app_name: str = "serverless-build-controller"
+
+    # How long each watch is held open, and so also the relist interval - the
+    # stream ending is what starts the next resync.
+    resync_seconds: int = Field(default=300, gt=0)
+    # Only for a pass that raised; a watch that merely ended resyncs at once.
+    error_backoff_seconds: float = Field(default=5.0, ge=0)
+    # Delete the Images a switchover stranded in the other sites. Off leaves them
+    # rebuilding (docs/BUILDING.md - Pruning stranded Images).
+    prune_orphans: bool = True
+
+
+@lru_cache
+def get_settings() -> ControllerSettings:
+    """Cached settings singleton."""
+    return ControllerSettings()

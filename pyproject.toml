@@ -7,19 +7,25 @@ name = "serverless-api"
 version = "0.1.0"
 description = "FaaS/CaaS REST API wrapping Knative on OpenShift"
 requires-python = ">=3.14"
+# What BOTH services need. The build controller serves no HTTP and installs
+# nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
-    "fastapi>=0.141.1",
-    "uvicorn[standard]>=0.52.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
-    "httpx>=0.28.1",
-    "pyjwt[crypto]>=2.13.0",
     "kubernetes>=36.0.3",
-    "pyyaml>=6.0.3",
-    "tzdata>=2026.3",
 ]
 
 [project.optional-dependencies]
+# The API's own: serving HTTP, validating tokens, reading the runtimes file and
+# calling the registry. `pip install ".[api]"` is what its image runs.
+api = [
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.0",
+    "httpx>=0.28.1",
+    "pyjwt[crypto]>=2.13.0",
+    "pyyaml>=6.0.3",
+    "tzdata>=2026.3",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -57,7 +63,7 @@ convention = "google"
 "tests/**" = ["E501", "D", "S", "B"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "common*"]
+include = ["api*", "common*", "controller*"]
 
 [tool.setuptools.package-data]
 # Vendored Swagger UI / ReDoc assets served offline (airgapped docs).

@@ -9,6 +9,42 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **BREAKING (chart values):** the chart now renders two Deployments, so the
+  per-deployment values moved into a section each. `replicaCount`, `resources`,
+  `service`, `route`, `deployment.*` and `image.repository`/`image.tag` are now
+  under `api`, and the build controller's equivalents under `buildController`;
+  both take the same `labels`/`annotations` (Deployment) and `podLabels`/
+  `podAnnotations` (pods), and neither touches the selector, which is immutable
+  once the Deployment exists. The root `image`
+  section keeps `registry`, `tag` and `pullPolicy`, so a mirrored install still
+  overrides those once for both, while each names its own `repository` - the two
+  services ship as two images. Existing values files need the keys re-nested;
+  nothing else changed shape.
+- **One writer per phase for a function's KSVC image.** A create writes it once,
+  at `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}`;
+  after that the build controller is the only thing that writes it, and only
+  ever as a digest. A `PUT` now keeps whatever the workload is running, whatever
+  changed - it used to write the branch tag so that *something* eventually ran
+  the new build, which cut a revision of the code already running (the tag
+  resolves to the deployed digest until the new build finishes) with the real
+  rollout arriving minutes later regardless. `POST .../build` writes no KSVC at
+  all, as before.
+
+  The controller correspondingly stopped comparing repositories before it
+  writes. That guard existed so an `Image` under an old registry layout could
+  not pull a workload backwards, but as the only writer it also made a layout
+  change unfixable - nothing else would re-point the workload, so the function
+  would sit on a repository nothing pushes to. Stranded Images are now handled
+  where they come from, by the prune.
+- `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
+  They were only ever annotations, but the runtime import meant `common.logging`
+  - which reads the request-id context var from there - pulled a web framework
+  in behind every log line, and so did anything that logged. `common/__init__.py`
+  already claimed logging imported no framework; now it does not. The layering
+  test covers the controller's modules, so this cannot come back silently.
+- `Deployer` no longer has its own copy of "build a client per site" and "which
+  of these is local"; both are `common.cluster.clusters_for` / `select_local`,
+  which the build controller needs to mean exactly the same thing by.
 - `api/services/` is grouped by responsibility instead of being a flat directory
   of 22 modules: `manifests/` builds what gets applied, `sites/` talks to the
   clusters, `state/` interprets what came back, and `builder/` covers the
@@ -44,20 +80,79 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   removed, so cleanup cannot delete a different repository than the build
   pushed to.
 
-  Changing it on an install that already has functions is a **migration**: the
-  KSVC keeps whatever reference it was applied with. Per function, rebuild first
-  (that is what puts anything in the new repository - a `spec.tag` change alone
-  does not rebuild, since kpack's `CONFIG` diff covers source, env, services and
-  resources but not the tag), then send any `PUT`. The update path now compares
-  the deployed repository against the computed one and adopts the new reference
-  when they differ; without that an untouched function would point at a
-  repository nothing pushes to permanently, because every later comparison is
-  against the same stale value. Compared on the repository alone, so a resolved
-  digest is still never rewritten back to the branch tag. Content under the old
-  layout is left behind - cleanup addresses the current one.
+  Changing it on an install that already has functions is handled by the
+  re-tag path below: any `PUT` per function, and the old repositories are
+  reclaimed.
+
+### Fixed
+
+- **A moved registry layout wedged every later write to a function.** `spec.tag`
+  is immutable on a kpack `Image` - `validateTag` compares against the baseline
+  and rejects a change at admission - so applying a re-tagged `Image` failed.
+  Not only did the documented migration never work: `PUT` and `POST .../build`
+  both emit the `Image` manifest, so *any* write to an affected function was
+  rejected until someone deleted the object by hand.
+
+  The API now deletes the `Image` and lets the apply recreate it whenever the
+  computed tag differs from the deployed one - one GET on the build site per
+  write, a no-op in every normal case. A new `Image` has no prior `Build`, so it
+  builds immediately, which makes the whole migration "change the value, send
+  any `PUT`". Build history resets, since `Build`s are owned by the `Image`.
+
+  The old image and cache repositories are **reclaimed** at the same time,
+  through the Quay API the delete path already uses. Cleanup on delete derives
+  the *current* layout, so without this each function leaked a repository pair
+  permanently and the old mutable tag was left pointing at content nothing
+  tracked. Skipped when the previous reference is on another **host** - this
+  token addresses one registry, and a same-named path elsewhere belongs to
+  somebody else.
 
 ### Added
 
+- **The build controller** (`controller/`, `python -m controller.main`), a second
+  Deployment that closes the last gap in the build path: a finished build now
+  reaches the running function. It watches kpack `Image` objects in the local
+  cluster and applies each `status.latestImage` to that function's Knative
+  Service in *every* site. Nothing in a request/response path could do this -
+  `STACK` and `BUILDPACK` rebuilds (the CVE patches kpack was chosen for) fire
+  with nobody asking - which is why it is a loop and not an endpoint.
+
+  One pass is a full relist followed by a watch resumed from it, so a dropped
+  stream or an expired `resourceVersion` costs one extra relist rather than a
+  function stuck on an old digest; `buildController.resyncSeconds` (300) is both
+  the watch's lifetime and the relist interval, because they are the same
+  number. It composes no KSVC - the API owns that spec and the controller owns
+  one field of it - so it applies the live object with the image replaced,
+  stripped of the metadata the server owns and of any pinned revision name.
+  Two conditions stop a write: the digest is already deployed, or the workload is
+  not a function (a container that reused a deleted function's name must not
+  inherit its image). No leader election, by the same convergence rules as every
+  other writer.
+
+  It ships as **its own image** (`Dockerfile.controller`), installing only the
+  base dependencies - `pydantic`, `pydantic-settings`, `kubernetes`. The API's
+  `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` moved behind a new `api`
+  extra that only its image installs. The controller holds a certificate that
+  can write every site's Knative Services and now cannot load a web framework or
+  `cryptography` at all: ~23 MB it never imported, and the steadiest source of
+  advisories, against a pod with no HTTP surface. CI proves it - it imports each
+  service out of its own image and asserts the controller's ships none of them.
+  Both images are built from one tag by the release job, so they cannot disagree
+  about `common/`. Its RBAC is the API's client certificate and Role, whose
+  verbs it uses a subset of.
+
+  Each resync also **prunes the `Image` objects a switchover stranded** in the
+  other sites. They keep firing `STACK`/`BUILDPACK` rebuilds for a function the
+  site no longer builds for, and since builds are not bit-reproducible they push
+  a different digest from the same source - so both sites' controllers would
+  publish and each swap would roll a revision of identical code. The newer
+  `creationTimestamp` wins, so exactly one site prunes and the two can never
+  delete each other's; a tie or an unreadable timestamp prunes nothing. It
+  deletes outward rather than deleting its own on losing, because the stranded
+  site is the one that may be down. A site that cannot be listed stops the whole
+  pass - deciding what is stranded from a partial view is how a transient read
+  failure deletes every live build. `buildController.pruneOrphans: false` turns
+  it off.
 - `POST /api/v1/groups/{group}/containers/{name}/pull` - re-resolve the image
   tag, with no request body. Knative pins a revision to the digest it resolved
   when the revision was created, so re-pushing `orders-api:1.4.2` changed

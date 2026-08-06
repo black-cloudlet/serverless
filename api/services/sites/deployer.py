@@ -12,7 +12,7 @@ from typing import Callable
 
 from api.core.config import Settings
 from api.models.common import SiteStatus
-from common.cluster import Cluster
+from common.cluster import Cluster, clusters_for, select_local
 from common.errors import SiteTotalFailure, ValidationError
 from common.logging import get_logger
 
@@ -34,10 +34,7 @@ class Deployer:
         """
         self._op_timeout = settings.site_op_timeout
         self._local_site = settings.local_site
-
-        self._clusters: dict[str, Cluster] = {
-            site.name: Cluster(site, settings) for site in settings.sites
-        }
+        self._clusters: dict[str, Cluster] = clusters_for(settings)
 
     def close(self) -> None:
         """Release every site's cluster client (connection pools) at shutdown."""
@@ -58,16 +55,7 @@ class Deployer:
         Raises:
             ValidationError: If no sites are configured.
         """
-        if not self._clusters:
-            raise ValidationError("no sites are configured")
-        if self._local_site:
-            by_site = self._clusters.get(self._local_site)
-            if by_site:
-                return by_site
-            for cluster in self._clusters.values():
-                if cluster.name == self._local_site:  # match the cluster name too
-                    return cluster
-        return next(iter(self._clusters.values()))
+        return select_local(self._clusters, self._local_site)
 
     def local_site(self) -> str:
         """The name of the local site (see :meth:`local_cluster`)."""

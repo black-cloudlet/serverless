@@ -11,7 +11,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY api ./api
 COPY common ./common
-RUN pip install .
+RUN pip install ".[api]"
 
 EXPOSE 8080
 USER 1001

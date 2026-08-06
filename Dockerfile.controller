@@ -1,0 +1,27 @@
+# The build controller (docs/BUILDING.md - Digest propagation).
+#
+# Its own image, not the API's with a different entrypoint: it serves no HTTP,
+# so it installs the base dependencies only - no fastapi, uvicorn, httpx or
+# pyjwt[crypto], and so no `cryptography`, which is the bulk of what the API
+# adds and the steadiest source of advisories. What it cannot import, it cannot
+# be told to patch.
+FROM python:3.14-slim
+
+ARG PIP_INDEX_URL
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+COPY pyproject.toml ./
+# No `api`: setuptools finds only what is here, and the layering test
+# (tests/test_layering.py) is what keeps the controller from reaching for it.
+COPY common ./common
+COPY controller ./controller
+RUN pip install .
+
+USER 1001
+
+ENTRYPOINT ["python", "-m", "controller.main"]

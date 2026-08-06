@@ -1,7 +1,7 @@
 # Building - kpack + Cloud Native Buildpacks
 
 How source becomes an image: buildpack topology, runtime versions, credentials,
-the build flow, and what the API owns versus the build service.
+the build flow, and what the API owns versus the build controller.
 
 ## Contents
 
@@ -13,6 +13,10 @@ the build flow, and what the API owns versus the build service.
 - [Registry & Git Credentials](#registry--git-credentials)
 - [Build Flow](#build-flow)
 - [Ownership: API vs Build Service](#ownership-api-vs-build-service)
+- [Digest propagation](#digest-propagation)
+- [Who writes the ksvc image](#who-writes-the-ksvc-image)
+- [Moving a function's repository](#moving-a-functions-repository)
+- [Pruning stranded Images](#pruning-stranded-images)
 - [Active/Active Behaviour](#activeactive-behaviour)
 - [Lifecycle & Cleanup](#lifecycle--cleanup)
 - [Sample Manifests](#sample-manifests)
@@ -32,7 +36,7 @@ the build flow, and what the API owns versus the build service.
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
 | Image CR writer | The **API** (POST / PUT / build / webhook) |
-| Digest propagation | The **build service** watches `status.latestImage` and updates the ksvc in *all* sites |
+| Digest propagation | The **build controller**, its own Deployment, watches `status.latestImage` in the local cluster and applies the ksvc with the new digest to *all* sites (BUILDING.md: Digest propagation) |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
 | Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
@@ -218,18 +222,43 @@ the image reference hangs off it and the repository *delete* addresses Quay by t
 string with the host removed, so the repository that is deleted is the one that was
 pushed to.
 
-**Changing it later is a migration, not a config edit.** The KSVC keeps whatever reference
-it was applied with, so an install that already has functions needs, per function:
+### Moving a function's repository
 
-1. `POST .../functions/{name}/build` - re-applies the `Image` at the new tag and builds,
-   which is what puts anything in the new repository. A `spec.tag` change alone does not
-   rebuild: kpack's `CONFIG` diff covers source, env, services and resources, not the tag.
-2. any `PUT` - the update path compares the deployed repository against the computed one
-   and adopts the new reference when they differ (an ordinary config-only body will do).
+`spec.tag` is **immutable on a kpack `Image`** - `validateTag` compares against the
+baseline on every update and rejects a change at admission:
 
-In that order. Reversed, the workload would point at a repository nothing has pushed to
-yet and sit in `Building` until step 1 finished. The old repositories are left behind:
-cleanup addresses the *current* layout, so nothing deletes content under the previous one.
+```go
+if apis.IsInUpdate(ctx) {
+    original := apis.GetBaseline(ctx).(*Image)
+    return validate.ImmutableField(original.Spec.Tag, is.Tag, "tag")
+}
+```
+
+So a moved tag cannot be *applied over*. Left as an ordinary apply it does not merely fail
+to migrate - it wedges the function: every later write emits the `Image` manifest, so a
+`PUT` that has nothing to do with the registry is rejected too, until someone deletes the
+object by hand.
+
+The API therefore **deletes the `Image` and lets the apply recreate it** whenever the
+computed tag differs from the deployed one (`WorkloadService.retag_build`, one GET on the
+build site per write). Three things follow:
+
+- **A new `Image` has no prior `Build`, so it builds immediately.** Nothing has to ask for
+  one; changing the layout and sending any `PUT` is the whole migration.
+- **The old repository and its cache are reclaimed** through the same Quay API the delete
+  path uses (BUILDING.md: Registry cleanup on delete). Cleanup on delete derives the
+  *current* layout, so without this each function would leak a repository pair permanently
+  - and the mutable tag would be left pointing at content nothing tracks. The reclaim is
+  skipped when the old reference is on a different **host**: this token addresses one
+  registry, and a same-named path elsewhere is somebody else's repository.
+- **Build history resets.** `Build`s are owned by the `Image`, so deleting it collects
+  them. Acceptable for a function that is about to rebuild anyway.
+
+The workload keeps serving its existing digest throughout - the create is the only path
+that writes the ksvc image (BUILDING.md: Who writes the ksvc image) - so the old repository
+must not be reclaimed before the new build lands. It is not: the reclaim runs against the
+*previous* tag only after the `Image` has been replaced, and the running pods already hold
+their image.
 
 The stack and store images are *mirrored* content rather than something this platform
 builds, so they sit under the organization but **not** under `build.builderRepository`.
@@ -493,7 +522,7 @@ Two components, split by execution model:
 | Component | Path | Responsibility |
 |-----------|------|----------------|
 | **API** | request/response | On POST / PUT / build / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
-| **Build service** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites. |
+| **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites (BUILDING.md: Digest propagation). |
 
 The watch loop does not fit a request/response API, and the shared library already
 anticipates this split (`common/cluster.py`: *"the API and a future builder service both
@@ -532,17 +561,155 @@ function that no longer exists.
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
 `Image` on a site that has never had one - which is what makes a PUT after a switchover
-self-healing (BUILDING.md: Active/Active Behaviour). An update that changes nothing therefore keeps the deployed image
-exactly as it is: that image may be a digest a finished build resolved, and rewriting it
-back to the tag would spawn a pointless revision.
+self-healing (BUILDING.md: Active/Active Behaviour).
+
+### Who writes the ksvc image
+
+Exactly one writer per phase, with no overlap:
+
+| Path | ksvc image |
+|------|-----------|
+| POST | **written once**: `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}` |
+| PUT | **kept** - whatever the workload is running, read back off it |
+| `POST .../build` | **not written** - no ksvc is applied at all |
+| build controller | **the only writer after the create**, and only ever the digest |
+
+A create has nothing to keep, so it deploys at the branch tag and reads `Building` until a
+build pushes something there. After that the tag is never written again: it resolves to the
+digest already running, so writing it cuts a revision of *the same code*, and the real
+rollout arrives minutes later from the controller anyway. Two revisions where one belongs.
+
+This is also what lets a **moved repository** work (BUILDING.md: Registry layout). The
+controller does not compare repositories - it cannot, being the only writer - so the first
+build that pushes to the new layout moves the workload there on its own. The update that
+re-tags the `Image` and the roll-out are separate events, in that order, which is why the
+migration reads "build first".
 
 `POST .../functions/{name}/build` is the manual half of that: it re-applies the same
 composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
 without inventing a spec change (FUNCTIONS.md: Building again without changing anything).
 
-Still to come, and deliberately out of scope for the current implementation: the build
-service's watch loop, and the per-function webhook endpoint that pins a pushed SHA to
-`spec.source.git.revision` (`BuildRequest.revision` already carries it).
+Still to come, and deliberately out of scope for the current implementation: the
+per-function webhook endpoint that pins a pushed SHA to `spec.source.git.revision`
+(`BuildRequest.revision` already carries it).
+
+---
+
+## Digest propagation
+
+The `Image` says what to build; `status.latestImage` says what was built. Nothing in a
+request/response path can observe the second - a `STACK` or `BUILDPACK` rebuild fires with
+nobody asking (BUILDING.md: What causes a new Build) - so a control loop closes the gap.
+
+`controller/` is that loop, in its own Deployment (`{name}-build-controller`) and its own
+image. Separate Deployments because a watch loop and an HTTP API scale and restart on their
+own terms.
+
+### Two images
+
+`Dockerfile.controller` installs the base dependencies only - `pydantic`,
+`pydantic-settings`, `kubernetes`. `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` are the
+API's, behind a `[project.optional-dependencies] api` extra its own image installs with
+`pip install ".[api]"`.
+
+That is what makes the split worth having: the controller holds a client certificate that
+can write every site's Knative Services, and it now cannot load a web framework or
+`cryptography` at all - roughly 23 MB it never imported, and the steadiest source of
+advisories against a pod that has no HTTP surface to exploit them through. **What is not
+installed cannot be flagged, and cannot be reached.**
+
+The two are only ever built from the same commit, so they cannot disagree about
+`common/` - the release job builds both from one tag. CI proves the split rather than
+trusting it: it imports each service out of its own image, and asserts the controller's has
+no `fastapi`, `starlette`, `uvicorn`, `jwt` or `cryptography`. An import in `common` that
+quietly pulled a framework back in would pass every other check
+(`tests/test_layering.py` catches it in the source; that step catches it in the artifact).
+
+### One pass
+
+```
+list Images (local)  ──►  reconcile each  ──►  watch from that resourceVersion
+      ▲                                              │
+      └──────────────  stream ends (timeout)  ───────┘
+```
+
+Event-driven, without depending on having *seen* every event. A dropped connection or an
+expired `resourceVersion` costs one extra relist, not a function stuck on an old digest.
+`buildController.resyncSeconds` (default 300) is both the watch's lifetime and, therefore,
+the relist interval - one knob, because they are the same number.
+
+Reads are **local only**: a function's `Image` exists in exactly one cluster, the one that
+built it (BUILDING.md: Active/Active Behaviour). Writes go to **every** site, because the
+registry is shared and a site that only runs the workload pulls what this site pushed.
+
+### What it writes
+
+The controller does **not** compose a KSVC. The API owns that spec; the controller owns one
+field of it. So it applies the *live* object with the image replaced - a full server-side
+apply, like every other write path (BUILDING.md: Active/Active Behaviour), of an object
+that has been stripped of the metadata the server owns (`managedFields`, `resourceVersion`,
+`uid`, …) and of any pinned `spec.template.metadata.name`, which Knative would reject.
+
+Two things stop a write. The repository is deliberately **not** one of them: this is the
+only writer of the image after the create (BUILDING.md: Who writes the ksvc image), so
+refusing a moved one would strand the workload on a repository nothing pushes to.
+
+| Condition | Why it is left alone |
+|---|---|
+| The KSVC already runs that digest | The loop's normal outcome, and why a resync costs nothing |
+| It is not labelled `offering: function` | A container that reused a deleted function's name must not inherit its image |
+
+### No leader election
+
+Two replicas - or two sites' controllers reaching the same conclusion - apply the same
+desired state, and a server-side apply of identical content is a no-op that produces no
+Knative revision. Same convergence rules as every other writer (BUILDING.md: Convergence
+rules); `buildController.replicaCount` above 1 is safe, just redundant.
+
+Two controllers never see the same input, so there is normally nothing to contend over: a
+function's `Image` exists in exactly one cluster, and only that site's controller has an
+opinion about it. The one way both sites hold a live `Image` for one function is a
+switchover, and that is what the prune below removes.
+
+### Pruning stranded Images
+
+A switchover leaves the previous site's `Image` objects in place. They keep firing
+`STACK`/`BUILDPACK` rebuilds, and because builds are not bit-reproducible they push a
+*different* digest from the same source - so both sites' controllers would publish, and
+each swap rolls a Knative revision of identical code.
+
+Each resync therefore also compares this site's `Image`s with the other sites' and deletes
+the ones this site has superseded, by `metadata.creationTimestamp`:
+
+| | |
+|---|---|
+| Newer here | delete theirs |
+| Newer there | do nothing - their controller will delete ours |
+| Same age, or either timestamp unreadable | do nothing |
+
+**Only the newer site acts**, so the two can never delete each other's. It deletes
+*outward* rather than deleting its own on losing, deliberately: the stranded site is the
+one that may be down, and its controller with it, so a prune that ran only locally would
+never fire in the case it exists for.
+
+**A site that cannot be listed stops the pass** - not just that site. Deciding what is
+stranded from a partial view is how a transient read failure deletes every live build.
+
+Timestamps come from two API servers, so a few seconds of clock skew is possible; a tie
+prunes nothing, and the gap this is aimed at is the minutes or hours between a switchover
+and the next build.
+
+**It assumes writes land at one site at a time**, which is what the API's DNS already does
+(ARCHITECTURE.md: Networking & Exposure - one active site, the other on failover). Were
+both sites to take writes for the *same* function concurrently, each would keep recreating
+its `Image` and pruning the other's, cancelling builds in flight. That is the same
+assumption the rest of the build path rests on - it is why an `Image` normally exists in
+one cluster at all - but this is the component that would misbehave loudest if it stopped
+holding. `buildController.pruneOrphans: false` turns it off, leaving the
+stranded Images rebuilding.
+
+The deleted `Image` is not missed. Nothing needs it to *run* the function - the registry is
+shared - and the next write at that site recreates it (BUILDING.md: Active/Active Behaviour).
 
 ---
 
@@ -563,7 +730,7 @@ create-or-update by construction**. Every path therefore composes the *complete*
 | Path | Behaviour |
 |------|-----------|
 | POST | compose -> apply -> creates |
-| PUT | compose -> apply -> **creates if missing**, else updates |
+| PUT | compose -> apply -> **creates if missing**, else updates. Keeps the ksvc image (BUILDING.md: Who writes the ksvc image) |
 | build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
 
@@ -626,10 +793,11 @@ twice means.
   PUT/webhook builds from scratch. Builds are not bit-reproducible, so the digest differs
   from the previous cluster's and a new Knative revision rolls out even when the source is
   unchanged. It is bounded to functions actually touched after switchover.
-- **Orphaned Images keep building.** The previously-active cluster still holds `Image`
-  objects and will keep firing `STACK`/`BUILDPACK` rebuilds, pushing digests nobody
-  deploys. ksvcs are digest-pinned so nothing breaks, but build capacity is wasted and the
-  mutable tag drifts to an undeployed digest. See BUILDING.md: Lifecycle & Cleanup.
+- **Orphaned Images keep building, until the next prune.** The previously-active cluster
+  still holds `Image` objects and keeps firing `STACK`/`BUILDPACK` rebuilds. The build
+  controller deletes them once the new site has built the function itself, so the window
+  is one resync past the first build there (BUILDING.md: Pruning stranded Images) - not
+  indefinite, but not instant either.
 
 ---
 
@@ -640,7 +808,7 @@ twice means.
 | Function delete | Nothing to do *in the cluster*: the `Image` and build `ServiceAccount` are owned by the KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
 | Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
-| Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
+| Periodic prune | Each build-controller resync deletes `Image` objects the local site has superseded in the others (BUILDING.md: Pruning stranded Images). |
 
 ### Build history
 
@@ -722,7 +890,8 @@ to delete.
   grammar-validated only, not scoped to the caller's group, so a container may reference a
   function's image. Deleting the function removes it regardless.
 - **A switchover orphan re-pushes.** An `Image` left in a previously-active cluster keeps
-  rebuilding (BUILDING.md: Active/Active Behaviour) and will re-create the repository after cleanup ran.
+  rebuilding (BUILDING.md: Active/Active Behaviour) and will re-create the repository after cleanup ran,
+  until it is pruned (BUILDING.md: Pruning stranded Images).
 - **Reclamation is not immediate.** Deleting the repository removes it from the listing at
   once, but the underlying blobs come back when Quay garbage-collects, after its
   time-machine window has passed.
@@ -1085,14 +1254,9 @@ Either form is attached per build through `spec.build.services`, alongside the C
    their upstream paths (enabling a single `BP_DEPENDENCY_MIRROR`), or must per-dependency
    `dependency-mapping` bindings be generated from each `buildpack.toml`? The former
    removes a regeneration step on every buildpackage bump.
-3. **Build service packaging** - separate Deployment in this chart, or a second container
-   in the API pod? A watch loop and an HTTP API have different scaling and restart
-   characteristics. *Default if undecided: separate Deployment, single replica.*
-4. **Prune cadence** (BUILDING.md: Lifecycle & Cleanup) - periodic reconcile, or triggered explicitly on switchover?
-   *Default if undecided: periodic.*
-5. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
+3. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
    trees (node_modules, Go module graphs) may need explicit limits.
-6. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
+4. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
    cache repository does not accumulate tags; superseded blobs are the registry's to
    reclaim. Whether the registry's own GC settles this, or the periodic prune has to,
    depends on the registry.

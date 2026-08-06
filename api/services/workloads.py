@@ -41,6 +41,7 @@ from api.models.common import (
     WorkloadStatsResponse,
     WorkloadSummary,
 )
+from api.services.builder import registry as registry_svc
 from api.services.manifests import ksvc as ksvc_svc
 from api.services.manifests import route as route_svc
 from api.services.manifests.env import env_secret_name, resolve_env
@@ -471,6 +472,9 @@ class WorkloadService:
         # A non-target local site gets the build objects only. No KSVC there to own
         # them, so they are applied unowned and delete() reclaims them by name.
         build_only = bool(req.local_resources) and not any(c.site == build_site for c in targets)
+        # Before any apply: a moved tag cannot be applied over, only replaced.
+        if req.local_resources:
+            await self.retag_build(req.local_resources)
         if build_only:
             await asyncio.to_thread(
                 site_apply.apply_build_objects,
@@ -538,12 +542,61 @@ class WorkloadService:
         cluster = self.deployer.local_cluster()
         oname = object_name(name, group)
         manifests = list(plan.replicated) + list(plan.local)
+        await self.retag_build(manifests)
 
         def work() -> bool:
             site_apply.apply_build_objects(cluster, manifests, oname=oname)
             return self.builder.trigger(cluster, name, group)
 
         return await asyncio.to_thread(work)
+
+    async def retag_build(self, manifests: Sequence[dict]) -> None:
+        """Make way for an Image whose tag has moved, and reclaim what it left.
+
+        ``spec.tag`` is **immutable** on a kpack Image, so applying a moved one is
+        rejected at admission - which would wedge every later write to the
+        function, not just the layout change. The Image is deleted instead and
+        the apply that follows recreates it; a new Image with no prior Build
+        builds on its own, so nothing else has to ask for one.
+
+        The old repository and its cache are then reclaimed: cleanup on delete
+        derives the *current* layout, so nothing would ever address them again
+        (docs/BUILDING.md - Moving a function's repository).
+
+        A no-op in the normal case, which is what the tag comparison buys - the
+        cost is one GET on the build site per write.
+
+        Args:
+            manifests: The build plan's manifests; the Image is picked out of them.
+        """
+        desired = next((m for m in manifests if m.get("kind") == "Image"), None)
+        if desired is None:
+            return
+        cluster = self.deployer.local_cluster()
+        name = (desired.get("metadata") or {}).get("name")
+        want = (desired.get("spec") or {}).get("tag")
+
+        def retag() -> str | None:
+            try:
+                current = cluster.get(ResourceKind.KPACK_IMAGE, name)
+            except NotFoundError:
+                return None  # nothing built here yet; the apply creates it
+            had = ((current.get("spec") or {}).get("tag")) or None
+            if not had or had == want:
+                return None
+            cluster.delete(ResourceKind.KPACK_IMAGE, name)
+            logger.info("Image '%s' re-tagged from '%s' to '%s'", name, had, want)
+            return had
+
+        try:
+            previous = await asyncio.to_thread(retag)
+        except Exception:  # noqa: BLE001 - the apply below reports the real failure
+            logger.exception("could not re-tag Image '%s'", name)
+            return
+        if previous:
+            await asyncio.to_thread(
+                registry_svc.reclaim_moved_repositories, self.settings.registry, previous
+            )
 
     async def stamp_pull(self, name: str, group: str, stamp: str) -> list[SiteStatus]:
         """Stamp a new pull marker on the workload in every site.

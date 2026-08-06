@@ -31,13 +31,17 @@ api/        the control-plane API service (python -m api.main)
             manifests/ (build what gets applied), sites/ (fan-out + per-site
             read/write), state/ (interpret what came back), builder/ (image build)
   routers/  functions / containers / info (public) endpoints
-common/     shared by api + a future build service: build domain, cluster
-            client (mTLS), settings, /healthz+/readyz + offline docs, labels,
-            errors, logging
-charts/     Helm chart (Deployment, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
+controller/ the build controller (python -m controller.main): watches kpack
+            Images and rolls each finished build's digest onto the function's
+            Knative Service in every site. Serves no HTTP; its own image, built
+            from Dockerfile.controller with no web stack installed.
+common/     shared by api + controller: build domain, cluster client (mTLS),
+            settings, /healthz+/readyz + offline docs, labels, errors, logging
+charts/     Helm chart (2 Deployments, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
 tests/      unit + API tests
 .github/    CI/CD workflows: checks (reusable), ci, release
-Dockerfile
+Dockerfile            the API image
+Dockerfile.controller the build controller image
 ```
 
 The ArgoCD `ApplicationSet` is **not** in this repo - it lives in the central GitOps repo

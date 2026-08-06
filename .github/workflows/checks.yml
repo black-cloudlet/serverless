@@ -23,12 +23,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: derive
         run: |
-          docker_py=$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' Dockerfile)
           req_py=$(grep -oP 'requires-python = ">=\K[0-9]+\.[0-9]+' pyproject.toml)
-          if [ -z "$docker_py" ] || [ "$docker_py" != "$req_py" ]; then
-            echo "::error::Python version drift: Dockerfile=$docker_py, requires-python=$req_py. Bump both together."
-            exit 1
-          fi
+          for df in Dockerfile Dockerfile.controller; do
+            docker_py=$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' "$df")
+            if [ -z "$docker_py" ] || [ "$docker_py" != "$req_py" ]; then
+              echo "::error::Python version drift: $df=$docker_py, requires-python=$req_py. Bump them together."
+              exit 1
+            fi
+          done
           echo "python=$docker_py" >> "$GITHUB_OUTPUT"
           echo "Python version (Dockerfile == requires-python): $docker_py"
 
@@ -60,8 +62,8 @@ jobs:
         with:
           python-version: ${{ needs.version.outputs.python }}
           cache: pip
-      - run: pip install -e ".[dev]"
-      - run: pytest -q --cov=api --cov=common --cov-report=term-missing --cov-fail-under=90
+      - run: pip install -e ".[api,dev]"
+      - run: pytest -q --cov=api --cov=common --cov=controller --cov-report=term-missing --cov-fail-under=90
 
   security:
     needs: version
@@ -83,7 +85,7 @@ jobs:
         with:
           python-version: ${{ needs.version.outputs.python }}
       # Audit the runtime deps that ship in the image for known CVEs.
-      - run: pip install . pip-audit
+      - run: pip install ".[api]" pip-audit
       - run: pip-audit
 
   helm:
@@ -118,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: Build (load, no push)
+      - name: Build the API image (load, no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -127,11 +129,42 @@ jobs:
           tags: serverless-api:scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build the build-controller image (load, no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile.controller
+          load: true
+          tags: serverless-build-controller:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Each image must actually start its own service. Nothing else in the
+      # suite would notice a package left out of a COPY or a module path that
+      # stopped resolving - the failure would arrive as a CrashLoopBackOff
+      # after deploy.
+      - name: Each image runs its own service
+        run: |
+          docker run --rm --entrypoint python serverless-api:scan \
+            -c "import api.main as m; assert m.app"
+          docker run --rm --entrypoint python serverless-build-controller:scan \
+            -c "import controller.main as m; assert callable(m.run)"
+      # The point of two images: the controller serves no HTTP, so its own must
+      # not carry a web stack. An import in `common` that quietly pulled fastapi
+      # back in would pass every other check (docs/BUILDING.md - Two images).
+      - name: The controller image carries no web stack
+        run: |
+          docker run --rm --entrypoint python serverless-build-controller:scan -c "
+          import importlib.util, sys
+          leaked = [m for m in ('fastapi', 'starlette', 'uvicorn', 'jwt', 'cryptography')
+                    if importlib.util.find_spec(m) is not None]
+          if leaked:
+              sys.exit(f'the build controller image should not ship {leaked}')
+          "
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
       # even when nothing in our code changed. The python:3.13-slim base is
       # rebuilt on Debian security updates, keeping HIGH low without a patch step.
-      - name: Vulnerability report (Trivy)
+      - name: Vulnerability report (Trivy, API)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: serverless-api:scan
@@ -139,11 +172,19 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "0"
-      # Gate: fail the build only on CRITICAL vulnerabilities.
-      - name: Vulnerability gate (Trivy, CRITICAL)
+      # Gate: fail the build only on CRITICAL vulnerabilities, in either image.
+      - name: Vulnerability gate (Trivy, CRITICAL, API)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: serverless-api:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Vulnerability gate (Trivy, CRITICAL, build controller)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: serverless-build-controller:scan
           format: table
           severity: CRITICAL
           ignore-unfixed: true

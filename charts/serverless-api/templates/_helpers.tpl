@@ -19,20 +19,37 @@ clash). Call with a dict of the root context and the per-namespace labels:
 {{- end -}}
 
 {{/*
-Fully-qualified container image reference.
+The build controller's object name and selector labels. A distinct
+``app.kubernetes.io/name`` keeps the API's Service from selecting its pods;
+adding a component label to the API's own selector would fail every upgrade.
+*/}}
+{{- define "serverless-api.controllerName" -}}
+{{ .Values.name }}-build-controller
+{{- end -}}
 
-The tag falls back to the chart's ``.Chart.AppVersion`` when ``image.tag`` is
-left empty, so a released chart pins the matching image without setting the
-version in two places: CI stamps ``appVersion`` to the git tag on a release (and
-leaves it "latest" on main), and this image tracks it automatically. An optional
-``image.registry`` is prefixed when set.
+{{- define "serverless-api.controllerLabels" -}}
+app.kubernetes.io/name: {{ include "serverless-api.controllerName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Fully-qualified image reference for one deployment. Call with the root context
+and that deployment's values:
+
+  {{ include "serverless-api.image" (dict "root" $ "spec" $.Values.api) }}
+
+Each deployment names its own ``repository``; the tag falls back to the shared
+``image.tag`` and then to ``.Chart.AppVersion``, which CI stamps on a release, so
+a released chart pins both images without a second version to keep in step.
 */}}
 {{- define "serverless-api.image" -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
-{{- with .Values.image.registry -}}
-{{ . }}/{{ $.Values.image.repository }}:{{ $tag }}
+{{- $root := .root -}}
+{{- $repo := required "each deployment needs an image repository" .spec.repository -}}
+{{- $tag := .spec.tag | default $root.Values.image.tag | default $root.Chart.AppVersion -}}
+{{- with $root.Values.image.registry -}}
+{{ . }}/{{ $repo }}:{{ $tag }}
 {{- else -}}
-{{ .Values.image.repository }}:{{ $tag }}
+{{ $repo }}:{{ $tag }}
 {{- end -}}
 {{- end -}}
 

@@ -1202,13 +1202,14 @@ async def test_list_of_containers_reads_no_build():
 class _ApplyCluster:
     """Records applied manifests; serves a preset existing KSVC (and Secrets)."""
 
-    def __init__(self, name, existing, secrets=None):
+    def __init__(self, name, existing, secrets=None, images=None):
         self.site = name
         self.name = name
         self._existing = existing  # oname -> ksvc dict
         self._secrets = secrets or {}  # secret name -> secret dict (preset)
+        self._images = images or {}  # kpack Image name -> object (preset)
         self.applied = []
-        self.deleted = []  # [(ResourceKind, name)] from prune
+        self.deleted = []  # [(ResourceKind, name)] from prune / re-tag
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
         from common.cluster import ResourceKind
@@ -1218,7 +1219,9 @@ class _ApplyCluster:
             return self._existing[name]
         if kind == ResourceKind.SECRET and name in self._secrets:
             return self._secrets[name]
-        raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret
+        if kind == ResourceKind.KPACK_IMAGE and name in self._images:
+            return self._images[name]
+        raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret/image
 
     def apply(self, manifest):
         self.applied.append(manifest)
@@ -1357,7 +1360,7 @@ async def test_container_update_rotates_pull_secret():
     assert ksvc["spec"]["template"]["spec"]["imagePullSecrets"] == [{"name": "api-team-pull"}]
 
 
-async def test_function_update_rebuilds_when_token_given():
+async def test_function_update_rebuilds_without_touching_the_running_image():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
@@ -1414,7 +1417,9 @@ async def test_function_update_rebuilds_when_token_given():
     assert builder.req.git_url == "https://git/old.git"
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert extract_image(ksvc) == "reg/built:rel"  # deployed at the rebuilt tag
+    # The build is re-declared, the running image is not touched: after the
+    # create only the controller writes it (docs/BUILDING.md - Digest propagation).
+    assert extract_image(ksvc) == "reg/fn:old"
 
 
 async def test_function_update_without_token_keeps_image():

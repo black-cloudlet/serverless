@@ -9,7 +9,7 @@ spec:
   selector:
     {{- include "serverless-api.labels" . | nindent 4 }}
   ports:
-    - name: {{ .Values.service.portName }}
-      port: {{ .Values.service.port }}
-      targetPort: {{ .Values.service.targetPort }}
+    - name: {{ .Values.api.service.portName }}
+      port: {{ .Values.api.service.port }}
+      targetPort: {{ .Values.api.service.targetPort }}
       protocol: TCP

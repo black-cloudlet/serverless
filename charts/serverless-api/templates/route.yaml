@@ -8,20 +8,20 @@ metadata:
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
-    {{- with .Values.route.labels }}
+    {{- with .Values.api.route.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- with .Values.route.annotations }}
+  {{- with .Values.api.route.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  host: {{ tpl (.Values.route.host | default (printf "serverless.%s" .Values.global.baseDomain)) . | quote }}
+  host: {{ tpl (.Values.api.route.host | default (printf "serverless.%s" .Values.global.baseDomain)) . | quote }}
   to:
     kind: Service
     name:  {{ .Values.name }}
   port:
-    targetPort: {{ .Values.service.portName }}
+    targetPort: {{ .Values.api.service.portName }}
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
