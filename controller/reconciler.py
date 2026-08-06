@@ -4,6 +4,9 @@ Reads are local - a function's Image exists only in the cluster that built it -
 and writes go to every site, which share the registry. One pass relists and then
 watches from that point, so nothing is lost when a stream drops. No leader
 election (docs/BUILDING.md - Digest propagation).
+
+The same pass prunes the Images a switchover stranded in the other sites
+(docs/BUILDING.md - Pruning stranded Images).
 """
 
 from __future__ import annotations
@@ -31,17 +34,20 @@ IMAGE_SELECTOR = f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE},{LABEL_OFFERING}={OFFER
 class Reconciler:
     """Propagates ``Image.status.latestImage`` to the function's KSVC in every site."""
 
-    def __init__(self, settings: CommonSettings):
+    def __init__(self, settings: CommonSettings, *, prune_orphans: bool = True):
         """Build the per-site clients and pick the one holding the Images.
 
         Args:
             settings: Shared settings (sites, local site, TLS material).
+            prune_orphans: Whether each pass also deletes Images this site has
+                superseded in the others.
 
         Raises:
             ValidationError: If no sites are configured.
         """
         self._clusters = clusters_for(settings)
         self._local = select_local(self._clusters, settings.local_site)
+        self._prune_orphans = prune_orphans
 
     @property
     def local(self) -> Cluster:
@@ -66,7 +72,56 @@ class Reconciler:
         for image in images:
             self.reconcile(image)
         logger.info("resynced %d image(s) from %s", len(images), self._local.site)
+        if self._prune_orphans:
+            self.prune(images)
         return version
+
+    def prune(self, mine: list[dict]) -> int:
+        """Delete Images in the other sites that this site has since superseded.
+
+        The newer Image wins, so exactly one site prunes and two can never
+        delete each other's. Deleting outward rather than inward is deliberate:
+        the stranded site is the one that may be down. A site that cannot be
+        listed stops the pass - deciding what is stranded from a partial view is
+        how everything gets deleted (docs/BUILDING.md - Pruning stranded Images).
+
+        Args:
+            mine: This site's Images, already listed by :meth:`resync`.
+
+        Returns:
+            How many Images were deleted.
+        """
+        local = _by_name(mine)
+        if not local:
+            return 0
+        others = {}
+        for site, cluster in self._clusters.items():
+            if cluster is self._local:
+                continue
+            try:
+                images, _version = cluster.list_resources(
+                    ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR
+                )
+            except Exception:  # noqa: BLE001 - an unread site is not an empty one
+                logger.warning("could not list images in %s; skipping the prune", site)
+                return 0
+            others[site] = _by_name(images)
+
+        pruned = 0
+        for site, theirs in others.items():
+            for name, stranded in theirs.items():
+                if not _supersedes(local.get(name), stranded):
+                    continue
+                try:
+                    self._clusters[site].delete(ResourceKind.KPACK_IMAGE, name)
+                except NotFoundError:
+                    continue
+                except Exception:  # noqa: BLE001 - retried by the next pass
+                    logger.exception("could not prune Image '%s' in %s", name, site)
+                    continue
+                pruned += 1
+                logger.info("pruned Image '%s' stranded in %s", name, site)
+        return pruned
 
     def follow(self, timeout_seconds: int) -> None:
         """Reconcile each Image change until the server closes the stream.
@@ -128,3 +183,32 @@ class Reconciler:
             return False
         logger.info("rolled '%s' onto '%s' in %s", digest, workload, cluster.site)
         return True
+
+
+def _by_name(images: list[dict]) -> dict[str, dict]:
+    """Index Images by object name, skipping any that has none."""
+    named = {}
+    for image in images:
+        name = (image.get("metadata") or {}).get("name")
+        if name:
+            named[name] = image
+    return named
+
+
+def _created(image: dict | None) -> str | None:
+    """An Image's creationTimestamp, or None when it is missing or unusable."""
+    if image is None:
+        return None
+    stamp = (image.get("metadata") or {}).get("creationTimestamp")
+    return stamp if isinstance(stamp, str) and stamp else None
+
+
+def _supersedes(mine: dict | None, theirs: dict) -> bool:
+    """Whether ``mine`` is the newer of two Images for the same function.
+
+    RFC3339 timestamps from two API servers, compared as strings because the
+    format sorts. A tie, or either one unreadable, means no - the pass would
+    otherwise turn a few seconds of clock skew into a deleted live build.
+    """
+    ours, other = _created(mine), _created(theirs)
+    return bool(ours and other and ours > other)

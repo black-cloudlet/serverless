@@ -20,6 +20,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   overrides those once for both. `buildController.repository` is empty by
   default and falls back to the API's - they are one image with two entrypoints.
   Existing values files need the keys re-nested; nothing else changed shape.
+- A function `PUT` no longer rewrites the KSVC image, even when it changes a
+  build input. It used to write the branch tag so that *something* eventually
+  ran the new build; with the build controller that is now the controller's job,
+  and writing the tag cut a revision of the code already running - the tag still
+  resolves to the deployed digest until the new build finishes, and the real
+  rollout followed a few minutes later. Two revisions where one belongs, the
+  first of them a no-op restart. A **moved repository** is still adopted: the
+  controller only writes a digest whose repository already matches, so nothing
+  else would ever re-point the workload.
 - `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
   They were only ever annotations, but the runtime import meant `common.logging`
   - which reads the request-id context var from there - pulled a web framework
@@ -102,6 +111,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   It runs the API's image with a different entrypoint and the same client
   certificate: one build cannot drift from the other in the library they share,
   and its verbs are a subset of the Role the API already holds.
+
+  Each resync also **prunes the `Image` objects a switchover stranded** in the
+  other sites. They keep firing `STACK`/`BUILDPACK` rebuilds for a function the
+  site no longer builds for, and since builds are not bit-reproducible they push
+  a different digest from the same source - so both sites' controllers would
+  publish and each swap would roll a revision of identical code. The newer
+  `creationTimestamp` wins, so exactly one site prunes and the two can never
+  delete each other's; a tie or an unreadable timestamp prunes nothing. It
+  deletes outward rather than deleting its own on losing, because the stranded
+  site is the one that may be down. A site that cannot be listed stops the whole
+  pass - deciding what is stranded from a partial view is how a transient read
+  failure deletes every live build. `buildController.pruneOrphans: false` turns
+  it off.
 - Every kpack `Image` now carries an explicit `successBuildHistoryLimit` /
   `failedBuildHistoryLimit`, from the new `build.history.success` /
   `build.history.failed` chart values (both **3**). Nothing set them before,

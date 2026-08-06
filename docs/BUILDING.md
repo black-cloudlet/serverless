@@ -14,6 +14,7 @@ the build flow, and what the API owns versus the build controller.
 - [Build Flow](#build-flow)
 - [Ownership: API vs Build Service](#ownership-api-vs-build-service)
 - [Digest propagation](#digest-propagation)
+- [Pruning stranded Images](#pruning-stranded-images)
 - [Active/Active Behaviour](#activeactive-behaviour)
 - [Lifecycle & Cleanup](#lifecycle--cleanup)
 - [Sample Manifests](#sample-manifests)
@@ -533,9 +534,18 @@ function that no longer exists.
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
 `Image` on a site that has never had one - which is what makes a PUT after a switchover
-self-healing (BUILDING.md: Active/Active Behaviour). An update that changes nothing therefore keeps the deployed image
-exactly as it is: that image may be a digest a finished build resolved, and rewriting it
-back to the tag would spawn a pointless revision.
+self-healing (BUILDING.md: Active/Active Behaviour).
+
+**A PUT never rewrites the ksvc image**, not even when it rebuilds. Only a create does,
+because a new function has no image to keep. Writing the tag on an update cuts a revision
+of the code that is *already running*: the tag still resolves to the deployed digest until
+the new build finishes, and the real rollout arrives afterwards anyway, from the controller
+(BUILDING.md: Digest propagation). Two revisions where one belongs, the first of them a
+no-op restart.
+
+The one exception is a **moved repository**, which is the case the controller structurally
+cannot fix: it only writes a digest whose repository already matches the deployed one, so
+nothing else would ever re-point the workload (BUILDING.md: Registry layout).
 
 `POST .../functions/{name}/build` is the manual half of that: it re-applies the same
 composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
@@ -598,12 +608,42 @@ desired state, and a server-side apply of identical content is a no-op that prod
 Knative revision. Same convergence rules as every other writer (BUILDING.md: Convergence
 rules); `buildController.replicaCount` above 1 is safe, just redundant.
 
-The exception is the **orphaned `Image`** case (BUILDING.md: Accepted consequences). A
-previously-active cluster keeps rebuilding functions it no longer serves, and its
-controller would keep publishing those digests, so the two sites' controllers alternate
-digests and each swap rolls a Knative revision. Repositories match, so the guard above does
-not catch it. The remedy is the one already documented for the orphans themselves - the
-periodic prune (BUILDING.md: Lifecycle & Cleanup) - not a second mechanism here.
+Two controllers never see the same input, so there is normally nothing to contend over: a
+function's `Image` exists in exactly one cluster, and only that site's controller has an
+opinion about it. The one way both sites hold a live `Image` for one function is a
+switchover, and that is what the prune below removes.
+
+### Pruning stranded Images
+
+A switchover leaves the previous site's `Image` objects in place. They keep firing
+`STACK`/`BUILDPACK` rebuilds, and because builds are not bit-reproducible they push a
+*different* digest from the same source - so both sites' controllers would publish, and
+each swap rolls a Knative revision of identical code.
+
+Each resync therefore also compares this site's `Image`s with the other sites' and deletes
+the ones this site has superseded, by `metadata.creationTimestamp`:
+
+| | |
+|---|---|
+| Newer here | delete theirs |
+| Newer there | do nothing - their controller will delete ours |
+| Same age, or either timestamp unreadable | do nothing |
+
+**Only the newer site acts**, so the two can never delete each other's. It deletes
+*outward* rather than deleting its own on losing, deliberately: the stranded site is the
+one that may be down, and its controller with it, so a prune that ran only locally would
+never fire in the case it exists for.
+
+**A site that cannot be listed stops the pass** - not just that site. Deciding what is
+stranded from a partial view is how a transient read failure deletes every live build.
+
+Timestamps come from two API servers, so a few seconds of clock skew is possible; a tie
+prunes nothing, and the gap this is aimed at is the minutes or hours between a switchover
+and the next build. `buildController.pruneOrphans: false` turns it off, leaving the
+stranded Images rebuilding.
+
+The deleted `Image` is not missed. Nothing needs it to *run* the function - the registry is
+shared - and the next write at that site recreates it (BUILDING.md: Active/Active Behaviour).
 
 ---
 
@@ -624,7 +664,7 @@ create-or-update by construction**. Every path therefore composes the *complete*
 | Path | Behaviour |
 |------|-----------|
 | POST | compose -> apply -> creates |
-| PUT | compose -> apply -> **creates if missing**, else updates |
+| PUT | compose -> apply -> **creates if missing**, else updates. Leaves the ksvc image alone (BUILDING.md: Ownership: API vs Build Service) |
 | build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
 
@@ -687,10 +727,11 @@ twice means.
   PUT/webhook builds from scratch. Builds are not bit-reproducible, so the digest differs
   from the previous cluster's and a new Knative revision rolls out even when the source is
   unchanged. It is bounded to functions actually touched after switchover.
-- **Orphaned Images keep building.** The previously-active cluster still holds `Image`
-  objects and will keep firing `STACK`/`BUILDPACK` rebuilds, pushing digests nobody
-  deploys. ksvcs are digest-pinned so nothing breaks, but build capacity is wasted and the
-  mutable tag drifts to an undeployed digest. See BUILDING.md: Lifecycle & Cleanup.
+- **Orphaned Images keep building, until the next prune.** The previously-active cluster
+  still holds `Image` objects and keeps firing `STACK`/`BUILDPACK` rebuilds. The build
+  controller deletes them once the new site has built the function itself, so the window
+  is one resync past the first build there (BUILDING.md: Pruning stranded Images) - not
+  indefinite, but not instant either.
 
 ---
 
@@ -701,7 +742,7 @@ twice means.
 | Function delete | Nothing to do *in the cluster*: the `Image` and build `ServiceAccount` are owned by the KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
 | Function delete (registry) | Nothing in the cluster owns registry content, so the API deletes both repositories by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
 | Switchover | Orphaned `Image` objects remain in the previously-active cluster (BUILDING.md: Active/Active Behaviour). |
-| Periodic prune | A reconcile pass deletes `Image` objects in non-local clusters, selected by the existing `LABEL_MANAGED_BY` / `LABEL_WORKLOAD` labels. |
+| Periodic prune | Each build-controller resync deletes `Image` objects the local site has superseded in the others (BUILDING.md: Pruning stranded Images). |
 
 ### Build history
 
@@ -783,7 +824,8 @@ to delete.
   grammar-validated only, not scoped to the caller's group, so a container may reference a
   function's image. Deleting the function removes it regardless.
 - **A switchover orphan re-pushes.** An `Image` left in a previously-active cluster keeps
-  rebuilding (BUILDING.md: Active/Active Behaviour) and will re-create the repository after cleanup ran.
+  rebuilding (BUILDING.md: Active/Active Behaviour) and will re-create the repository after cleanup ran,
+  until it is pruned (BUILDING.md: Pruning stranded Images).
 - **Reclamation is not immediate.** Deleting the repository removes it from the listing at
   once, but the underlying blobs come back when Quay garbage-collects, after its
   time-machine window has passed.
@@ -1146,11 +1188,9 @@ Either form is attached per build through `spec.build.services`, alongside the C
    their upstream paths (enabling a single `BP_DEPENDENCY_MIRROR`), or must per-dependency
    `dependency-mapping` bindings be generated from each `buildpack.toml`? The former
    removes a regeneration step on every buildpackage bump.
-3. **Prune cadence** (BUILDING.md: Lifecycle & Cleanup) - periodic reconcile, or triggered explicitly on switchover?
-   *Default if undecided: periodic.*
-4. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
+3. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
    trees (node_modules, Go module graphs) may need explicit limits.
-5. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
+4. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
    cache repository does not accumulate tags; superseded blobs are the registry's to
    reclaim. Whether the registry's own GC settles this, or the periodic prune has to,
    depends on the registry.

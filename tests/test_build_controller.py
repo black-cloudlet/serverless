@@ -72,18 +72,21 @@ def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
     }
 
 
-def _image(latest=DIGEST, workload=WORKLOAD, ready="True"):
+def _image(latest=DIGEST, workload=WORKLOAD, ready="True", created="2026-08-05T12:00:00Z"):
     """A kpack Image as the cluster hands it back."""
     status = {"conditions": [{"type": "Ready", "status": ready}]}
     if latest:
         status["latestImage"] = latest
+    metadata = {
+        "name": f"fn-{workload}" if workload else "fn-orphan",
+        "labels": ({LABEL_WORKLOAD: workload} if workload else {}),
+    }
+    if created:
+        metadata["creationTimestamp"] = created
     return {
         "apiVersion": "kpack.io/v1alpha2",
         "kind": "Image",
-        "metadata": {
-            "name": f"fn-{workload}" if workload else "fn-orphan",
-            "labels": ({LABEL_WORKLOAD: workload} if workload else {}),
-        },
+        "metadata": metadata,
         "status": status,
     }
 
@@ -91,14 +94,18 @@ def _image(latest=DIGEST, workload=WORKLOAD, ready="True"):
 class _FakeCluster:
     """One site: canned KSVCs and Images, recording every apply."""
 
-    def __init__(self, site, ksvcs=None, images=None, version="7", fail_apply=False):
+    def __init__(
+        self, site, ksvcs=None, images=None, version="7", fail_apply=False, fail_list=False
+    ):
         self.site = site
         self.name = f"{site}-0"
         self._ksvcs = ksvcs if ksvcs is not None else {}
         self._images = images or []
         self._version = version
         self._fail_apply = fail_apply
+        self._fail_list = fail_list
         self.applied = []
+        self.deleted = []
         self.watch_calls = []
         self.list_calls = []
         self.closed = False
@@ -118,8 +125,13 @@ class _FakeCluster:
         return [manifest]
 
     def list_resources(self, kind, *, label_selector=None):
+        if self._fail_list:
+            raise RuntimeError("apiserver unreachable")
         self.list_calls.append((kind, label_selector))
         return list(self._images), self._version
+
+    def delete(self, kind, name):
+        self.deleted.append((kind, name))
 
     def watch(self, kind, *, resource_version=None, label_selector=None, timeout_seconds=None):
         self.watch_calls.append((kind, resource_version, label_selector, timeout_seconds))
@@ -129,11 +141,12 @@ class _FakeCluster:
         self.closed = True
 
 
-def _reconciler(clusters, local="central"):
+def _reconciler(clusters, local="central", prune=False):
     """A Reconciler over fake sites (bypasses the real cluster construction)."""
     reconciler = object.__new__(Reconciler)
     reconciler._clusters = clusters
     reconciler._local = clusters[local]
+    reconciler._prune_orphans = prune
     return reconciler
 
 
@@ -449,7 +462,7 @@ def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch)
             closed.append(True)
 
     monkeypatch.setattr(controller_main.signal, "signal", lambda s, h: signals.setdefault(s, h))
-    monkeypatch.setattr(controller_main, "Reconciler", lambda settings: _Reconciler())
+    monkeypatch.setattr(controller_main, "Reconciler", lambda settings, **kw: _Reconciler())
     monkeypatch.setattr(controller_main, "loop", lambda r, s: (_ for _ in ()).throw(SystemExit(0)))
 
     with pytest.raises(SystemExit):
@@ -457,3 +470,99 @@ def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch)
 
     assert set(signals) == {controller_main.signal.SIGTERM, controller_main.signal.SIGINT}
     assert closed == [True]
+
+
+# --------------------------------------------------------------------------- #
+# prune: the Images a switchover strands                                        #
+# --------------------------------------------------------------------------- #
+
+OLD, NEW = "2026-08-01T00:00:00Z", "2026-08-05T00:00:00Z"
+
+
+def _sites(local_created, remote_created, prune=True):
+    """Two sites holding an Image for the same function, built at different times."""
+    central = _FakeCluster("central", {WORKLOAD: _ksvc()}, images=[_image(created=local_created)])
+    south = _FakeCluster("south", {WORKLOAD: _ksvc()}, images=[_image(created=remote_created)])
+    return central, south, _reconciler({"central": central, "south": south}, prune=prune)
+
+
+async def test_the_newer_image_prunes_the_one_a_switchover_stranded():
+    central, south, reconciler = _sites(local_created=NEW, remote_created=OLD)
+
+    reconciler.resync()
+
+    assert south.deleted == [(ResourceKind.KPACK_IMAGE, f"fn-{WORKLOAD}")]
+    assert central.deleted == []
+
+
+async def test_the_older_site_prunes_nothing():
+    # The other half of the pair above: exactly one site acts, so the two can
+    # never delete each other's Images.
+    central, south, reconciler = _sites(local_created=OLD, remote_created=NEW)
+
+    reconciler.resync()
+
+    assert (central.deleted, south.deleted) == ([], [])
+
+
+async def test_two_images_of_the_same_age_are_both_left_alone():
+    # Clock skew between two API servers must not read as "superseded".
+    central, south, reconciler = _sites(local_created=NEW, remote_created=NEW)
+
+    reconciler.resync()
+
+    assert south.deleted == []
+
+
+async def test_an_image_with_no_timestamp_is_never_pruned():
+    central = _FakeCluster("central", images=[_image(created=NEW)])
+    south = _FakeCluster("south", images=[_image(created=None)])
+
+    _reconciler({"central": central, "south": south}, prune=True).resync()
+
+    assert south.deleted == []
+
+
+async def test_a_function_only_this_site_builds_is_not_touched():
+    # The normal case: one Image, one site, nothing to compare against.
+    central = _FakeCluster("central", images=[_image(created=NEW)])
+    south = _FakeCluster("south", images=[])
+
+    _reconciler({"central": central, "south": south}, prune=True).resync()
+
+    assert south.deleted == []
+
+
+async def test_a_site_that_cannot_be_listed_stops_the_whole_prune():
+    # Deciding what is stranded from a partial view is how everything gets deleted.
+    central = _FakeCluster("central", images=[_image(created=NEW)])
+    unreadable = _FakeCluster("south", images=[_image(created=OLD)], fail_list=True)
+    third = _FakeCluster("west", images=[_image(created=OLD)])
+
+    _reconciler({"central": central, "south": unreadable, "west": third}, prune=True).resync()
+
+    assert third.deleted == []
+
+
+async def test_pruning_off_leaves_the_stranded_image_alone():
+    central, south, reconciler = _sites(local_created=NEW, remote_created=OLD, prune=False)
+
+    reconciler.resync()
+
+    assert south.deleted == []
+
+
+async def test_a_prune_failure_does_not_stop_the_rest():
+    class _Undeletable(_FakeCluster):
+        def delete(self, kind, name):
+            raise RuntimeError("delete refused")
+
+    central = _FakeCluster("central", images=[_image(created=NEW)])
+    broken = _Undeletable("south", images=[_image(created=OLD)])
+    west = _FakeCluster("west", images=[_image(created=OLD)])
+
+    pruned = _reconciler({"central": central, "south": broken, "west": west}, prune=True).prune(
+        [_image(created=NEW)]
+    )
+
+    assert pruned == 1 and west.deleted

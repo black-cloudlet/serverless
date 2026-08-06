@@ -84,6 +84,12 @@ buildController:
   # How long each watch is held open, and so also the full-relist interval.
   resyncSeconds: 300
 
+  # Delete the Images a switchover stranded in the other sites, which would
+  # otherwise keep rebuilding and publishing digests that fight this site's.
+  # The newer Image wins, so only one site ever prunes.
+  # docs/BUILDING.md - Pruning stranded Images.
+  pruneOrphans: true
+
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
   api: serverless-api

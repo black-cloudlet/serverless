@@ -53,6 +53,8 @@ spec:
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
               value: {{ .Values.buildController.resyncSeconds | quote }}
+            - name: SERVERLESS_PRUNE_ORPHANS
+              value: {{ .Values.buildController.pruneOrphans | quote }}
             - name: SERVERLESS_CLIENT_CERT_DIR
               value: {{ .Values.certificate.mountPath | quote }}
             - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP

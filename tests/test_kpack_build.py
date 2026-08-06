@@ -707,7 +707,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
-async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
+async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     """path is a build input: a different directory is a different application."""
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
@@ -732,8 +732,11 @@ async def test_changing_only_the_source_path_rebuilds_and_moves_the_image():
     )
 
     assert builder.reqs[0].path == "services/worker"
-    # a config-only update keeps the running image; this one must not
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    # The build is re-declared, but the workload keeps the digest it is serving:
+    # the tag still resolves to that same digest until the build lands, so
+    # writing it would cut a revision of identical code. The controller supplies
+    # the new digest (docs/BUILDING.md - Digest propagation).
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 async def test_update_without_any_token_emits_no_build():
@@ -758,7 +761,7 @@ async def test_update_without_any_token_emits_no_build():
     assert _applied_kind(cluster, "Image") == []
 
 
-async def test_branch_change_moves_the_deployment_to_the_new_tag():
+async def test_a_branch_change_rebuilds_without_disturbing_the_running_image():
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
@@ -777,7 +780,9 @@ async def test_branch_change_moves_the_deployment_to_the_new_tag():
         _principal(),
     )
     assert builder.calls == 1
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+    # A branch change re-tags where the build pushes, but the running digest is
+    # untouched until that build finishes and the controller rolls it out.
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 # ------------------------------------------------------- request validation
@@ -1009,7 +1014,7 @@ def test_a_runtime_naming_no_version_env_gets_none_invented():
     assert not [e for e in env if e["name"].startswith("BP_")]
 
 
-async def test_changing_the_version_rebuilds_and_moves_the_image():
+async def test_changing_the_version_rebuilds_but_leaves_the_running_image():
     """The language version is a build input like branch or path."""
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
@@ -1034,11 +1039,10 @@ async def test_changing_the_version_rebuilds_and_moves_the_image():
     )
 
     assert builder.reqs[0].version == "3.12"
-    # a config-only update keeps the running image; a version change must not
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
-async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuilds():
+async def test_omitting_the_version_returns_to_the_default_and_rebuilds():
     """`version` is replaced, not kept - like branch and runtime, unlike gitToken.
 
     So a PUT that drops it is a deliberate "give me the platform default", and
@@ -1063,7 +1067,7 @@ async def test_omitting_the_version_on_update_returns_to_the_default_and_rebuild
     )
 
     assert builder.reqs[0].version is None  # -> the builder pins defaultVersion
-    assert extract_image(_applied_kind(cluster, "Service")[0]) == builder.image_ref(None)
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 
 async def test_resending_the_same_version_is_not_a_rebuild():

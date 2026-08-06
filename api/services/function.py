@@ -409,8 +409,8 @@ class FunctionService:
         stored_token = existing.get("git_token")
         token = spec.gitToken or stored_token
 
-        # A changed build input (or a rotated token) rebuilds; a config-only edit
-        # re-sends the same inputs and must not disturb the running image.
+        # Only to refuse an untokenised rebuild; what rebuilds is kpack's own
+        # diff of the Image spec, not this.
         build_inputs_changed = (
             git_url != existing.get("gitUrl")
             or branch != existing.get("branch")
@@ -421,7 +421,6 @@ class FunctionService:
             # field is replaced, not kept, like branch and runtime.
             or version != existing.get("version")
         )
-        token_rotated = spec.gitToken is not None and spec.gitToken != stored_token
         if build_inputs_changed and token is None:
             raise ValidationError(
                 "a git token is required to rebuild; none was supplied and none is stored"
@@ -448,13 +447,17 @@ class FunctionService:
                 user,
             )
             replicated, local = plan.replicated, plan.local
-            # A layout change moves where builds are pushed with nothing about the
-            # function changing, so nothing else here would notice. Repository only:
-            # the deployed value may be a digest (docs/BUILDING.md - Registry layout).
-            moved = repository_of(image) != repository_of(plan.tag)
-            # Keep the deployed image otherwise: it may be a digest a finished build
-            # resolved, and rewriting it back to the tag spawns a pointless revision.
-            if build_inputs_changed or token_rotated or moved:
+            # An update never rewrites the image to the tag, even when it rebuilds:
+            # the tag still resolves to the digest already running, so it would cut
+            # a revision of the SAME code and the real one would follow when the
+            # build lands. The controller supplies the new digest
+            # (docs/BUILDING.md - Digest propagation).
+            #
+            # A moved repository is the exception, and the one case the controller
+            # structurally cannot fix: it only writes a digest whose repository
+            # already matches, so nothing else would ever re-point the workload
+            # (docs/BUILDING.md - Registry layout).
+            if repository_of(image) != repository_of(plan.tag):
                 image = plan.tag
 
         body, code = await self._engine.apply_workload(
