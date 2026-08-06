@@ -601,10 +601,29 @@ The `Image` says what to build; `status.latestImage` says what was built. Nothin
 request/response path can observe the second - a `STACK` or `BUILDPACK` rebuild fires with
 nobody asking (BUILDING.md: What causes a new Build) - so a control loop closes the gap.
 
-`controller/` is that loop, in its own Deployment (`{name}-build-controller`), running the
-API's image with a different entrypoint. One image means the two services cannot drift in
-the library they share; separate Deployments mean a watch loop and an HTTP API scale and
-restart on their own terms.
+`controller/` is that loop, in its own Deployment (`{name}-build-controller`) and its own
+image. Separate Deployments because a watch loop and an HTTP API scale and restart on their
+own terms.
+
+### Two images
+
+`Dockerfile.controller` installs the base dependencies only - `pydantic`,
+`pydantic-settings`, `kubernetes`. `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` are the
+API's, behind a `[project.optional-dependencies] api` extra its own image installs with
+`pip install ".[api]"`.
+
+That is what makes the split worth having: the controller holds a client certificate that
+can write every site's Knative Services, and it now cannot load a web framework or
+`cryptography` at all - roughly 23 MB it never imported, and the steadiest source of
+advisories against a pod that has no HTTP surface to exploit them through. **What is not
+installed cannot be flagged, and cannot be reached.**
+
+The two are only ever built from the same commit, so they cannot disagree about
+`common/` - the release job builds both from one tag. CI proves the split rather than
+trusting it: it imports each service out of its own image, and asserts the controller's has
+no `fastapi`, `starlette`, `uvicorn`, `jwt` or `cryptography`. An import in `common` that
+quietly pulled a framework back in would pass every other check
+(`tests/test_layering.py` catches it in the source; that step catches it in the artifact).
 
 ### One pass
 

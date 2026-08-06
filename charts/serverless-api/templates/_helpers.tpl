@@ -38,15 +38,13 @@ and that deployment's values:
 
   {{ include "serverless-api.image" (dict "root" $ "spec" $.Values.api) }}
 
-Precedence, most specific first: the deployment's own ``repository``/``tag``,
-the shared ``image`` section, then ``.Chart.AppVersion`` - which CI stamps on a
-release, so a released chart pins its images without a second version to keep in
-step. The controller's repository defaults to the API's: one image, two
-entrypoints.
+Each deployment names its own ``repository``; the tag falls back to the shared
+``image.tag`` and then to ``.Chart.AppVersion``, which CI stamps on a release, so
+a released chart pins both images without a second version to keep in step.
 */}}
 {{- define "serverless-api.image" -}}
 {{- $root := .root -}}
-{{- $repo := .spec.repository | default $root.Values.api.repository -}}
+{{- $repo := required "each deployment needs an image repository" .spec.repository -}}
 {{- $tag := .spec.tag | default $root.Values.image.tag | default $root.Chart.AppVersion -}}
 {{- with $root.Values.image.registry -}}
 {{ . }}/{{ $repo }}:{{ $tag }}

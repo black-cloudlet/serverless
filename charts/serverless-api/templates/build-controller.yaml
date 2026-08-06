@@ -41,8 +41,6 @@ spec:
         - name: {{ include "serverless-api.controllerName" . }}
           image: {{ include "serverless-api.image" (dict "root" $ "spec" .Values.buildController) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # The other entrypoint of the API's image.
-          command: ["python", "-m", "controller.main"]
           env:
             - name: SERVERLESS_BASE_DOMAIN
               value: {{ .Values.global.baseDomain | quote }}

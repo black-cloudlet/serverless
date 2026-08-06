@@ -60,9 +60,7 @@ buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
   enabled: true
-  # Empty runs the API's image: one build, two entrypoints. Set it only for an
-  # install that publishes the controller as its own image.
-  repository: ""
+  repository: serverless/serverless-build-controller
   tag: ""
   # More is safe but redundant: replicas converge rather than race, which is why
   # there is no leader election (docs/BUILDING.md - Convergence rules).

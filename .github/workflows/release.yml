@@ -66,10 +66,19 @@ jobs:
     needs: prepare
     uses: ./.github/workflows/checks.yml
 
+  # One job per service image (docs/BUILDING.md - Two images). Both are built
+  # from the same tag, so they cannot disagree about the library they share.
   image:
     needs: [prepare, checks]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - name: api
+            dockerfile: ./Dockerfile
+          - name: build-controller
+            dockerfile: ./Dockerfile.controller
     permissions:
       contents: read
       packages: write
@@ -85,7 +94,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/${{ github.repository }}/api
+          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
           tags: |
             type=raw,value=${{ needs.prepare.outputs.version }}
             # :latest only for stable releases; a pre-release (contains '-') must not move it.
@@ -105,7 +114,7 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: ./Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
@@ -121,7 +130,7 @@ jobs:
       # Keyless signature (OIDC -> Fulcio/Rekor). GHCR names must be lowercase.
       - name: Sign image
         run: |
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/api"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.name }}"
           cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
 
   chart:
@@ -177,13 +186,11 @@ jobs:
           cat > notes.md <<EOF
           ## Artifacts
 
-          - **Image:** \`ghcr.io/${REPO_LC}/api:${VERSION}\` - both services:
-            \`python -m api.main\` (the default entrypoint) and
-            \`python -m controller.main\` (the build controller, which the chart
-            selects with a \`command\` override)
+          - **API image:** \`ghcr.io/${REPO_LC}/api:${VERSION}\`
+          - **Build controller image:** \`ghcr.io/${REPO_LC}/build-controller:${VERSION}\`
           - **Chart:** \`oci://ghcr.io/${{ github.repository_owner }}/charts/serverless-api:${VERSION}\`
 
-          Both are cosign-signed (keyless) and carry an SBOM.
+          All are cosign-signed (keyless) and carry an SBOM.
           EOF
           prerelease=""
           [[ "$VERSION" == *-* ]] && prerelease="--prerelease"

@@ -17,9 +17,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `podAnnotations` (pods), and neither touches the selector, which is immutable
   once the Deployment exists. The root `image`
   section keeps `registry`, `tag` and `pullPolicy`, so a mirrored install still
-  overrides those once for both. `buildController.repository` is empty by
-  default and falls back to the API's - they are one image with two entrypoints.
-  Existing values files need the keys re-nested; nothing else changed shape.
+  overrides those once for both, while each names its own `repository` - the two
+  services ship as two images. Existing values files need the keys re-nested;
+  nothing else changed shape.
 - **One writer per phase for a function's KSVC image.** A create writes it once,
   at `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}`;
   after that the build controller is the only thing that writes it, and only
@@ -129,9 +129,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   inherit its image). No leader election, by the same convergence rules as every
   other writer.
 
-  It runs the API's image with a different entrypoint and the same client
-  certificate: one build cannot drift from the other in the library they share,
-  and its verbs are a subset of the Role the API already holds.
+  It ships as **its own image** (`Dockerfile.controller`), installing only the
+  base dependencies - `pydantic`, `pydantic-settings`, `kubernetes`. The API's
+  `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` moved behind a new `api`
+  extra that only its image installs. The controller holds a certificate that
+  can write every site's Knative Services and now cannot load a web framework or
+  `cryptography` at all: ~23 MB it never imported, and the steadiest source of
+  advisories, against a pod with no HTTP surface. CI proves it - it imports each
+  service out of its own image and asserts the controller's ships none of them.
+  Both images are built from one tag by the release job, so they cannot disagree
+  about `common/`. Its RBAC is the API's client certificate and Role, whose
+  verbs it uses a subset of.
 
   Each resync also **prunes the `Image` objects a switchover stranded** in the
   other sites. They keep firing `STACK`/`BUILDPACK` rebuilds for a function the
