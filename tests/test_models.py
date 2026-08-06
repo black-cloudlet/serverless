@@ -154,6 +154,28 @@ def test_filemount_content_required_unless_secret_keep():
         FileMount(mountPath="/etc/a", content="x", contentBase64="eA==", secret=True)
 
 
+def test_envvar_name_is_validated_at_the_edge():
+    # The name reaches the container's `env` AND, for a secret, the key of the
+    # {workload}-env Secret. An unusable one must be a 422, not a background
+    # apply failure the caller never sees.
+    for good in ("LOG_LEVEL", "my.env-name", "_x", "a1", "A-B.C_D"):
+        assert EnvVar(name=good, value="1").name == good
+    for bad in ("", "1LEADING_DIGIT", "HAS SPACE", "has/slash", "has$dollar", "..", "..x"):
+        with pytest.raises(ValidationError):
+            EnvVar(name=bad, value="1")
+
+
+def test_mount_path_is_validated_at_the_edge():
+    # Kubernetes refuses an empty mountPath and one containing ':'; '..' would
+    # escape the subPath the file is mounted through.
+    assert FileMount(mountPath="  /etc/a  ", content="x").mountPath == "/etc/a"
+    for bad in ("", "   ", "/etc/a:b", "/etc/../../a", "..", "/etc/\na", "/" + "a" * 300):
+        with pytest.raises(ValidationError):
+            FileMount(mountPath=bad, content="x")
+    # A '..' inside a segment is a legal filename, not a traversal.
+    assert FileMount(mountPath="/etc/a..b", content="x").mountPath == "/etc/a..b"
+
+
 def test_scaling_bounds():
     with pytest.raises(ValidationError):
         Scaling(minScale=5, maxScale=2)

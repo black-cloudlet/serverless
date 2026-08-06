@@ -23,7 +23,7 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 | Topic | Decision |
 |-------|----------|
 | Deliverable | FastAPI app + Helm chart + CI/CD in this repo (GitOps `ApplicationSet` lives elsewhere) |
-| FaaS build | **Knative Functions** (`func` + Cloud Native Buildpacks), mirrored builder images for airgap |
+| FaaS build | **kpack** (Kubernetes-native Cloud Native Buildpacks), mirrored stack/store images for airgap - see BUILDING.md: Design Decisions (locked in) |
 | Cluster auth | **cert-manager `Certificate` CR** (shipped in Helm chart) → client TLS cert; **CN is a DNS name** `serverless-api.clients.{base_domain}` (ACME-issued); that name is the Kubernetes user, bound via RBAC |
 | Topology | **Two separate OpenShift clusters** ("sites") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
 | Site selection | **Deploy to both sites on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless site (active/passive at the traffic layer, active/active at the deploy layer). |
@@ -46,7 +46,7 @@ want two consumption models:
 
 - **FaaS** - "give us your source code, we build and run it." The client provides a Git
   repository URL, branch, an access token, and the source lives in that repo. Supported
-  runtimes are **configurable** (default **Python, Go, JavaScript**; see FUNCTIONS.md: FaaS - Function as a Service) and listed on
+  runtimes are **configurable** (the chart ships **Python, Go, Node**; see FUNCTIONS.md: Overview) and listed on
   `GET /api/v1/functions/info`.
 - **CaaS** - "give us your image, we run it." The client provides a container image
   reference plus registry credentials (username + token).
@@ -70,7 +70,6 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 
 ### Non-goals (this phase)
 
-- Implementation code (delivered later).
 - Cross-site traffic steering is handled **outside** the API by a **DNS record that forwards
   to the active serverless site** (the Route host is identical in both clusters). The API is
   not a GSLB.
@@ -88,7 +87,9 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 | **SSO** | Red Hat Build of Keycloak - the OIDC identity provider. |
 | **ESO** | External Secrets Operator - syncs secrets from Vault into Kubernetes Secrets. |
 | **Tenant / group** | An SSO (Keycloak) group; the unit of ownership and isolation. |
-| **`func`** | Knative Functions CLI / library used to build source into an OCI image via buildpacks. |
+| **kpack** | The Kubernetes-native Cloud Native Buildpacks controller that builds a function's source into an OCI image (BUILDING.md). |
+| **`Image` (kpack)** | The kpack CR declaring one function's build. Not to be confused with a container image. |
+| **`Builder` (kpack)** | A kpack CR composing a stack and a set of buildpacks into a builder image. One per runtime. |
 
 ---
 
@@ -207,10 +208,12 @@ each site is a full, independent replica; a DNS record forwards end-user traffic
 active site.
 
 The **client certificate, CA bundle, and workloads namespace are global** (the same in every
-cluster), so a site profile is just its name, cluster, and endpoint. The `routeDomain`,
-`workloadsNamespace`, client cert directory, and CA bundle are shared config:
+cluster), so a site profile is just its name and its cluster - the API server URL is
+**derived**, not configured. The `routeDomain`, `workloadsNamespace`, client cert directory,
+and CA bundle are shared config:
 
 ```yaml
+baseDomain: example.com                   # each site's API server derives from this
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
 workloadsNamespace: serverless-workloads  # where the API creates workloads (global)
 clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
@@ -221,11 +224,15 @@ caBundle:                                 # OpenShift-injected, global
 sites:
   - name: central                          # site/region
     cluster: central-0                     # cluster instance
-    apiServer: https://api.central-0.example.com:6443
   - name: south
     cluster: south-0
-    apiServer: https://api.south-0.example.com:6443
 ```
+
+> **There is no per-site `apiServer`.** Each site's endpoint is composed as
+> `https://api.{cluster}.{baseDomain}:6443` (`common.cluster.Cluster`), so the cluster name
+> is the only thing that varies and a site cannot be pointed at an endpoint that
+> contradicts its name. `local_site` names the site this instance sits in (matched on the
+> site name first, then the cluster name).
 
 > The API always authenticates with the **client certificate** (no in-cluster/ServiceAccount
 > path) - uniform whether it's talking to its local cluster or the peer over its external API
@@ -255,11 +262,23 @@ sites:
 
 ### Partial-failure semantics
 
-| Scenario | Behavior |
-|----------|----------|
-| Both sites succeed | `overallStatus = Ready`, `201`/`200`. |
-| One site fails | `overallStatus = Degraded`, `207 Multi-Status`; the per-site object carries the error. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
-| Both sites fail | `502 SITE_TOTAL_FAILURE` error envelope (no workload body); the per-site errors are in `details[]`. Re-apply is idempotent (server-side apply), so a retry heals any partial state. |
+Create and update are **asynchronous**: the pre-flight runs synchronously and the call
+returns `202` with `overallStatus: "Pending"`, so the outcome of the fan-out is observed by
+polling `GET {statusUrl}` (or `/stats`), not from the status code of the write.
+
+| Scenario | What the poll reports |
+|----------|-----------------------|
+| Every site succeeds | `overallStatus = Ready`. A mixed `Ready` + `Deploying` is a normal rollout with one site ahead, **not** a failure. |
+| One site fails | `overallStatus = Degraded`; that site's entry in `sites[]` carries the `error`. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
+| Every site fails | `overallStatus = Degraded` with an error on every site. The background deploy raises `SITE_TOTAL_FAILURE` internally; it is logged with the request id rather than returned, because the caller already holds a `202`. |
+
+Re-apply is idempotent (server-side apply), so a retry heals any partial state.
+
+The **synchronous** read paths do surface these as status codes: a listing whose every
+site is unreachable is a `502 SITE_TOTAL_FAILURE` with the per-site errors in `details[]`,
+and a single `GET`/`DELETE` that cannot confirm a workload's absence because a site was
+unreachable is a `503` rather than a misleading `404` (a missing answer is not evidence of
+absence).
 
 - **An unavailable site does not freeze the API.** Per-site work runs concurrently in
   threads; every cluster call has a **connect/read timeout** and each site has an overall
@@ -501,14 +520,22 @@ categories:
 
 | Category | Owner / mechanism | ESO? |
 |----------|-------------------|------|
-| 7.1 **API's own platform secrets** (SSO client secret, client-cert material) | Vault → ESO `ExternalSecret` → K8s Secret | **Yes** |
-| 7.2 **Customer credentials** (git/registry tokens) | Supplied per-request, stored as scoped, labeled workload Secrets; never returned on read | No |
-| 7.3 **Customer config & secret mounts** (what the user wants inside their workload) | **Created and managed by the API directly**; readable back via the API | **No** |
+| **API's own platform secrets** (admin API key, registry credentials) | Vault → ESO `ExternalSecret` → K8s Secret | **Yes** |
+| **Customer credentials** (git/registry tokens) | Supplied per-request, stored as scoped, labeled workload Secrets; never returned on read | No |
+| **Customer config & secret mounts** (what the user wants inside their workload) | **Created and managed by the API directly**; readable back via the API | **No** |
 
 ### The API's own platform secrets - Vault → ESO → Kubernetes Secret
 
-The API needs, e.g., the SSO client secret and per-site client-cert material. These are
-stored in **Vault** and projected into the cluster by **ESO**.
+Three, all stored in **Vault** and projected into the cluster by **ESO**: the static
+**admin API key** (`SERVERLESS_ADMIN_API_KEY`), the **Quay OAuth token** used to delete a
+deleted function's repositories (`SERVERLESS_REGISTRY__API_TOKEN`), and the shared
+**registry dockerconfigjson** that kpack pushes with and every function's KSVC pulls with
+(in the *workloads* namespace - BUILDING.md: Registry & Git Credentials).
+
+> There is **no SSO client secret**. The API is a resource server: it validates tokens
+> offline against cached JWKS and never calls the token endpoint, and the Swagger UI login
+> is a public client using Authorization Code + PKCE. The client cert is not here either -
+> it comes from cert-manager, not Vault.
 
 ```mermaid
 flowchart LR
@@ -582,10 +609,10 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 | Concern | Approach |
 |---------|----------|
 | **Platform & app images** | Mirror to the internal registry; use `ImageDigestMirrorSet` / `ImageContentSourcePolicy` so image pulls resolve internally. |
-| **Buildpack builder/run images** | Mirror the Cloud Native Buildpacks **builder** and **run** images used by Knative Functions for Python/Go/JS into the internal registry; configure `func` to use them. This is the key airgap dependency for FaaS. |
+| **Buildpack stack & store images** | Mirror the Cloud Native Buildpacks **build**/**run** stack images and the Paketo buildpackages into the internal registry; the kpack release's `ClusterStack`/`ClusterStore` reference them, and the `Builder`s here compose them. **The runtime tarballs themselves are a separate class of artefact** - files on the artifact server, not registry content - and missing them is the most common airgap failure (BUILDING.md: Airgapped Mirror Inventory). |
 | **Python dependencies (the API)** | Build the API container against an **internal PyPI mirror** (e.g. Nexus/Artifactory) or vendored wheels; pin all versions. |
 | **Function dependencies (per runtime)** | Buildpacks must resolve language deps from internal mirrors (internal PyPI, Go module proxy/`GOPROXY`, npm registry mirror). Documented as a prerequisite for each runtime. |
-| **Base images** | The API image builds on a mirrored **`python:3.14-slim`** base (Python 3.14; kept in sync with `pyproject` `requires-python` and the CI `PYTHON_VERSION`); mirror the workload/builder bases likewise. |
+| **Base images** | Both images build on a mirrored **`python:3.14-slim`** base. The version lives in exactly two places - the Dockerfiles and `pyproject` `requires-python` - and a CI `version` job fails the build if they drift, deriving the value the other jobs use; mirror the workload/builder bases likewise. |
 | **CA trust** | A ConfigMap labelled `config.openshift.io/inject-trusted-cabundle: "true"` is created in **both** namespaces; OpenShift auto-populates it with the cluster's trusted CAs. It is **mounted into the API and every FaaS/CaaS workload** and exported via injected CA-trust env vars (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`) so all internal TLS (Git, registry, Vault, SSO, the cluster API) is trusted across languages. Same bundle for every cluster. |
 | **cert-manager** | Issue client certs via **ACME against an internal ACME endpoint** (e.g. step-ca / internal CA exposing ACME) - not a public CA. Both clusters trust this CA, and the cert CN/SAN is the DNS name `serverless-api.clients.{base_domain}`. |
 | **Helm charts** | Hosted in an internal chart repo / Git; no public chart pulls. |
@@ -619,6 +646,8 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
 | `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
 | `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
+| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). Constant responses - they never touch a cluster, so a down site cannot fail a probe. |
+| `GET` | `/docs`, `/redoc`, `/openapi.json` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). |
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
 `overallStatus` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
@@ -629,7 +658,6 @@ express: `name` and `group` are each valid at 63 characters, but it is `{name}-{
 becomes the KSVC name and the first DNS label, and `group` is a path parameter rather than a
 body field. The per-field rules themselves (pattern, maxLength, description, examples) are on
 `/openapi.json`, so a generated client validates them without a second copy.
-| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). |
 
 > Workload secrets and config files are **not** separate endpoints - they are derived
 > **inline** from the deploy request (`env` with `secret: true`, and `files`) and created by
@@ -646,9 +674,17 @@ body field. The per-field rules themselves (pattern, maxLength, description, exa
 > workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
 > changes go through the `PUT` endpoints.
 >
-> **`PUT` is a full replace** of the mutable spec (env/files/scaling/hostname; image for
-> containers - defaults to the current image if omitted) and **404s** if the workload
-> doesn't exist. Function code changes are not done via `PUT` (no git inputs); recreate.
+> **`PUT` is a full replace** of the mutable spec and **404s** if the workload doesn't
+> exist. The body is the complete desired state, so the non-secret fields are **required
+> on update exactly as on create** - `image` for a container, `gitRepo` and `runtime` for a
+> function - and an omitted optional field returns to its default rather than keeping what
+> is deployed (`port` to 8080, `branch` to `main`, `version` to the platform default).
+> **Only redacted secret material is keep-on-omit**, because only it cannot be read back:
+> the git/registry token and secret `env`/`files` values.
+>
+> Function build inputs **are** part of `PUT`: changing `gitRepo`/`branch`/`path`/`runtime`/
+> `version` rebuilds from source using the stored `gitToken`. To rebuild the *same*
+> definition, use `POST .../functions/{name}/build`.
 >
 > **Typed endpoints are offering-scoped:** `/functions/{name}` only acts on a function and
 > `/containers/{name}` only on a container - a name that is the other offering returns 404.
@@ -666,11 +702,14 @@ body field. The per-field rules themselves (pattern, maxLength, description, exa
                                         // a single label, or one level under {route_domain}
                                         // ({label}.{route_domain}); must not be assigned (else 409).
   "env": [                              // optional; each entry is name + value
+    // `name` follows Kubernetes' own env-var rule: letters, digits, '-', '_', '.',
+    // not starting with a digit. It doubles as the Secret key for a secret var.
     { "name": "LOG_LEVEL", "value": "info" },                       // inline
     { "name": "DB_PASSWORD", "value": "s3cret", "secret": true }    // -> API-created Secret {workload}-env
   ],
   "files": [                            // optional: inline files to mount
     // non-secret files -> one {workload}-files ConfigMap; secret files -> one {workload}-files Secret
+    // `mountPath` must be non-empty and carry no ':' or '..' segment.
     { "mountPath": "/etc/app/app.yaml", "content": "log_level: info\n", "secret": false, "readOnly": true },
     { "mountPath": "/etc/tls/tls.key",  "contentBase64": "<base64>",    "secret": true }
   ],
@@ -739,26 +778,32 @@ absent or malformed. It is echoed back in the `X-Request-ID` response header on
 every response (success and error) and bound into the server logs, so a
 `requestId` from an error body greps straight to the request's log lines.
 
+This table is the authoritative prose, but a client should read `errorCodes` off
+`/api/v1/{containers,functions}/info` rather than embed it: that document is walked off the
+`APIError` subclasses in code, so it cannot go stale the way this can.
+
 | HTTP | Code | When |
 |------|------|------|
-| `400` | `VALIDATION_ERROR` | Bad/missing fields, unsupported runtime. |
-| `401` | `UNAUTHENTICATED` | Missing/invalid JWT. |
-| `403` | `FORBIDDEN` | Caller not in a required/owning group. |
-| `404` | `NOT_FOUND` | Workload not found in caller's group scope. |
+| `400` | `VALIDATION_ERROR` | Bad/missing fields, unsupported runtime, a rebuild with no stored token. |
+| `401` | `UNAUTHENTICATED` | Missing/invalid JWT, or an unrecognized bearer token. |
+| `403` | `FORBIDDEN` | Caller not in a required/owning group, or a valid token carrying no groups. |
+| `404` | `NOT_FOUND` | Workload not found in caller's group scope. A workload the caller may not see, or one of the *other* offering, is hidden as a 404 rather than a 403. |
 | `405` | `METHOD_NOT_ALLOWED` | Path exists but not for that HTTP method. |
 | `409` | `CONFLICT` | Name already exists for the group, or the requested `hostname` is already assigned. |
-| `502` | `SITE_TOTAL_FAILURE` | Both sites failed. |
-| `500` | `INTERNAL` | Unexpected error. |
+| `422` | `VALIDATION_ERROR` | Request body/path failed schema validation (FastAPI's own; rendered into the same envelope). |
+| `500` | `INTERNAL` | Unexpected error. The message is a fixed string - an exception's own text routinely carries internal hostnames or secret material - so the detail is in the log, under the same `requestId`. |
+| `502` | `SITE_TOTAL_FAILURE` | Every site failed (a listing whose sites were all unreachable). |
+| `503` | `SERVICE_UNAVAILABLE` | A check could not be *run*, so it has not passed: a site was unreachable during a host/absence pre-flight, a delete could not be confirmed, or a stored secret could not be read back to preserve a "keep". Fail-closed by design - retry. |
 
 ---
 
-## Proposed Repository Layout
+## Repository Layout
 
 ```text
 Serverless/
 ├── README.md
-├── docs/
-│   └── ARCHITECTURE.md              # this document
+├── docs/                            # ARCHITECTURE (this document), FUNCTIONS,
+│                                    # CONTAINERS, BUILDING, DEPLOYING
 ├── api/                             # the control-plane API service (python -m api.main)
 │   ├── main.py                      # app factory, router registration, middleware
 │   ├── dependencies.py              # FastAPI DI: cached service singletons
@@ -807,9 +852,9 @@ Serverless/
 │   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build domain
 │   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the controller)
 │   ├── names.py                     # name/branch rules + object_name - the {name}-{group} primary key
-│   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
+│   ├── web.py                       # /healthz + /readyz, offline Swagger/ReDoc, error handlers
 │   ├── labels.py                    # ownership label keys + workload_labels
-│   ├── errors.py                    # error envelope, typed errors, exception handlers
+│   ├── errors.py                    # typed errors as plain data (no web framework)
 │   ├── requestid.py                 # X-Request-ID correlation middleware (adopt/mint)
 │   ├── logging.py                   # logging configuration (binds requestId)
 │   └── static/                      # vendored Swagger UI / ReDoc assets (airgap)
@@ -829,17 +874,22 @@ Serverless/
 │           ├── route.yaml           # API Route (host/labels/annotations configurable)
 │           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site; incl. pods/log)
 │           ├── certificate.yaml     # cert-manager Certificate (ACME, per site)
-│           └── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
+│           ├── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
+│           └── kpack/               # Builders, build SA + its ExternalSecret, SCC + RBAC,
+│                                    # Kyverno CA-injection policy (all gated on build.enabled)
 │   # NOTE: no secretstore.yaml - the ClusterSecretStore already exists in the clusters.
 │   # NOTE: the ArgoCD ApplicationSet lives in a SEPARATE central GitOps repo, not here.
 ├── .github/
 │   └── workflows/
-│       ├── checks.yml               # reusable suite: ruff, pytest+coverage, gitleaks, helm/kubeconform, image scan
-│       ├── ci.yml                   # PRs / main: runs the checks suite
-│       └── release.yml              # one-click release: bump+tag, build/scan/sign, SBOM, GitHub Release
+│       ├── checks.yml               # reusable suite: version drift, ruff, pytest+coverage,
+│       │                            # gitleaks + pip-audit, helm/kubeconform, image build + Trivy
+│       ├── ci.yml                   # PRs / branch pushes: runs the checks suite
+│       └── release.yml              # one-click release: validate, check, bump+tag, build/scan/sign, SBOM, Release
 ├── tests/                           # flat pytest modules (test_api.py, test_*.py)
-├── Dockerfile                       # multi-stage: install (api+common) then copy the artifact
-├── pyproject.toml                   # one dist (packages: api*, common*); deps + ruff/pytest config
+├── dev/runtimes.yaml                # sample runtimes file, for running the API locally
+├── Dockerfile                       # the API image (single stage; installs ".[api]")
+├── Dockerfile.controller            # the build controller image (base deps only, no web stack)
+├── pyproject.toml                   # one dist (packages: api*, common*, controller*); deps + ruff/pytest config
 └── .env.example                     # sample SERVERLESS_* configuration
 ```
 
@@ -866,6 +916,7 @@ Serverless/
 | **Observability** | Live state is **polled**, not streamed: `/stats` is the cheap poll target, and `/logs` returns a **local-site, point-in-time** snapshot (node-local, ephemeral). Two things remain to be designed. **Streaming** - an SSE `/logs` follow and a `/stats` stream would make logs and replica count event-driven rather than poll-driven, but need a bounded executor (a held-open stream holds a worker thread), a Route timeout annotation, and an auth scheme browsers can use without an `Authorization` header. **Durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) behind `/logs` - are the only way to get history and a cross-site view. |
 | **Audit logging** | Who deployed/changed/deleted what - likely required for enterprise/compliance. |
 | **Stronger isolation** | Optional move from shared-namespace to **namespace-per-group** for hard multi-tenancy. |
-| **Build pipeline hardening** | Where `func` builds run (Tekton task vs. in-API job), build caching, and signed images (cosign in airgap). |
+| **Git webhook** | **Not implemented.** A per-function webhook endpoint would pin the pushed commit SHA to the function's build (`BuildRequest.revision` already carries the field), making a push-triggered rebuild idempotent by data. Until then a build follows the branch head and `POST .../functions/{name}/build` is the on-demand trigger (BUILDING.md: Who writes the ksvc image). |
+| **Build pipeline hardening** | Signed function images (cosign in airgap) and per-function build resource tuning. *Where* builds run and where layers are cached are settled - kpack in the workloads namespace, cache in the registry (BUILDING.md). |
 | **Rollback / versioning** | Knative revisions enable traffic splitting/rollback; expose this via the API later. |
 | **Secret rotation** | cert-manager cert renewal + ESO refresh cadence and zero-downtime reload of the API clients. |

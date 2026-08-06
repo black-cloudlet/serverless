@@ -65,3 +65,39 @@ def test_total_sums_sites_before_rounding():
 
 def test_usage_adds_componentwise():
     assert Usage(10.0, 100.0) + Usage(5.0, 50.0) == Usage(15.0, 150.0)
+
+
+def test_an_unparseable_quantity_never_escapes_the_usage_read():
+    """A site whose usage cannot be parsed reports unmeasured, not Failed.
+
+    ``site_usage`` promises never to raise, and the promise is load-bearing: it
+    runs inside the ``/stats`` fan-out, so an escaping ValueError becomes a
+    ``Failed`` site and a ``Degraded`` rollup for a workload that is serving.
+    Kubernetes may render a quantity in a form the parser does not know (e.g.
+    decimal-exponent notation), which is exactly when this matters.
+    """
+    from api.services.sites.site_read import site_usage
+
+    class Cluster:
+        site = "central"
+
+        def get(self, kind, name=None, label_selector=None):
+            return [{"containers": [{"usage": {"cpu": "1e3n", "memory": "1e6"}}]}]
+
+    read = site_usage(Cluster(), "orders-api-team")
+    assert read.measured is False
+    assert read.total is None
+
+
+def test_a_readable_site_still_reports_its_usage():
+    from api.services.sites.site_read import site_usage
+
+    class Cluster:
+        site = "central"
+
+        def get(self, kind, name=None, label_selector=None):
+            return [{"containers": [{"usage": {"cpu": "120m", "memory": "180Mi"}}]}]
+
+    read = site_usage(Cluster(), "orders-api-team")
+    assert read.measured is True
+    assert read.total.quantities().cpu == "120m"
