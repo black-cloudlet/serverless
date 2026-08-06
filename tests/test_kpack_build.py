@@ -1793,23 +1793,6 @@ def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
     assert builder.cache_ref(_request()) == "registry.internal/acme/payments/hello_cache:latest"
 
 
-@pytest.mark.parametrize(
-    ("image", "expected"),
-    [
-        ("reg/acme/team/app:main", "reg/acme/team/app"),
-        ("reg/acme/team/app@sha256:" + "a" * 64, "reg/acme/team/app"),
-        ("reg/acme/team/app:main@sha256:" + "a" * 64, "reg/acme/team/app"),
-        # the host's port is not a tag separator
-        ("reg.internal:5000/team/app:main", "reg.internal:5000/team/app"),
-        ("reg.internal:5000/team/app", "reg.internal:5000/team/app"),
-    ],
-)
-def test_repository_of_ignores_the_tag_and_the_digest(image, expected):
-    from common.names import repository_of
-
-    assert repository_of(image) == expected
-
-
 async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
     """The update moves where the build pushes; the controller moves the workload.
 

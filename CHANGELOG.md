@@ -83,16 +83,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   pushed to.
 
   Changing it on an install that already has functions is a **migration**: the
-  KSVC keeps whatever reference it was applied with. Per function, rebuild first
-  (that is what puts anything in the new repository - a `spec.tag` change alone
-  does not rebuild, since kpack's `CONFIG` diff covers source, env, services and
-  resources but not the tag), then send any `PUT`. The update path now compares
-  the deployed repository against the computed one and adopts the new reference
-  when they differ; without that an untouched function would point at a
-  repository nothing pushes to permanently, because every later comparison is
-  against the same stale value. Compared on the repository alone, so a resolved
-  digest is still never rewritten back to the branch tag. Content under the old
-  layout is left behind - cleanup addresses the current one.
+  KSVC keeps whatever reference it was applied with, so each function needs one
+  `POST .../build`. That is what puts anything in the new repository - a
+  `spec.tag` change alone does not rebuild, since kpack's `CONFIG` diff covers
+  source, env, services and resources but not the tag - and the build controller
+  then rolls the resulting digest onto the workload. Content under the old layout
+  is left behind; cleanup addresses the current one.
 
 ### Added
 
@@ -111,11 +107,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   number. It composes no KSVC - the API owns that spec and the controller owns
   one field of it - so it applies the live object with the image replaced,
   stripped of the metadata the server owns and of any pinned revision name.
-  Three conditions stop a write: the digest is already deployed, the workload is
-  not a function, or the digest is in a different repository than the KSVC's
-  current reference (an `Image` left under a previous registry layout must not
-  pull a workload backwards). No leader election, by the same convergence rules
-  as every other writer.
+  Two conditions stop a write: the digest is already deployed, or the workload is
+  not a function (a container that reused a deleted function's name must not
+  inherit its image). No leader election, by the same convergence rules as every
+  other writer.
 
   It runs the API's image with a different entrypoint and the same client
   certificate: one build cannot drift from the other in the library they share,
