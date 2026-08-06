@@ -7,7 +7,11 @@ import logging
 import httpx
 import pytest
 
-from api.services.builder.registry import delete_function_repositories
+from api.services.builder.registry import (
+    delete_function_repositories,
+    moved_repositories,
+    reclaim_moved_repositories,
+)
 from common.config import CommonSettings
 from common.names import cache_repository, image_repository
 
@@ -179,3 +183,91 @@ def test_the_prefix_skips_whichever_half_is_unset(monkeypatch):
     _run(monkeypatch, quay, _settings(repository="fns"))
 
     assert sorted(quay.deleted) == ["fns/payments/hello", "fns/payments/hello_cache"]
+
+
+# --------------------------------------------------------------------------- #
+# reclaiming what a moved tag left behind                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _reclaim(monkeypatch, quay: _Quay, previous_tag, settings=None) -> None:
+    transport = httpx.MockTransport(quay.handler)
+    real = httpx.Client
+
+    def client(**kwargs):
+        kwargs["transport"] = transport
+        return real(**kwargs)
+
+    monkeypatch.setattr(httpx, "Client", client)
+    reclaim_moved_repositories((settings or _settings()).registry, previous_tag)
+
+
+def test_a_moved_tag_reclaims_both_of_its_old_repositories(monkeypatch):
+    # Nothing addresses them once the tag moves: cleanup on delete derives the
+    # CURRENT layout, so without this the pair leaks permanently.
+    quay = _Quay()
+
+    _reclaim(monkeypatch, quay, "registry.internal/payments/hello:main")
+
+    assert sorted(quay.deleted) == ["payments/hello", "payments/hello_cache"]
+
+
+def test_the_old_path_comes_off_the_old_tag_not_off_config(monkeypatch):
+    # The whole point: config already describes the NEW layout by the time this runs.
+    quay = _Quay()
+
+    _reclaim(
+        monkeypatch,
+        quay,
+        "registry.internal/acme/payments/hello:main",
+        _settings(organization="acme", repository="serverless/builders"),
+    )
+
+    assert sorted(quay.deleted) == ["acme/payments/hello", "acme/payments/hello_cache"]
+
+
+def test_a_digest_reference_reclaims_the_same_pair(monkeypatch):
+    quay = _Quay()
+
+    _reclaim(monkeypatch, quay, "registry.internal/payments/hello@sha256:" + "a" * 64)
+
+    assert sorted(quay.deleted) == ["payments/hello", "payments/hello_cache"]
+
+
+def test_a_tag_on_another_registry_is_never_touched(monkeypatch, caplog):
+    # This API and this token address one registry; a same-named path on another
+    # host is somebody else's repository.
+    quay = _Quay()
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        _reclaim(monkeypatch, quay, "other.registry/payments/hello:main")
+
+    assert quay.deleted == []
+    assert any("not reclaiming" in r.message for r in _records(caplog))
+
+
+def test_reclaiming_is_skipped_without_a_token(monkeypatch):
+    quay = _Quay()
+
+    _reclaim(monkeypatch, quay, "registry.internal/payments/hello:main", _settings(api_token=""))
+
+    assert quay.deleted == []
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [
+        ("registry.internal/payments/hello:main", ["payments/hello", "payments/hello_cache"]),
+        (
+            "registry.internal/acme/serverless/builders/payments/hello:main",
+            [
+                "acme/serverless/builders/payments/hello",
+                "acme/serverless/builders/payments/hello_cache",
+            ],
+        ),
+        ("registry.internal/payments/hello", ["payments/hello", "payments/hello_cache"]),
+        ("elsewhere.internal/payments/hello:main", []),
+    ],
+)
+def test_moved_repositories_derivation(tag, expected):
+    assert moved_repositories(_settings().registry, tag) == expected

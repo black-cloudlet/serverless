@@ -35,9 +35,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   not pull a workload backwards, but as the only writer it also made a layout
   change unfixable - nothing else would re-point the workload, so the function
   would sit on a repository nothing pushes to. Stranded Images are now handled
-  where they come from, by the prune. A **registry-layout migration is
-  correspondingly simpler**: one `POST .../build` per function, no `PUT`
-  afterwards and no ordering to get right.
+  where they come from, by the prune.
 - `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
   They were only ever annotations, but the runtime import meant `common.logging`
   - which reads the request-id context var from there - pulled a web framework
@@ -82,13 +80,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   removed, so cleanup cannot delete a different repository than the build
   pushed to.
 
-  Changing it on an install that already has functions is a **migration**: the
-  KSVC keeps whatever reference it was applied with, so each function needs one
-  `POST .../build`. That is what puts anything in the new repository - a
-  `spec.tag` change alone does not rebuild, since kpack's `CONFIG` diff covers
-  source, env, services and resources but not the tag - and the build controller
-  then rolls the resulting digest onto the workload. Content under the old layout
-  is left behind; cleanup addresses the current one.
+  Changing it on an install that already has functions is handled by the
+  re-tag path below: any `PUT` per function, and the old repositories are
+  reclaimed.
+
+### Fixed
+
+- **A moved registry layout wedged every later write to a function.** `spec.tag`
+  is immutable on a kpack `Image` - `validateTag` compares against the baseline
+  and rejects a change at admission - so applying a re-tagged `Image` failed.
+  Not only did the documented migration never work: `PUT` and `POST .../build`
+  both emit the `Image` manifest, so *any* write to an affected function was
+  rejected until someone deleted the object by hand.
+
+  The API now deletes the `Image` and lets the apply recreate it whenever the
+  computed tag differs from the deployed one - one GET on the build site per
+  write, a no-op in every normal case. A new `Image` has no prior `Build`, so it
+  builds immediately, which makes the whole migration "change the value, send
+  any `PUT`". Build history resets, since `Build`s are owned by the `Image`.
+
+  The old image and cache repositories are **reclaimed** at the same time,
+  through the Quay API the delete path already uses. Cleanup on delete derives
+  the *current* layout, so without this each function leaked a repository pair
+  permanently and the old mutable tag was left pointing at content nothing
+  tracked. Skipped when the previous reference is on another **host** - this
+  token addresses one registry, and a same-named path elsewhere belongs to
+  somebody else.
 
 ### Added
 

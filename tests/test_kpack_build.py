@@ -486,7 +486,9 @@ class _RecordingBuilder:
                     "apiVersion": "kpack.io/v1alpha2",
                     "kind": "Image",
                     "metadata": {"name": "fn-hello-payments", "labels": dict(labels)},
-                    "spec": {},
+                    # A real tag: the engine compares it against the deployed
+                    # Image's, since kpack makes spec.tag immutable.
+                    "spec": {"tag": self.image_ref(req)},
                 }
             ],
         )
@@ -1959,3 +1961,131 @@ async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202(
     body = await svc.accept_build("payments", "hello", _principal(), background)
     assert body.overallStatus == "Pending"
     await background()  # must not raise
+
+
+# ------------------------------------------------- re-tagging a moved Image
+
+
+from common.cluster import ResourceKind  # noqa: E402
+
+
+def _kpack_image(tag):
+    return {
+        "apiVersion": "kpack.io/v1alpha2",
+        "kind": "Image",
+        "metadata": {"name": "fn-hello-payments"},
+        "spec": {"tag": tag},
+    }
+
+
+def _reclaimed(monkeypatch):
+    """Capture what the Quay reclaim was asked to delete, without any HTTP."""
+    from api.services import workloads as workloads_svc
+
+    calls = []
+    monkeypatch.setattr(
+        workloads_svc.registry_svc,
+        "reclaim_moved_repositories",
+        lambda registry, previous: calls.append(previous),
+    )
+    return calls
+
+
+async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
+    """kpack makes spec.tag immutable, so a moved one cannot be applied over.
+
+    Left as an apply it is rejected at admission - which wedges every later
+    write to the function, not only the layout change that caused it.
+    """
+    from api.models.function import FunctionUpdate
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(image=DEPLOYED)},
+        secrets={"hello-payments-git": stored},
+        images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+    )
+    reclaimed = _reclaimed(monkeypatch)
+
+    class _MovedBuilder(_RecordingBuilder):
+        def image_ref(self, req):
+            return "reg/acme/serverless/builders/payments/hello:main"
+
+    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
+    applied = _applied_kind(cluster, "Image")[0]
+    assert applied["spec"]["tag"] == "reg/acme/serverless/builders/payments/hello:main"
+    # and the repositories the old tag pushed to are handed back
+    assert reclaimed == ["reg/acme/payments/hello:main"]
+
+
+async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
+    """The normal case, and what the comparison buys - one GET, no churn."""
+    from api.models.function import FunctionUpdate
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "site-a",
+        {"hello-payments": _ksvc(image=DEPLOYED)},
+        secrets={"hello-payments-git": stored},
+        images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+    )
+    reclaimed = _reclaimed(monkeypatch)
+
+    await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") not in cluster.deleted
+    assert reclaimed == []
+
+
+async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
+    """The create path: there is nothing to replace, and nothing to reclaim."""
+    from api.models.function import FunctionCreate
+    from tests.test_auth_and_deployer import _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    reclaimed = _reclaimed(monkeypatch)
+
+    await _function_service({"site-a": cluster}, _RecordingBuilder()).create(
+        "payments",
+        FunctionCreate(
+            name="hello",
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            gitToken="ghp_x",
+        ),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") not in cluster.deleted
+    assert reclaimed == []
+
+
+async def test_the_build_endpoint_re_tags_too(monkeypatch):
+    """It applies the same composed Image, so it hits the same immutable field."""
+    cluster = _build_cluster()
+    cluster._inner._images = {"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")}
+    reclaimed = _reclaimed(monkeypatch)
+
+    class _MovedTriggering(_TriggeringBuilder):
+        def image_ref(self, req):
+            return "reg/acme/serverless/builders/payments/hello:main"
+
+    await _run_build(_build_service({"site-a": cluster}, _MovedTriggering()))
+
+    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
+    assert reclaimed == ["reg/acme/payments/hello:main"]

@@ -1202,13 +1202,14 @@ async def test_list_of_containers_reads_no_build():
 class _ApplyCluster:
     """Records applied manifests; serves a preset existing KSVC (and Secrets)."""
 
-    def __init__(self, name, existing, secrets=None):
+    def __init__(self, name, existing, secrets=None, images=None):
         self.site = name
         self.name = name
         self._existing = existing  # oname -> ksvc dict
         self._secrets = secrets or {}  # secret name -> secret dict (preset)
+        self._images = images or {}  # kpack Image name -> object (preset)
         self.applied = []
-        self.deleted = []  # [(ResourceKind, name)] from prune
+        self.deleted = []  # [(ResourceKind, name)] from prune / re-tag
 
     def get(self, kind, name=None, label_selector=None, namespace=None):
         from common.cluster import ResourceKind
@@ -1218,7 +1219,9 @@ class _ApplyCluster:
             return self._existing[name]
         if kind == ResourceKind.SECRET and name in self._secrets:
             return self._secrets[name]
-        raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret
+        if kind == ResourceKind.KPACK_IMAGE and name in self._images:
+            return self._images[name]
+        raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret/image
 
     def apply(self, manifest):
         self.applied.append(manifest)

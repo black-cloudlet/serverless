@@ -357,6 +357,26 @@ def image_tag(branch: str) -> str:
     return tag
 
 
+def repository_of(image: str) -> str:
+    """The repository half of an image reference - everything but tag and digest.
+
+    ``reg/acme/team/app:main``, ``reg/acme/team/app@sha256:...`` and
+    ``reg/acme/team/app:main@sha256:...`` all reduce to ``reg/acme/team/app``.
+
+    The tag is split off only after the digest, and only past the last ``/``: a
+    registry host may carry a port, and that colon is not a tag separator.
+
+    Args:
+        image: An image reference (already validated).
+
+    Returns:
+        The repository, including host.
+    """
+    repo = image.split("@", 1)[0]
+    head, sep, tail = repo.rpartition("/")
+    return f"{head}{sep}{tail.split(':', 1)[0]}" if sep else repo.split(":", 1)[0]
+
+
 def image_repository(group: str, name: str) -> str:
     """The repository a function's images are pushed to: ``{group}/{name}``.
 

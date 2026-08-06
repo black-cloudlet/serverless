@@ -15,6 +15,7 @@ the build flow, and what the API owns versus the build controller.
 - [Ownership: API vs Build Service](#ownership-api-vs-build-service)
 - [Digest propagation](#digest-propagation)
 - [Who writes the ksvc image](#who-writes-the-ksvc-image)
+- [Moving a function's repository](#moving-a-functions-repository)
 - [Pruning stranded Images](#pruning-stranded-images)
 - [Active/Active Behaviour](#activeactive-behaviour)
 - [Lifecycle & Cleanup](#lifecycle--cleanup)
@@ -221,20 +222,43 @@ the image reference hangs off it and the repository *delete* addresses Quay by t
 string with the host removed, so the repository that is deleted is the one that was
 pushed to.
 
-**Changing it later is a migration, not a config edit.** The KSVC keeps whatever reference
-it was applied with, so an install that already has functions needs, per function, one
-`POST .../functions/{name}/build`. That re-applies the `Image` at the new tag and builds,
-which is what puts anything in the new repository; the controller then rolls the resulting
-digest onto the workload. Nothing else is required - no `PUT`, and no ordering to get
-right - because the controller does not compare repositories
-(BUILDING.md: Who writes the ksvc image).
+### Moving a function's repository
 
-A `spec.tag` change alone does **not** rebuild: kpack's `CONFIG` diff covers source, env,
-services and resources, not the tag. That is why the build request is the step, and why an
-untouched function stays where it is until something asks for a build.
+`spec.tag` is **immutable on a kpack `Image`** - `validateTag` compares against the
+baseline on every update and rejects a change at admission:
 
-The old repositories are left behind: cleanup addresses the *current* layout, so nothing
-deletes content under the previous one.
+```go
+if apis.IsInUpdate(ctx) {
+    original := apis.GetBaseline(ctx).(*Image)
+    return validate.ImmutableField(original.Spec.Tag, is.Tag, "tag")
+}
+```
+
+So a moved tag cannot be *applied over*. Left as an ordinary apply it does not merely fail
+to migrate - it wedges the function: every later write emits the `Image` manifest, so a
+`PUT` that has nothing to do with the registry is rejected too, until someone deletes the
+object by hand.
+
+The API therefore **deletes the `Image` and lets the apply recreate it** whenever the
+computed tag differs from the deployed one (`WorkloadService.retag_build`, one GET on the
+build site per write). Three things follow:
+
+- **A new `Image` has no prior `Build`, so it builds immediately.** Nothing has to ask for
+  one; changing the layout and sending any `PUT` is the whole migration.
+- **The old repository and its cache are reclaimed** through the same Quay API the delete
+  path uses (BUILDING.md: Registry cleanup on delete). Cleanup on delete derives the
+  *current* layout, so without this each function would leak a repository pair permanently
+  - and the mutable tag would be left pointing at content nothing tracks. The reclaim is
+  skipped when the old reference is on a different **host**: this token addresses one
+  registry, and a same-named path elsewhere is somebody else's repository.
+- **Build history resets.** `Build`s are owned by the `Image`, so deleting it collects
+  them. Acceptable for a function that is about to rebuild anyway.
+
+The workload keeps serving its existing digest throughout - the create is the only path
+that writes the ksvc image (BUILDING.md: Who writes the ksvc image) - so the old repository
+must not be reclaimed before the new build lands. It is not: the reclaim runs against the
+*previous* tag only after the `Image` has been replaced, and the running pods already hold
+their image.
 
 The stack and store images are *mirrored* content rather than something this platform
 builds, so they sit under the organization but **not** under `build.builderRepository`.
