@@ -654,7 +654,15 @@ stranded from a partial view is how a transient read failure deletes every live 
 
 Timestamps come from two API servers, so a few seconds of clock skew is possible; a tie
 prunes nothing, and the gap this is aimed at is the minutes or hours between a switchover
-and the next build. `buildController.pruneOrphans: false` turns it off, leaving the
+and the next build.
+
+**It assumes writes land at one site at a time**, which is what the API's DNS already does
+(ARCHITECTURE.md: Networking & Exposure - one active site, the other on failover). Were
+both sites to take writes for the *same* function concurrently, each would keep recreating
+its `Image` and pruning the other's, cancelling builds in flight. That is the same
+assumption the rest of the build path rests on - it is why an `Image` normally exists in
+one cluster at all - but this is the component that would misbehave loudest if it stopped
+holding. `buildController.pruneOrphans: false` turns it off, leaving the
 stranded Images rebuilding.
 
 The deleted `Image` is not missed. Nothing needs it to *run* the function - the registry is

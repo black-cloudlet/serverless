@@ -533,6 +533,20 @@ async def test_a_function_only_this_site_builds_is_not_touched():
     assert south.deleted == []
 
 
+async def test_a_site_holding_no_images_prunes_nothing():
+    """The dangerous case: an empty local site must not read as "I superseded it".
+
+    True of a controller starting on a site that has never built, and of one
+    whose own Images were pruned by the other side a moment ago.
+    """
+    empty = _FakeCluster("central", images=[])
+    holder = _FakeCluster("south", images=[_image(created=OLD)])
+
+    _reconciler({"central": empty, "south": holder}, prune=True).resync()
+
+    assert holder.deleted == []
+
+
 async def test_a_site_that_cannot_be_listed_stops_the_whole_prune():
     # Deciding what is stranded from a partial view is how everything gets deleted.
     central = _FakeCluster("central", images=[_image(created=NEW)])
