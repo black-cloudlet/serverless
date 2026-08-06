@@ -1357,7 +1357,7 @@ async def test_container_update_rotates_pull_secret():
     assert ksvc["spec"]["template"]["spec"]["imagePullSecrets"] == [{"name": "api-team-pull"}]
 
 
-async def test_function_update_rebuilds_when_token_given():
+async def test_function_update_rebuilds_without_touching_the_running_image():
     from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
@@ -1414,7 +1414,9 @@ async def test_function_update_rebuilds_when_token_given():
     assert builder.req.git_url == "https://git/old.git"
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert extract_image(ksvc) == "reg/built:rel"  # deployed at the rebuilt tag
+    # The build is re-declared, the running image is not touched: after the
+    # create only the controller writes it (docs/BUILDING.md - Digest propagation).
+    assert extract_image(ksvc) == "reg/fn:old"
 
 
 async def test_function_update_without_token_keeps_image():

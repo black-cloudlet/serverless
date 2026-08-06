@@ -1719,6 +1719,72 @@ def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
     )
 
 
+async def test_a_created_function_is_deployed_at_the_branch_tag():
+    """The one path that writes the image: `{registry base}/{group}/{name}:{branch}`.
+
+    There is nothing to keep on a create, and no digest exists yet - the KSVC
+    reads Building until the build pushes one and the controller rolls it out.
+    """
+    from api.models.function import FunctionCreate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    cluster = _ApplyCluster("site-a", {})
+    builder = _RecordingBuilder()
+    await _function_service({"site-a": cluster}, builder).create(
+        "payments",
+        FunctionCreate(
+            name="hello",
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            gitToken="ghp_x",
+        ),
+        _principal(),
+    )
+
+    assert extract_image(_applied_kind(cluster, "Service")[0]) == "reg/acme/payments/hello:main"
+
+
+async def test_no_api_path_writes_the_image_after_the_create():
+    """The controller is the only writer once the function exists.
+
+    Every shape of update at once, because the rule is what keeps a revision
+    from being cut for code already running, and it is one forgotten branch away
+    from coming back. The build path is covered separately - it writes no KSVC
+    at all (test_build_never_writes_the_workload).
+    """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+
+    def _site():
+        return _ApplyCluster(
+            "site-a",
+            {"hello-payments": _ksvc(image=DEPLOYED)},
+            secrets={"hello-payments-git": stored},
+        )
+
+    # a config-only edit, a rebuild-triggering edit, and a rotated token
+    for spec in (
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git", runtime="python", branch="release"
+        ),
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            runtime="python",
+            gitToken="ghp_rotated",
+        ),
+    ):
+        cluster = _site()
+        await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+            "payments", "hello", spec, _principal()
+        )
+        assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
+
+
 def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
     """The prefix is optional, so an install that never sets it is unaffected."""
     builder = _builder(_layout_settings())
@@ -1744,11 +1810,12 @@ def test_repository_of_ignores_the_tag_and_the_digest(image, expected):
     assert repository_of(image) == expected
 
 
-async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
-    """The layout is configuration, so nothing about the function marks the move.
+async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
+    """The update moves where the build pushes; the controller moves the workload.
 
-    Left unnoticed the workload would point at a repository nothing pushes to,
-    permanently: every later comparison is against the same stale value.
+    An update writes the image on no path at all now, so the move reaches the
+    running function the same way every other build does - as a digest, once
+    kpack has actually pushed one there.
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
@@ -1765,7 +1832,8 @@ async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
         {"hello-payments": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
         secrets={"hello-payments-git": stored},
     )
-    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+    builder = _MovedBuilder()
+    await _function_service({"site-a": cluster}, builder).update(
         "payments",
         "hello",
         # every build input identical to what is stored: a config-only edit
@@ -1773,8 +1841,13 @@ async def test_a_moved_registry_layout_is_adopted_by_the_next_update():
         _principal(),
     )
 
+    # The build is re-declared at the new repository...
+    assert builder.calls == 1
+    assert builder.image_ref(None) == "reg/acme/serverless/builders/payments/hello:main"
+    # ...and the workload stays on the old one until a build actually pushes to
+    # the new one and the controller rolls that digest out.
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert extract_image(ksvc) == "reg/acme/serverless/builders/payments/hello:main"
+    assert extract_image(ksvc) == "reg/acme/payments/hello@sha256:" + "a" * 64
 
 
 async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest():

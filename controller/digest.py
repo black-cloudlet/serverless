@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 
 from common.labels import LABEL_OFFERING, OFFERING_FUNCTION
-from common.names import repository_of
 
 # Comes back on a read; `managedFields` is rejected outright on the way in.
 _SERVER_METADATA = (
@@ -46,8 +45,11 @@ def deployed_image(ksvc: dict) -> str | None:
 def needs_image(ksvc: dict, image: str) -> bool:
     """Whether ``image`` should replace what this KSVC currently runs.
 
-    No if it already runs it, if it is not a function, or if the repository
-    differs - the API writes that half (docs/BUILDING.md - What it writes).
+    No if it already runs it, or if it is not a function - an Image's digest has
+    no business on a container that reused a deleted function's name. The
+    repository is not compared: after the create this is the only writer of the
+    image, so refusing a moved one would strand the workload on a repository
+    nothing pushes to (docs/BUILDING.md - What it writes).
 
     Args:
         ksvc: The live Knative Service object.
@@ -60,9 +62,7 @@ def needs_image(ksvc: dict, image: str) -> bool:
     if labels.get(LABEL_OFFERING) != OFFERING_FUNCTION:
         return False
     current = deployed_image(ksvc)
-    if not current or current == image:
-        return False
-    return repository_of(current) == repository_of(image)
+    return bool(current) and current != image
 
 
 def with_image(ksvc: dict, image: str) -> dict:

@@ -14,7 +14,7 @@ from api.services.workloads import ApplyRequest, WorkloadService
 from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError
 from common.labels import OFFERING_FUNCTION, workload_labels
-from common.names import object_name, repository_of
+from common.names import object_name
 
 
 class FunctionService:
@@ -426,6 +426,10 @@ class FunctionService:
                 "a git token is required to rebuild; none was supplied and none is stored"
             )
 
+        # Never rewritten here, whatever changed. After the create, the image is
+        # the controller's alone (docs/BUILDING.md - Digest propagation): the
+        # build this update declares has not pushed yet, so anything written now
+        # is a revision of the code already running.
         image = existing["image"]
         replicated: list[dict] = []
         local: list[dict] = []
@@ -447,18 +451,6 @@ class FunctionService:
                 user,
             )
             replicated, local = plan.replicated, plan.local
-            # An update never rewrites the image to the tag, even when it rebuilds:
-            # the tag still resolves to the digest already running, so it would cut
-            # a revision of the SAME code and the real one would follow when the
-            # build lands. The controller supplies the new digest
-            # (docs/BUILDING.md - Digest propagation).
-            #
-            # A moved repository is the exception, and the one case the controller
-            # structurally cannot fix: it only writes a digest whose repository
-            # already matches, so nothing else would ever re-point the workload
-            # (docs/BUILDING.md - Registry layout).
-            if repository_of(image) != repository_of(plan.tag):
-                image = plan.tag
 
         body, code = await self._engine.apply_workload(
             ApplyRequest(

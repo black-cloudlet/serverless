@@ -20,15 +20,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   overrides those once for both. `buildController.repository` is empty by
   default and falls back to the API's - they are one image with two entrypoints.
   Existing values files need the keys re-nested; nothing else changed shape.
-- A function `PUT` no longer rewrites the KSVC image, even when it changes a
-  build input. It used to write the branch tag so that *something* eventually
-  ran the new build; with the build controller that is now the controller's job,
-  and writing the tag cut a revision of the code already running - the tag still
-  resolves to the deployed digest until the new build finishes, and the real
-  rollout followed a few minutes later. Two revisions where one belongs, the
-  first of them a no-op restart. A **moved repository** is still adopted: the
-  controller only writes a digest whose repository already matches, so nothing
-  else would ever re-point the workload.
+- **One writer per phase for a function's KSVC image.** A create writes it once,
+  at `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}`;
+  after that the build controller is the only thing that writes it, and only
+  ever as a digest. A `PUT` now keeps whatever the workload is running, whatever
+  changed - it used to write the branch tag so that *something* eventually ran
+  the new build, which cut a revision of the code already running (the tag
+  resolves to the deployed digest until the new build finishes) with the real
+  rollout arriving minutes later regardless. `POST .../build` writes no KSVC at
+  all, as before.
+
+  The controller correspondingly stopped comparing repositories before it
+  writes. That guard existed so an `Image` under an old registry layout could
+  not pull a workload backwards, but as the only writer it also made a layout
+  change unfixable - nothing else would re-point the workload, so the function
+  would sit on a repository nothing pushes to. Stranded Images are now handled
+  where they come from, by the prune. A **registry-layout migration is
+  correspondingly simpler**: one `POST .../build` per function, no `PUT`
+  afterwards and no ordering to get right.
 - `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
   They were only ever annotations, but the runtime import meant `common.logging`
   - which reads the request-id context var from there - pulled a web framework

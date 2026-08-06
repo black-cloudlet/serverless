@@ -185,11 +185,11 @@ def test_a_container_offering_is_never_written():
     assert needs_image(_ksvc(offering=OFFERING_CONTAINER), DIGEST) is False
 
 
-def test_a_digest_from_another_repository_is_not_wanted():
-    # An Image left under a previous registry layout would otherwise pull the
-    # workload back to the repository the API has stopped writing.
-    old = "registry.internal/acme/payments/hello@sha256:" + "c" * 64
-    assert needs_image(_ksvc(), old) is False
+def test_a_digest_from_a_moved_repository_is_wanted():
+    # The layout is configuration, and after the create nothing else writes the
+    # image - refusing this would strand the workload on the old repository.
+    moved = "registry.internal/acme/payments/hello@sha256:" + "c" * 64
+    assert needs_image(_ksvc(), moved) is True
 
 
 def test_a_workload_with_no_image_is_left_alone():

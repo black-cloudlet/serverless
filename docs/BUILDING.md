@@ -14,6 +14,7 @@ the build flow, and what the API owns versus the build controller.
 - [Build Flow](#build-flow)
 - [Ownership: API vs Build Service](#ownership-api-vs-build-service)
 - [Digest propagation](#digest-propagation)
+- [Who writes the ksvc image](#who-writes-the-ksvc-image)
 - [Pruning stranded Images](#pruning-stranded-images)
 - [Active/Active Behaviour](#activeactive-behaviour)
 - [Lifecycle & Cleanup](#lifecycle--cleanup)
@@ -221,17 +222,19 @@ string with the host removed, so the repository that is deleted is the one that 
 pushed to.
 
 **Changing it later is a migration, not a config edit.** The KSVC keeps whatever reference
-it was applied with, so an install that already has functions needs, per function:
+it was applied with, so an install that already has functions needs, per function, one
+`POST .../functions/{name}/build`. That re-applies the `Image` at the new tag and builds,
+which is what puts anything in the new repository; the controller then rolls the resulting
+digest onto the workload. Nothing else is required - no `PUT`, and no ordering to get
+right - because the controller does not compare repositories
+(BUILDING.md: Who writes the ksvc image).
 
-1. `POST .../functions/{name}/build` - re-applies the `Image` at the new tag and builds,
-   which is what puts anything in the new repository. A `spec.tag` change alone does not
-   rebuild: kpack's `CONFIG` diff covers source, env, services and resources, not the tag.
-2. any `PUT` - the update path compares the deployed repository against the computed one
-   and adopts the new reference when they differ (an ordinary config-only body will do).
+A `spec.tag` change alone does **not** rebuild: kpack's `CONFIG` diff covers source, env,
+services and resources, not the tag. That is why the build request is the step, and why an
+untouched function stays where it is until something asks for a build.
 
-In that order. Reversed, the workload would point at a repository nothing has pushed to
-yet and sit in `Building` until step 1 finished. The old repositories are left behind:
-cleanup addresses the *current* layout, so nothing deletes content under the previous one.
+The old repositories are left behind: cleanup addresses the *current* layout, so nothing
+deletes content under the previous one.
 
 The stack and store images are *mirrored* content rather than something this platform
 builds, so they sit under the organization but **not** under `build.builderRepository`.
@@ -536,16 +539,27 @@ Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it rec
 `Image` on a site that has never had one - which is what makes a PUT after a switchover
 self-healing (BUILDING.md: Active/Active Behaviour).
 
-**A PUT never rewrites the ksvc image**, not even when it rebuilds. Only a create does,
-because a new function has no image to keep. Writing the tag on an update cuts a revision
-of the code that is *already running*: the tag still resolves to the deployed digest until
-the new build finishes, and the real rollout arrives afterwards anyway, from the controller
-(BUILDING.md: Digest propagation). Two revisions where one belongs, the first of them a
-no-op restart.
+### Who writes the ksvc image
 
-The one exception is a **moved repository**, which is the case the controller structurally
-cannot fix: it only writes a digest whose repository already matches the deployed one, so
-nothing else would ever re-point the workload (BUILDING.md: Registry layout).
+Exactly one writer per phase, with no overlap:
+
+| Path | ksvc image |
+|------|-----------|
+| POST | **written once**: `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}` |
+| PUT | **kept** - whatever the workload is running, read back off it |
+| `POST .../build` | **not written** - no ksvc is applied at all |
+| build controller | **the only writer after the create**, and only ever the digest |
+
+A create has nothing to keep, so it deploys at the branch tag and reads `Building` until a
+build pushes something there. After that the tag is never written again: it resolves to the
+digest already running, so writing it cuts a revision of *the same code*, and the real
+rollout arrives minutes later from the controller anyway. Two revisions where one belongs.
+
+This is also what lets a **moved repository** work (BUILDING.md: Registry layout). The
+controller does not compare repositories - it cannot, being the only writer - so the first
+build that pushes to the new layout moves the workload there on its own. The update that
+re-tags the `Image` and the roll-out are separate events, in that order, which is why the
+migration reads "build first".
 
 `POST .../functions/{name}/build` is the manual half of that: it re-applies the same
 composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
@@ -593,13 +607,14 @@ apply, like every other write path (BUILDING.md: Active/Active Behaviour), of an
 that has been stripped of the metadata the server owns (`managedFields`, `resourceVersion`,
 `uid`, …) and of any pinned `spec.template.metadata.name`, which Knative would reject.
 
-Three things stop a write, and each is a different mistake:
+Two things stop a write. The repository is deliberately **not** one of them: this is the
+only writer of the image after the create (BUILDING.md: Who writes the ksvc image), so
+refusing a moved one would strand the workload on a repository nothing pushes to.
 
 | Condition | Why it is left alone |
 |---|---|
 | The KSVC already runs that digest | The loop's normal outcome, and why a resync costs nothing |
 | It is not labelled `offering: function` | A container that reused a deleted function's name must not inherit its image |
-| The digest is in another **repository** | The reference is desired state the API writes and only the digest half is the controller's; an `Image` under a previous layout (BUILDING.md: Registry layout) would otherwise pull the workload backwards |
 
 ### No leader election
 
@@ -664,7 +679,7 @@ create-or-update by construction**. Every path therefore composes the *complete*
 | Path | Behaviour |
 |------|-----------|
 | POST | compose -> apply -> creates |
-| PUT | compose -> apply -> **creates if missing**, else updates. Leaves the ksvc image alone (BUILDING.md: Ownership: API vs Build Service) |
+| PUT | compose -> apply -> **creates if missing**, else updates. Keeps the ksvc image (BUILDING.md: Who writes the ksvc image) |
 | build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
 
