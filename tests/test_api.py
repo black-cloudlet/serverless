@@ -121,6 +121,9 @@ class FakeContainers:
     async def accept_update(self, group, name, spec, user, background):
         return _accepted("container", name, group, image=spec.image or "kept:1")
 
+    async def accept_pull(self, group, name, user, background):
+        return _accepted("container", name, group, image="reg/x:1")
+
     async def get(self, name, group, user):
         return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
 
@@ -290,6 +293,25 @@ def test_only_functions_can_be_built(client):
 
 def test_build_path_name_validated_at_the_edge(client):
     assert client.post("/api/v1/groups/team/functions/Bad_Name/build").status_code == 400
+
+
+def test_pull_container_accepted_without_a_body(client):
+    """Nothing to send: the image to re-resolve is the one already deployed."""
+    r = client.post("/api/v1/groups/team/containers/orders-api/pull")
+
+    assert r.status_code == 202
+    body = r.json()
+    assert body["overallStatus"] == "Pending"
+    assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
+
+
+def test_only_containers_can_be_pulled(client):
+    """A function's digest is the build controller's to roll out, not a re-pull."""
+    assert client.post("/api/v1/groups/team/functions/orders/pull").status_code == 404
+
+
+def test_pull_path_name_validated_at_the_edge(client):
+    assert client.post("/api/v1/groups/team/containers/Bad_Name/pull").status_code == 400
 
 
 def test_create_container_validation_error(client):
