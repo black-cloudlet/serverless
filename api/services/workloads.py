@@ -29,6 +29,7 @@ from api.auth.claims import Principal
 from api.core.config import Settings
 from api.models.common import (
     ANNOTATION_HOST,
+    ANNOTATION_PULL_STAMP,
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
@@ -138,6 +139,8 @@ class ApplyRequest:
         git_url: Function source repo, stamped as an annotation.
         branch: Function source branch, stamped as an annotation.
         path: Function source sub-directory, stamped as an annotation.
+        pull_stamp: The workload's current pull stamp, carried forward so a
+            re-composed spec does not drop it and cut a revision.
     """
 
     name: str
@@ -166,6 +169,7 @@ class ApplyRequest:
     git_url: str | None = None
     branch: str | None = None
     path: str | None = None
+    pull_stamp: str | None = None
 
 
 class WorkloadService:
@@ -439,6 +443,7 @@ class WorkloadService:
             ca_config_map=self.settings.ca_bundle.config_map,
             ca_mount_path=self.settings.ca_bundle.mount_path,
             ca_file=self.settings.ca_bundle.file,
+            pull_stamp=req.pull_stamp,
         )
         mapping = route_svc.build_domain_mapping(
             name=oname, group=req.group, owner=owner, offering=offering.name, host=host
@@ -539,6 +544,38 @@ class WorkloadService:
             return self.builder.trigger(cluster, name, group)
 
         return await asyncio.to_thread(work)
+
+    async def stamp_pull(self, name: str, group: str, stamp: str) -> list[SiteStatus]:
+        """Stamp a new pull marker on the workload in every site.
+
+        Changing a ``spec.template`` annotation is what makes Knative cut a
+        revision and resolve the tag again. A merge patch rather than the usual
+        full apply, like the rebuild trigger: no desired state changes
+        (docs/CONTAINERS.md - Pulling the tag again).
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            stamp: The value to write, the same in every site so they cannot
+                drift onto different revisions.
+
+        Returns:
+            One status per site; ``Absent`` where the workload does not run.
+        """
+        oname = object_name(name, group)
+        patch = {
+            "metadata": {"annotations": {ANNOTATION_PULL_STAMP: stamp}},
+            "spec": {"template": {"metadata": {"annotations": {ANNOTATION_PULL_STAMP: stamp}}}},
+        }
+
+        def stamp_site(cluster: Cluster) -> SiteStatus:
+            try:
+                cluster.patch(ResourceKind.KNATIVE_SERVICE, oname, patch)
+            except NotFoundError:
+                return SiteStatus(site=cluster.site, status="Absent")
+            return SiteStatus(site=cluster.site, status="Deploying")
+
+        return await self.deployer.fanout(self.deployer.resolve_targets(None), stamp_site)
 
     async def load_existing(
         self, name: str, offering: Offering, user: Principal, group: str

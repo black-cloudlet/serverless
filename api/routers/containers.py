@@ -68,6 +68,33 @@ async def update_container(
     return await svc.accept_update(group, name, spec, user, background)
 
 
+@router.post("/{name}/pull", response_model=ContainerResponse, status_code=202)
+async def pull_container(
+    group: Group,
+    name: Name,
+    user: CurrentUser,
+    svc: ContainerDep,
+    background: BackgroundTasks,
+) -> ContainerResponse:
+    """Pull the image tag again (202), no body.
+
+    Knative resolves a tag to a digest once, at revision creation, so an image
+    pushed over the same tag is never picked up. This cuts a new revision in
+    every site, which resolves the tag again; nothing else changes.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller (injected).
+        svc: The container service (injected).
+        background: FastAPI background tasks (injected).
+
+    Returns:
+        A Pending response with a ``statusUrl`` to poll.
+    """
+    return await svc.accept_pull(group, name, user, background)
+
+
 @router.get("", response_model=list[WorkloadSummary])
 async def list_containers(
     group: Group,

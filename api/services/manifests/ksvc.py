@@ -10,6 +10,7 @@ from api.models.common import (
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
     ANNOTATION_INJECTED_ENV,
+    ANNOTATION_PULL_STAMP,
     ANNOTATION_RUNTIME,
     ANNOTATION_RUNTIME_VERSION,
     ANNOTATION_SIZE,
@@ -129,6 +130,7 @@ def build_ksvc(
     ca_config_map: str | None = None,
     ca_mount_path: str | None = None,
     ca_file: str | None = None,
+    pull_stamp: str | None = None,
 ) -> dict:
     """Build the Knative Service (KSVC) manifest for a workload.
 
@@ -159,6 +161,8 @@ def build_ksvc(
         ca_file: Absolute path to the CA file inside the pod; when the CA is
             mounted, the CA-trust env vars (see ``CA_ENV_VARS``) default to it for
             any name the caller didn't set.
+        pull_stamp: Carried forward, never minted here: a fresh value on every
+            apply would cut a revision on every apply.
 
     Returns:
         The KSVC manifest dict.
@@ -176,6 +180,9 @@ def build_ksvc(
     # Optional: delay scale-down to smooth bursty traffic (Knative default otherwise).
     if scaling.scaleDownDelay:
         annotations["autoscaling.knative.dev/scale-down-delay"] = scaling.scaleDownDelay
+    # On the template, so a change here is a change Knative cuts a revision for.
+    if pull_stamp:
+        annotations[ANNOTATION_PULL_STAMP] = pull_stamp
     labels = workload_labels(group, owner, name, offering)
     vols, mounts = _volumes(volumes)
 
@@ -227,6 +234,9 @@ def build_ksvc(
         meta_annotations[ANNOTATION_GIT_PATH] = path
     if injected:
         meta_annotations[ANNOTATION_INJECTED_ENV] = ",".join(injected)
+    # The stored copy an update reads back, so re-composing does not drop it.
+    if pull_stamp:
+        meta_annotations[ANNOTATION_PULL_STAMP] = pull_stamp
 
     return {
         "apiVersion": KSVC_API,

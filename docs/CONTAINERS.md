@@ -7,6 +7,7 @@ functions - scaling, env, files, hosts, status - is in ARCHITECTURE.md.
 
 - [Overview](#overview)
 - [API - create & update](#api---create--update)
+- [Pulling the tag again](#pulling-the-tag-again)
 
 ## Overview
 
@@ -49,3 +50,40 @@ Request:
 
 Response `202 Accepted`: same envelope as the FaaS response (`type: "container"`, no
 `runtime` build fields; `image` echoed back), then poll `statusUrl`.
+## Pulling the tag again
+
+`POST /api/v1/groups/{group}/containers/{name}/pull`, no request body.
+
+Knative resolves `image` to a digest **once**, when the revision is created, and pins the
+pods to that digest. Re-pushing `orders-api:1.4.2` therefore changes nothing: the running
+revision keeps the digest it resolved, and a `PUT` with the same image is a no-op that
+produces no new revision. `imagePullPolicy: Always` does not help either - the Deployment
+is already pinned to a digest, so it re-pulls the same bytes.
+
+What does work is a **new revision**, which resolves the tag again. This endpoint writes
+one annotation to make Knative cut one:
+
+```
+metadata.annotations["serverless.platform/pull-stamp"]                  the stored copy
+spec.template.metadata.annotations["serverless.platform/pull-stamp"]    what Knative diffs
+```
+
+Both carry the same value, minted once per request and written to **every** site - a
+per-site value would leave the sites on different revisions. It is a merge patch rather
+than the platform's usual full apply, for the same reason the function rebuild trigger is
+(BUILDING.md: What causes a new Build): nothing about the desired state changes, and the
+workload was just read, so there is nothing to create.
+
+The metadata copy is the load-bearing one. `build_ksvc` re-stamps it from the workload's
+stored state on every apply, so the next ordinary `PUT` carries the stamp forward instead
+of dropping it - dropping it is itself a template change, and would cut a second revision
+nobody asked for.
+
+**A digest-pinned container is a `400`.** `image` given as `...@sha256:...` names one
+immutable object; a new revision would resolve the same digest. Send a `PUT` with a tag to
+track one.
+
+**Functions do not have this endpoint.** A function's image is built by the platform, and
+its digest reaches the workload through the build controller
+(BUILDING.md: Digest propagation). `POST .../functions/{name}/build` is the equivalent:
+build again, then let the controller roll the result out.

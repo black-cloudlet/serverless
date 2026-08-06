@@ -28,6 +28,7 @@ from api.models.common import (
     ANNOTATION_GIT_PATH,
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
+    ANNOTATION_PULL_STAMP,
     ANNOTATION_RUNTIME,
     ANNOTATION_RUNTIME_VERSION,
 )
@@ -72,6 +73,7 @@ def existing_state(obj: dict, cluster: Cluster, offering: Offering, oname: str) 
         "branch": ann.get(ANNOTATION_GIT_BRANCH),
         "path": ann.get(ANNOTATION_GIT_PATH),
         "host": ann.get(ANNOTATION_HOST),
+        "pull_stamp": ann.get(ANNOTATION_PULL_STAMP),
         "pull_secret": ps_name,
         # Existing secret values, so an update can keep a redacted secret the
         # client sent back without a value (see resolve_env/_files). Env values
