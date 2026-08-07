@@ -9,9 +9,6 @@ description = "FaaS/CaaS REST API wrapping Knative on OpenShift"
 requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
-# cloudlet-apis is here without extras for exactly that reason: bare, it is the
-# error envelope, the log format, request ids and the group rules, and it pulls
-# in no web framework - the API adds `[web,auth]` below.
 dependencies = [
     "cloudlet-apis>=0.1,<1",
     "pydantic>=2.13.4",
