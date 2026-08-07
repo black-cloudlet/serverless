@@ -37,7 +37,10 @@ def test_require_auth_via_bearer_admin_key(monkeypatch):
     req = SimpleNamespace(headers={"Authorization": "Bearer opaque-s3cret"})
     p = require_auth(req)
     assert p.username == "admin" and p.is_admin is True
-    assert p.groups == ["platform-admins"]
+    # The configured admin groups, mapped the same way a token's claim is: the
+    # normalized name as the key, the spelling config used underneath.
+    assert p.groups == {"platform-admins": ["platform-admins"]}
+    assert p.can_access_group("platform-admins") is True
 
     # An unrecognised, non-JWT token must be rejected, not silently allowed.
     bad = SimpleNamespace(headers={"Authorization": "Bearer nope"})
