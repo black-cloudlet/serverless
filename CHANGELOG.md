@@ -513,6 +513,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Fixed README/ARCHITECTURE references left pointing at the old `app/` layout, and
   moved the revision changelog out of the architecture doc into this file.
 
+### Removed
+
+- `uv.lock` is no longer tracked. Nothing installed from it: both Dockerfiles run
+  `pip install .`/`.[api]` and every CI job resolves from `pyproject.toml`, so the
+  committed lock produced no artifact and gated nothing - which is precisely why
+  it went stale twice in this cycle without failing anything. Supersedes the
+  regeneration noted under Fixed below; the net effect for this release is that
+  the file is gone. Local development is unaffected (`pip install -e ".[api,dev]"`,
+  per the README). Worth committing again the day a deploy installs with
+  `uv sync --frozen` - then it pins what actually ships and cannot drift unseen.
+
 ### Fixed
 
 - **A healthy workload could report `Degraded` because of its usage read.**

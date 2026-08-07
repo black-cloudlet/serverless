@@ -8,3 +8,10 @@ venv/
 .coverage
 dist/
 build/
+
+# uv's resolved lock. Not committed: nothing here installs from it - both images
+# and every CI job resolve from pyproject.toml with pip - so a tracked lock is a
+# file that must be maintained while gating nothing, and it silently went stale
+# twice. If a deploy is ever made to install with `uv sync --frozen`, commit it
+# again: then it pins what actually ships and cannot drift unnoticed.
+uv.lock
