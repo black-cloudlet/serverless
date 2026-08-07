@@ -263,6 +263,28 @@ wheels = [
 ]
 
 [[package]]
+name = "cloudlet-apis"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/19/fc/5373580605fb6b7d7adcd809c0494190605f9d48c7e77e60d4dc88bd1831/cloudlet_apis-0.1.0.tar.gz", hash = "sha256:0be321d0e380f987db19f30305d8976cb61c930de3058116bf4248e2cf8b7240", size = 805395, upload-time = "2026-08-07T21:24:52.844Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4c/52/8a60d3e5f41d69e1f35fd5ce2cd9101944f3954715b12d4acc7808ddd750/cloudlet_apis-0.1.0-py3-none-any.whl", hash = "sha256:66217d8ad44dbe54a10043fc35706e2157a80a4f2b1a417e36e5b6586daac6f9", size = 796208, upload-time = "2026-08-07T21:24:51.705Z" },
+]
+
+[package.optional-dependencies]
+auth = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pyjwt", extra = ["crypto"] },
+]
+web = [
+    { name = "fastapi" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1091,6 +1113,7 @@ name = "serverless-api"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cloudlet-apis" },
     { name = "kubernetes" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1098,9 +1121,9 @@ dependencies = [
 
 [package.optional-dependencies]
 api = [
+    { name = "cloudlet-apis", extra = ["auth", "web"] },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "pyjwt", extra = ["crypto"] },
     { name = "pyyaml" },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1115,13 +1138,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cloudlet-apis", specifier = ">=0.1,<1" },
+    { name = "cloudlet-apis", extras = ["web", "auth"], marker = "extra == 'api'", specifier = ">=0.1,<1" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.141.1" },
     { name = "httpx", marker = "extra == 'api'", specifier = ">=0.28.1" },
     { name = "kubernetes", specifier = ">=36.0.3" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.10.1" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
-    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'api'", specifier = ">=2.13.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
