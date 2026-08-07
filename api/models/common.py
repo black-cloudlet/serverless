@@ -26,18 +26,22 @@ from common.names import (  # noqa: F401
     DNS1123,
     HOSTNAME,
     Branch,
+    EnvVarName,
     GitUrl,
     Group,
     Hostname,
     ImageRef,
+    MountPath,
     Name,
     SourcePath,
     normalize_group,
     validate_branch,
+    validate_env_var_name,
     validate_git_url,
     validate_group,
     validate_hostname,
     validate_image_ref,
+    validate_mount_path,
     validate_name,
     validate_source_path,
 )
@@ -122,7 +126,7 @@ class EnvVar(BaseModel):
     needs a value, and a brand-new secret needs one too (there is nothing to keep).
     """
 
-    name: str
+    name: EnvVarName
     value: str | None = None
     secret: bool = False
 
@@ -147,7 +151,7 @@ class FileMount(BaseModel):
     supplying both is always rejected.
     """
 
-    mountPath: str
+    mountPath: MountPath
     content: str | None = None
     contentBase64: str | None = None
     secret: bool = False

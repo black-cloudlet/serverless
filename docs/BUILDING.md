@@ -35,10 +35,10 @@ the build flow, and what the API owns versus the build controller.
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Local cluster** - each site builds its own image |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
-| Image CR writer | The **API** (POST / PUT / build / webhook) |
+| Image CR writer | The **API** (POST / PUT / `POST .../build`; a git webhook is planned, not implemented) |
 | Digest propagation | The **build controller**, its own Deployment, watches `status.latestImage` in the local cluster and applies the ksvc with the new digest to *all* sites (BUILDING.md: Digest propagation) |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
-| Rebuild trigger | Webhook sets `spec.source.git.revision` to the **pushed commit SHA** (idempotent). An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition |
+| Rebuild trigger | An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition. *Planned:* a webhook setting `spec.source.git.revision` to the pushed commit SHA (idempotent by data) |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
 | Registry credential | **One** ESO-managed secret: kpack **push** + function **pull** |
@@ -133,7 +133,7 @@ Three independent axes. Conflating them is the most common source of confusion:
 
 > Selecting a version only *asks* for it - the buildpack still has to fetch that runtime
 > from the internet. Offline, this axis works only once the download is redirected to the
-> mirror (BUILDING.md: Airgapped Mirror Inventory, BUILDING.md: Airgapped Mirror Inventory).
+> mirror (BUILDING.md: Airgapped Mirror Inventory).
 
 ### Axis 3 - application packages (airgapped)
 
@@ -176,8 +176,8 @@ runtimes:
 ```
 
 **The runtimes file is the contract.** `RuntimeSpec` declares every key the builder
-reads - `builder`, `versionEnv`, `defaultVersion`, `versions`, `buildEnv`,
-`buildEnv` - and keeps unknown keys, so a newer chart can be rolled out ahead of the
+reads - `name`, `builder`, `versionEnv`, `defaultVersion`, `versions` and `buildEnv` - and
+keeps unknown keys (`extra="allow"`), so a newer chart can be rolled out ahead of the
 API. Numbers are coerced to strings, because an unquoted `defaultVersion: 3.12` is a float
 in YAML and rejecting it would take down every runtime over a missing pair of quotes.
 
@@ -452,8 +452,9 @@ workloads namespace, which is what makes one git Secret enough.
 > `kubernetes.io/basic-auth` (`username` + `password`) annotated
 > `kpack.io/git: <scheme>://<host>`. kpack clones with it - it reads no other shape - and
 > the API reads the password back so a later edit rebuilds without the client re-sending
-> the token. One shape and one decode path - `load_existing` reads the `password` key
-> through `_secret_data`, the same way it reads a workload's env and files.
+> the token. One shape and one decode path: `FunctionOffering.read_extra_state` pulls the
+> `password` key through `site_read.secret_text`, the same call that reads a workload's
+> env values.
 
 ---
 
@@ -493,8 +494,8 @@ actionable error.
 
 | Reason | Trigger | In this platform |
 |--------|---------|------------------|
-| `CONFIG` | `spec` changed | PUT that changes runtime, version or env |
-| `COMMIT` | resolved source SHA changed | the per-function **webhook** |
+| `CONFIG` | `spec` changed | PUT that changes runtime, version, branch, path or env |
+| `COMMIT` | resolved source SHA changed | kpack's own `SourceResolver` re-resolving the branch. *Planned:* a per-function **webhook** pinning the pushed SHA, so a push builds at once rather than at the next poll |
 | `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/build` |
 | `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
 | `STACK` | the Stack run image was updated | **CVE patch** - often a fast *rebase* |
@@ -521,7 +522,7 @@ Two components, split by execution model:
 
 | Component | Path | Responsibility |
 |-----------|------|----------------|
-| **API** | request/response | On POST / PUT / build / webhook: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
+| **API** | request/response | On POST / PUT / `POST .../build`: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
 | **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites (BUILDING.md: Digest propagation). |
 
 The watch loop does not fit a request/response API, and the shared library already
@@ -529,11 +530,12 @@ anticipates this split (`common/cluster.py`: *"the API and a future builder serv
 reach a cluster the same way"*; `common/labels.py`: *"a future builder service stamps them
 on its build resources"*).
 
-**Contract change - implemented.** `BuildBackend.build` no longer returns a finished image. It
-records desired state (git Secret -> ServiceAccount -> `Image`, in dependency order) and
-returns the deterministic tag the build will push to; the ksvc is applied against that tag
-immediately, and `GET` reports `Building` until kpack finishes (FUNCTIONS.md: Function Status Resolution). "Created" no longer
-implies "serving", which is why the status code for `Building` is `202`.
+**The contract is declarative.** `BuildBackend.plan` does not return a finished image and
+does not touch a cluster. It returns the manifests recording desired state (git Secret ->
+build ServiceAccount -> `Image`, in dependency order) plus the deterministic `tag` the
+build will push to; the caller applies them alongside the KSVC's other derived resources,
+the ksvc is applied against that tag immediately, and `GET` reports `Building` until kpack
+finishes (FUNCTIONS.md: Function Status Resolution). "Created" no longer implies "serving".
 
 The manifests are **owned resources of the KSVC**, applied in the same pass as the
 function's env Secret and DomainMapping and carrying the same `ownerReference`. That is
@@ -732,7 +734,7 @@ create-or-update by construction**. Every path therefore composes the *complete*
 | POST | compose -> apply -> creates |
 | PUT | compose -> apply -> **creates if missing**, else updates. Keeps the ksvc image (BUILDING.md: Who writes the ksvc image) |
 | build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
-| webhook | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
+| webhook *(planned)* | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
 
 The build applies *before* it triggers, and that ordering is what makes it self-healing
 rather than merely idempotent: on a site that has never built the function the apply
@@ -771,9 +773,10 @@ definition. Duplicate builds come from nonces, not from concurrency:
 2. **No timestamps, UUIDs or counters** anywhere in the spec.
 3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type
    and setting it forces a rebuild on every apply.
-4. **The webhook sets a SHA, not a trigger annotation.** Bumping
+4. **The webhook, when it lands, must set a SHA, not a trigger annotation.** Bumping
    `image.kpack.io/additionalBuildNeeded` is a nonce: two instances handling one push would
    produce two builds. `spec.source.git.revision = <pushed SHA>` is idempotent by data.
+   This rule is recorded now because it is the constraint that shapes that endpoint.
 
 With these, two instances applying the same desired state produce one object and kpack
 creates **one** build - no lease or leader election is required.
@@ -790,7 +793,7 @@ twice means.
 ### Accepted consequences
 
 - **A post-switchover write rebuilds.** The new cluster has no `Image`, so the first
-  PUT/webhook builds from scratch. Builds are not bit-reproducible, so the digest differs
+  PUT or `POST .../build` builds from scratch. Builds are not bit-reproducible, so the digest differs
   from the previous cluster's and a new Knative revision rolls out even when the source is
   unchanged. It is bounded to functions actually touched after switchover.
 - **Orphaned Images keep building, until the next prune.** The previously-active cluster
@@ -914,7 +917,8 @@ metadata:
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello-payments
 spec:
-  tag: registry.internal/<org>/<repo>/payments/hello  # {base}/{group}/{name} (BUILDING.md: Registry layout)
+  # {base}/{group}/{name}:{branch projected to a legal OCI tag} (BUILDING.md: Registry layout)
+  tag: registry.internal/<org>/<repo>/payments/hello:main
   builder:
     kind: Builder
     name: python
@@ -922,7 +926,7 @@ spec:
   source:
     git:
       url: https://git.internal/payments/hello.git
-      revision: 9f2c1ab…               # pushed SHA (webhook) or branch
+      revision: main                   # the branch; a pinned SHA awaits the webhook
   cache:                               # registry, not a PVC (BUILDING.md: Build cache)
     registry:
       tag: registry.internal/<org>/<repo>/payments/hello_cache:latest
@@ -1008,7 +1012,7 @@ Shipped as `templates/kpack/ca-policy.yaml`, gated on `build.caInjection.enabled
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
-  name: kpack-build-ca-bundle
+  name: serverless-api-build-ca-bundle   # {.Values.name}-build-ca-bundle
 spec:
   rules:
     - name: mount-ca-bundle
@@ -1254,22 +1258,32 @@ Either form is attached per build through `spec.build.services`, alongside the C
    their upstream paths (enabling a single `BP_DEPENDENCY_MIRROR`), or must per-dependency
    `dependency-mapping` bindings be generated from each `buildpack.toml`? The former
    removes a regeneration step on every buildpackage bump.
-3. **Build resource limits** - `spec.build.resources` defaults are unset; large dependency
-   trees (node_modules, Go module graphs) may need explicit limits.
+3. **Build resource sizing** - `build.resources` now ships a default (500m/1Gi requests,
+   2 CPU/4Gi limits), so a build is no longer BestEffort. Whether one bound suits every
+   function is the open part: a large `node_modules` or Go module graph may need more,
+   and per-function tuning would belong beside the workload's `size` rather than on this
+   value (BUILDING.md: Build pod resources).
 4. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
    cache repository does not accumulate tags; superseded blobs are the registry's to
    reclaim. Whether the registry's own GC settles this, or the periodic prune has to,
    depends on the registry.
+5. **Git webhook** - not implemented. `BuildRequest.revision` carries the field and the
+   convergence rule it must follow is recorded above (rule 4); what is undecided is the
+   endpoint's auth model (per-function shared secret vs. provider signature) and how a
+   push maps to a function when several functions build from one monorepo.
 
 ### Resolved
 
 - **`javascript` -> `node` rename** - done. The runtimes list is `python`, `go`, `node`
-  across the chart values, `runtimes.py::_DEFAULT_RUNTIMES`, the contract docstring and
-  the tests. TypeScript was offered briefly as an alias to the node builder and has been
+  across the chart values, the runtimes ConfigMap, the contract docstring and the tests.
+  TypeScript was offered briefly as an alias to the node builder and has been
   withdrawn: it needs the npm registry mirror to fetch the compiler as a devDependency,
   which is not mirrored. A TS app can still be deployed by committing compiled JS, or by
-  building under the `node` runtime once `npm_config_registry` is set. Safe without a compatibility alias because function
-  creation had never succeeded at the time (`builder.build` raised `NotImplementedError`),
-  so no deployed function carries `ANNOTATION_RUNTIME: javascript` for BUILDING.md: Active/Active Behaviour to reconstruct.
-  The same fact retires the git-Secret compatibility path: no `{workload}-git` Secret was
-  ever written in the earlier Opaque shape, so nothing reads that key any more.
+  building under the `node` runtime once `npm_config_registry` is set. It was safe to drop
+  without a compatibility alias because no function had ever been created at the time, so
+  none carries `ANNOTATION_RUNTIME: javascript` for BUILDING.md: Active/Active Behaviour to
+  reconstruct. The same fact retires the git-Secret compatibility path: no `{workload}-git`
+  Secret was ever written in the earlier Opaque shape, so nothing reads that key any more.
+- **A built-in runtimes fallback** - removed. The runtimes file is required and
+  `load_runtimes` raises without it, so a broken mount fails readiness instead of
+  advertising runtimes that map to no `Builder` (BUILDING.md: Where it lives).

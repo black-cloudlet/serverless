@@ -16,7 +16,7 @@ functions - scaling, env, files, hosts, status - is in ARCHITECTURE.md.
 | Field | Required | Notes |
 |-------|----------|-------|
 | `image` | yes | Fully-qualified image reference in the internal registry (airgap). |
-| `registryUsername` | no | Registry username. Optional - omit both creds for a public image; if either is given, **both** are required. Returned on GET (`spec.registryUsername`). |
+| `registryUsername` | no | Registry username. Optional - omit both creds for a public image; if either is given, **both** are required. Returned on GET as the top-level `registryUsername`, like a secret's name. |
 | `registryToken` | no | Registry access token; used to create an `imagePullSecret`, **not persisted** and **never returned**. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `error`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/containers/info`. |
@@ -50,6 +50,11 @@ Request:
 
 Response `202 Accepted`: same envelope as the FaaS response (`type: "container"`, no
 `runtime` build fields; `image` echoed back), then poll `statusUrl`.
+
+`PUT` is a **full replace**, so `image` is required on update exactly as on create, and an
+omitted `port` returns the workload to 8080. Only redacted secret material is keep-on-omit
+(FUNCTIONS.md: Editing a workload - the recipes there cover both offerings).
+
 ## Pulling the tag again
 
 `POST /api/v1/groups/{group}/containers/{name}/pull`, no request body.

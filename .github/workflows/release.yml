@@ -2,12 +2,17 @@ name: Release
 
 # One-click release (manual). Enter a version - X.Y.Z or a pre-release
 # X.Y.Z-{alpha|beta|rc}.N (e.g. 1.2.0-beta.1) - and this workflow:
-#   1. bumps the version in pyproject.toml + Chart.yaml and commits it onto the
-#      vX.Y.Z tag ONLY - the branch it runs from is left unchanged;
+#   1. validates the version string and that no such tag exists yet;
 #   2. runs the full check suite;
-#   3. builds/scans/signs and publishes the image and chart from the tag, then
+#   3. bumps the version in pyproject.toml + Chart.yaml and commits it onto the
+#      vX.Y.Z tag ONLY - the branch it runs from is left unchanged;
+#   4. builds/scans/signs and publishes the image and chart from the tag, then
 #      cuts a GitHub Release. A pre-release does NOT move the :latest image tag
 #      and is marked as a GitHub pre-release.
+#
+# The checks run BEFORE the tag is pushed, deliberately: the tag is the one
+# thing here that a re-run cannot redo, and step 1 refuses a version that
+# already has one.
 #
 # The tag/image/chart use the SemVer string (1.2.0-beta.1); the installed Python
 # version normalizes to PEP 440 (1.2.0b1), so __version__ reports 1.2.0b1.
@@ -32,16 +37,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  # Reject a malformed or already-used version before anything runs. Separate
+  # from `prepare` so the whole check suite does not have to run to find out the
+  # version string was a typo.
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write # commit the version bump + push the tag
+    timeout-minutes: 5
     outputs:
       version: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate, bump, commit, tag
+      - name: Validate the version
         run: |
           VERSION="${{ inputs.version }}"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
@@ -50,6 +56,31 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
             echo "::error::tag v$VERSION already exists"; exit 1
           fi
+          echo "Releasing v$VERSION"
+
+  # Same validation as CI, and it runs BEFORE the tag is pushed. The tag is the
+  # one artifact of this workflow that cannot be undone by re-running it: the
+  # version guard above refuses a version that already has one, so a tag pushed
+  # ahead of a failing check would block retrying that same version until
+  # someone deleted it by hand. Nothing here depends on the stamped version, so
+  # gating on it costs nothing.
+  checks:
+    needs: validate
+    uses: ./.github/workflows/checks.yml
+
+  prepare:
+    needs: [validate, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # commit the version bump + push the tag
+    outputs:
+      version: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bump, commit, tag
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
           sed -i -E "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
           sed -i -E "s/^version:.*/version: $VERSION/" charts/serverless-api/Chart.yaml
           sed -i -E "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/serverless-api/Chart.yaml
@@ -61,15 +92,11 @@ jobs:
           # bump commit exists solely on the tag (the release snapshot).
           git push origin "v$VERSION"
 
-  # Same validation as CI; publishing is gated on it via `needs`.
-  checks:
-    needs: prepare
-    uses: ./.github/workflows/checks.yml
-
   # One job per service image (docs/BUILDING.md - Two images). Both are built
   # from the same tag, so they cannot disagree about the library they share.
+  # `prepare` already gates on `checks`, so publishing is still gated on it.
   image:
-    needs: [prepare, checks]
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -134,7 +161,7 @@ jobs:
           cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
 
   chart:
-    needs: [prepare, checks]
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -163,10 +190,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push + sign
+        # `pipefail` because the push is piped into `tee`: without it the
+        # pipeline reports tee's exit status, so a failed push would fall
+        # through to an empty digest and fail later, in cosign, as something
+        # else. `-u` catches the same emptiness if the log ever stops carrying
+        # a digest.
+        shell: bash
         run: |
+          set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
           helm push dist/serverless-api-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts 2>&1 | tee push.log
           DIGEST=$(grep -oE 'sha256:[0-9a-f]+' push.log | head -1)
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::helm push reported no digest; refusing to sign"; exit 1
+          fi
           cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/serverless-api@${DIGEST}"
 
   github-release:

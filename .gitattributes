@@ -1,4 +1,4 @@
 # Vendored Swagger UI / ReDoc assets (served offline for airgapped docs).
-app/static/** linguist-vendored
-app/static/*.js -diff
-app/static/*.css -diff
+common/static/** linguist-vendored
+common/static/*.js -diff
+common/static/*.css -diff

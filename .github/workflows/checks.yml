@@ -162,7 +162,7 @@ jobs:
           "
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
-      # even when nothing in our code changed. The python:3.13-slim base is
+      # even when nothing in our code changed. The python:3.14-slim base is
       # rebuilt on Debian security updates, keeping HIGH low without a patch step.
       - name: Vulnerability report (Trivy, API)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

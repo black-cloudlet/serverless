@@ -1,0 +1,31 @@
+# Local development only.
+#
+# The runtimes file is REQUIRED and has no built-in fallback: a default list
+# would name no kpack Builder while looking real at the API surface, so a broken
+# mount would pass for a working platform until the first function failed to
+# build (docs/BUILDING.md - Runtime Versions & Dependencies). That applies to
+# running the app locally too, so this file exists to make
+# `SERVERLESS_RUNTIMES_FILE=dev/runtimes.yaml uvicorn api.main:app` start.
+#
+# It is NOT the source of truth. In a cluster the list is rendered into the
+# `{name}-runtimes` ConfigMap from `charts/serverless-api/values.yaml`, with
+# each entry's `buildEnv` already merged (shared env + dependency mirror). The
+# entries below are a trimmed copy: enough to exercise the API's validation and
+# the /api/v1/functions/info document, with no artifact-server URLs, since
+# nothing is built locally.
+runtimes:
+  - name: python
+    builder: python
+    versionEnv: BP_CPYTHON_VERSION
+    defaultVersion: "3.12"
+    versions: ["3.11", "3.12", "3.13"]
+  - name: go
+    builder: go
+    versionEnv: BP_GO_VERSION
+    defaultVersion: "1.24"
+    versions: ["1.23", "1.24", "1.25"]
+  - name: node
+    builder: node
+    versionEnv: BP_NODE_VERSION
+    defaultVersion: "20"
+    versions: ["18", "20", "22"]

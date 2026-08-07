@@ -17,51 +17,69 @@ what functions share with containers is ARCHITECTURE.md.
 | Field | Required | Notes |
 |-------|----------|-------|
 | `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). `http://` is accepted for an internal host, but sends the token in the clear. SSH/scp-style refs (`git@host:org/repo.git`) are rejected: the clone authenticates with a basic-auth Secret, which only applies over http(s). Credentials embedded in the URL are rejected rather than stripped - it is written verbatim to the kpack `Image`, which is readable far more widely than the Secret; send the token as `gitToken`. |
-| `branch` | yes | Branch / ref to build. |
+| `branch` | no | Branch / ref to build. Defaults to **`main`**, and is *replaced* on `PUT` - omitting it returns the function to `main` and rebuilds. |
 | `path` | no | Directory inside the repository holding the application, for a monorepo (e.g. `services/api`). Defaults to the repository root. Surrounding `/` are stripped; `..` is rejected. Changing it rebuilds. |
-| `gitToken` | yes | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see ARCHITECTURE.md: Secrets Management). |
-| `runtime` | yes | One of the platform's configured runtimes (default `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`services.runtimes`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
-| `name` | yes | Logical workload name (DNS-1123). |
+| `gitToken` | yes on create | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see ARCHITECTURE.md: Secrets Management). The one keep-on-omit field on `PUT`: omitting it reuses the stored token, sending it rotates it (and rebuilds). |
+| `runtime` | yes | One of the platform's configured runtimes (the chart ships `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`api/services/builder/runtimes.py`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
+| `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `branch`, and changing it rebuilds. |
+| `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/v1/functions/info`. |
+| `sites` | no | Which sites to deploy to; defaults to all of them (HA). The **build** always runs on the local site regardless (BUILDING.md: Ownership: API vs Build Service). |
 | `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `error`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
-**Build flow (Knative Functions / buildpacks):**
+**Build flow (kpack / Cloud Native Buildpacks):**
 
-1. The API launches a **build** (in-cluster) using **Knative Functions** (`func`) with
-   **Cloud Native Buildpacks**. The builder/run images are the **mirrored** versions hosted
-   in the internal registry (see ARCHITECTURE.md: Airgapped Considerations) - buildpack autodetection picks the right
-   Python/Go/JS buildpack.
-2. Source is cloned from `gitRepo@branch` using `gitToken`.
-3. The resulting OCI image is pushed to the **internal container registry** under a
-   deterministic tag, e.g. `registry.internal/<group>/<name>:<gitsha>`.
-4. The API then creates/updates the **KSVC** referencing that image (ARCHITECTURE.md: Shared capabilities), in **both
-   sites**.
+The API does not *run* builds; it **declares** them. Full detail is in BUILDING.md - this
+is the shape:
 
-> The build runs once and the **same image digest** is deployed to both sites to guarantee
-> bit-for-bit parity across the active/active pair.
+1. The API validates the request and returns **`202 Accepted`**. Nothing is built yet.
+2. In the background it applies, to the **local** site only, the function's kpack `Image`
+   plus the per-function build `ServiceAccount`; the `{workload}-git` Secret holding
+   `gitToken` goes to **every** site, so any of them can rebuild after a switchover.
+3. **kpack** does the rest on its own: clone `gitRepo@branch`, run the runtime's `Builder`
+   (the mirrored Paketo stack and buildpackages - ARCHITECTURE.md: Airgapped Considerations),
+   and push to the internal registry at
+   `{registry base}/{group}/{name}:{branch}` (BUILDING.md: Registry layout).
+4. In the same pass as step 2, the API applies the **KSVC** to every target site, pointing
+   at that **tag**. Until a build lands there is no image to pull, which is why a new
+   function reads `Building` rather than `Degraded` (see *Function Status Resolution*).
+5. When the build finishes, the **build controller** - a separate Deployment watching
+   `Image.status.latestImage` - rolls the resulting **digest** onto the function's KSVC in
+   **every** site (BUILDING.md: Digest propagation). After the create, it is the only
+   thing that writes that field.
+
+> The tag is a projection of the branch, not the commit: an OCI tag may not contain `/`,
+> so `feature/login` pushes to `feature-login` while the build still compiles that exact
+> ref. One site builds and every site pulls the same digest from the shared registry, so
+> the active/active pair runs identical bytes.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as Client
     participant API as FastAPI API
-    participant Build as func / buildpacks (build job)
+    participant KP as kpack (local site)
     participant Reg as Internal Registry
+    participant BC as build controller
     participant ZA as Site A (Knative)
     participant ZB as Site B (Knative)
 
     U->>API: POST /api/v1/groups/{group}/functions (git, runtime, ...)
-    API->>API: AuthN (JWT) + AuthZ (group)
-    API->>Build: build(gitRepo@branch, runtime)
-    Build->>Reg: push image @digest
-    Build-->>API: image digest
-    par Deploy to both sites (same digest)
-        API->>ZA: apply KSVC + ensure Route
-        API->>ZB: apply KSVC + ensure Route
+    API->>API: AuthN (JWT) + AuthZ (group) + pre-flight
+    API-->>U: 202 Accepted { overallStatus: "Pending", statusUrl }
+    API->>KP: apply Image + build ServiceAccount (local site only)
+    par Deploy to all sites, at the branch tag
+        API->>ZA: apply KSVC + DomainMapping
+        API->>ZB: apply KSVC + DomainMapping
     end
-    ZA-->>API: route URL A, status
-    ZB-->>API: route URL B, status
-    API-->>U: 201 Created { sites: [A,B], urls, status }
+    KP->>Reg: clone, build, push image @digest
+    BC->>KP: watch status.latestImage
+    par Roll the digest out everywhere
+        BC->>ZA: apply KSVC with @digest
+        BC->>ZB: apply KSVC with @digest
+    end
+    U->>API: GET {statusUrl} (poll)
+    API-->>U: 200 { overallStatus: "Building" -> "Ready" }
 ```
 
 ## API - create & update
@@ -261,16 +279,29 @@ re-keyed to the new image's registry):
 { "image": "docker.io/library/nginx:1.27" }
 ```
 
-**Rebuild a function from a new branch - no token needed** (the stored git token is reused):
+**Rebuild a function from a new branch - no token needed** (the stored git token is reused).
+`gitRepo` and `runtime` are required on every function `PUT`, as on create - the body is
+the full desired state, so they are re-sent unchanged rather than carried forward:
 
 ```json
-{ "branch": "release", "runtime": "python", "scaling": { "minScale": 0, "maxScale": 3 } }
+{
+  "gitRepo": "https://git.internal/team/image-resizer.git",
+  "runtime": "python",
+  "branch": "release",
+  "scaling": { "minScale": 0, "maxScale": 3 }
+}
 ```
 
-**Rotate the git token** (sending it also triggers a rebuild):
+**Rotate the git token** (sending it also triggers a rebuild). Note that omitting `branch`
+here would reset it to `main`, so send the branch you are on:
 
 ```json
-{ "gitToken": "ghp_new-token" }
+{
+  "gitRepo": "https://git.internal/team/image-resizer.git",
+  "runtime": "python",
+  "branch": "release",
+  "gitToken": "ghp_new-token"
+}
 ```
 
 ## Building again without changing anything
@@ -306,7 +337,7 @@ What it deliberately does **not** do:
 | | |
 |---|---|
 | Touch the workload | Nothing about the desired state changes, so no KSVC is applied and no revision is spawned. The running revision keeps serving its current digest until the new one is rolled out (BUILDING.md: Ownership: API vs Build Service) - as for any build kpack starts on its own. |
-| Take a commit SHA | Pinning the exact commit that was pushed is the webhook's job (`BuildRequest.revision`); a rebuild builds the branch head, which is what create and update do. |
+| Take a commit SHA | A rebuild builds the branch head, which is what create and update do. Pinning an exact commit is the job of the git webhook, which is **not implemented yet** (`BuildRequest.revision` already carries the field for it - BUILDING.md: Who writes the ksvc image). |
 | Change the spec | Send a `PUT` for that. A rebuild is the one function write that carries no desired state at all. |
 
 **Errors.** `404` if there is no such function (including a *container* of the same name -
@@ -345,12 +376,16 @@ info only (no live usage/replicas; use the single-workload GET for those):
 
 ```
 GET /functions/{name}
-  1. look up the Image / latest Build in the LOCAL cluster
-       building  -> return "building"  (+ build reason, phase, started-at)
-       failed    -> return "build failed" (+ failure detail, log pointer)
+  1. look up the Image in the LOCAL cluster
+       Building -> overallStatus "Building"
+       Failed   -> overallStatus "Degraded" (+ the condition message on build.message)
   2. no Image found, or the build succeeded
-       -> fall through to the Knative Service status (existing behaviour)
+       -> fall through to the Knative Service status
 ```
+
+The `build` object on the response carries `state` and `message` only. Per-phase build
+logs are not on this endpoint - they live in the `Build`'s pod, one container per
+lifecycle phase (BUILDING.md: Inside the build pod).
 
 Two properties this gives us:
 
@@ -391,7 +426,8 @@ used to escape it, and both showed a red failure for a perfectly normal build:
   fan-out rather than chained onto it. A listing that cannot read kpack falls back to the
   ksvc statuses, exactly as a single GET does.
 
-`Building` is therefore a *site* status as well as a workload one, and `GET /info` publishes
-it in both vocabularies so a client hardcodes neither.
+`Building` is therefore a *site* status as well as a workload one, and
+`GET /api/v1/functions/info` publishes it in both vocabularies (`statuses.workload` and
+`statuses.site`) so a client hardcodes neither.
 
 ---
