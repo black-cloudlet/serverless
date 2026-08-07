@@ -1,70 +1,29 @@
-"""Domain errors raised by any service (docs/ARCHITECTURE.md - REST API).
+"""Domain errors: the shared catalog, plus the ones only this platform raises.
 
-Deliberately free of any web framework: these are raised deep in the service and
-cluster layers, so importing one must not drag FastAPI into a process that
-serves no HTTP - a build service raising ``NotFoundError`` should not need it.
+The base class and the general HTTP failures live in :mod:`cloudlet_apis.errors`
+and are re-exported here, so every ``from common.errors import ...`` in this
+repository keeps working and there is one import site to change if that ever
+moves again.
 
-``status_code`` and ``code`` stay here as plain data. They are how an error
-describes itself, not how it is served; the FastAPI handlers that turn them into
-a response envelope live in :mod:`common.web`.
+What stays is what is ours: :class:`SiteTotalFailure` describes a multi-site
+apply where every site failed, which no other API has. It is a plain subclass in
+our own tree, and ``cloudlet_apis.errors.error_catalog()`` walks subclasses at
+call time, so ``/info`` publishes it without the shared package knowing it exists.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-
-class APIError(Exception):
-    """Base class for errors that map to the standard error envelope."""
-
-    status_code: int = 500
-    code: str = "INTERNAL"
-
-    def __init__(self, message: str, details: list[dict[str, Any]] | None = None):
-        """Initialize the error.
-
-        Args:
-            message: Human-readable error message.
-            details: Optional structured details (e.g. per-site failures).
-        """
-        super().__init__(message)
-        self.message = message
-        self.details = details or []
-
-
-class ValidationError(APIError):
-    """Invalid request input (HTTP 400)."""
-
-    status_code = 400
-    code = "VALIDATION_ERROR"
-
-
-class UnauthenticatedError(APIError):
-    """Missing or invalid credentials (HTTP 401)."""
-
-    status_code = 401
-    code = "UNAUTHENTICATED"
-
-
-class ForbiddenError(APIError):
-    """Authenticated but not permitted for this resource/group (HTTP 403)."""
-
-    status_code = 403
-    code = "FORBIDDEN"
-
-
-class NotFoundError(APIError):
-    """The requested resource does not exist (HTTP 404)."""
-
-    status_code = 404
-    code = "NOT_FOUND"
-
-
-class ConflictError(APIError):
-    """The request conflicts with current state, e.g. a duplicate (HTTP 409)."""
-
-    status_code = 409
-    code = "CONFLICT"
+# Re-exported for existing importers - see the module docstring.
+from cloudlet_apis.errors import (  # noqa: F401
+    APIError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ServiceUnavailableError,
+    UnauthenticatedError,
+    ValidationError,
+    error_catalog,
+)
 
 
 class SiteTotalFailure(APIError):
@@ -72,37 +31,3 @@ class SiteTotalFailure(APIError):
 
     status_code = 502
     code = "SITE_TOTAL_FAILURE"
-
-
-class ServiceUnavailableError(APIError):
-    """A required backend (e.g. the build pipeline) is not available."""
-
-    status_code = 503
-    code = "SERVICE_UNAVAILABLE"
-
-
-def error_catalog() -> list[tuple[str, int]]:
-    """Every ``(code, status)`` an error envelope can carry, sorted by status.
-
-    Walked off the subclasses rather than listed, so an error added here is
-    published without a second edit - a hand-kept list is exactly what goes
-    stale. Framework HTTP errors (404 on an unknown route, 405) are not here:
-    they derive their code from the status in :mod:`common.web`.
-
-    The base class is included, not just its subclasses: nothing raises a bare
-    ``APIError``, but :mod:`common.web`'s catch-all handler renders any
-    unanticipated exception with its ``INTERNAL``/500, so that pair is a real
-    thing a client can receive and has to be published like the rest.
-
-    Returns:
-        ``(code, status_code)`` pairs, deduplicated.
-    """
-    seen: dict[str, int] = {APIError.code: APIError.status_code}
-
-    def walk(cls: type[APIError]) -> None:
-        for sub in cls.__subclasses__():
-            seen[sub.code] = sub.status_code
-            walk(sub)
-
-    walk(APIError)
-    return sorted(seen.items(), key=lambda pair: (pair[1], pair[0]))

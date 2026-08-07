@@ -11,7 +11,8 @@ Kubernetes object, and this one weighs the object against a caller.
 
 from __future__ import annotations
 
-from api.auth.claims import Principal
+from cloudlet_apis.auth import Principal
+
 from api.models.common import LABEL_GROUP, LABEL_OFFERING
 
 

@@ -396,22 +396,30 @@ in the **same `Authorization: Bearer <key>` header**. The API distinguishes the 
 a structural JWT (`header.payload.signature`) is validated as an OIDC token; an opaque token is
 compared against the single configured admin key. The key is the **raw token** (not a hash),
 sourced from Vault via ESO into `SERVERLESS_ADMIN_API_KEY` and matched with a **constant-time**
-compare (`api/auth/apikey.py`). A match yields an **admin** Principal (the key is admin-only;
+compare (`cloudlet_apis.auth.verify_admin_key`). A match yields an **admin** Principal (the key is admin-only;
 regular users go through OIDC). It defaults to empty, which **disables** key auth; set the env
 var to enable it.
 
-#### Auth as an internal component (not a separate microservice)
+#### Auth as a shared library (not a separate microservice)
 
-All OIDC interaction is encapsulated in a **self-contained auth component inside the API**
-(the `api/auth/` package - see ARCHITECTURE.md: Proposed Repository Layout), **not** a separately-deployed microservice. Because
-token validation is **stateless** (verify signature against cached JWKS + read claims),
-there is no shared state to centralize; a standalone auth service would only add a network
-hop, another deployment to secure in both clusters, and a failure point. The component owns:
+All OIDC interaction is encapsulated in a **self-contained auth component the API imports**
+(`cloudlet_apis.auth`, from the shared `cloudlet-apis` package), **not** a separately-deployed
+microservice. Because token validation is **stateless** (verify signature against cached JWKS +
+read claims), there is no shared state to centralize; a standalone auth service would only add
+a network hop, another deployment to secure in both clusters, and a failure point. The
+component owns:
 
-- SSO OIDC discovery + **JWKS fetch/cache** and **token validation** (`oidc.py`),
-- **claims → group** mapping and admin/tenant policy (`claims.py`),
-- the FastAPI **`require_auth`** dependency (and the `CurrentUser` annotation) the routers
-  use (`deps.py`); per-group authorization is asserted in the service layer (`assert_group`).
+- SSO OIDC discovery + **JWKS fetch/cache** and **token validation** (`TokenValidator`),
+- **claims → group** mapping and admin/tenant policy (`principal_from_claims`, `Principal`),
+- the **`SSOAuth.require_auth`** dependency (and the `CurrentUser` annotation) the routers
+  use; per-group authorization is asserted in the service layer (`assert_group`).
+
+It is a library rather than a copy in each API for the same reason group names are
+normalized in one place: two APIs disagreeing about which groups a token carries is an
+authorization bug, not a formatting one. What stays in this repository is `api/auth/deps.py` -
+**which of this service's settings** the component is built from - and the SSO defaults in
+`api/core/config.py`. The shared package requires an issuer rather than defaulting to one,
+so the value deciding whose signatures we trust is always a deliberate choice here.
 
 > If auth-at-the-edge is ever wanted (to keep tokens out of app code / defense-in-depth), the
 > OpenShift-native drop-ins are **oauth2-proxy** or **Authorino** as a sidecar/gateway - an
@@ -801,18 +809,14 @@ Serverless/
 │   ├── config.py                    # ControllerSettings(CommonSettings) + loop pacing
 │   ├── reconciler.py                # watch local Images -> apply the digest to every site
 │   └── digest.py                    # which digests belong on a ksvc, and how to re-apply it
-├── common/                          # shared by api + controller
+├── common/                          # shared by api + controller, in THIS repository
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
 │   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build domain
 │   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the controller)
-│   ├── names.py                     # name/branch rules + object_name - the {name}-{group} primary key
-│   ├── web.py                       # /healthz + /readyz and offline Swagger/ReDoc mounting
+│   ├── names.py                     # object_name/image+cache repos/OCI tags; re-exports the shared group rules
 │   ├── labels.py                    # ownership label keys + workload_labels
-│   ├── errors.py                    # error envelope, typed errors, exception handlers
-│   ├── requestid.py                 # X-Request-ID correlation middleware (adopt/mint)
-│   ├── logging.py                   # logging configuration (binds requestId)
-│   └── static/                      # vendored Swagger UI / ReDoc assets (airgap)
+│   └── errors.py                    # SiteTotalFailure; re-exports the shared error catalog
 ├── charts/
 │   └── serverless-api/
 │       ├── Chart.yaml
@@ -846,7 +850,7 @@ Serverless/
 > **Monorepo, future-ready.** The repo is organized as services + a shared
 > library so a **builder** microservice can be added as a second package
 > (`builder/`) without restructuring: it would import the build domain and the
-> cluster client from `common/`, ship its own Dockerfile + image
+> cluster client from `common/` and `cloudlet-apis`, ship its own Dockerfile + image
 > (`…/serverless/builder`), and deploy from the same chart. The API talks to it
 > through `common.build.BuildBackend` - today via the in-process `KpackBackend`,
 > later via a `RemoteBackend` HTTP client - with no change to the orchestration.

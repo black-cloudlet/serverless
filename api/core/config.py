@@ -2,14 +2,18 @@
 
 Environment-driven; in production the values come from Vault via the External
 Secrets Operator. The connection identity is shared and lives in
-:mod:`common.config`; this module adds the API's own fields.
+:mod:`common.config`, the SSO model in :mod:`cloudlet_apis.auth`; this module
+adds the API's own fields and this deployment's defaults for both.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import BaseModel, Field
+# The SSO model is shared - every API on the platform validates tokens the same
+# way - so it lives in cloudlet_apis and is re-exported here for existing importers.
+from cloudlet_apis.auth import SSOConfig  # noqa: F401
+from pydantic import Field
 
 # Shared connection settings + sub-configs; re-exported for existing importers.
 from common.config import (  # noqa: F401
@@ -20,41 +24,26 @@ from common.config import (  # noqa: F401
 )
 
 
-class SSOConfig(BaseModel):
-    """SSO (Keycloak) OIDC settings used by the auth component.
+class SSOSettings(SSOConfig):
+    """The shared SSO model with this deployment's defaults filled in.
 
-    Only the ``issuer`` is configured; the discovery, authorization and token
-    endpoints are all fixed Keycloak paths under it and are derived as properties.
+    ``SSOConfig.issuer`` is required: a package shared by every API must not
+    carry one environment's identity provider as a silent fallback, since that
+    is the value deciding whose signatures a service trusts. Ours is a property
+    of this deployment, so the default is re-declared here, where it is ours to
+    be wrong about.
+
+    A subclass rather than a ``default_factory`` returning a populated model:
+    pydantic-settings builds the nested model from the env vars it finds, so with
+    a factory a single ``SERVERLESS_SSO__ADMIN_GROUPS`` would construct an
+    ``SSOConfig`` with no issuer at all and fail validation. Defaults declared on
+    the field survive a partial override; a factory's do not.
     """
 
     issuer: str = "https://sso.internal/realms/serverless"
-    # Verified against `aud` when set. Empty (the default) skips the check, so
-    # tokens work without a Keycloak audience mapper.
-    audience: str = ""
     # Public Keycloak client Swagger UI uses for its "Authorize" login
     # (Authorization Code + PKCE; no secret). From Helm values, not a secret.
     swagger_client_id: str = "serverless-api-swagger"
-    groups_claim: str = "groups"
-    admin_groups: list[str] = Field(default_factory=list)
-    # Seconds the JWK set is cached before it is refetched from the JWKS URI.
-    jwks_cache_seconds: int = 3600
-    # Timeout (seconds) for the one-off OIDC discovery request.
-    discovery_timeout: float = 5.0
-
-    @property
-    def discovery_url(self) -> str:
-        """The OIDC discovery document URL (issuer + the fixed well-known path)."""
-        return f"{self.issuer.rstrip('/')}/.well-known/openid-configuration"
-
-    @property
-    def authorization_url(self) -> str:
-        """The Keycloak authorization endpoint (derived from the issuer)."""
-        return f"{self.issuer.rstrip('/')}/protocol/openid-connect/auth"
-
-    @property
-    def token_url(self) -> str:
-        """The Keycloak token endpoint (derived from the issuer)."""
-        return f"{self.issuer.rstrip('/')}/protocol/openid-connect/token"
 
 
 class Settings(CommonSettings):
@@ -74,7 +63,7 @@ class Settings(CommonSettings):
     # in local dev/tests -> the loader falls back to built-in defaults.
     runtimes_file: str = "/etc/serverless/runtimes/runtimes.yaml"
 
-    sso: SSOConfig = Field(default_factory=SSOConfig)
+    sso: SSOSettings = Field(default_factory=SSOSettings)
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth
     # rather than shipping a usable default credential.
     admin_api_key: str = ""

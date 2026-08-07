@@ -1,6 +1,15 @@
-"""Name validation and normalisation shared by every service.
+"""Naming rules for what THIS platform builds out of a name and a group.
 
-These live in ``common``, not the API's request models, because the same rules
+The platform-wide part - what a name and a group may be, and how a group is
+normalized before either is compared - lives in :mod:`cloudlet_apis.names` and is
+re-exported below, because every API on the platform has to agree on it.
+
+What stays here is what only we derive: an object name from a ``{name}-{group}``
+pair, an image repository, a cache repository, an OCI tag projected from a branch,
+and the git/image/path validators the build pipeline needs. These change when the
+pipeline changes, which is why they are not in the shared package.
+
+They live in ``common``, not the API's request models, because the same rules
 bound what reaches a cluster: a name becomes an object name, a group part of an
 image repository, a branch an image tag. Everything constructing those must agree.
 
@@ -15,19 +24,23 @@ import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
+# The platform-wide rules, re-exported so this module stays the one import site
+# for naming in this repository (see the module docstring). DNS1123 is imported
+# rather than redeclared: a second copy of the regex is a second thing to drift.
+from cloudlet_apis.names import (  # noqa: F401
+    DNS1123,
+    Group,
+    Name,
+    normalize_group,
+    validate_group,
+    validate_name,
+)
 from pydantic import AfterValidator, WithJsonSchema
 
-# DNS-1123 label: lowercase alphanumeric and '-', not starting or ending with '-'.
-DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 # RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
 HOSTNAME = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
 )
-# Leading "ggd-<1-4 digits>-" prefix some OIDC groups carry (e.g.
-# "ggd-1234-platforms" is the group "platforms").
-_GGD_PREFIX = re.compile(r"^ggd-\d{1,4}-")
-_UNDERSCORE = str.maketrans({"_": "-"})
-
 # Characters an OCI tag may not contain; the tag must also start alphanumeric
 # or '_' and is capped at 128 characters.
 _TAG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -53,71 +66,6 @@ _IMAGE_MAX = 512
 
 # A KSVC name and a DNS label are both capped here, and {name}-{group} is both.
 MAX_OBJECT_NAME = 63
-
-
-def normalize_group(group: str) -> str:
-    """Normalize a group name to its bare, DNS-safe form.
-
-    Strips the Keycloak "/" prefix, lowercases, strips a leading ``ggd-<1-4 digits>-``
-    prefix, then folds "_" to "-", so "/ggd-1234-platforms", "Platforms" and "My_Team"
-    each land on one canonical group. Applied to both the token's groups and a
-    request-supplied one, so membership compares like with like.
-
-    Lowercasing runs *before* the prefix strip so an upper-case prefix
-    ("GGD-1234-Team") is still recognized, and before the "_" fold so neither
-    rule can mask the other.
-
-    Args:
-        group: The raw group name.
-
-    Returns:
-        The normalized group name.
-    """
-    return _GGD_PREFIX.sub("", group.lstrip("/").lower()).translate(_UNDERSCORE)
-
-
-def validate_name(name: str) -> str:
-    """Validate a workload name as a DNS-1123 label.
-
-    Args:
-        name: The candidate workload name.
-
-    Returns:
-        The name unchanged.
-
-    Raises:
-        ValueError: If it isn't a DNS-1123 label of at most 63 characters.
-    """
-    if not DNS1123.match(name) or len(name) > 63:
-        raise ValueError(
-            "name must be a DNS-1123 label (lowercase alphanumeric and '-', <=63 chars)"
-        )
-    return name
-
-
-def validate_group(group: str) -> str:
-    """Normalize and validate a group name as a DNS-1123 label.
-
-    Normalization runs first, so a ``ggd-<digits>-`` prefix, "_" separators and
-    upper case are accepted on input; the check applies to the normalized form.
-
-    Args:
-        group: The candidate group name.
-
-    Returns:
-        The normalized group name.
-
-    Raises:
-        ValueError: If the normalized form isn't a DNS-1123 label of at most 63
-            characters.
-    """
-    group = normalize_group(group)
-    if not DNS1123.match(group) or len(group) > 63:
-        raise ValueError(
-            "group must be a DNS-1123 label (alphanumeric, '-' or '_', <=63 chars); "
-            "'_' is normalized to '-' and the name is lowercased"
-        )
-    return group
 
 
 def validate_hostname(host: str) -> str:
@@ -440,30 +388,10 @@ def _schema(description: str, example: str, **fields) -> WithJsonSchema:
     )
 
 
-# Shared by request models, query params and the build contract. The group
-# validator also NORMALIZES, so nothing downstream re-normalizes. Each carries a
-# JSON Schema so /openapi.json publishes the rule instead of a bare "string";
-# the patterns come from the same regexes the validators use.
-Name = Annotated[
-    str,
-    AfterValidator(validate_name),
-    _schema(
-        "DNS-1123 label: lowercase alphanumeric and '-'.",
-        "image-resizer",
-        pattern=DNS1123.pattern,
-        maxLength=63,
-    ),
-]
-Group = Annotated[
-    str,
-    AfterValidator(validate_group),
-    _schema(
-        "Owning SSO group. Normalized before validation: a 'ggd-<digits>-' prefix "
-        "is stripped, '_' becomes '-', and the name is lowercased.",
-        "payments",
-        maxLength=63,
-    ),
-]
+# Shared by request models, query params and the build contract, alongside the
+# Name/Group pair re-exported from cloudlet_apis.names above. Each carries a JSON
+# Schema so /openapi.json publishes the rule instead of a bare "string"; the
+# patterns come from the same regexes the validators use.
 Hostname = Annotated[
     str,
     AfterValidator(validate_hostname),

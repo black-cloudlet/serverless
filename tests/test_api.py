@@ -1,9 +1,9 @@
 """API routing tests with auth and services stubbed (no cluster needed)."""
 
 import pytest
+from cloudlet_apis.auth import Principal
 from fastapi.testclient import TestClient
 
-from api.auth.claims import Principal
 from api.auth.deps import require_auth
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
@@ -212,7 +212,7 @@ def test_info_is_public_and_static():
 
 async def test_startup_warmup_is_best_effort(monkeypatch):
     """A failing OIDC discovery / cluster connect must not crash startup."""
-    from api.core.config import Settings, SiteConfig, SSOConfig
+    from api.core.config import Settings, SiteConfig, SSOSettings
     from api.main import _warmup
     from api.services.sites.deployer import Deployer
 
@@ -220,11 +220,11 @@ async def test_startup_warmup_is_best_effort(monkeypatch):
         def warmup(self):
             raise RuntimeError("sso down")
 
-    monkeypatch.setattr("api.main.get_validator", lambda: _BoomValidator())
+    monkeypatch.setattr("api.main.get_auth", lambda: _BoomValidator())
 
     settings = Settings(
         auth_enabled=True,
-        sso=SSOConfig(),
+        sso=SSOSettings(),
         sites=[SiteConfig(name="site-a", cluster="site-a-0")],
         cluster_connect_timeout=0.01,
         cluster_read_timeout=0.01,
@@ -764,7 +764,7 @@ def test_the_unhandled_error_is_logged_with_the_id_the_client_was_given():
             records.append(record)
 
     client = _client_raising(RuntimeError("boom"))  # calls configure_logging()
-    web_logger = logging.getLogger("common.web")
+    web_logger = logging.getLogger("cloudlet_apis.web")
     handler = _Collect()
     web_logger.addHandler(handler)
     try:

@@ -5,6 +5,14 @@ These assertions are about *reach*, not style. The build controller
 without inheriting the API's web stack, and nothing else in the suite would
 notice if an innocuous import quietly took that away - it would just ship a
 controller carrying a web framework it never serves with.
+
+Since the shared layers moved to ``cloudlet-apis``, the risk has a new shape:
+that package's extras are what keep FastAPI and pyjwt out of the controller's
+image, so importing ``cloudlet_apis.web`` or ``cloudlet_apis.auth`` from a domain
+module would defeat the split from this side even though the package itself is
+layered correctly. ``common.errors`` is checked with the rest: it now re-exports
+from ``cloudlet_apis.errors``, and that indirection is exactly where an
+accidental heavy import would hide.
 """
 
 from __future__ import annotations
@@ -23,11 +31,18 @@ DOMAIN = [
     "common.config",
     "common.build",
     "common.kpack",
+    # The shared core, reached through this repository's re-exports: bare, it
+    # must stay as light as the modules that import it.
+    "cloudlet_apis.errors",
+    "cloudlet_apis.names",
 ]
 # Layer 2: adds the kubernetes client, still no web framework.
 CLUSTER = ["common.cluster"]
 
 FRAMEWORKS = {"fastapi", "starlette"}
+# What cloudlet-apis' [auth] extra brings. A domain module reaching these would
+# put a JWT stack in the controller's image as surely as a web framework would.
+AUTH_DEPS = {"jwt", "cryptography"}
 
 
 def _imported_by(module: str) -> set[str]:
@@ -56,6 +71,10 @@ def test_domain_modules_pull_in_no_framework_and_no_cluster_client(module):
     assert "kubernetes" not in loaded, (
         f"{module} reaches the kubernetes client; a service that only renders manifests "
         "should not have to install it"
+    )
+    assert not (loaded & AUTH_DEPS), (
+        f"{module} reaches cloudlet-apis' [auth] dependencies; the controller installs "
+        "the package without extras and would fail to import it"
     )
 
 
@@ -86,6 +105,18 @@ def test_the_build_controller_never_imports_the_api():
         text=True,
     )
     assert out.stdout == "", f"controller/ imports from api/:\n{out.stdout}"
+
+
+def test_the_build_controller_carries_no_auth_stack():
+    """The controller installs cloudlet-apis bare, so pyjwt must never be reachable.
+
+    The API gets it through the ``[auth]`` extra. An import in ``common`` that
+    pulled ``cloudlet_apis.auth`` in would make the controller's image fail to
+    start - it does not install that extra - and nothing else here would say why.
+    """
+    for module in ("controller.main", "controller.reconciler", "controller.digest"):
+        leaked = _imported_by(module) & AUTH_DEPS
+        assert not leaked, f"{module} reaches {sorted(leaked)}"
 
 
 def test_common_never_imports_the_api():

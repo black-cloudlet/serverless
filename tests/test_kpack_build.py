@@ -513,7 +513,7 @@ class _SiteAwareBuilder(_RecordingBuilder):
 
 
 def _principal():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     return Principal(subject="u", username="alice", groups=["payments"])
 
@@ -1925,9 +1925,9 @@ def test_the_history_limit_never_prunes_the_build_the_trigger_needs():
 
 async def test_build_is_refused_for_a_group_the_caller_is_not_in():
     """Authorization is the engine's, and it runs before anything is read."""
+    from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.auth.claims import Principal
     from common.errors import ForbiddenError
 
     svc = _build_service({"site-a": _build_cluster()}, _TriggeringBuilder())

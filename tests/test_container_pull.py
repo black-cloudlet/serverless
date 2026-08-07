@@ -8,9 +8,9 @@ a new one, and the carry-forward that stops an ordinary update cutting another.
 from __future__ import annotations
 
 import pytest
+from cloudlet_apis.auth import Principal
 from fastapi import BackgroundTasks
 
-from api.auth.claims import Principal
 from api.core.config import Settings
 from api.models.common import ANNOTATION_PULL_STAMP, LABEL_GROUP, LABEL_OFFERING, Scaling
 from api.services.container import ContainerService

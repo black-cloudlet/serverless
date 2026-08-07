@@ -1,6 +1,7 @@
 """The one ownership rule every read path shares."""
 
-from api.auth.claims import Principal
+from cloudlet_apis.auth import Principal
+
 from api.models.common import LABEL_GROUP, LABEL_OFFERING
 from api.services.state.ownership import owned_by
 

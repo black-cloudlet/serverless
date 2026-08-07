@@ -11,6 +11,8 @@ The same pass prunes the Images a switchover stranded in the other sites
 
 from __future__ import annotations
 
+from cloudlet_apis.logging import get_logger
+
 from common import kpack
 from common.cluster import Cluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings
@@ -22,7 +24,6 @@ from common.labels import (
     MANAGED_BY_VALUE,
     OFFERING_FUNCTION,
 )
-from common.logging import get_logger
 from controller.digest import needs_image, with_image
 
 logger = get_logger(__name__)

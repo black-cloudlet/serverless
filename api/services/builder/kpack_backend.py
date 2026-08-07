@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from cloudlet_apis.logging import get_logger
+
 from api.services.builder.runtimes import RuntimeRegistry
 from api.services.manifests import secrets as secret_svc
 from common import kpack
@@ -37,7 +39,6 @@ from common.cluster import Cluster, ResourceKind
 from common.config import CommonSettings
 from common.errors import NotFoundError, ValidationError
 from common.labels import LABEL_GROUP, LABEL_OFFERING, LABEL_WORKLOAD, OFFERING_FUNCTION
-from common.logging import get_logger
 from common.names import object_name
 
 logger = get_logger(__name__)
