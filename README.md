@@ -5,8 +5,8 @@ platform that wraps the open-source [Knative](https://knative.dev/) project on *
 exposed through a **Python / FastAPI** REST API.
 
 - **FaaS** - clients provide a Git repo (URL, branch, token) and source code; runtimes are
-  **configurable** (default **Python, Go, JavaScript**; listed on `GET /api/v1/info`). Built
-  with Knative Functions / buildpacks.
+  **configurable** (the chart ships **Python, Go, Node**; listed on
+  `GET /api/v1/functions/info`). Built in-cluster by **kpack** with Cloud Native Buildpacks.
 - **CaaS** - clients provide a container image plus registry credentials.
 - Both support **env vars**, **mounted secrets/config files**, and **scaling options**, and
   are exposed externally via **OpenShift Routes**.
@@ -17,9 +17,18 @@ exposed through a **Python / FastAPI** REST API.
 
 ## Documentation
 
-- **[Architecture & Design](docs/ARCHITECTURE.md)** - the full design document: component and
-  sequence diagrams, REST API specification, repository layout, and sample manifests.
+Start with **[docs/](docs/README.md)**, which indexes the set:
+
+- **[Architecture & Design](docs/ARCHITECTURE.md)** - the platform as a whole: multi-site
+  active/active, networking, auth, secrets, airgap, and the REST conventions both
+  offerings share.
+- **[Functions](docs/FUNCTIONS.md)** / **[Containers](docs/CONTAINERS.md)** - the two offerings.
+- **[Building](docs/BUILDING.md)** - how source becomes an image (kpack + buildpacks).
+- **[Deploying](docs/DEPLOYING.md)** - charts, GitOps, RBAC, sample manifests.
 - **[Changelog](CHANGELOG.md)** - notable changes per release.
+
+The code is the source of truth; where a document disagrees with it, the document is
+the bug.
 
 ## Layout
 
@@ -39,6 +48,7 @@ common/     shared by api + controller: build domain, cluster client (mTLS),
             settings, labels, the platform's own naming rules, SiteTotalFailure
 charts/     Helm chart (2 Deployments, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
 tests/      unit + API tests
+dev/        sample runtimes file, for running the API locally
 .github/    CI/CD workflows: checks (reusable), ci, release
 Dockerfile            the API image
 Dockerfile.controller the build controller image
@@ -69,10 +79,19 @@ SERVERLESS_AUTH_ENABLED=false uvicorn api.main:app --reload
 # Interactive API docs at http://127.0.0.1:8000/docs
 ```
 
+`.env.example` points `SERVERLESS_RUNTIMES_FILE` at `dev/runtimes.yaml`. That file is not
+optional: the runtimes list has no built-in fallback, so the app refuses to start without
+it (docs/BUILDING.md - Runtime Versions & Dependencies). The configured sites are not
+reachable locally either; that is expected - the startup warmup logs a warning and the
+API serves, since cluster connections are lazy.
+
 Configuration is environment-driven (`SERVERLESS_*`); see `.env.example`. In production the
 values are projected from Vault via the External Secrets Operator
 (docs/ARCHITECTURE.md - Secrets Management).
 
-> **Status:** Application scaffold implemented (endpoints, auth, multi-site deployer, manifest
-> builders, Helm chart) with unit/API tests. The in-cluster FaaS build backend
-> (`func`/Tekton) is the remaining integration point - see `api/services/builder/kpack_backend.py`.
+> **Status:** Implemented end to end - endpoints, auth, multi-site deployer, manifest
+> builders, kpack builds and the build controller that rolls each finished digest out -
+> with unit/API tests. Not yet implemented: the per-function **git webhook** that would pin
+> a pushed commit SHA to a build (`BuildRequest.revision` already carries the field); until
+> then a build follows the branch head, and `POST .../functions/{name}/build` is the
+> on-demand trigger.

@@ -60,6 +60,15 @@ _IMAGE_MAX = 512
 # A KSVC name and a DNS label are both capped here, and {name}-{group} is both.
 MAX_OBJECT_NAME = 63
 
+# An environment variable name, exactly as Kubernetes accepts one
+# (`util/validation.IsEnvVarName`). It is also used verbatim as the key of the
+# workload's `{workload}-env` Secret, and this is a subset of what a Secret key
+# allows, so one rule covers both writers.
+ENV_VAR_NAME = re.compile(r"^[-._a-zA-Z][-._a-zA-Z0-9]*$")
+# A ConfigMap/Secret key is capped here, and a mount path becomes one (see
+# `api.services.manifests.files._key`).
+MAX_MOUNT_PATH = 253
+
 
 def validate_hostname(host: str) -> str:
     """Validate a custom hostname as a DNS-1123 label or a lowercase FQDN.
@@ -219,6 +228,78 @@ def validate_source_path(path: str) -> str:
         raise ValueError("path must not contain empty, '.' or '..' segments")
     if len(cleaned) > 255:
         raise ValueError("path must be at most 255 characters")
+    return cleaned
+
+
+def validate_env_var_name(name: str) -> str:
+    """Validate an environment variable name.
+
+    Here for the same reason :func:`validate_image_ref` is: the value is written
+    verbatim into the container's ``env`` **and**, for a secret var, used as the
+    key of the ``{workload}-env`` Secret. Unchecked, a name the API server
+    refuses is accepted (202) and dies in the background apply as a per-site
+    error about a field the caller cannot see - the failure mode the validators
+    in this module exist to prevent.
+
+    The rule is Kubernetes' own ``IsEnvVarName``: ``[-._a-zA-Z][-._a-zA-Z0-9]*``,
+    which cannot start with a digit and, since it may not begin with ``.``
+    followed by nothing else, can never be ``.`` or ``..`` - the two keys a
+    ConfigMap and a Secret both reject.
+
+    Args:
+        name: The candidate variable name.
+
+    Returns:
+        The name unchanged.
+
+    Raises:
+        ValueError: If it is empty or not a legal environment variable name.
+    """
+    if not name:
+        raise ValueError("env var name must not be empty")
+    if name.startswith(".."):
+        raise ValueError("env var name must not start with '..'")
+    if not ENV_VAR_NAME.match(name):
+        raise ValueError(
+            "env var name must be letters, digits, '-', '_' or '.', and must not "
+            "start with a digit (e.g. 'LOG_LEVEL', 'my.env-name')"
+        )
+    return name
+
+
+def validate_mount_path(path: str) -> str:
+    """Validate the path a file is mounted at inside the container.
+
+    Two consumers, both of which reject silently late. Kubernetes requires a
+    non-empty ``mountPath`` containing no ``:``; and the path is projected into
+    the backing ConfigMap/Secret key the file is stored under
+    (``api.services.manifests.files._key``), which is capped and cannot address
+    a parent directory.
+
+    ``..`` is refused rather than normalised: the mount is a ``subPath`` of a
+    shared volume, so a path escaping it would not mean what it says.
+
+    Args:
+        path: The candidate mount path.
+
+    Returns:
+        The path stripped of surrounding whitespace.
+
+    Raises:
+        ValueError: If it is empty, too long, holds ``:``/control characters, or
+            contains a ``..`` segment.
+    """
+    cleaned = path.strip()
+    if not cleaned:
+        raise ValueError("mountPath must not be empty")
+    if len(cleaned) > MAX_MOUNT_PATH:
+        raise ValueError(f"mountPath must be at most {MAX_MOUNT_PATH} characters")
+    if ":" in cleaned:
+        raise ValueError("mountPath must not contain ':'")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in cleaned):
+        raise ValueError("mountPath must not contain control characters")
+    if any(seg == ".." for seg in cleaned.split("/")):
+        raise ValueError("mountPath must not contain a '..' segment")
     return cleaned
 
 
@@ -429,5 +510,27 @@ SourcePath = Annotated[
         "the repository root. Surrounding '/' are stripped and '..' is rejected.",
         "services/api",
         maxLength=255,
+    ),
+]
+EnvVarName = Annotated[
+    str,
+    AfterValidator(validate_env_var_name),
+    _schema(
+        "Environment variable name. Letters, digits, '-', '_' and '.'; may not start "
+        "with a digit. A secret var is stored under this same key.",
+        "LOG_LEVEL",
+        pattern=ENV_VAR_NAME.pattern,
+    ),
+]
+MountPath = Annotated[
+    str,
+    AfterValidator(validate_mount_path),
+    # No `pattern`: the validator strips surrounding whitespace first, so a
+    # pattern running ahead of it would reject what it fixes (as for Group/SourcePath).
+    _schema(
+        "Path the file is mounted at inside the container. Must not be empty, "
+        "contain ':', or contain a '..' segment.",
+        "/etc/app/config.yaml",
+        maxLength=MAX_MOUNT_PATH,
     ),
 ]

@@ -1,9 +1,13 @@
 """Shared test setup.
 
-The runtimes ConfigMap is required at runtime (``api.services.runtimes``), so
-the suite provides a real file rather than a stub: tests then exercise the same
-load path a deployment does, and a change that breaks the file's shape fails
-here instead of in production.
+The runtimes ConfigMap is required at runtime
+(``api.services.builder.runtimes``), so the suite provides a real file rather
+than a stub: tests then exercise the same load path a deployment does, and a
+change that breaks the file's shape fails here instead of in production.
+
+Deliberately its own copy, not ``dev/runtimes.yaml``: this one is a fixture that
+tests pin expectations against (the exact versions below appear in assertions),
+so it must be free to differ from what a developer runs locally.
 """
 
 from __future__ import annotations

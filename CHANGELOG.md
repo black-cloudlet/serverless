@@ -7,134 +7,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
-### Changed
-
-- **The parts every API on the platform repeats now come from `cloudlet-apis`.**
-  The error envelope, logging, `X-Request-ID` correlation, the `/healthz` +
-  `/readyz` + offline-docs wiring, the name/group rules and SSO auth moved into
-  a shared package and are installed rather than vendored. Its extras mirror the
-  split the two images already had: the API installs `cloudlet-apis[web,auth]`,
-  the controller installs it bare and still ships no web stack -
-  `tests/test_layering.py` now checks both, that no domain module reaches a web
-  framework and that none reaches the `[auth]` dependencies either.
-
-  What stayed is what is ours. `common/errors.py` re-exports the shared catalog
-  and defines `SiteTotalFailure`, which is picked up by `error_catalog()` walking
-  subclasses, so `/info` publishes it unchanged. `common/names.py` re-exports
-  `normalize_group`/`validate_name`/`validate_group` and keeps everything this
-  platform derives from them - object names, image and cache repositories, OCI
-  tags, the git/image/path validators - because those change when the build
-  pipeline changes. Every `from common.errors import ...` and
-  `from common.names import ...` in this repository still resolves.
-
-  **Behaviour is unchanged**, including the response envelope, the correlation
-  id and the admin-key path. Two things to know when upgrading: the auth
-  component is now built from settings by `api.auth.deps.get_auth()` instead of
-  resolving a module-level singleton per request, so it holds one JWKS cache per
-  process rather than one per interpreter; and `SSOConfig.issuer` is required in
-  the shared package, with this deployment's default re-declared on
-  `api.core.config.SSOSettings`. No environment variable changed name or meaning.
-
-- **BREAKING (chart values):** the chart now renders two Deployments, so the
-  per-deployment values moved into a section each. `replicaCount`, `resources`,
-  `service`, `route`, `deployment.*` and `image.repository`/`image.tag` are now
-  under `api`, and the build controller's equivalents under `buildController`;
-  both take the same `labels`/`annotations` (Deployment) and `podLabels`/
-  `podAnnotations` (pods), and neither touches the selector, which is immutable
-  once the Deployment exists. The root `image`
-  section keeps `registry`, `tag` and `pullPolicy`, so a mirrored install still
-  overrides those once for both, while each names its own `repository` - the two
-  services ship as two images. Existing values files need the keys re-nested;
-  nothing else changed shape.
-- **One writer per phase for a function's KSVC image.** A create writes it once,
-  at `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}`;
-  after that the build controller is the only thing that writes it, and only
-  ever as a digest. A `PUT` now keeps whatever the workload is running, whatever
-  changed - it used to write the branch tag so that *something* eventually ran
-  the new build, which cut a revision of the code already running (the tag
-  resolves to the deployed digest until the new build finishes) with the real
-  rollout arriving minutes later regardless. `POST .../build` writes no KSVC at
-  all, as before.
-
-  The controller correspondingly stopped comparing repositories before it
-  writes. That guard existed so an `Image` under an old registry layout could
-  not pull a workload backwards, but as the only writer it also made a layout
-  change unfixable - nothing else would re-point the workload, so the function
-  would sit on a repository nothing pushes to. Stranded Images are now handled
-  where they come from, by the prune.
-- `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
-  They were only ever annotations, but the runtime import meant `common.logging`
-  - which reads the request-id context var from there - pulled a web framework
-  in behind every log line, and so did anything that logged. `common/__init__.py`
-  already claimed logging imported no framework; now it does not. The layering
-  test covers the controller's modules, so this cannot come back silently.
-- `Deployer` no longer has its own copy of "build a client per site" and "which
-  of these is local"; both are `common.cluster.clusters_for` / `select_local`,
-  which the build controller needs to mean exactly the same thing by.
-- `api/services/` is grouped by responsibility instead of being a flat directory
-  of 22 modules: `manifests/` builds what gets applied, `sites/` talks to the
-  clusters, `state/` interprets what came back, and `builder/` covers the
-  function image build. The workload engine and the two offering services stay
-  at the top level, since they are what the routers hold. Module filenames are
-  unchanged and every import kept its existing local alias, so the diff is moves
-  and import lines - no call site changed. (`builder/`, not `build/`: the latter
-  is gitignored as a Python artifact directory.)
-- The check that a fetched workload belongs to the caller had five copies - the
-  single GET, the stats view, the log snapshot, the update's state load, and the
-  delete. It is one function now, `services.state.ownership.owned_by`. What the
-  copies actually differed in was the *reaction* to a denial (404, or recording
-  the site so the fan-out can tell denied from unreachable), so that stays at
-  each call site; the rule itself does not. A read path added later cannot now
-  be the one that forgets to check the offering label alongside the group.
-- The listing's merge - per-site KSVCs into one summary per workload - moved out
-  of `WorkloadService.list` into `services.state.summaries`. It was already pure
-  dict work with the I/O above it, and its rules are the interesting part: a
-  workload on one site of two reads `Ready` rather than `Degraded`, a site that
-  did not answer is skipped, a running build outranks the KSVC status. Those are
-  now stated against plain dicts instead of fake clusters, and `list` is 63 lines
-  instead of 110. No behaviour change.
-- Function images and their build caches now sit under
-  `build.builderRepository`, the same root the composed Builder images use:
-  `{registry.url}/{registry.organization}/{build.builderRepository}/{group}/{name}`.
-  One value covers both because they are pushed by the same credential,
-  mirrored together, and cleaned up against the same root; a function cannot
-  collide with a Builder, which is one path component below the base where a
-  function is two. Either prefix may be empty and is skipped, so a flat install
-  is unaffected. `RegistryConfig.path` is now the single derivation of the
-  segment between host and `{group}/{name}` - the image reference hangs off it
-  and the Quay repository delete addresses the same string with the host
-  removed, so cleanup cannot delete a different repository than the build
-  pushed to.
-
-  Changing it on an install that already has functions is handled by the
-  re-tag path below: any `PUT` per function, and the old repositories are
-  reclaimed.
-
-### Fixed
-
-- **A moved registry layout wedged every later write to a function.** `spec.tag`
-  is immutable on a kpack `Image` - `validateTag` compares against the baseline
-  and rejects a change at admission - so applying a re-tagged `Image` failed.
-  Not only did the documented migration never work: `PUT` and `POST .../build`
-  both emit the `Image` manifest, so *any* write to an affected function was
-  rejected until someone deleted the object by hand.
-
-  The API now deletes the `Image` and lets the apply recreate it whenever the
-  computed tag differs from the deployed one - one GET on the build site per
-  write, a no-op in every normal case. A new `Image` has no prior `Build`, so it
-  builds immediately, which makes the whole migration "change the value, send
-  any `PUT`". Build history resets, since `Build`s are owned by the `Image`.
-
-  The old image and cache repositories are **reclaimed** at the same time,
-  through the Quay API the delete path already uses. Cleanup on delete derives
-  the *current* layout, so without this each function leaked a repository pair
-  permanently and the old mutable tag was left pointing at content nothing
-  tracked. Skipped when the previous reference is on another **host** - this
-  token addresses one registry, and a same-named path elsewhere belongs to
-  somebody else.
-
 ### Added
 
+- `env[].name` and `files[].mountPath` are validated at the edge, the last two
+  caller-supplied strings that reached a cluster without a rule. An env name now
+  follows Kubernetes' own `IsEnvVarName` (`[-._a-zA-Z][-._a-zA-Z0-9]*`), which is
+  also what the `{workload}-env` Secret accepts as a key, since a secret var is
+  stored under its own name; a mount path must be non-empty and carry no `:` or
+  `..` segment. Both were previously accepted (202) and failed in the background
+  apply as a per-site error about a field the caller never sees - the failure
+  mode every other validator in `common/names.py` exists to prevent.
+- `dev/runtimes.yaml`, so the local-development flow in the README works. The
+  runtimes file is required and has no fallback, so `uvicorn api.main:app` had
+  been exiting at startup with `RuntimeConfigError` unless the operator happened
+  to have `/etc/serverless/runtimes/runtimes.yaml` on their machine.
+  `.env.example` now points at it.
 - **The build controller** (`controller/`, `python -m controller.main`), a second
   Deployment that closes the last gap in the build path: a finished build now
   reaches the running function. It watches kpack `Image` objects in the local
@@ -350,7 +237,152 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `BuildRequest`, not the runtimes ConfigMap, not the kpack `Image` - so an app
   that did not read `$PORT` had no way to say so and simply never became ready.
 
+
+- `build.scc` ships a least-privilege OpenShift `SecurityContextConstraints` for
+  kpack build pods, off by default. A build pod runs as the builder image's CNB
+  user and group - uid 1001, gid 1000 on the Paketo jammy images, which are not
+  the same number - and `restricted-v2` allocates uids from the namespace's own
+  range and rejects an explicit one outside it. With nothing else available the
+  pod is refused at admission and the build never starts, per function rather
+  than per install: a function build runs as the `fn-{workload}` account the API
+  creates at request time. The SCC grants those two ids and nothing more, and
+  carries no priority, so pods `restricted-v2` can admit are unaffected.
+  `anyuid` would also have worked, and would also have permitted uid 0
+  (docs/DEPLOYING.md - OpenShift SCC for builds).
+
 ### Changed
+
+- **The parts every API on the platform repeats now come from `cloudlet-apis`.**
+  The error envelope, logging, `X-Request-ID` correlation, the `/healthz` +
+  `/readyz` + offline-docs wiring, the name/group rules and SSO auth moved into
+  a shared package and are installed rather than vendored. Its extras mirror the
+  split the two images already had: the API installs `cloudlet-apis[web,auth]`,
+  the controller installs it bare and still ships no web stack -
+  `tests/test_layering.py` now checks both, that no domain module reaches a web
+  framework and that none reaches the `[auth]` dependencies either.
+
+  What stayed is what is ours. `common/errors.py` re-exports the shared catalog
+  and defines `SiteTotalFailure`, which is picked up by `error_catalog()` walking
+  subclasses, so `/info` publishes it unchanged. `common/names.py` re-exports
+  `normalize_group`/`validate_name`/`validate_group` and keeps everything this
+  platform derives from them - object names, image and cache repositories, OCI
+  tags, the git/image/path validators - because those change when the build
+  pipeline changes. Every `from common.errors import ...` and
+  `from common.names import ...` in this repository still resolves.
+
+  **Behaviour is unchanged**, including the response envelope, the correlation
+  id and the admin-key path. Two things to know when upgrading: the auth
+  component is now built from settings by `api.auth.deps.get_auth()` instead of
+  resolving a module-level singleton per request, so it holds one JWKS cache per
+  process rather than one per interpreter; and `SSOConfig.issuer` is required in
+  the shared package, with this deployment's default re-declared on
+  `api.core.config.SSOSettings`. No environment variable changed name or meaning.
+
+- **Documentation corrected against the code**, which is the source of truth.
+  The substantive drift: ARCHITECTURE.md and FUNCTIONS.md still described the
+  FaaS build as Knative Functions (`func`) with a synchronous build returning a
+  digest and a `201`, three engine changes ago - it is kpack, declarative, and
+  the digest arrives from the build controller; ARCHITECTURE.md claimed function
+  code changes could not be made via `PUT` ("recreate") and that a container's
+  `image` defaulted to the deployed one when omitted, both the opposite of what
+  the models do; its partial-failure table published `201`/`207` status codes
+  that the async 202-and-poll flow never returns; its site-config sample carried
+  a per-site `apiServer` that does not exist (the endpoint is derived from the
+  cluster name); the error table was missing `503`, which is the code every
+  fail-closed path returns. Two `PUT` recipes in FUNCTIONS.md were bodies the
+  API would reject for missing required fields. Also: `GET /api/v1/info` (long
+  split per offering), the `func` glossary entry, a table broken mid-render, and
+  stale symbol names (`BuildBackend.build`, `_secret_data`, `_DEFAULT_RUNTIMES`).
+- `.env.example` claimed the admin API key is hashed before comparison and that
+  it "defaults to a well-known dev value". Neither is true: the configured value
+  *is* the credential, compared raw in constant time, and the default is empty,
+  which disables key auth. It also shipped a non-empty key that contradicted its
+  own comment, listed a `SERVERLESS_SITES` field the settings ignore, and omitted
+  `SERVERLESS_BASE_DOMAIN` and `SERVERLESS_RUNTIMES_FILE`, without which the app
+  cannot reach a cluster or start.
+- The git **webhook** is documented as planned rather than as shipped. It was
+  named as a live write path in three tables (the Image-CR writer, the causes of
+  a new `Build`, and the write-path matrix) while the code has only the
+  `BuildRequest.revision` field it will use. The convergence rule it must follow
+  is kept, marked as the constraint on the endpoint's future shape.
+- The changelog's `[Unreleased]` section had three `### Added`/`### Changed`/
+  `### Fixed` headings each; merged into one of each, in Keep a Changelog's
+  order, with every entry preserved verbatim.
+- **BREAKING (chart values):** the chart now renders two Deployments, so the
+  per-deployment values moved into a section each. `replicaCount`, `resources`,
+  `service`, `route`, `deployment.*` and `image.repository`/`image.tag` are now
+  under `api`, and the build controller's equivalents under `buildController`;
+  both take the same `labels`/`annotations` (Deployment) and `podLabels`/
+  `podAnnotations` (pods), and neither touches the selector, which is immutable
+  once the Deployment exists. The root `image`
+  section keeps `registry`, `tag` and `pullPolicy`, so a mirrored install still
+  overrides those once for both, while each names its own `repository` - the two
+  services ship as two images. Existing values files need the keys re-nested;
+  nothing else changed shape.
+- **One writer per phase for a function's KSVC image.** A create writes it once,
+  at `{registry.url}/{organization}/{builderRepository}/{group}/{name}:{branch}`;
+  after that the build controller is the only thing that writes it, and only
+  ever as a digest. A `PUT` now keeps whatever the workload is running, whatever
+  changed - it used to write the branch tag so that *something* eventually ran
+  the new build, which cut a revision of the code already running (the tag
+  resolves to the deployed digest until the new build finishes) with the real
+  rollout arriving minutes later regardless. `POST .../build` writes no KSVC at
+  all, as before.
+
+  The controller correspondingly stopped comparing repositories before it
+  writes. That guard existed so an `Image` under an old registry layout could
+  not pull a workload backwards, but as the only writer it also made a layout
+  change unfixable - nothing else would re-point the workload, so the function
+  would sit on a repository nothing pushes to. Stranded Images are now handled
+  where they come from, by the prune.
+- `common.requestid` imports the Starlette ASGI types under `TYPE_CHECKING`.
+  They were only ever annotations, but the runtime import meant `common.logging`
+  - which reads the request-id context var from there - pulled a web framework
+  in behind every log line, and so did anything that logged. `common/__init__.py`
+  already claimed logging imported no framework; now it does not. The layering
+  test covers the controller's modules, so this cannot come back silently.
+- `Deployer` no longer has its own copy of "build a client per site" and "which
+  of these is local"; both are `common.cluster.clusters_for` / `select_local`,
+  which the build controller needs to mean exactly the same thing by.
+- `api/services/` is grouped by responsibility instead of being a flat directory
+  of 22 modules: `manifests/` builds what gets applied, `sites/` talks to the
+  clusters, `state/` interprets what came back, and `builder/` covers the
+  function image build. The workload engine and the two offering services stay
+  at the top level, since they are what the routers hold. Module filenames are
+  unchanged and every import kept its existing local alias, so the diff is moves
+  and import lines - no call site changed. (`builder/`, not `build/`: the latter
+  is gitignored as a Python artifact directory.)
+- The check that a fetched workload belongs to the caller had five copies - the
+  single GET, the stats view, the log snapshot, the update's state load, and the
+  delete. It is one function now, `services.state.ownership.owned_by`. What the
+  copies actually differed in was the *reaction* to a denial (404, or recording
+  the site so the fan-out can tell denied from unreachable), so that stays at
+  each call site; the rule itself does not. A read path added later cannot now
+  be the one that forgets to check the offering label alongside the group.
+- The listing's merge - per-site KSVCs into one summary per workload - moved out
+  of `WorkloadService.list` into `services.state.summaries`. It was already pure
+  dict work with the I/O above it, and its rules are the interesting part: a
+  workload on one site of two reads `Ready` rather than `Degraded`, a site that
+  did not answer is skipped, a running build outranks the KSVC status. Those are
+  now stated against plain dicts instead of fake clusters, and `list` is 63 lines
+  instead of 110. No behaviour change.
+- Function images and their build caches now sit under
+  `build.builderRepository`, the same root the composed Builder images use:
+  `{registry.url}/{registry.organization}/{build.builderRepository}/{group}/{name}`.
+  One value covers both because they are pushed by the same credential,
+  mirrored together, and cleaned up against the same root; a function cannot
+  collide with a Builder, which is one path component below the base where a
+  function is two. Either prefix may be empty and is skipped, so a flat install
+  is unaffected. `RegistryConfig.path` is now the single derivation of the
+  segment between host and `{group}/{name}` - the image reference hangs off it
+  and the Quay repository delete addresses the same string with the host
+  removed, so cleanup cannot delete a different repository than the build
+  pushed to.
+
+  Changing it on an install that already has functions is handled by the
+  re-tag path below: any `PUT` per function, and the old repositories are
+  reclaimed.
+
 
 - **Breaking:** the single-workload `GET` no longer returns `sites[].usage`. Live
   usage moved to `/stats`, which is where a client polling for it should be
@@ -378,90 +410,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   offering. `apply_workload` takes an `ApplyRequest` instead of 25 keyword
   arguments. The offering constants move to `common/labels.py`, beside the
   `LABEL_OFFERING` they are the values of. No behaviour change.
-### Fixed
-
-- DNS was blocked in the workloads namespace on OpenShift: `allow-egress-dns` opened
-  53, but a NetworkPolicy matches the destination pod's port and OpenShift's CoreDNS
-  listens on 5353. New `networkPolicy.dnsPorts`, default `[53, 5353]`.
-- Listing functions reported a normal first build as `Degraded`. The build-first
-  rule (docs/FUNCTIONS.md - Function Status Resolution) was applied only on the
-  single GET, so `GET .../functions` read the KSVC alone - and that KSVC is
-  failing to pull an image kpack has not pushed yet. The list now folds the build
-  state in exactly as the GET does, and the two can no longer disagree about the
-  same function. It costs one extra read for the whole listing, not one per
-  function: `BuildBackend.statuses` label-selects every one of a group's kpack
-  `Image`s from the local site in a single call, overlapped with the site
-  fan-out. A container listing does not make the call at all.
-- A function's per-site rows contradicted its own header while it built: the
-  header said `Building` and the `sites` table directly below said `Failed` -
-  `Unable to fetch image "..."`, which reads as a broken deploy during what is a
-  normal build. While a build is in flight a failing site now reports `Building`
-  with no error, since that pull failure is the running build rather than a
-  second, independent one; the build's own state stays on `build`. Only a
-  *running* build masks anything - a failed build leaves the rows untouched,
-  because then the image genuinely never arrives and the site is telling the
-  truth. `Building` is published in the site-status vocabulary on `/info`
-  alongside the workload one.
-- `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
-  the response read `spec.path`, but `WorkloadSpec` never declared the field, so
-  `parse_spec`'s `path=` was silently dropped by Pydantic and the read raised
-  `AttributeError`. That URL is the `statusUrl` every function 202 advertises, so
-  no function deploy could be observed at all.
-- Any unanticipated exception is now rendered as the documented error envelope
-  (`500`/`INTERNAL`) with its `requestId`, in the body and the `X-Request-ID`
-  header, instead of Starlette's plain-text `Internal Server Error` with no code
-  and no correlation id.
-- A secret file holding non-UTF-8 bytes (a keystore, a DER certificate) failed
-  the request with a 500: content was decoded to `str` with `surrogateescape` and
-  the re-encode then raised. The same round-trip broke keep-on-update for any
-  such file already stored.
-- Undecodable `contentBase64` returned 500 rather than 400. It is now rejected by
-  the request model, which is early enough - the accept path echoes the submitted
-  spec back before the service-layer validation runs.
-- SSO groups whose names use `_` or mixed case (e.g. `My_Team`) were unusable: the
-  caller authenticated fine and carried the group in their `groups` claim, but
-  every request naming that group was rejected with a `422`, because both are legal
-  in a Keycloak group and illegal in the DNS-1123 object names and hosts the group
-  is interpolated into (`{name}-{group}`, `{name}-{group}.{base_domain}`).
-  `normalize_group` now lowercases and folds `_` to `-` alongside the existing `/`
-  and `ggd-<digits>-` stripping (lowercasing runs first, so an upper-case
-  `GGD-1234-` prefix is still recognized). Because normalization is applied at both
-  edges — the token claim and the `{group}` path segment — the API accepts any
-  spelling in the path and they all resolve to the same group; the lowercase
-  hyphenated form is what is stored, deployed, and returned. Configured admin
-  groups are normalized before the admin-membership comparison too, so an admin
-  group written `Platform_Admins` still matches. Names normalization can't rescue
-  (a leading/trailing `_`, whitespace, non-ASCII) are still rejected — the DNS-1123
-  check runs on the normalized form.
-- `_creation_time` used the Python-2 `except ValueError, AttributeError:` form,
-  a `SyntaxError` on any supported Python that broke importing the entire
-  `workloads` module (and with it the whole API); parenthesized to
-  `except (ValueError, AttributeError):`.
-- A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
-  reports `Ready=False`, the per-site `error` carries the specific cause from the
-  Revision's failing sub-condition (e.g. `ContainerHealthy` - image-pull error,
-  crash, quota), falling back to the KSVC's aggregate message and then a reason
-  code, instead of `status: "Failed"` with `error: null`. Reuses the Revision
-  read already done for the replica count, so no extra cluster call.
-- `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
-  positional arguments, which raised `TypeError: get() takes 1 positional
-  argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
-
-### Added
-
-- `build.scc` ships a least-privilege OpenShift `SecurityContextConstraints` for
-  kpack build pods, off by default. A build pod runs as the builder image's CNB
-  user and group - uid 1001, gid 1000 on the Paketo jammy images, which are not
-  the same number - and `restricted-v2` allocates uids from the namespace's own
-  range and rejects an explicit one outside it. With nothing else available the
-  pod is refused at admission and the build never starts, per function rather
-  than per install: a function build runs as the `fn-{workload}` account the API
-  creates at request time. The SCC grants those two ids and nothing more, and
-  carries no priority, so pods `restricted-v2` can admit are unaffected.
-  `anyuid` would also have worked, and would also have permitted uid 0
-  (docs/DEPLOYING.md - OpenShift SCC for builds).
-
-### Changed
 
 - `ClusterStack` and `ClusterStore` moved out of this chart into the kpack
   chart (`clusterBuild.stacks` / `clusterBuild.stores`), along with the
@@ -564,6 +512,127 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Raised the dependency floors to the Dependabot python-deps group versions.
 - Fixed README/ARCHITECTURE references left pointing at the old `app/` layout, and
   moved the revision changelog out of the architecture doc into this file.
+
+### Fixed
+
+- **A healthy workload could report `Degraded` because of its usage read.**
+  `site_read.site_usage` documents that it never raises - it runs inside the
+  `/stats` fan-out, where an escaping exception becomes a `Failed` site and a
+  `Degraded` rollup - but only the metrics *read* was inside the guard, not the
+  parse. A quantity in a form `state.metrics` does not recognise (Kubernetes may
+  render one in decimal-exponent notation) therefore escaped as a `ValueError`
+  and failed the site. The parse is now inside the guard, so an unreadable
+  figure reports `measured=False` and the site keeps the status it earned.
+- `POST .../containers/{name}/pull` answered its 202 with an empty `hostname`
+  when the workload carried no host annotation, where the function rebuild path
+  derives the default host for exactly that case. It now derives it too.
+- The release workflow pushed the version tag **before** running the check
+  suite, so a failed check left a tag behind - and the workflow refuses a
+  version that already has one, making that version unreleasable until someone
+  deleted the tag by hand. Checks now gate the tag: `validate` (version string
+  and tag-does-not-exist) -> `checks` -> `prepare` (bump, commit, tag) ->
+  publish. Nothing in the suite depends on the stamped version, so this costs
+  nothing.
+- The chart-push step piped `helm push` into `tee` without `pipefail`, so the
+  step took `tee`'s exit status and a failed push fell through to an empty
+  digest, surfacing later as a confusing cosign error. It now fails at the push,
+  and refuses to sign if no digest was reported.
+- `.gitattributes` still marked `app/static/**` vendored - the package was
+  renamed to `common/` - so the vendored Swagger UI / ReDoc blobs were being
+  diffed and counted as source.
+- `uv.lock` was stale: it still recorded `fastapi`, `uvicorn`, `httpx`,
+  `pyjwt[crypto]`, `pyyaml` and `tzdata` as **base** dependencies, from before
+  they moved behind the `api` extra for the two-image split. Nothing in CI reads
+  the lock, so it broke nothing, but `uv sync` handed a developer exactly the web
+  stack the controller image exists to not have. Regenerated; no version moved.
+- **A moved registry layout wedged every later write to a function.** `spec.tag`
+  is immutable on a kpack `Image` - `validateTag` compares against the baseline
+  and rejects a change at admission - so applying a re-tagged `Image` failed.
+  Not only did the documented migration never work: `PUT` and `POST .../build`
+  both emit the `Image` manifest, so *any* write to an affected function was
+  rejected until someone deleted the object by hand.
+
+  The API now deletes the `Image` and lets the apply recreate it whenever the
+  computed tag differs from the deployed one - one GET on the build site per
+  write, a no-op in every normal case. A new `Image` has no prior `Build`, so it
+  builds immediately, which makes the whole migration "change the value, send
+  any `PUT`". Build history resets, since `Build`s are owned by the `Image`.
+
+  The old image and cache repositories are **reclaimed** at the same time,
+  through the Quay API the delete path already uses. Cleanup on delete derives
+  the *current* layout, so without this each function leaked a repository pair
+  permanently and the old mutable tag was left pointing at content nothing
+  tracked. Skipped when the previous reference is on another **host** - this
+  token addresses one registry, and a same-named path elsewhere belongs to
+  somebody else.
+
+
+- DNS was blocked in the workloads namespace on OpenShift: `allow-egress-dns` opened
+  53, but a NetworkPolicy matches the destination pod's port and OpenShift's CoreDNS
+  listens on 5353. New `networkPolicy.dnsPorts`, default `[53, 5353]`.
+- Listing functions reported a normal first build as `Degraded`. The build-first
+  rule (docs/FUNCTIONS.md - Function Status Resolution) was applied only on the
+  single GET, so `GET .../functions` read the KSVC alone - and that KSVC is
+  failing to pull an image kpack has not pushed yet. The list now folds the build
+  state in exactly as the GET does, and the two can no longer disagree about the
+  same function. It costs one extra read for the whole listing, not one per
+  function: `BuildBackend.statuses` label-selects every one of a group's kpack
+  `Image`s from the local site in a single call, overlapped with the site
+  fan-out. A container listing does not make the call at all.
+- A function's per-site rows contradicted its own header while it built: the
+  header said `Building` and the `sites` table directly below said `Failed` -
+  `Unable to fetch image "..."`, which reads as a broken deploy during what is a
+  normal build. While a build is in flight a failing site now reports `Building`
+  with no error, since that pull failure is the running build rather than a
+  second, independent one; the build's own state stays on `build`. Only a
+  *running* build masks anything - a failed build leaves the rows untouched,
+  because then the image genuinely never arrives and the site is telling the
+  truth. `Building` is published in the site-status vocabulary on `/info`
+  alongside the workload one.
+- `GET /api/v1/groups/{group}/functions/{name}` returned 500 unconditionally:
+  the response read `spec.path`, but `WorkloadSpec` never declared the field, so
+  `parse_spec`'s `path=` was silently dropped by Pydantic and the read raised
+  `AttributeError`. That URL is the `statusUrl` every function 202 advertises, so
+  no function deploy could be observed at all.
+- Any unanticipated exception is now rendered as the documented error envelope
+  (`500`/`INTERNAL`) with its `requestId`, in the body and the `X-Request-ID`
+  header, instead of Starlette's plain-text `Internal Server Error` with no code
+  and no correlation id.
+- A secret file holding non-UTF-8 bytes (a keystore, a DER certificate) failed
+  the request with a 500: content was decoded to `str` with `surrogateescape` and
+  the re-encode then raised. The same round-trip broke keep-on-update for any
+  such file already stored.
+- Undecodable `contentBase64` returned 500 rather than 400. It is now rejected by
+  the request model, which is early enough - the accept path echoes the submitted
+  spec back before the service-layer validation runs.
+- SSO groups whose names use `_` or mixed case (e.g. `My_Team`) were unusable: the
+  caller authenticated fine and carried the group in their `groups` claim, but
+  every request naming that group was rejected with a `422`, because both are legal
+  in a Keycloak group and illegal in the DNS-1123 object names and hosts the group
+  is interpolated into (`{name}-{group}`, `{name}-{group}.{base_domain}`).
+  `normalize_group` now lowercases and folds `_` to `-` alongside the existing `/`
+  and `ggd-<digits>-` stripping (lowercasing runs first, so an upper-case
+  `GGD-1234-` prefix is still recognized). Because normalization is applied at both
+  edges — the token claim and the `{group}` path segment — the API accepts any
+  spelling in the path and they all resolve to the same group; the lowercase
+  hyphenated form is what is stored, deployed, and returned. Configured admin
+  groups are normalized before the admin-membership comparison too, so an admin
+  group written `Platform_Admins` still matches. Names normalization can't rescue
+  (a leading/trailing `_`, whitespace, non-ASCII) are still rejected — the DNS-1123
+  check runs on the normalized form.
+- `_creation_time` used the Python-2 `except ValueError, AttributeError:` form,
+  a `SyntaxError` on any supported Python that broke importing the entire
+  `workloads` module (and with it the whole API); parenthesized to
+  `except (ValueError, AttributeError):`.
+- A workload GET now surfaces *why* a site failed: when a reachable site's KSVC
+  reports `Ready=False`, the per-site `error` carries the specific cause from the
+  Revision's failing sub-condition (e.g. `ContainerHealthy` - image-pull error,
+  crash, quota), falling back to the KSVC's aggregate message and then a reason
+  code, instead of `status: "Failed"` with `error: null`. Reuses the Revision
+  read already done for the replica count, so no extra cluster call.
+- `Cluster._dynamic_api` called the dynamic client's `resources.get()` with
+  positional arguments, which raised `TypeError: get() takes 1 positional
+  argument but 3 were given`; it now passes `api_version=`/`kind=` by keyword.
 
 ## [0.1.0] - 2026-07-06
 

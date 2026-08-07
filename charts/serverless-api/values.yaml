@@ -370,15 +370,20 @@ build:
             - { id: paketo-buildpacks/environment-variables, optional: true }
             - { id: paketo-buildpacks/image-labels, optional: true }
 
+# A site is a region; its cluster's API server is DERIVED as
+# https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
 sites:
-  - name: central                 
-    cluster: central-0        
+  - name: central
+    cluster: central-0
   - name: south
     cluster: south-0
 
 certificate:
   name: serverless-client-cert
-  user: serverless-api.client.example.com
+  # The cert's CN/SAN, and therefore the Kubernetes *username* the RoleBinding
+  # binds - both read this one value, so they cannot drift. ACME requires the
+  # identity to be a DNS name (docs/ARCHITECTURE.md - Authentication & Authorization).
+  user: serverless-api.clients.example.com
   mountPath: /etc/serverless/client
   issuerRef:
     name: client-cert-acme

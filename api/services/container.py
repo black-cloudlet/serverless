@@ -274,9 +274,11 @@ class ContainerService:
                 "pull. Send a PUT with a tag to track one."
             )
         background.add_task(self._engine.run, self.pull, group, name)
-        return self._engine.accepted(
-            CONTAINER, name, group, existing.get("host") or "", image=image
-        )
+        # Same fallback as the function rebuild path: a workload written before the
+        # host annotation existed still has a host, and it is the derived one - so
+        # derive it rather than answering the 202 with an empty `hostname`.
+        host = existing.get("host") or self._engine.host_for(name, None, group)
+        return self._engine.accepted(CONTAINER, name, group, host, image=image)
 
     async def pull(self, group: str, name: str) -> None:
         """Cut a revision so Knative re-resolves the tag (runs in the background).

@@ -41,9 +41,10 @@ flowchart LR
   `serverless-workloads` for customer workloads, both annotated
   `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
   them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-sites`
-  **`ConfigMap`** holding just the OpenShift **sites data** (per-site API endpoint, name,
-  namespace), loaded into the API as the `SERVERLESS_SITES` env var (the rest of the config is
-  plain `env` on the Deployment), a `serverless-api-runtimes` **`ConfigMap`** holding the
+  **`ConfigMap`** holding just the **sites list** - each site's name and its cluster, which
+  is the whole profile, since the API server URL is derived from the cluster name and the
+  base domain - loaded into both Deployments as the `SERVERLESS_SITES` env var (the rest of
+  the config is plain `env` on each), a `serverless-api-runtimes` **`ConfigMap`** holding the
   available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
   workloads namespace (ARCHITECTURE.md: Networking & Exposure), **two `Deployment`s** - the API and the build
   controller (BUILDING.md: Digest propagation), configured under `api` and `buildController`
@@ -97,10 +98,12 @@ serverless-api chart                            one release per cluster/site
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
 ├── ExternalSecret          ...... the registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
 ├── ExternalSecret          ...... the Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
-├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Chart Topology)
+├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Network policy for build pods)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
+├── SCC + ClusterRole       ...... build pods' CNB uid/gid, off by default (DEPLOYING.md: OpenShift SCC for builds)  [cluster-scoped]
 ├── build-controller Deploy ...... Image watch -> ksvc digest (BUILDING.md: Digest propagation)
-└── (existing: ksvc, Route, NetworkPolicy, CA bundle, ...)
+└── (existing: API Deployment + Service + Route, namespaces, CA bundle,
+    sites/runtimes ConfigMaps, Certificate, RBAC, tenant NetworkPolicies)
 ```
 
 The kpack release's buildpack content is described by its own `clusterBuild` values, not
@@ -133,7 +136,7 @@ That boundary is `networkPolicy` and quota, so the two are worth stating plainly
   labelled `kpack.io/build`. NetworkPolicies are additive, so tenant pods keep exactly the
   egress they had.
 - **Quota.** A build is far heavier than the function it produces, and it now draws on the
-  same namespace quota. `build.resources` bounds it (BUILDING.md: Runtime Versions & Dependencies); size the namespace quota for
+  same namespace quota. `build.resources` bounds it (BUILDING.md: Build pod resources); size the namespace quota for
   concurrent builds plus the running functions, not just the latter.
 
 **Why the split is by scope.** `ClusterStack` and `ClusterStore` are **cluster-scoped
@@ -296,7 +299,7 @@ spec:
             name: ca-bundle
 ```
 
-### 12.1a Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
+### Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
 
 ```yaml
 apiVersion: v1
@@ -367,6 +370,9 @@ rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["services", "domainmappings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["serving.knative.dev"]  # read-only: actualReplicas + the failure detail
+    resources: ["revisions"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
@@ -376,6 +382,19 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]              # for GET /api/v1/groups/{group}/{type}/{name}/logs
     verbs: ["get"]
+  - apiGroups: ["metrics.k8s.io"]        # live per-site usage on /stats
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # The rest is gated on build.enabled (see templates/rbac.yaml):
+  - apiGroups: ["kpack.io"]
+    resources: ["images"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kpack.io"]              # patch only, for the rebuild trigger annotation
+    resources: ["builds"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]                      # the per-function build ServiceAccount
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -206,16 +206,20 @@ def site_usage(cluster: Cluster, oname: str) -> SiteUsage:
     """Best-effort live cpu/memory summed over one site's running pods.
 
     Never raises: an unreadable metrics API must not fail a status that is
-    otherwise worth returning.
+    otherwise worth returning. The *parse* is inside the guard for the same
+    reason the read is - a quantity in a form :mod:`api.services.state.metrics`
+    does not recognise (Kubernetes may render one in decimal-exponent notation)
+    would otherwise escape into the fan-out, where it becomes a ``Failed`` site
+    and a ``Degraded`` rollup for a workload that is serving perfectly well.
 
     Returns:
-        The site's usage, with ``measured=False`` if the read itself failed.
+        The site's usage, with ``measured=False`` if the read or the parse failed.
     """
     try:
         items = cluster.get(
             ResourceKind.POD_METRICS,
             label_selector=f"serving.knative.dev/service={oname}",
         )
+        return SiteUsage(measured=True, total=metrics_svc.total_usage(items))
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
         return SiteUsage(measured=False, total=None)
-    return SiteUsage(measured=True, total=metrics_svc.total_usage(items))
