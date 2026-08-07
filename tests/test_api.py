@@ -376,25 +376,21 @@ def test_info_publishes_the_combined_name_and_group_limit():
     assert len(object_name("n" * 40, "g" * 40)) > naming["maxLength"]
 
 
-def test_the_error_catalog_is_walked_off_the_exception_classes():
-    """A hand-kept list is what goes stale, so a new error must publish itself."""
-    import gc
+def test_our_own_error_is_published_in_the_catalog():
+    """SiteTotalFailure is defined in this repository, not the shared package.
 
-    from common.errors import APIError, error_catalog
+    error_catalog walks subclasses at call time, which is what lets us keep a
+    platform-specific error locally and still have /info advertise it. The walk
+    itself is cloudlet_apis.errors' behaviour and is tested there; this is the
+    part that would break silently if SiteTotalFailure stopped being imported.
+    """
+    from common.errors import SiteTotalFailure, error_catalog
 
-    class TeapotError(APIError):
-        status_code = 418
-        code = "TEAPOT"
+    codes = dict(error_catalog())
+    assert codes[SiteTotalFailure.code] == SiteTotalFailure.status_code
 
-    try:
-        assert ("TEAPOT", 418) in error_catalog()
-    finally:
-        # __subclasses__ holds weak references, so dropping the class and
-        # collecting keeps this test out of every later catalog.
-        del TeapotError
-        gc.collect()
-
-    assert "TEAPOT" not in dict(error_catalog())
+    body = TestClient(create_app()).get("/api/v1/containers/info").json()
+    assert {"code": "SITE_TOTAL_FAILURE", "status": 502} in body["errorCodes"]
 
 
 def test_framework_http_errors_get_a_meaningful_code_and_status(client):
@@ -634,32 +630,23 @@ def test_update_function_build_change_accepted_without_token(client):
     assert r.status_code == 202
 
 
-def test_docs_served_offline_from_vendored_assets():
-    """Swagger UI / ReDoc must load local assets, not the jsdelivr CDN (airgap)."""
-    from api.main import create_app
+def test_docs_are_served_from_local_assets_not_a_cdn():
+    """The app must build its docs offline - unreachable CDN, airgapped cluster.
 
+    That the vendored assets exist and are served is cloudlet_apis.web's job and
+    is tested there. What is ours is calling mount_offline_docs at all, and
+    building the app with docs_url/redoc_url disabled so it takes effect.
+    """
     client = TestClient(create_app())
-
-    # OpenAPI schema is served by the app itself.
-    assert client.get("/openapi.json").status_code == 200
 
     docs = client.get("/docs")
     assert docs.status_code == 200
     assert "/static/swagger-ui-bundle.js" in docs.text
-    assert "/static/swagger-ui.css" in docs.text
-    assert "cdn.jsdelivr.net" not in docs.text  # no CDN dependency
+    assert "cdn.jsdelivr.net" not in docs.text
 
     redoc = client.get("/redoc")
     assert redoc.status_code == 200
-    assert "/static/redoc.standalone.js" in redoc.text
     assert "cdn.jsdelivr.net" not in redoc.text
-    assert "fonts.googleapis.com" not in redoc.text  # google fonts disabled
-
-    # The vendored static files are actually served.
-    css = client.get("/static/swagger-ui.css")
-    assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
-    assert client.get("/static/swagger-ui-bundle.js").status_code == 200
-    assert client.get("/static/redoc.standalone.js").status_code == 200
 
 
 def test_swagger_sso_login_wired_in_openapi():
@@ -696,85 +683,6 @@ def test_swagger_docs_html_delivers_oauth_init():
     assert "initOAuth" in docs.text
     assert "serverless-api-swagger" in docs.text  # client id pre-filled
     assert "usePkceWithAuthorizationCodeGrant" in docs.text  # PKCE, no secret
-
-
-def _client_raising(exc: Exception) -> TestClient:
-    """A client whose container service raises ``exc``, with 500s returned not re-raised."""
-    from api.dependencies import get_container_service
-
-    class _Boom:
-        async def get(self, name, group, user):
-            raise exc
-
-    app = create_app()
-    app.dependency_overrides[require_auth] = lambda: Principal(
-        subject="u", username="alice", groups=["team"], is_admin=False
-    )
-    app.dependency_overrides[get_container_service] = lambda: _Boom()
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def test_an_unanticipated_error_still_returns_the_documented_envelope():
-    """A 500 is the response a caller most needs to be able to report.
-
-    Served by Starlette's default it is plain text with no `error` object, so a
-    client parsing the envelope /info advertises breaks inside its own error
-    path, and there is no id to tie the report to the traceback.
-    """
-    client = _client_raising(RuntimeError("connection to db-master.internal failed"))
-    r = client.get("/api/v1/groups/team/containers/app", headers={"X-Request-ID": "trace-me-123"})
-
-    assert r.status_code == 500
-    assert r.headers["content-type"].startswith("application/json")
-    err = r.json()["error"]
-    assert err["status"] == 500
-    assert err["code"] == "INTERNAL"
-    # the correlation id survives in the body AND the header - the 500 used to be
-    # the one response carrying it nowhere, because ServerErrorMiddleware sits
-    # outside the middleware that stamps it
-    assert err["requestId"] == "trace-me-123"
-    assert r.headers["x-request-id"] == "trace-me-123"
-
-
-def test_an_unanticipated_error_does_not_leak_the_exception_text():
-    """Exception text routinely carries internal hostnames or secret material."""
-    client = _client_raising(RuntimeError("connection to db-master.internal failed"))
-    body = client.get("/api/v1/groups/team/containers/app").text
-
-    assert "db-master.internal" not in body
-    assert "RuntimeError" not in body
-    assert body.count("Internal server error.") == 1
-
-
-def test_the_unhandled_error_is_logged_with_the_id_the_client_was_given():
-    """The detail belongs in the log - which is only useful if it carries the id.
-
-    The handler runs after the request has unwound and the context var the log
-    filter normally reads is back to "-", so the id has to be stamped explicitly.
-
-    Captured on the module logger rather than with caplog: configure_logging()
-    replaces the root handlers wholesale, which drops caplog's.
-    """
-    import logging
-
-    records: list[logging.LogRecord] = []
-
-    class _Collect(logging.Handler):
-        def emit(self, record):
-            records.append(record)
-
-    client = _client_raising(RuntimeError("boom"))  # calls configure_logging()
-    web_logger = logging.getLogger("cloudlet_apis.web")
-    handler = _Collect()
-    web_logger.addHandler(handler)
-    try:
-        client.get("/api/v1/groups/team/containers/app", headers={"X-Request-ID": "abc123"})
-    finally:
-        web_logger.removeHandler(handler)
-
-    record = next(r for r in records if r.levelno == logging.ERROR)
-    assert record.request_id == "abc123"
-    assert record.exc_info is not None  # the traceback is kept, just not returned
 
 
 def test_info_publishes_the_internal_code_the_catch_all_can_return():

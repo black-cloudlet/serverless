@@ -275,33 +275,19 @@ def test_git_repo_rejects_embedded_credentials_rather_than_stripping_them():
 def test_the_published_schema_agrees_with_the_validator():
     """The schema is documentation, so it must describe what the validator does.
 
-    Name is checked as an equivalence: a client applying the advertised pattern
-    and maxLength must reach the same verdict the API will. Group and path
-    publish no pattern on purpose - they normalize first, so no pattern could
-    describe their input.
+    SourcePath is ours. Name and Group come from cloudlet_apis.names, which
+    tests its own schema/validator agreement - all that is asserted here is that
+    the types we re-export still behave when a request model uses them.
     """
-    import re
-
     from pydantic import TypeAdapter
 
-    from api.models.common import Group, Name, SourcePath
+    from api.models.common import Group, SourcePath
 
-    schema = TypeAdapter(Name).json_schema()
-    pattern, max_len = re.compile(schema["pattern"]), schema["maxLength"]
-
-    for candidate in ["ok", "a-b-c", "x" * 63, "x" * 64, "Bad", "bad_name", "-lead", ""]:
-        by_schema = bool(pattern.match(candidate)) and len(candidate) <= max_len
-        try:
-            TypeAdapter(Name).validate_python(candidate)
-            by_api = True
-        except Exception:
-            by_api = False
-        assert by_schema == by_api, f"{candidate!r}: schema says {by_schema}, API says {by_api}"
-
-    # a pattern on these would run before the validator and reject what it fixes
-    assert "pattern" not in TypeAdapter(Group).json_schema()
+    # A pattern on either would run before the validator and reject what it fixes.
     assert "pattern" not in TypeAdapter(SourcePath).json_schema()
+    assert "pattern" not in TypeAdapter(Group).json_schema()
     assert TypeAdapter(Group).validate_python("My_Team") == "my-team"
+    assert TypeAdapter(SourcePath).validate_python("/src/") == "src"
 
 
 def test_image_must_be_a_well_formed_reference():
