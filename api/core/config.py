@@ -27,17 +27,13 @@ from common.config import (  # noqa: F401
 class SSOSettings(SSOConfig):
     """The shared SSO model with this deployment's defaults filled in.
 
-    ``SSOConfig.issuer`` is required: a package shared by every API must not
-    carry one environment's identity provider as a silent fallback, since that
-    is the value deciding whose signatures a service trusts. Ours is a property
-    of this deployment, so the default is re-declared here, where it is ours to
-    be wrong about.
+    ``SSOConfig.issuer`` is required - a package shared by every API must not
+    carry one environment's identity provider as a fallback - so ours is
+    re-declared here, where it is ours to be wrong about.
 
-    A subclass rather than a ``default_factory`` returning a populated model:
-    pydantic-settings builds the nested model from the env vars it finds, so with
-    a factory a single ``SERVERLESS_SSO__ADMIN_GROUPS`` would construct an
-    ``SSOConfig`` with no issuer at all and fail validation. Defaults declared on
-    the field survive a partial override; a factory's do not.
+    A subclass rather than a ``default_factory``: pydantic-settings builds the
+    nested model from the env vars it finds, so a factory's defaults are lost the
+    moment any sibling field is set from the environment.
     """
 
     issuer: str = "https://sso.internal/realms/serverless"

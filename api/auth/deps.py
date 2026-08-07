@@ -1,14 +1,10 @@
 """This API's auth wiring: one :class:`SSOAuth` built from its own settings.
 
-The component itself - token validation, the admin-key fallback, the claims
-mapping - is :mod:`cloudlet_apis.auth`, shared with every other API on the
-platform. What is service-specific, and so lives here, is which settings it is
-built from.
+The component itself is :mod:`cloudlet_apis.auth`, shared with every API on the
+platform; what lives here is only which settings it is built from.
 
-``require_auth`` stays a module-level function wrapping the component's own
-dependency rather than being replaced by it. Two reasons: the settings are
-resolved per request, so a test that re-points them is seen, and it remains the
-callable ``app.dependency_overrides`` keys on (tests/test_api.py).
+``require_auth`` stays a module-level function wrapping it, so settings resolve
+per request and it remains the callable ``dependency_overrides`` keys on.
 """
 
 from __future__ import annotations
@@ -26,9 +22,8 @@ from api.core.config import get_settings
 def get_auth() -> SSOAuth:
     """The app's auth component (one JWKS cache per process).
 
-    Cached here rather than inside the component: the settings it is built from
-    are themselves a cached singleton, so building it per request would give a
-    fresh validator - and a fresh discovery round trip - every time.
+    Cached here rather than inside the component: building it per request would
+    give a fresh validator, and a fresh discovery round trip, every time.
 
     Returns:
         The configured :class:`~cloudlet_apis.auth.SSOAuth`.

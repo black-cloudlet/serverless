@@ -1,17 +1,10 @@
 """Naming rules for what THIS platform builds out of a name and a group.
 
 The platform-wide part - what a name and a group may be, and how a group is
-normalized before either is compared - lives in :mod:`cloudlet_apis.names` and is
-re-exported below, because every API on the platform has to agree on it.
-
-What stays here is what only we derive: an object name from a ``{name}-{group}``
-pair, an image repository, a cache repository, an OCI tag projected from a branch,
-and the git/image/path validators the build pipeline needs. These change when the
-pipeline changes, which is why they are not in the shared package.
-
-They live in ``common``, not the API's request models, because the same rules
-bound what reaches a cluster: a name becomes an object name, a group part of an
-image repository, a branch an image tag. Everything constructing those must agree.
+normalized - lives in :mod:`cloudlet_apis.names` and is re-exported below, since
+every API has to agree on it. What stays here is what only we derive: object
+names, image and cache repositories, the OCI tag projected from a branch, and the
+git/image/path validators. Those change when the build pipeline changes.
 
 ``api.models.common`` re-exports the ``Annotated`` types, so request models and
 query params keep importing them from there.

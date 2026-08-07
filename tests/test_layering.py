@@ -1,18 +1,13 @@
 """Enforce the module layering described in ``common/__init__.py``.
 
-These assertions are about *reach*, not style. The build controller
-(docs/BUILDING.md - Digest propagation) reuses the domain and cluster layers
-without inheriting the API's web stack, and nothing else in the suite would
-notice if an innocuous import quietly took that away - it would just ship a
-controller carrying a web framework it never serves with.
+These assertions are about *reach*, not style. Nothing else in the suite would
+notice an innocuous import taking the split away - it would just ship a
+controller carrying a framework it never serves with.
 
-Since the shared layers moved to ``cloudlet-apis``, the risk has a new shape:
-that package's extras are what keep FastAPI and pyjwt out of the controller's
-image, so importing ``cloudlet_apis.web`` or ``cloudlet_apis.auth`` from a domain
-module would defeat the split from this side even though the package itself is
-layered correctly. ``common.errors`` is checked with the rest: it now re-exports
-from ``cloudlet_apis.errors``, and that indirection is exactly where an
-accidental heavy import would hide.
+Since the shared layers moved to ``cloudlet-apis``, its extras are what keep
+FastAPI and pyjwt out of that image, so reaching them from a domain module
+defeats the split from this side. ``common.errors`` is checked with the rest -
+it re-exports from the package, which is where a heavy import would hide.
 """
 
 from __future__ import annotations
