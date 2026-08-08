@@ -44,12 +44,8 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _terminate)
     signal.signal(signal.SIGINT, _terminate)
 
-    reconciler = Reconciler(settings, prune_orphans=settings.prune_orphans)
-    logger.info(
-        "build controller watching kpack Images in %s, fanning out to %s",
-        reconciler.local.site,
-        ", ".join(settings.site_names),
-    )
+    reconciler = Reconciler(settings)
+    logger.info("build controller watching kpack Images in %s", reconciler.local.site)
     try:
         loop(reconciler, settings)
     finally:

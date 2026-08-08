@@ -1,12 +1,12 @@
-"""The control loop: watch local kpack Images, roll their digests out everywhere.
+"""The control loop: watch local kpack Images, roll their digests onto the local KSVC.
 
-Reads are local - a function's Image exists only in the cluster that built it -
-and writes go to every site, which share the registry. One pass relists and then
-watches from that point, so nothing is lost when a stream drops. No leader
-election (docs/BUILDING.md - Digest propagation).
+Both ends are local, and for the same reason: a site builds what it runs and
+pushes to its own registry (docs/PER-SITE-REGISTRY.md), so the Image is here
+because this site built it, and the digest it produced is only pullable here.
+Nothing in this loop reads or writes a peer cluster.
 
-The same pass prunes the Images a switchover stranded in the other sites
-(docs/BUILDING.md - Pruning stranded Images).
+One pass relists and then watches from that point, so nothing is lost when a
+stream drops. No leader election (docs/BUILDING.md - Digest propagation).
 """
 
 from __future__ import annotations
@@ -33,32 +33,29 @@ IMAGE_SELECTOR = f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE},{LABEL_OFFERING}={OFFER
 
 
 class Reconciler:
-    """Propagates ``Image.status.latestImage`` to the function's KSVC in every site."""
+    """Propagates ``Image.status.latestImage`` to the function's KSVC in this site."""
 
-    def __init__(self, settings: CommonSettings, *, prune_orphans: bool = True):
-        """Build the per-site clients and pick the one holding the Images.
+    def __init__(self, settings: CommonSettings):
+        """Build the client for the site this controller sits in.
 
         Args:
             settings: Shared settings (sites, local site, TLS material).
-            prune_orphans: Whether each pass also deletes Images this site has
-                superseded in the others.
 
         Raises:
             ValidationError: If no sites are configured.
         """
-        self._clusters = clusters_for(settings)
-        self._local = select_local(self._clusters, settings.local_site)
-        self._prune_orphans = prune_orphans
+        # Every site is constructed only to pick this one out; the rest are
+        # dropped unconnected, since nothing here touches a peer.
+        self._local = select_local(clusters_for(settings), settings.local_site)
 
     @property
     def local(self) -> Cluster:
-        """The cluster whose Images this loop follows."""
+        """The cluster whose Images this loop follows, and whose KSVCs it writes."""
         return self._local
 
     def close(self) -> None:
-        """Release every site's cluster client at shutdown."""
-        for cluster in self._clusters.values():
-            cluster.close()
+        """Release the cluster client at shutdown."""
+        self._local.close()
 
     def resync(self) -> str | None:
         """Reconcile every Image once, and return where a watch should resume.
@@ -72,57 +69,8 @@ class Reconciler:
         )
         for image in images:
             self.reconcile(image)
-        logger.info("resynced %d image(s) from %s", len(images), self._local.site)
-        if self._prune_orphans:
-            self.prune(images)
+        logger.info("resynced %d image(s) in %s", len(images), self._local.site)
         return version
-
-    def prune(self, mine: list[dict]) -> int:
-        """Delete Images in the other sites that this site has since superseded.
-
-        The newer Image wins, so exactly one site prunes and two can never
-        delete each other's. Deleting outward rather than inward is deliberate:
-        the stranded site is the one that may be down. A site that cannot be
-        listed stops the pass - deciding what is stranded from a partial view is
-        how everything gets deleted (docs/BUILDING.md - Pruning stranded Images).
-
-        Args:
-            mine: This site's Images, already listed by :meth:`resync`.
-
-        Returns:
-            How many Images were deleted.
-        """
-        local = _by_name(mine)
-        if not local:
-            return 0
-        others = {}
-        for site, cluster in self._clusters.items():
-            if cluster is self._local:
-                continue
-            try:
-                images, _version = cluster.list_resources(
-                    ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR
-                )
-            except Exception:  # noqa: BLE001 - an unread site is not an empty one
-                logger.warning("could not list images in %s; skipping the prune", site)
-                return 0
-            others[site] = _by_name(images)
-
-        pruned = 0
-        for site, theirs in others.items():
-            for name, stranded in theirs.items():
-                if not _supersedes(local.get(name), stranded):
-                    continue
-                try:
-                    self._clusters[site].delete(ResourceKind.KPACK_IMAGE, name)
-                except NotFoundError:
-                    continue
-                except Exception:  # noqa: BLE001 - retried by the next pass
-                    logger.exception("could not prune Image '%s' in %s", name, site)
-                    continue
-                pruned += 1
-                logger.info("pruned Image '%s' stranded in %s", name, site)
-        return pruned
 
     def follow(self, timeout_seconds: int) -> None:
         """Reconcile each Image change until the server closes the stream.
@@ -139,40 +87,44 @@ class Reconciler:
         ):
             self.reconcile(image)
 
-    def reconcile(self, image: dict) -> None:
-        """Roll one Image's last successful digest onto its function, everywhere.
+    def reconcile(self, image: dict) -> bool:
+        """Roll one Image's last successful digest onto its function here.
 
         ``latestImage`` is the last *successful* build, so the ready state is
         not consulted: a failed newest build leaves the previous digest serving.
 
         Args:
             image: The kpack Image object.
+
+        Returns:
+            True if the KSVC was applied.
         """
         workload = ((image.get("metadata") or {}).get("labels") or {}).get(LABEL_WORKLOAD)
         _state, digest, _message = kpack.build_status(image)
         if not workload or not digest:
-            return  # never built, or not attributable to a workload
-        for cluster in self._clusters.values():
-            self._roll_out(cluster, workload, digest)
+            return False  # never built, or not attributable to a workload
+        return self._roll_out(workload, digest)
 
-    def _roll_out(self, cluster: Cluster, workload: str, digest: str) -> bool:
-        """Apply the digest to one site's KSVC, if that is what it needs.
+    def _roll_out(self, workload: str, digest: str) -> bool:
+        """Apply the digest to the local KSVC, if that is what it needs.
 
-        Per-site failures are logged, not raised; the next resync retries.
+        Failures are logged, not raised; the next resync retries.
 
         Args:
-            cluster: The site to write to.
             workload: The object name (``{name}-{group}``).
             digest: The image reference to run.
 
         Returns:
             True if the KSVC was applied.
         """
+        cluster = self._local
         try:
             ksvc = cluster.get(ResourceKind.KNATIVE_SERVICE, workload)
         except NotFoundError:
-            return False  # not deployed to this site
-        except Exception:  # noqa: BLE001 - one site's failure is not the loop's
+            # An Image outliving its KSVC: the delete cascade has not collected
+            # it yet, or it was applied before builds followed the workload.
+            return False
+        except Exception:  # noqa: BLE001 - one bad read is not the loop's end
             logger.exception("could not read '%s' in %s", workload, cluster.site)
             return False
         if not needs_image(ksvc, digest):
@@ -184,32 +136,3 @@ class Reconciler:
             return False
         logger.info("rolled '%s' onto '%s' in %s", digest, workload, cluster.site)
         return True
-
-
-def _by_name(images: list[dict]) -> dict[str, dict]:
-    """Index Images by object name, skipping any that has none."""
-    named = {}
-    for image in images:
-        name = (image.get("metadata") or {}).get("name")
-        if name:
-            named[name] = image
-    return named
-
-
-def _created(image: dict | None) -> str | None:
-    """An Image's creationTimestamp, or None when it is missing or unusable."""
-    if image is None:
-        return None
-    stamp = (image.get("metadata") or {}).get("creationTimestamp")
-    return stamp if isinstance(stamp, str) and stamp else None
-
-
-def _supersedes(mine: dict | None, theirs: dict) -> bool:
-    """Whether ``mine`` is the newer of two Images for the same function.
-
-    RFC3339 timestamps from two API servers, compared as strings because the
-    format sorts. A tie, or either one unreadable, means no - the pass would
-    otherwise turn a few seconds of clock skew into a deleted live build.
-    """
-    ours, other = _created(mine), _created(theirs)
-    return bool(ours and other and ours > other)

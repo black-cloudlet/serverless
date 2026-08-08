@@ -805,7 +805,7 @@ Two properties make step 3 safe rather than delicate:
 | ~~1~~ | ~~`SiteRegistry` + `registry_for` + `SERVERLESS_SITES` serialization + chart values~~ **done** | - | Yes (no behaviour change until 2) |
 | ~~2~~ | ~~`BuildPlan.per_site`, `plan(sites)`, per-site `Image`/SA in `KpackBackend`~~ **done** | 1 | No |
 | ~~3~~ | ~~Per-site KSVC composition and per-site build apply; delete `build_only`~~ **done** | 2 | With 2 |
-| 4 | Controller: local-only write, delete `prune` | 3 | Yes |
+| ~~4~~ | ~~Controller: local-only write, delete `prune`~~ **done** | 3 | Yes |
 | 5 | Per-site build status in `get`/`stats`/`list` | 3 | Yes |
 | 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` (needs `target.template` in `externalsecret.yaml`) | 1 | Yes |
 | 7 | Site-aware push credential (per-site Vault path, host from `global.site`) + kpack registry pull Secret on both ServiceAccount kinds | 1 | Yes |
@@ -815,7 +815,7 @@ Two properties make step 3 safe rather than delicate:
 
 ---
 
-### Landed in slices 1-3
+### Landed in slices 1-4
 
 Two details the implementation settled that the design above did not spell out:
 
@@ -829,9 +829,16 @@ Two details the implementation settled that the design above did not spell out:
   registry - which it has no credential for and, airgapped, may not reach.
   `test_an_update_keeps_each_sites_own_image_rather_than_one_sites` guards it.
 
-Still on the old behaviour until their slices land: the build controller writes
-every site and prunes (4), build status is read from the local site only (5),
-and registry cleanup addresses one registry (6).
+The controller now reads and writes one cluster and holds one client, so
+`Reconciler.prune` and its three helpers are gone along with
+`buildController.pruneOrphans` and `SERVERLESS_PRUNE_ORPHANS`.
+
+Still on the old behaviour until their slices land: build status is read from
+the local site only (5), and registry cleanup addresses one registry (6).
+
+**docs/BUILDING.md is stale from slice 3 onward** and is slice 8's job. It still
+describes builds as local-only, one `Image` per function, a cross-site digest
+write, and a `pruneOrphans` value that no longer exists.
 
 ---
 

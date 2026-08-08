@@ -53,9 +53,8 @@ api:
     #   haproxy.router.openshift.io/timeout: 60s
     annotations: {}
 
-# Rolls each finished build's digest onto the function's Knative Service in
-# every site (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no
-# Service and no Route.
+# Rolls each finished build's digest onto the function's Knative Service in this
+# site (docs/PER-SITE-REGISTRY.md). Serves no HTTP, so no Service and no Route.
 buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
@@ -81,12 +80,6 @@ buildController:
 
   # How long each watch is held open, and so also the full-relist interval.
   resyncSeconds: 300
-
-  # Delete the Images a switchover stranded in the other sites, which would
-  # otherwise keep rebuilding and publishing digests that fight this site's.
-  # The newer Image wins, so only one site ever prunes.
-  # docs/BUILDING.md - Pruning stranded Images.
-  pruneOrphans: true
 
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
