@@ -97,9 +97,20 @@ class RegistryConfig(BaseModel):
     timeout: float = 10.0
 
     @property
+    def _host(self) -> str:
+        """The configured registry host, tolerant of a pasted scheme.
+
+        The chart asks for a bare host, but ``https://registry.internal`` is an
+        easy operator mistake - un-stripped it would double the scheme in
+        :attr:`api_url` and put ``https://`` inside every image reference.
+        """
+        url = self.url.strip("/")
+        return url.split("://", 1)[-1]
+
+    @property
     def api_url(self) -> str:
         """Registry base URL. Always https - internal TLS is trusted via the CA bundle."""
-        return f"https://{self.url.strip('/')}"
+        return f"https://{self._host}"
 
     @property
     def can_delete(self) -> bool:
@@ -123,7 +134,7 @@ class RegistryConfig(BaseModel):
     @property
     def base(self) -> str:
         """Registry host plus :attr:`path`, the prefix every image ref hangs off."""
-        url = self.url.strip("/")
+        url = self._host
         return f"{url}/{self.path}" if self.path else url
 
 
@@ -220,9 +231,14 @@ class CommonSettings(BaseSettings):
         override = profile.registry if profile else None
         # Falls back rather than defaulting to "": an empty token disables
         # cleanup outright, so an unlisted site would silently stop reclaiming.
-        update: dict[str, object] = {
-            "api_token": self.site_registry_tokens.get(site) or self.registry.api_token
-        }
+        # But only onto the SAME host - the default token belongs to the default
+        # registry, and sending it to a site's overridden registry would be the
+        # wrong credential handed to a different service.
+        token = self.site_registry_tokens.get(site) or ""
+        same_host = override is None or override.url.strip("/") == self.registry.url.strip("/")
+        if not token and same_host:
+            token = self.registry.api_token
+        update: dict[str, object] = {"api_token": token}
         if override is not None:
             update["url"] = override.url
             # None inherits, "" overrides with nothing - see SiteRegistry.

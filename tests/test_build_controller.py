@@ -448,8 +448,12 @@ def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
     with pytest.raises(SystemExit):
         controller_main.loop(_Flaky(), ControllerSettings(error_backoff_seconds=2.5))
 
-    # One sleep, for the one failure - a watch that merely ended is not one.
-    assert slept == [2.5]
+    # The failed pass sleeps the error backoff. The clean pass that follows ended
+    # instantly, so it is paced to the minimum pass duration - the floor that
+    # keeps a stream closed at the door from becoming back-to-back relists.
+    assert slept[0] == 2.5
+    assert len(slept) == 2
+    assert 0 < slept[1] <= controller_main._MIN_PASS_SECONDS
 
 
 def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch):

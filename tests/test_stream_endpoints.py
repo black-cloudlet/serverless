@@ -20,7 +20,7 @@ from api.models.common import (
 )
 from api.services.streams.sse import StreamEvent
 
-KEY = "endpoint-test-signing-key"  # noqa: S105 - a fixture, not a credential
+KEY = "endpoint-test-signing-key-0123456"  # noqa: S105 - a fixture, not a credential
 PODS = "/api/v1/groups/team/functions/foo/pods"
 LOGS = "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
 STATS = "/api/v1/groups/team/functions/foo/stats/stream"
@@ -324,7 +324,7 @@ def test_a_ticket_for_another_stream_is_refused():
 
 
 def test_a_forged_ticket_is_refused():
-    ticket = StreamTickets("not-the-real-key").mint(CALLER, LOGS).value
+    ticket = StreamTickets("not-the-real-key-abcdefghijklmnopqrs").mint(CALLER, LOGS).value
     response = build(FakeStreams(events=[]), authenticated=False).get(f"{LOGS}?ticket={ticket}")
     assert response.status_code == 401
 

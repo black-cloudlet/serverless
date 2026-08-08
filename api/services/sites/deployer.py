@@ -8,8 +8,6 @@ HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads
 from __future__ import annotations
 
 import asyncio
-import contextvars
-import functools
 from concurrent.futures import Executor
 from typing import Callable
 
@@ -17,6 +15,7 @@ from cloudlet_apis.logging import get_logger
 
 from api.core.config import Settings
 from api.models.common import SiteStatus
+from api.services.streams.capacity import run_on
 from common.cluster import Cluster, clusters_for, select_local
 from common.errors import SiteTotalFailure, ValidationError
 
@@ -24,32 +23,6 @@ logger = get_logger(__name__)
 
 # fn(cluster) -> SiteStatus  (may run blocking I/O; executed in a thread)
 SiteFn = Callable[[Cluster], SiteStatus]
-
-
-async def run_on(executor: Executor | None, fn, *args):
-    """Run blocking ``fn`` in a thread, on ``executor`` or the default pool.
-
-    ``asyncio.to_thread`` is exactly this against the default executor, and that
-    default is what a stream must not use: a held-open connection would take
-    threads from the pool every ordinary request shares. Passing an executor is
-    how the streaming paths keep to their own (see
-    :class:`~api.services.streams.capacity.StreamCapacity`).
-
-    The context copy is the part that is easy to lose by reaching for
-    ``run_in_executor`` directly - without it the request id the log filter reads
-    is absent from every line the worker writes.
-
-    Args:
-        executor: The pool to run on, or None for the default.
-        fn: The blocking callable.
-        *args: Positional arguments for ``fn``.
-
-    Returns:
-        Whatever ``fn`` returns.
-    """
-    loop = asyncio.get_running_loop()
-    ctx = contextvars.copy_context()
-    return await loop.run_in_executor(executor, functools.partial(ctx.run, fn, *args))
 
 
 class Deployer:

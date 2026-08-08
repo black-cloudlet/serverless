@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from cloudlet_apis.auth import Principal
+from cloudlet_apis.logging import get_logger
 
 from api.models.common import (
     PodLogSnapshot,
@@ -22,6 +23,8 @@ from api.services.workloads import ApplyRequest, WorkloadService
 from common.errors import ValidationError
 from common.labels import OFFERING_CONTAINER, workload_labels
 from common.names import object_name
+
+logger = get_logger(__name__)
 
 
 class ContainerService:
@@ -295,7 +298,19 @@ class ContainerService:
             name: The workload name.
         """
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
-        await self._engine.stamp_pull(name, group, stamp)
+        statuses = await self._engine.stamp_pull(name, group, stamp)
+        # Background work: the 202 went out long ago, so a failed patch has no
+        # response left to land in. Say so in the log - without this an
+        # all-sites-failed pull completes silently and the client's statusUrl
+        # just never shows a new revision.
+        failed = [s for s in statuses if s.error]
+        if failed:
+            logger.warning(
+                "pull of '%s' (group '%s') failed in %s",
+                name,
+                group,
+                ", ".join(f"{s.site}: {s.error}" for s in failed),
+            )
 
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
         """Get one container with live per-site status.

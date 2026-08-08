@@ -176,9 +176,11 @@ def test_local_cluster_selection():
     # match by cluster name (Cluster.name), not just site name
     d._local_site = "site-b-0"
     assert d.local_cluster().site == "site-b"
-    # unknown value -> deterministic fallback to the first site
+    # unknown value -> an error, not a silent adoption of the first site: a
+    # process serving as a site it is not would build and reconcile wrongly.
     d._local_site = "nope"
-    assert d.local_cluster().site == "site-a"
+    with pytest.raises(ValidationError):
+        d.local_cluster()
 
 
 async def test_fanout_captures_per_site_errors():

@@ -29,7 +29,7 @@ from cloudlet_apis.errors import APIError
 from cloudlet_apis.logging import get_logger
 
 from api.core.config import StreamConfig
-from api.models.common import PodInfo, PodRoster, StreamError
+from api.models.common import PodInfo, PodRoster, StreamEnd, StreamError
 from api.services.state import metrics as metrics_svc
 from api.services.state.ksvc_state import ISRAEL_TZ
 from api.services.streams.capacity import StreamCapacity
@@ -131,7 +131,7 @@ def read_roster(cluster: Cluster, oname: str) -> list[PodInfo]:
         name = meta.get("name")
         if not name:
             continue
-        measured = usage.get(name)
+        pod_usage = usage.get(name)
         roster.append(
             PodInfo(
                 pod=name,
@@ -140,7 +140,7 @@ def read_roster(cluster: Cluster, oname: str) -> list[PodInfo]:
                 ready=_ready(pod),
                 restarts=_restarts(pod),
                 startedAt=_started(pod),
-                usage=measured.quantities() if measured else None,
+                usage=pod_usage.quantities() if pod_usage else None,
             )
         )
     return sorted(roster, key=lambda p: p.pod)
@@ -189,7 +189,12 @@ async def follow(
             if loop.time() < due:
                 yield heartbeat()
         if loop.time() >= deadline:
-            return  # the client reconnects; SSE does that on its own
+            # Said out loud, exactly as the log stream does: without an `end` a
+            # client cannot tell the scheduled rollover from a dropped connection.
+            yield StreamEvent(
+                "end", StreamEnd(reason="the stream reached its time limit; reconnect")
+            )
+            return
 
         try:
             pods = await capacity.run(read_roster, cluster, oname)

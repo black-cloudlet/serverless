@@ -51,8 +51,17 @@ def files_name(workload: str) -> str:
 
 
 def _key(mount_path: str) -> str:
-    """Stable, collision-free ConfigMap/Secret key derived from the mount path."""
-    safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in mount_path.lstrip("/"))
+    """Stable ConfigMap/Secret key derived from the mount path.
+
+    ASCII alphanumerics only - a ConfigMap/Secret key is restricted to
+    ``[-._a-zA-Z0-9]``, and ``isalnum()`` alone would let a non-ASCII letter
+    through to fail the apply. Not collision-free: distinct paths can fold onto
+    one key (``/etc/a/b`` and ``/etc/a-b``), which the resolver below rejects
+    loudly at accept time rather than silently merging.
+    """
+    safe = "".join(
+        c if (c.isascii() and c.isalnum()) or c in "-_." else "-" for c in mount_path.lstrip("/")
+    )
     return safe.strip("-_.") or "file"
 
 
@@ -96,15 +105,18 @@ def resolve_files(
     config_data: dict[str, bytes] = {}
     secret_data: dict[str, bytes] = {}
     volumes: list[VolumeSpec] = []
-    seen: set[str] = set()
+    seen: dict[str, str] = {}  # key -> the mount path that claimed it
 
     for f in files:
         key = _key(f.mountPath)
         if key in seen:
+            # Either a genuine duplicate or two distinct paths folding onto one
+            # key; name both so the caller knows which mount to rename.
             raise ValidationError(
-                f"duplicate file mount path '{f.mountPath}' resolves to key '{key}'"
+                f"file mount paths '{seen[key]}' and '{f.mountPath}' both resolve "
+                f"to key '{key}'; rename one of them"
             )
-        seen.add(key)
+        seen[key] = f.mountPath
 
         if f.secret and f.keep:
             # No content given: keep the stored secret content for this mount.

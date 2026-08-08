@@ -225,33 +225,40 @@ def test_the_pool_is_sized_for_every_stream_it_will_admit():
 
 
 def test_slots_are_handed_back_when_a_stream_ends(capacity):
-    with capacity.slot():
-        assert capacity.open_streams == 1
+    slot = capacity.admit()
+    assert capacity.open_streams == 1
+    slot.release()
     assert capacity.open_streams == 0
 
 
-def test_a_slot_is_handed_back_even_when_the_stream_raises(capacity):
-    with pytest.raises(RuntimeError), capacity.slot():
-        raise RuntimeError("boom")
+def test_a_double_release_returns_the_slot_once(capacity):
+    """Several owners may release one slot (finally, error path, GC backstop);
+    only the first may count, or the gate over-admits forever after."""
+    slot = capacity.admit()
+    slot.release()
+    slot.release()
+    assert capacity.open_streams == 0
+    # And the count cannot go negative: the next admit/release pair is exact.
+    other = capacity.admit()
+    assert capacity.open_streams == 1
+    other.release()
     assert capacity.open_streams == 0
 
 
 def test_the_stream_past_the_limit_is_refused_not_queued(capacity):
-    held = [capacity.slot() for _ in range(FAST.max_concurrent)]
-    for slot in held:
-        slot.__enter__()
+    held = [capacity.admit() for _ in range(FAST.max_concurrent)]
     try:
         with pytest.raises(ServiceUnavailableError) as caught:
-            with capacity.slot():
-                pass
+            capacity.admit()
         assert "too many open streams" in caught.value.message
         assert caught.value.status_code == 503
     finally:
         for slot in held:
-            slot.__exit__(None, None, None)
+            slot.release()
     # ...and the limit is not permanent: the next caller gets in.
-    with capacity.slot():
-        assert capacity.open_streams == 1
+    slot = capacity.admit()
+    assert capacity.open_streams == 1
+    slot.release()
 
 
 @pytest.mark.parametrize(
