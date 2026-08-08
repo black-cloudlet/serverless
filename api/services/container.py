@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from api.auth.claims import Principal
+from cloudlet_apis.auth import Principal
+
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.services.manifests import secrets as secret_svc

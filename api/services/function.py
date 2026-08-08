@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from cloudlet_apis.auth import Principal
 from pydantic import ValidationError as PydanticValidationError
 
-from api.auth.claims import Principal
 from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services.builder.runtimes import RuntimeRegistry

@@ -34,7 +34,7 @@ the bug.
 
 ```
 api/        the control-plane API service (python -m api.main)
-  auth/     self-contained OIDC auth component (SSO)
+  auth/     which of this service's settings the shared SSO component is built from
   models/   Pydantic request/response schemas
   services/ workload engine + offerings, split by responsibility:
             manifests/ (build what gets applied), sites/ (fan-out + per-site
@@ -45,7 +45,7 @@ controller/ the build controller (python -m controller.main): watches kpack
             Knative Service in every site. Serves no HTTP; its own image, built
             from Dockerfile.controller with no web stack installed.
 common/     shared by api + controller: build domain, cluster client (mTLS),
-            settings, /healthz+/readyz + offline docs, labels, errors, logging
+            settings, labels, the platform's own naming rules, SiteTotalFailure
 charts/     Helm chart (2 Deployments, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
 tests/      unit + API tests
 dev/        sample runtimes file, for running the API locally
@@ -53,6 +53,13 @@ dev/        sample runtimes file, for running the API locally
 Dockerfile            the API image
 Dockerfile.controller the build controller image
 ```
+
+What is shared with the platform's **other** APIs is installed, not vendored:
+[`cloudlet-apis`](https://github.com/black-cloudlet/cloudlet-apis) carries the error
+envelope, logging, `X-Request-ID` correlation, `/healthz`+`/readyz` and the offline
+Swagger/ReDoc docs, the name/group rules, and SSO auth. Its extras mirror the split the
+two images already had: the API installs `cloudlet-apis[web,auth]`, the controller installs
+it bare and so still ships no web stack.
 
 The ArgoCD `ApplicationSet` is **not** in this repo - it lives in the central GitOps repo
 and renders `charts/serverless-api` once per site (docs/DEPLOYING.md - Deployment & GitOps).

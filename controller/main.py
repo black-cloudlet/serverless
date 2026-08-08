@@ -5,7 +5,8 @@ from __future__ import annotations
 import signal
 import time
 
-from common.logging import configure_logging, get_logger
+from cloudlet_apis.logging import configure_logging, get_logger
+
 from controller.config import ControllerSettings, get_settings
 from controller.reconciler import Reconciler
 

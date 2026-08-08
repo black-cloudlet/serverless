@@ -1,91 +1,55 @@
-"""FastAPI auth dependencies used by the routers."""
+"""This API's auth wiring: one :class:`SSOAuth` built from its own settings.
+
+The component itself is :mod:`cloudlet_apis.auth`, shared with every API on the
+platform; what lives here is only which settings it is built from.
+
+``require_auth`` stays a module-level function wrapping it, so settings resolve
+per request and it remains the callable ``dependency_overrides`` keys on.
+"""
 
 from __future__ import annotations
 
 from functools import lru_cache
 from typing import Annotated
 
+from cloudlet_apis.auth import Principal, SSOAuth  # noqa: F401 - Principal re-exported
 from fastapi import Depends, Request
 
-from api.auth.apikey import verify_admin_key
-from api.auth.claims import Principal, principal_from_claims
-from api.auth.oidc import TokenValidator, looks_like_jwt
-from api.core.config import Settings, get_settings
-from api.models.common import normalize_group
-from common.errors import ForbiddenError, UnauthenticatedError
+from api.core.config import get_settings
 
 
 @lru_cache
-def get_validator() -> TokenValidator:
-    """The cached OIDC token validator (one JWKS client per process)."""
-    return TokenValidator(get_settings().sso)
+def get_auth() -> SSOAuth:
+    """The app's auth component (one JWKS cache per process).
 
-
-def _bearer_token(request: Request) -> str:
-    """Extract the raw bearer token from the Authorization header.
-
-    Args:
-        request: The incoming request.
+    Cached here rather than inside the component: building it per request would
+    give a fresh validator, and a fresh discovery round trip, every time.
 
     Returns:
-        The token (the part after ``Bearer ``).
-
-    Raises:
-        UnauthenticatedError: If the header is missing or malformed.
+        The configured :class:`~cloudlet_apis.auth.SSOAuth`.
     """
-    header = request.headers.get("Authorization", "")
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise UnauthenticatedError("Missing or malformed Authorization header.")
-    return token
+    settings = get_settings()
+    return SSOAuth(
+        settings.sso,
+        admin_api_key=settings.admin_api_key,
+        enabled=settings.auth_enabled,
+    )
 
 
-def require_auth(
-    request: Request,
-    settings: Annotated[Settings, Depends(get_settings)],
-    validator: Annotated[TokenValidator, Depends(get_validator)],
-) -> Principal:
+def require_auth(request: Request) -> Principal:
     """Validate the bearer token and return the Principal.
-
-    A structural JWT is validated as an OIDC token; an opaque token is matched
-    against the admin API key. When ``auth_enabled`` is false (local dev only) a
-    synthetic admin principal is returned so the API is usable without a live SSO.
 
     Args:
         request: The incoming request (carries the Authorization header).
-        settings: Application settings (auth toggle, admin key, SSO config).
-        validator: The OIDC token validator.
 
     Returns:
-        The authenticated :class:`Principal`.
+        The authenticated :class:`~cloudlet_apis.auth.Principal`.
 
     Raises:
         UnauthenticatedError: If the token is missing/malformed or unrecognized.
         ForbiddenError: If a valid OIDC token carries no group membership.
     """
-    if not settings.auth_enabled:
-        return Principal(subject="dev", username="dev", groups=["dev"], is_admin=True)
-
-    token = _bearer_token(request)
-
-    # A structural JWT is an OIDC token; anything else is the admin API key,
-    # matched with a constant-time compare (see api.auth.apikey).
-    if looks_like_jwt(token):
-        claims = validator.validate(token)
-        principal = principal_from_claims(claims, settings.sso)
-        if not principal.groups:
-            raise ForbiddenError("Token has no group membership.")
-        return principal
-
-    if verify_admin_key(token, settings.admin_api_key):
-        return Principal(
-            subject="admin",
-            username="admin",
-            groups=[normalize_group(g) for g in settings.sso.admin_groups],
-            is_admin=True,
-        )
-
-    raise UnauthenticatedError("Invalid bearer token.")
+    return get_auth().require_auth(request)
 
 
 CurrentUser = Annotated[Principal, Depends(require_auth)]

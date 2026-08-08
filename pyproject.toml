@@ -10,19 +10,22 @@ requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
+    "cloudlet-apis>=0.1,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "kubernetes>=36.0.3",
 ]
 
 [project.optional-dependencies]
-# The API's own: serving HTTP, validating tokens, reading the runtimes file and
-# calling the registry. `pip install ".[api]"` is what its image runs.
+# The API's own: serving HTTP, reading the runtimes file and calling the
+# registry. `pip install ".[api]"` is what its image runs. Token validation and
+# the shared web wiring come from cloudlet-apis' extras, which is where
+# pyjwt[crypto] now enters - the controller image still never sees it.
 api = [
+    "cloudlet-apis[web,auth]>=0.1,<1",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.0",
     "httpx>=0.28.1",
-    "pyjwt[crypto]>=2.13.0",
     "pyyaml>=6.0.3",
     "tzdata>=2026.3",
 ]

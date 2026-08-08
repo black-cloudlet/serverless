@@ -1,7 +1,6 @@
 import pytest
 
-from api.auth.claims import principal_from_claims
-from api.core.config import Settings, SiteConfig, SSOConfig
+from api.core.config import Settings, SiteConfig, SSOSettings
 from api.models.common import SiteStatus
 from api.services.offering import CONTAINER, FUNCTION
 from api.services.sites.deployer import Deployer, aggregate, status_code_for
@@ -9,54 +8,47 @@ from common.errors import SiteTotalFailure, ValidationError
 from tests.conftest import runtime_registry
 
 
-def test_principal_from_claims_strips_and_detects_admin():
-    cfg = SSOConfig(groups_claim="groups", admin_groups=["platform-admins"])
-    p = principal_from_claims(
-        {"sub": "u1", "preferred_username": "alice", "groups": ["/team-a", "/platform-admins"]},
-        cfg,
-    )
-    assert p.username == "alice"
-    assert p.groups == ["team-a", "platform-admins"]
-    assert p.is_admin is True
-    assert p.can_access_group("anything") is True
+def _auth_with_admin_key(monkeypatch, raw_key, admin_groups=("platform-admins",)):
+    """Point api.auth.deps at settings carrying ``raw_key``, as production does.
 
+    Goes through ``get_auth`` rather than building an ``SSOAuth`` here, so what
+    is under test is this API's wiring - which settings the shared component is
+    built from - and not a second copy of it that could quietly drift.
+    """
+    from api.auth.deps import get_auth
 
-def test_principal_non_admin_scope():
-    cfg = SSOConfig(admin_groups=[])
-    p = principal_from_claims({"sub": "u", "groups": "team-a"}, cfg)
-    assert p.groups == ["team-a"]
-    assert p.can_access_group("team-a") is True
-    assert p.can_access_group("team-b") is False
-
-
-def _settings_with_admin_key(raw_key, admin_groups=("platform-admins",)):
-    return Settings(
+    settings = Settings(
         auth_enabled=True,
         admin_api_key=raw_key,
-        sso=SSOConfig(admin_groups=list(admin_groups)),
+        sso=SSOSettings(admin_groups=list(admin_groups)),
     )
+    monkeypatch.setattr("api.auth.deps.get_settings", lambda: settings)
+    get_auth.cache_clear()
 
 
-def test_require_auth_via_bearer_admin_key():
+def test_require_auth_via_bearer_admin_key(monkeypatch):
     from types import SimpleNamespace
 
     from api.auth.deps import require_auth
     from common.errors import UnauthenticatedError
 
-    settings = _settings_with_admin_key("opaque-s3cret")
+    _auth_with_admin_key(monkeypatch, "opaque-s3cret")
     # Opaque admin key in the standard Authorization: Bearer header.
     req = SimpleNamespace(headers={"Authorization": "Bearer opaque-s3cret"})
-    p = require_auth(req, settings, validator=None)  # validator unused for opaque key
+    p = require_auth(req)
     assert p.username == "admin" and p.is_admin is True
-    assert p.groups == ["platform-admins"]
+    # The configured admin groups, mapped the same way a token's claim is: the
+    # normalized name as the key, the spelling config used underneath.
+    assert p.groups == {"platform-admins": "platform-admins"}
+    assert p.can_access_group("platform-admins") is True
 
     # An unrecognised, non-JWT token must be rejected, not silently allowed.
     bad = SimpleNamespace(headers={"Authorization": "Bearer nope"})
     with pytest.raises(UnauthenticatedError):
-        require_auth(bad, settings, validator=None)
+        require_auth(bad)
 
 
-def test_admin_key_header_carries_raw_token_not_a_hash():
+def test_admin_key_header_carries_raw_token_not_a_hash(monkeypatch):
     """The header must carry the RAW token, matched directly against the configured
     key. A sha256 hash of the key is not the key, so it must not authenticate."""
     import hashlib
@@ -65,14 +57,14 @@ def test_admin_key_header_carries_raw_token_not_a_hash():
     from api.auth.deps import require_auth
     from common.errors import UnauthenticatedError
 
-    settings = _settings_with_admin_key("opaque-s3cret")
+    _auth_with_admin_key(monkeypatch, "opaque-s3cret")
     hashed = hashlib.sha256(b"opaque-s3cret").hexdigest()
     req = SimpleNamespace(headers={"Authorization": f"Bearer {hashed}"})
     with pytest.raises(UnauthenticatedError):
-        require_auth(req, settings, validator=None)
+        require_auth(req)
 
 
-def test_empty_admin_key_disables_key_auth():
+def test_empty_admin_key_disables_key_auth(monkeypatch):
     """Setting the admin key empty disables API-key auth entirely; no opaque token
     (including the empty string) is accepted."""
     from types import SimpleNamespace
@@ -80,61 +72,10 @@ def test_empty_admin_key_disables_key_auth():
     from api.auth.deps import require_auth
     from common.errors import UnauthenticatedError
 
-    settings = _settings_with_admin_key("")
+    _auth_with_admin_key(monkeypatch, "")
     req = SimpleNamespace(headers={"Authorization": "Bearer anything"})
     with pytest.raises(UnauthenticatedError):
-        require_auth(req, settings, validator=None)
-
-
-def test_verify_admin_key_constant_time_match():
-    from api.auth.apikey import verify_admin_key
-
-    assert verify_admin_key("opaque-s3cret", "opaque-s3cret") is True
-    assert verify_admin_key("wrong", "opaque-s3cret") is False
-    assert verify_admin_key("", "opaque-s3cret") is False
-    assert verify_admin_key("anything", "") is False
-
-
-def test_oidc_discovery_resolved_once_and_client_reused(monkeypatch):
-    from api.auth.oidc import TokenValidator
-
-    calls = {"n": 0}
-
-    class _Resp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"jwks_uri": "https://sso.internal/jwks"}
-
-    def fake_get(url, timeout=None):
-        calls["n"] += 1
-        return _Resp()
-
-    monkeypatch.setattr("api.auth.oidc.httpx.get", fake_get)
-
-    v = TokenValidator(SSOConfig())
-    c1 = v._client()
-    c2 = v._client()
-    assert c1 is c2  # one PyJWKClient, reused across requests
-    assert calls["n"] == 1  # discovery hit exactly once, not per request
-    assert c1.uri == "https://sso.internal/jwks"  # JWKS URI came from discovery
-
-
-def test_oidc_discovery_failure_is_service_unavailable(monkeypatch):
-    import httpx
-
-    from api.auth.oidc import TokenValidator
-    from common.errors import ServiceUnavailableError
-
-    def boom(url, timeout=None):
-        raise httpx.ConnectError("sso down")
-
-    monkeypatch.setattr("api.auth.oidc.httpx.get", boom)
-
-    v = TokenValidator(SSOConfig())
-    with pytest.raises(ServiceUnavailableError):
-        v._client()
+        require_auth(req)
 
 
 def test_aggregate_all_ok():
@@ -425,7 +366,7 @@ def _ksvc(offering, image="reg/x:1", group="team"):
 
 
 async def test_load_existing_returns_image():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     svc = _workload_service(
         {
@@ -439,7 +380,8 @@ async def test_load_existing_returns_image():
 
 
 async def test_load_existing_offering_mismatch_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     svc = _workload_service(
@@ -454,9 +396,9 @@ async def test_load_existing_offering_mismatch_404():
 
 
 async def test_accept_container_returns_pending_and_schedules():
+    from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
 
@@ -481,7 +423,8 @@ async def test_get_reports_size_and_replicas_but_carries_no_usage():
     PodMetrics call of its own. Reading PodMetrics here is an assertion failure -
     that is what keeps the cost off a response nobody polls for live numbers.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import ANNOTATION_HOST, ANNOTATION_SIZE, LABEL_GROUP, LABEL_OFFERING
     from common.cluster import ResourceKind
 
@@ -569,7 +512,7 @@ def _metrics_pod(cpu, memory):
 
 
 async def test_stats_returns_live_state_and_reads_nothing_else():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
         {"site-a": _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")] * 2)}
@@ -588,7 +531,7 @@ async def test_stats_returns_live_state_and_reads_nothing_else():
 
 async def test_stats_totals_across_sites_from_the_raw_figures():
     """The workload total is summed before rounding, so it is not 0m here."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     def site(name):
         return _StatsCluster(name, pods=[_metrics_pod("500u", "1536Ki")] * 2)
@@ -605,7 +548,8 @@ async def test_stats_totals_across_sites_from_the_raw_figures():
 
 async def test_stats_total_is_null_when_a_site_could_not_be_measured():
     """A total that quietly drops a site is worse than no total."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
 
     class _NoMetrics(_StatsCluster):
@@ -626,7 +570,7 @@ async def test_stats_total_is_null_when_a_site_could_not_be_measured():
 
 
 async def test_stats_survives_a_site_that_is_entirely_down():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     class _Down:
         site = name = "site-b"
@@ -648,7 +592,7 @@ async def test_stats_survives_a_site_that_is_entirely_down():
 
 
 async def test_stats_scaled_to_zero_is_not_an_error():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     engine = _workload_service({"site-a": _StatsCluster("site-a", pods=[], replicas=0)})
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -665,7 +609,8 @@ async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
     A function whose image is not built yet has a KSVC that cannot pull it. Left
     unfolded the header would read Building over a site row saying Failed.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.build import BuildStatus
     from common.cluster import ResourceKind
 
@@ -698,7 +643,8 @@ async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
 
 
 async def test_stats_hides_another_groups_workload_as_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     engine = _workload_service({"site-a": _StatsCluster("site-a", pods=[], group="other")})
@@ -709,7 +655,8 @@ async def test_stats_hides_another_groups_workload_as_404():
 
 async def test_stats_of_an_unconfirmable_workload_fails_closed():
     """A site that cannot answer means "absent" is not established -> 503, not 404."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import ServiceUnavailableError
 
     class _Down:
@@ -755,7 +702,8 @@ class _ListCluster:
 
 
 async def test_get_returns_redacted_spec():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.services.manifests.files import VolumeSpec
     from api.services.manifests.ksvc import ContainerEnv, build_ksvc
@@ -846,7 +794,8 @@ async def test_get_function_returns_build_inputs_and_build_state():
     that only a function reaches - the build-input annotations projected through
     WorkloadSpec, and the kpack build status folded into overallStatus.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
@@ -907,7 +856,8 @@ async def test_get_function_returns_build_inputs_and_build_state():
 
 async def test_get_function_building_image_reports_building():
     """A function whose image is still building is Building, not Degraded."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
@@ -967,7 +917,8 @@ async def test_get_function_building_image_reports_building():
 
 
 async def test_get_overall_status_reflects_rollout_state():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
 
     ksvc = _bare_ksvc()
@@ -1000,7 +951,8 @@ async def test_get_overall_status_reflects_rollout_state():
 async def test_get_failed_site_surfaces_ready_condition_message():
     """A reachable site whose KSVC failed to roll out carries the Ready-condition
     reason in the per-site `error` (not a bare status=Failed, error=null)."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
 
     ksvc = _bare_ksvc()
@@ -1041,7 +993,8 @@ async def test_get_failed_site_surfaces_ready_condition_message():
 async def test_get_failed_site_prefers_revision_specific_reason():
     """The per-site error is the Revision's specific failing sub-condition (the
     real cause), not the KSVC's generic aggregate message."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
 
     ksvc = _bare_ksvc()
@@ -1097,7 +1050,8 @@ async def test_get_failed_site_prefers_revision_specific_reason():
 
 async def test_get_ready_site_has_no_error():
     """A healthy (Ready) site leaves `error` null - it's only set on failure."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
 
     ksvc = _bare_ksvc()
@@ -1119,7 +1073,7 @@ async def test_get_ready_site_has_no_error():
 
 
 async def test_list_overall_status_per_workload():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     deploying = _bare_ksvc("app-team")  # no conditions -> Deploying
     failed = _bare_ksvc("bad-team")
@@ -1143,7 +1097,8 @@ async def test_list_folds_the_build_state_in_like_get_does():
     pull an image kpack has not pushed yet. The single GET already folded the
     build in; the list did not, so the two disagreed about the same function.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.build import BuildStatus
 
     building = _bare_ksvc("fn-team", offering="function")
@@ -1182,7 +1137,7 @@ async def test_list_folds_the_build_state_in_like_get_does():
 
 async def test_list_of_containers_reads_no_build():
     """An offering with no build never pays for the build read (`has_build`)."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     class _Builder(_NullBuilder):
         def statuses(self, cluster, group):
@@ -1245,7 +1200,8 @@ async def test_update_prunes_backing_no_longer_referenced():
     """Dropping the last secret env var / secret file on update must remove the
     now-stale {workload}-env / {workload}-files objects, while a still-referenced
     files ConfigMap is kept."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar, FileMount, Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -1296,7 +1252,8 @@ async def test_update_prunes_backing_no_longer_referenced():
 
 async def test_create_does_not_prune():
     """On create there is nothing to prune; no deletes are issued."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.services.container import ContainerService
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
@@ -1311,7 +1268,8 @@ async def test_create_does_not_prune():
 
 
 async def test_container_update_rotates_pull_secret():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.services.container import ContainerService
     from api.services.manifests.ksvc import build_ksvc
@@ -1361,7 +1319,8 @@ async def test_container_update_rotates_pull_secret():
 
 
 async def test_function_update_rebuilds_without_touching_the_running_image():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
@@ -1423,7 +1382,8 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
 
 
 async def test_function_update_without_token_keeps_image():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
@@ -1478,7 +1438,8 @@ async def test_function_update_without_token_keeps_image():
 async def test_function_create_persists_git_secret():
     import base64
 
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.function import FunctionCreate
     from api.services.function import FunctionService
     from api.services.manifests.secrets import GIT_TOKEN_KEY, build_git_secret
@@ -1512,7 +1473,8 @@ async def test_function_create_persists_git_secret():
 
 
 async def test_function_update_reuses_stored_git_token():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.function import FunctionService
@@ -1567,7 +1529,8 @@ async def test_function_update_reuses_stored_git_token():
 async def test_container_update_keeps_secret_env_value_when_omitted():
     import base64
 
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar, Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -1610,7 +1573,8 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
     import base64
     import json
 
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -1658,9 +1622,9 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
 
 async def test_update_container_username_change_without_token_rejected():
     import pytest
+    from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -1707,7 +1671,8 @@ async def test_update_container_username_change_without_token_rejected():
 
 
 async def test_container_update_both_creds_null_removes_pull_secret():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -1751,8 +1716,8 @@ async def test_container_update_both_creds_null_removes_pull_secret():
 
 async def test_load_existing_surfaces_transient_secret_read_as_503():
     import pytest
+    from cloudlet_apis.auth import Principal
 
-    from api.auth.claims import Principal
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
     from common.cluster import ResourceKind
@@ -1791,7 +1756,8 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
 
 
 async def test_load_existing_reads_secrets_from_local_site():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.services.manifests import resources as res
     from api.services.manifests.ksvc import build_ksvc
@@ -1828,7 +1794,7 @@ async def test_load_existing_reads_secrets_from_local_site():
 
 
 async def test_list_fans_out_and_merges_sites():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     # orders is deployed to both sites; web only to site-a.
     site_a = _ListCluster(
@@ -1863,7 +1829,7 @@ async def test_list_fans_out_and_merges_sites():
 
 
 async def test_list_skips_unreachable_site_best_effort():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     class _Boom:
         def __init__(self, name):
@@ -1889,7 +1855,7 @@ async def test_list_skips_unreachable_site_best_effort():
 
 
 async def test_list_sort_by_created_at():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     def _with_created(oname, created):
         k = _list_ksvc(oname, "small", f"{oname}.ex.com")
@@ -1915,7 +1881,8 @@ async def test_list_sort_by_created_at():
 
 
 async def test_list_errors_when_all_sites_fail():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import SiteTotalFailure
 
     class _Boom:
@@ -1934,9 +1901,9 @@ async def test_list_errors_when_all_sites_fail():
 
 
 async def test_accept_rejects_group_caller_is_not_member_of():
+    from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
     from common.errors import ForbiddenError
@@ -1976,7 +1943,8 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
     """Delete removes only the KSVC; the derived resources are garbage-collected
     by Kubernetes via their ownerReferences (set at apply time - see
     test_apply_sets_owner_references_on_derived)."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
 
     cluster = _DeleteCluster("site-a", _ksvc("container"))
@@ -1989,7 +1957,8 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
 
 
 async def test_delete_missing_workload_is_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     cluster = _DeleteCluster("site-a", None)  # no KSVC present
@@ -2009,7 +1978,8 @@ async def test_delete_fails_closed_when_a_site_cannot_be_reached():
     rebuild. Every other cross-site check in the engine fails closed with 503;
     delete has to as well.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
     from common.errors import ServiceUnavailableError
 
@@ -2034,7 +2004,8 @@ async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
     runs. So the reap happens whenever the fan-out is conclusive, then the 404 is
     reported for the workload itself.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.cluster import ResourceKind
     from common.errors import NotFoundError
 
@@ -2057,7 +2028,8 @@ async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
     would swallow it into a per-site error string and make it indistinguishable
     from an unreachable site.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import LABEL_GROUP, LABEL_OFFERING
     from common.errors import NotFoundError
 
@@ -2120,7 +2092,8 @@ async def test_apply_sets_owner_references_on_derived():
     """Every resource derived from a workload (env/files Secret & ConfigMap, the
     imagePullSecret, and the DomainMapping) must carry an ownerReference to the
     KSVC so Kubernetes GC cleans them up on delete. The KSVC itself owns nothing."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar, FileMount, Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2214,9 +2187,9 @@ async def test_host_check_still_available_on_real_404():
 
 async def test_accept_rejects_invalid_spec_synchronously():
     # A malformed spec must 400 at accept time, before anything is scheduled.
+    from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.common import FileMount
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
@@ -2243,7 +2216,8 @@ async def test_accept_rejects_invalid_spec_synchronously():
 async def test_update_reuses_existing_without_refetch():
     # accept_update passes the loaded `existing` into update(); update must reuse
     # it and NOT trigger a second load_existing fanout.
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2283,7 +2257,8 @@ async def test_update_reuses_existing_without_refetch():
 async def test_load_existing_unreachable_site_is_503_not_404():
     # A workload that can't be confirmed absent because the site is down must
     # surface ServiceUnavailable, not a misleading NotFound.
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import ServiceUnavailableError
 
     svc = _workload_service({"site-a": _DownCluster()})  # get() raises RuntimeError
@@ -2293,7 +2268,8 @@ async def test_load_existing_unreachable_site_is_503_not_404():
 
 
 async def test_load_existing_truly_absent_is_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get() -> NotFoundError
@@ -2311,7 +2287,7 @@ def _ready_ksvc(name="app-team"):
 async def test_get_omits_404_site_and_stays_healthy():
     # A site that returns a clean 404 (workload not deployed there) is omitted from
     # the per-site report and does NOT drag the rollup to Degraded.
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
         {
@@ -2327,7 +2303,7 @@ async def test_get_omits_404_site_and_stays_healthy():
 
 async def test_get_down_site_still_degrades():
     # An UNREACHABLE site is different from a 404: it stays visible and degrades.
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
         {
@@ -2342,7 +2318,8 @@ async def test_get_down_site_still_degrades():
 
 
 async def test_get_absent_everywhere_is_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
@@ -2353,132 +2330,14 @@ async def test_get_absent_everywhere_is_404():
 
 async def test_get_all_sites_down_is_503():
     # Can't confirm absence when every site is unreachable -> 503, not a false 404.
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import ServiceUnavailableError
 
     engine = _workload_service({"site-a": _DownCluster("site-a"), "site-b": _DownCluster("site-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
         await engine.get(CONTAINER, "app", user, "team")
-
-
-def test_principal_normalizes_slash_and_ggd_prefixes():
-    from api.auth.claims import principal_from_claims
-    from api.core.config import SSOConfig
-
-    cfg = SSOConfig(groups_claim="groups", admin_groups=["platform-admins"])
-    p = principal_from_claims(
-        {"sub": "u", "groups": ["/ggd-1234-team-a", "ggd-7-platform-admins", "/plain"]},
-        cfg,
-    )
-    assert p.groups == ["team-a", "platform-admins", "plain"]  # / and ggd-NNNN stripped
-    assert p.is_admin is True  # matched after normalization
-
-
-def test_validate_group_strips_ggd_prefix_on_input():
-    # A request-supplied group with the ggd- prefix normalizes to the bare name,
-    # so "ggd-1234-platforms" and "platforms" are the same group.
-    from api.models.common import normalize_group, validate_group
-
-    assert validate_group("ggd-1234-platforms") == "platforms"
-    assert validate_group("platforms") == "platforms"
-    assert normalize_group("/ggd-7-team-a") == "team-a"
-    assert normalize_group("ggd-1234platforms") == "ggd-1234platforms"  # no dash -> kept
-
-
-def test_group_underscores_fold_to_hyphens():
-    # "_" is legal in Keycloak but not in the DNS-1123 names the group ends up
-    # in, so both spellings normalize to the same group.
-    from api.models.common import normalize_group, validate_group
-
-    assert validate_group("my_team") == "my-team"
-    assert validate_group("my-team") == "my-team"
-    assert normalize_group("/ggd-1234-my_team") == "my-team"  # applied after the prefixes
-    assert validate_group("a_b_c") == "a-b-c"  # every separator, not just the first
-
-
-def test_group_case_is_folded_to_lower():
-    # Lowercased for the same reason, and before the other rules - so an
-    # upper-case ggd- prefix is still stripped and "_" still folded.
-    from api.models.common import normalize_group, validate_group
-
-    assert validate_group("Platforms") == "platforms"
-    assert validate_group("My_Team") == "my-team"
-    assert normalize_group("/GGD-1234-My_Team") == "my-team"
-    assert normalize_group("GGD-7-TEAM-A") == "team-a"
-
-
-def test_group_still_rejected_when_normalizing_cannot_save_it():
-    # Normalization is not a licence to accept anything: the DNS-1123 check runs on
-    # the normalized form, so a name that is still invalid after folding is rejected.
-    import pytest as _pytest
-
-    from api.models.common import validate_group
-
-    for bad in ["_team", "team_", "my team", "my_team/x", "a" * 64, "-team", "tëam"]:
-        with _pytest.raises(ValueError):
-            validate_group(bad)
-
-
-def test_principal_normalizes_underscored_groups_and_admin_groups():
-    # The admin groups come from config in their raw SSO spelling; they are
-    # normalized on both sides so the comparison still matches.
-    from api.auth.claims import principal_from_claims
-    from api.core.config import SSOConfig
-
-    cfg = SSOConfig(groups_claim="groups", admin_groups=["Platform_Admins"])
-    p = principal_from_claims({"sub": "u", "groups": ["/My_Team", "platform_admins"]}, cfg)
-
-    assert p.groups == ["my-team", "platform-admins"]
-    assert p.is_admin is True
-    # Membership is checked against the canonical form the routers also produce.
-    assert p.can_access_group("my-team") is True
-
-
-def test_sso_endpoints_derived_from_issuer():
-    from api.core.config import SSOConfig
-
-    cfg = SSOConfig(issuer="https://sso.x/realms/r")
-    assert cfg.discovery_url == "https://sso.x/realms/r/.well-known/openid-configuration"
-    assert cfg.authorization_url == "https://sso.x/realms/r/protocol/openid-connect/auth"
-    assert cfg.token_url == "https://sso.x/realms/r/protocol/openid-connect/token"
-    assert cfg.audience == ""  # empty by default -> audience not verified
-
-
-def test_validate_audience_verified_only_when_configured(monkeypatch):
-    import api.auth.oidc as oidc_mod
-    from api.auth.oidc import TokenValidator
-    from api.core.config import SSOConfig
-
-    captured: dict = {}
-
-    class _Key:
-        key = "k"
-
-    class _Client:
-        def get_signing_key_from_jwt(self, _t):
-            return _Key()
-
-    def fake_decode(_token, _key, **kwargs):
-        captured.clear()
-        captured.update(kwargs)
-        return {"sub": "u"}
-
-    monkeypatch.setattr(oidc_mod.jwt, "decode", fake_decode)
-
-    # No audience configured -> aud not checked.
-    none = TokenValidator(SSOConfig(audience=""))
-    monkeypatch.setattr(none, "_client", lambda: _Client())
-    none.validate("tok")
-    assert captured["audience"] is None
-    assert captured["options"]["verify_aud"] is False
-
-    # Audience configured -> aud enforced.
-    on = TokenValidator(SSOConfig(audience="serverless-api"))
-    monkeypatch.setattr(on, "_client", lambda: _Client())
-    on.validate("tok")
-    assert captured["audience"] == "serverless-api"
-    assert "verify_aud" not in captured["options"]
 
 
 # --- Review fixes: fail-closed prune (A1/A3), client cleanup (B1), guards (A2, D1) ---
@@ -2505,7 +2364,8 @@ def _existing_container_ksvc():
 async def test_prune_failure_aborts_update_fail_closed():
     """A non-404 prune error must abort the site's update: the new spec never goes
     live, so it can't sit alongside the stale, now-unreferenced secret."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2532,7 +2392,8 @@ async def test_prune_failure_aborts_update_fail_closed():
 async def test_prune_not_found_is_tolerated():
     """A 404 during prune just means the object never existed here; the update
     proceeds normally."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2560,7 +2421,8 @@ async def test_prune_runs_before_apply_on_update():
     """Ordering: the fail-closed secret/configmap prunes happen before the new
     spec is applied, while the old host's DomainMapping is retired *after* (prune-
     last) so a host move never drops the old host before the new one is live."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2611,9 +2473,9 @@ async def test_prune_runs_before_apply_on_update():
 async def test_accept_update_rejects_taken_host_synchronously():
     """A host already owned by another workload must 409 at accept time, not be
     swallowed in the background deploy where the client would never see it."""
+    from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.common import LABEL_WORKLOAD
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2647,7 +2509,8 @@ async def test_accept_update_rejects_taken_host_synchronously():
 
 async def test_update_unchanged_host_retires_no_mapping():
     """When the host is unchanged, no DomainMapping is retired (no spurious delete)."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2680,7 +2543,7 @@ async def test_update_unchanged_host_retires_no_mapping():
 async def test_list_total_failure_details_have_message_key():
     """The list total-failure details share deployer.aggregate's {site, message}
     shape so clients parse one envelope."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     class _Boom:
         def __init__(self, name):
@@ -2695,17 +2558,6 @@ async def test_list_total_failure_details_have_message_key():
     with pytest.raises(SiteTotalFailure) as ei:
         await engine.list(CONTAINER, user, "team")
     assert all(set(d) == {"site", "message"} for d in ei.value.details)
-
-
-def test_looks_like_jwt_rejects_non_string_and_empty():
-    """A None/empty/non-str token returns False (a clean 401 path) instead of
-    raising a 500 from the JWT parser."""
-    from api.auth.oidc import looks_like_jwt
-
-    assert looks_like_jwt(None) is False
-    assert looks_like_jwt("") is False
-    assert looks_like_jwt(123) is False  # type: ignore[arg-type]
-    assert looks_like_jwt("not-a-jwt") is False
 
 
 def test_deployer_close_releases_every_cluster():
@@ -2751,7 +2603,7 @@ def test_cluster_close_closes_api_client_and_resets():
 async def test_get_reports_terminating_during_delete():
     """A KSVC carrying a deletionTimestamp (being garbage-collected) reports
     Terminating rather than a stale Ready."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     terminating = _ready_ksvc()  # would otherwise read Ready
     terminating["metadata"]["deletionTimestamp"] = "2026-06-29T12:00:00Z"
@@ -2810,7 +2662,8 @@ class _BackingFails(_ApplyCluster):
 async def test_create_rolls_back_ksvc_on_backing_failure():
     """If a backing/mapping apply fails mid-create, the just-created KSVC is
     deleted (rolled back) so no half-built workload lingers on the name/host."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
     from common.cluster import ResourceKind
@@ -2827,7 +2680,8 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
 async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
     """A backing/mapping failure on update must NOT delete the live KSVC - Knative
     keeps serving the last-good revision; deleting would take it down + free the host."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import EnvVar
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
@@ -2899,7 +2753,7 @@ def _pod(name, revision="app-team-00001"):
 
 
 async def test_logs_reads_local_site_pods():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     cluster = _LogsCluster(
         "site-a",
@@ -2928,7 +2782,7 @@ async def test_logs_reads_local_site_pods():
 
 
 async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     cluster = _LogsCluster(
         "site-a",
@@ -2958,7 +2812,7 @@ async def test_logs_passes_since_and_limit_and_skips_vanished_pod():
 
 
 async def test_logs_scaled_to_zero_returns_empty():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(), pods=[])
     engine = _workload_service({"site-a": cluster})
@@ -2977,7 +2831,8 @@ async def test_logs_scaled_to_zero_returns_empty():
 
 
 async def test_logs_not_on_local_site_is_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     cluster = _LogsCluster("site-a", ksvc=None)  # KSVC absent locally
@@ -2997,7 +2852,8 @@ async def test_logs_not_on_local_site_is_404():
 
 
 async def test_logs_wrong_offering_hidden_as_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import NotFoundError
 
     # a container by this name exists locally; /functions must not read its logs
@@ -3018,7 +2874,8 @@ async def test_logs_wrong_offering_hidden_as_404():
 
 
 async def test_logs_wrong_group_hidden_as_404():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from common.errors import ForbiddenError
 
     cluster = _LogsCluster("site-a", ksvc=_logs_ksvc(group="other"))
@@ -3039,7 +2896,8 @@ async def test_logs_wrong_group_hidden_as_404():
 
 
 async def test_function_service_logs_delegates_to_engine():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.services.function import FunctionService
 
     cluster = _LogsCluster(
@@ -3059,7 +2917,8 @@ async def test_function_service_logs_delegates_to_engine():
 
 
 async def test_container_service_logs_delegates_to_engine():
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.services.container import ContainerService
 
     cluster = _LogsCluster(
@@ -3094,9 +2953,9 @@ def _function_service_with_runtimes(names, builder="python"):
 
 async def test_function_accept_rejects_a_runtime_with_no_builder():
     """An unmounted runtimes ConfigMap must 400 now, not fail the deploy later."""
+    from cloudlet_apis.auth import Principal
     from starlette.background import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.function import FunctionCreate
     from common.errors import ValidationError
 
@@ -3111,9 +2970,9 @@ async def test_function_accept_rejects_a_runtime_with_no_builder():
 
 
 async def test_function_accept_rejects_unknown_runtime():
+    from cloudlet_apis.auth import Principal
     from starlette.background import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.function import FunctionCreate
     from common.errors import ValidationError
 
@@ -3128,9 +2987,9 @@ async def test_function_accept_rejects_unknown_runtime():
 
 
 async def test_function_accept_allows_known_runtime():
+    from cloudlet_apis.auth import Principal
     from starlette.background import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.function import FunctionCreate
 
     fsvc = _function_service_with_runtimes(["python", "go"])
@@ -3144,9 +3003,9 @@ async def test_function_accept_allows_known_runtime():
 
 
 async def test_function_update_rejects_unknown_runtime():
+    from cloudlet_apis.auth import Principal
     from starlette.background import BackgroundTasks
 
-    from api.auth.claims import Principal
     from api.models.function import FunctionUpdate
     from common.errors import ValidationError
 
@@ -3167,7 +3026,8 @@ async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
     not reconciled microseconds later, so a follow-up GET buys nothing and costs
     a cross-site round trip on every site of every deploy.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
     from common.cluster import ResourceKind
@@ -3237,7 +3097,7 @@ async def test_get_reads_a_sites_revision_on_the_fanout_thread_and_never_measure
     The usage read is no longer here at all: measuring costs a cluster call, and
     the full GET is not the endpoint to poll.
     """
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     seen: dict[str, str] = {}
     engine = _workload_service({"site-a": _thread_recording_cluster(seen)})
@@ -3251,7 +3111,7 @@ async def test_get_reads_a_sites_revision_on_the_fanout_thread_and_never_measure
 
 async def test_stats_reads_revision_and_usage_on_the_fanout_thread():
     """The stats view takes the measurement, and on the same thread."""
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
 
     seen: dict[str, str] = {}
     engine = _workload_service({"site-a": _thread_recording_cluster(seen)})
@@ -3272,7 +3132,8 @@ async def test_get_overlaps_the_spec_and_build_reads():
     """
     import time
 
-    from api.auth.claims import Principal
+    from cloudlet_apis.auth import Principal
+
     from api.models.common import Scaling
     from api.services.manifests.files import VolumeSpec
     from api.services.manifests.ksvc import build_ksvc

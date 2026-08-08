@@ -5,19 +5,19 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
+from cloudlet_apis.auth import wire_sso_login
+from cloudlet_apis.logging import configure_logging, get_logger
+from cloudlet_apis.requestid import RequestIDMiddleware
+from cloudlet_apis.web import health_router, mount_offline_docs, register_exception_handlers
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api import __version__
-from api.auth.deps import get_validator
+from api.auth.deps import get_auth
 from api.core.config import Settings, get_settings
 from api.dependencies import get_runtimes, get_workload_service
-from api.docs import wire_sso_login
 from api.routers import containers, functions, info
 from api.services.sites.deployer import Deployer
-from common.logging import configure_logging, get_logger
-from common.requestid import RequestIDMiddleware
-from common.web import health_router, mount_offline_docs, register_exception_handlers
 
 logger = get_logger(__name__)
 
@@ -41,7 +41,7 @@ async def _warmup(settings: Settings, deployer: Deployer) -> None:
     timeout = settings.cluster_connect_timeout + settings.cluster_read_timeout
     tasks = []
     if settings.auth_enabled:
-        tasks.append(_warm("SSO discovery", get_validator().warmup, timeout))
+        tasks.append(_warm("SSO discovery", get_auth().warmup, timeout))
     if settings.sites:
         for cluster in deployer.resolve_targets(None):
             tasks.append(_warm(f"cluster {cluster.site}", cluster.connect, timeout))

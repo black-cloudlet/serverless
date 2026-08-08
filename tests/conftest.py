@@ -53,16 +53,20 @@ def runtimes_file(tmp_path_factory, monkeypatch):
     resolves a runtime fails at construction, which is the intended production
     behaviour and would otherwise make most of the suite unrunnable.
     """
+    from api.auth.deps import get_auth
     from api.core.config import get_settings
     from api.dependencies import get_runtimes
 
     path = tmp_path_factory.mktemp("runtimes") / "runtimes.yaml"
     path.write_text(RUNTIMES_YAML)
     monkeypatch.setenv("SERVERLESS_RUNTIMES_FILE", str(path))
-    # Both are lru_cached; clear before and after so neither this fixture nor a
-    # test that overrides the path leaks a registry into the next test.
+    # All three are lru_cached; clear before and after so neither this fixture
+    # nor a test that overrides the path leaks a registry - or an auth component
+    # built from superseded settings - into the next test.
     get_settings.cache_clear()
     get_runtimes.cache_clear()
+    get_auth.cache_clear()
     yield path
     get_settings.cache_clear()
     get_runtimes.cache_clear()
+    get_auth.cache_clear()

@@ -18,9 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from cloudlet_apis.logging import get_logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
-from common.logging import get_logger
 
 logger = get_logger(__name__)
 

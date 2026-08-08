@@ -252,6 +252,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **The parts every API on the platform repeats now come from `cloudlet-apis`.**
+  The error envelope, logging, `X-Request-ID` correlation, the `/healthz` +
+  `/readyz` + offline-docs wiring, the name/group rules and SSO auth moved into
+  a shared package and are installed rather than vendored. Its extras mirror the
+  split the two images already had: the API installs `cloudlet-apis[web,auth]`,
+  the controller installs it bare and still ships no web stack -
+  `tests/test_layering.py` now checks both, that no domain module reaches a web
+  framework and that none reaches the `[auth]` dependencies either.
+
+  What stayed is what is ours. `common/errors.py` re-exports the shared catalog
+  and defines `SiteTotalFailure`, which is picked up by `error_catalog()` walking
+  subclasses, so `/info` publishes it unchanged. `common/names.py` re-exports
+  `normalize_group`/`validate_name`/`validate_group` and keeps everything this
+  platform derives from them - object names, image and cache repositories, OCI
+  tags, the git/image/path validators - because those change when the build
+  pipeline changes. Every `from common.errors import ...` and
+  `from common.names import ...` in this repository still resolves.
+
+  **Behaviour is unchanged**, including the response envelope, the correlation
+  id and the admin-key path. Two things to know when upgrading: the auth
+  component is now built from settings by `api.auth.deps.get_auth()` instead of
+  resolving a module-level singleton per request, so it holds one JWKS cache per
+  process rather than one per interpreter; and `SSOConfig.issuer` is required in
+  the shared package, with this deployment's default re-declared on
+  `api.core.config.SSOSettings`. No environment variable changed name or meaning.
+
 - **Documentation corrected against the code**, which is the source of truth.
   The substantive drift: ARCHITECTURE.md and FUNCTIONS.md still described the
   FaaS build as Knative Functions (`func`) with a synchronous build returning a
@@ -486,6 +512,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Raised the dependency floors to the Dependabot python-deps group versions.
 - Fixed README/ARCHITECTURE references left pointing at the old `app/` layout, and
   moved the revision changelog out of the architecture doc into this file.
+
+### Removed
+
+- `uv.lock` is no longer tracked. Nothing installed from it: both Dockerfiles run
+  `pip install .`/`.[api]` and every CI job resolves from `pyproject.toml`, so the
+  committed lock produced no artifact and gated nothing - which is precisely why
+  it went stale twice in this cycle without failing anything. Supersedes the
+  regeneration noted under Fixed below; the net effect for this release is that
+  the file is gone. Local development is unaffected (`pip install -e ".[api,dev]"`,
+  per the README). Worth committing again the day a deploy installs with
+  `uv sync --frozen` - then it pins what actually ships and cannot drift unseen.
 
 ### Fixed
 

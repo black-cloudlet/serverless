@@ -25,7 +25,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from api.auth.claims import Principal
+from cloudlet_apis.auth import Principal
+from cloudlet_apis.logging import get_logger
+
 from api.core.config import Settings
 from api.models.common import (
     ANNOTATION_HOST,
@@ -66,7 +68,6 @@ from common.errors import (
     NotFoundError,
     SiteTotalFailure,
 )
-from common.logging import get_logger
 from common.names import object_name
 
 logger = get_logger(__name__)

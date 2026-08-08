@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
+from cloudlet_apis.logging import get_logger
+
 from api.core.config import Settings
 from api.models.common import SiteStatus
 from common.cluster import Cluster, clusters_for, select_local
 from common.errors import SiteTotalFailure, ValidationError
-from common.logging import get_logger
 
 logger = get_logger(__name__)
 

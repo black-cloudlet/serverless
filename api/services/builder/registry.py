@@ -15,9 +15,9 @@ credentials and cannot authenticate here (docs/BUILDING.md - Registry cleanup on
 from __future__ import annotations
 
 import httpx
+from cloudlet_apis.logging import get_logger
 
 from common.config import RegistryConfig
-from common.logging import get_logger
 from common.names import CACHE_SUFFIX, cache_repository, image_repository, repository_of
 
 logger = get_logger(__name__)
