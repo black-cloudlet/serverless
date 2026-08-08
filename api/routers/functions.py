@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi.responses import StreamingResponse
 
-from api.auth.deps import CurrentUser
+from api.auth.deps import CurrentUser, StreamUser
 from api.dependencies import FunctionDep
 from api.models.common import (
     Group,
@@ -16,6 +17,7 @@ from api.models.common import (
     WorkloadSummary,
 )
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
+from api.routers import sse
 
 router = APIRouter(prefix="/api/v1/groups/{group}/functions", tags=["functions"])
 
@@ -189,6 +191,87 @@ async def get_function_logs(
     return await svc.logs(
         name, group, user, container=container, since_seconds=sinceSeconds, limit_bytes=limitBytes
     )
+
+
+@router.get("/{name}/logs/stream", responses=sse.RESPONSES, response_class=StreamingResponse)
+async def stream_function_logs(
+    group: Group,
+    name: Name,
+    user: StreamUser,
+    svc: FunctionDep,
+    container: str = "user-container",
+    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
+    interval: Annotated[float | None, Query(gt=0)] = None,
+) -> StreamingResponse:
+    """Follow the function's pod logs from the current site (Server-Sent Events).
+
+    The streaming form of ``/logs``, and local-site only for the same reason -
+    logs live on the node that wrote them. Unlike the snapshot, this keeps up
+    with the workload: pods are re-listed every ``interval`` seconds, so a
+    scale-up or a new revision starts being followed without reconnecting.
+
+    Events: ``open`` (what is being followed), ``log`` (one line), ``pods`` (the
+    followed set changed), ``warning`` (degraded but still running - a pod cap
+    hit, or lines dropped because the client read too slowly), ``error`` (ending,
+    and why). Lines beginning with ``:`` are heartbeats.
+
+    Browsers authenticate with ``?ticket=`` from ``POST /api/v1/stream-tickets``;
+    everything else sends the usual ``Authorization`` header.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller, by header or ticket (injected).
+        svc: The function service (injected).
+        container: The pod container to read (default the user-container).
+        sinceSeconds: Start each pod's log this many seconds back.
+        interval: Seconds between pod re-listings; omit for the default.
+
+    Returns:
+        The event stream.
+    """
+    return sse.stream(
+        await svc.stream_logs(
+            name,
+            group,
+            user,
+            container=container,
+            since_seconds=sinceSeconds,
+            interval=interval,
+        )
+    )
+
+
+@router.get("/{name}/stats/stream", responses=sse.RESPONSES, response_class=StreamingResponse)
+async def stream_function_stats(
+    group: Group,
+    name: Name,
+    user: StreamUser,
+    svc: FunctionDep,
+    interval: Annotated[float | None, Query(gt=0)] = None,
+) -> StreamingResponse:
+    """Follow the function's live state (Server-Sent Events).
+
+    The streaming form of ``/stats``, reporting exactly the same body on an
+    interval instead of on request. One connection replaces a client's poll
+    loop, so the fan-out happens once per interval however many clients are
+    watching.
+
+    Events: ``stats`` (a :class:`WorkloadStatsResponse`, the first sent
+    immediately) and ``error`` (the workload is gone, or no site could answer).
+    Lines beginning with ``:`` are heartbeats.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller, by header or ticket (injected).
+        svc: The function service (injected).
+        interval: Seconds between readings; omit for the default.
+
+    Returns:
+        The event stream.
+    """
+    return sse.stream(await svc.stream_stats(name, group, user, interval=interval))
 
 
 @router.delete("/{name}", status_code=204)

@@ -15,6 +15,7 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 - [Secrets Management](#secrets-management)
 - [Airgapped Considerations](#airgapped-considerations)
 - [REST API Specification](#rest-api-specification)
+- [Streaming](#streaming)
 - [Proposed Repository Layout](#proposed-repository-layout)
 - [Open Questions / Future Work](#open-questions--future-work)
 
@@ -652,6 +653,9 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/stats` | **The lightweight endpoint to poll.** Live state only: `overallStatus`, workload-wide `replicas` and `usage`, and the same three per site. No desired-state config, so a two-second refresh never re-reads the workload's backing Secret. Fans out to all sites; a function's build is still read, so `Building` is reported here as on the GET. Totals are summed before rounding (they need not equal the sum of the printed per-site figures) and are `null` if any site could not be measured. Scaled-to-zero -> `replicas: 0`, `usage: null`. Same `404`/`503` rules as the full GET. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/logs` | Snapshot the workload's pod logs from the **current site** (point-in-time, not streamed; Kubernetes keeps no buffer beyond the node). Optional `container` (default `user-container`), `sinceSeconds`, `limitBytes`. Scaled-to-zero → `200` with empty `pods`. Wrong group/offering or not deployed here → `404`. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs/stream` | **Follow** the pod logs as Server-Sent Events (`text/event-stream`), current site only for the same reason as the snapshot. Unlike the snapshot it keeps up with the workload: pods are re-listed every `interval` seconds, so a scale-up or a new revision is picked up without reconnecting. Events: `open`, `log`, `pods`, `warning`, `error`; `:` lines are heartbeats. Optional `container`, `sinceSeconds`, `interval`, `ticket`. Same `404` rules as the snapshot; `503` when the stream pool is full. See ARCHITECTURE.md: Streaming. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/stats/stream` | **Follow** the live state as Server-Sent Events - the same body as `/stats`, pushed every `interval` seconds instead of on request, so one connection replaces a client's poll loop. Events: `stats` (the first sent immediately) and `error`. Optional `interval`, `ticket`. Same `404`/`503` rules as `/stats`, plus `503` when the stream pool is full. |
+| `POST` | `/api/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
 | `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
 | `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
 | `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). Constant responses - they never touch a cluster, so a down site cannot fail a probe. |
@@ -801,7 +805,94 @@ This table is the authoritative prose, but a client should read `errorCodes` off
 | `422` | `VALIDATION_ERROR` | Request body/path failed schema validation (FastAPI's own; rendered into the same envelope). |
 | `500` | `INTERNAL` | Unexpected error. The message is a fixed string - an exception's own text routinely carries internal hostnames or secret material - so the detail is in the log, under the same `requestId`. |
 | `502` | `SITE_TOTAL_FAILURE` | Every site failed (a listing whose sites were all unreachable). |
-| `503` | `SERVICE_UNAVAILABLE` | A check could not be *run*, so it has not passed: a site was unreachable during a host/absence pre-flight, a delete could not be confirmed, or a stored secret could not be read back to preserve a "keep". Fail-closed by design - retry. |
+| `503` | `SERVICE_UNAVAILABLE` | A check could not be *run*, so it has not passed: a site was unreachable during a host/absence pre-flight, a delete could not be confirmed, or a stored secret could not be read back to preserve a "keep". Fail-closed by design - retry. Also: the stream pool is full, or stream tickets are not configured. |
+
+---
+
+## Streaming
+
+`/logs/stream` and `/stats/stream` are **Server-Sent Events**, not WebSockets. The traffic is
+one-directional, SSE is plain HTTP through the existing Route with no upgrade to negotiate, and
+browsers reconnect on their own. Three things had to be solved to make it safe; each is the
+reason for a piece of the design.
+
+### A held-open stream holds a thread
+
+The Kubernetes client is synchronous, so following a pod log is a thread **blocked on a socket
+for as long as the client stays connected** - not for the length of a request. On the default
+executor that `asyncio.to_thread` uses, a handful of idle log tails would occupy the same threads
+every create, read and delete needs, and the API would stop answering while looking healthy.
+
+So streaming owns a pool of its own (`api/services/streams/capacity.py`), and admission is capped
+**before** that pool can be exhausted:
+
+| Bound | Default | What it stops |
+|-------|---------|---------------|
+| `stream.maxConcurrent` | 8 | More streams than the pool can serve. Beyond it: `503` with a retry - being told to come back beats being connected and starved. |
+| `stream.maxPods` | 5 | One client taking the pool by following a wide workload. The rest are named in a `warning` event, never dropped silently. |
+| `stream.queueSize` | 1000 | A workload logging faster than its reader growing the process. Past it, lines are dropped and the gap is **reported** as a `warning` carrying `droppedLines`. |
+| `stream.maxSeconds` | 3600 | An immortal stream. It ends itself and the client reconnects, which SSE does unprompted. |
+
+The pool size is *derived* (`maxConcurrent × (maxPods + 1)`), not configured: a pool smaller than
+the admissions it must serve turns a bound into a stall.
+
+Teardown closes each follow's socket - the only thing that interrupts a blocking read, since a
+flag is checked between lines and a quiet workload produces none - then waits, briefly, before
+handing the slot back. Guarding the whole generator matters: a client that disconnects
+immediately closes it at its **first** suspension point, and those are exactly the streams that
+would otherwise leak threads.
+
+### The Route would cut them
+
+OpenShift's router times a connection out after **30s** by default, which would sever every
+stream half a minute in; the client would reconnect forever without surfacing why. The chart sets
+`haproxy.router.openshift.io/timeout` from `api.route.timeout` (default `65m`) and **fails to
+render** if it does not exceed `stream.maxSeconds` - the two live in different sections of
+`values.yaml`, so the relationship is asserted rather than left to whoever edits one. A quiet
+stream also sends a `:` comment every `stream.heartbeatSeconds`, so nothing in the path reaps it
+between events. The timeout applies to the whole Route (OpenShift has no per-path timeout); the
+API bounds its own cluster work with `siteOpTimeout` regardless.
+
+### Browsers cannot send an `Authorization` header
+
+`EventSource` is the only way a browser consumes SSE and there is no API to give it a header. That
+leaves the credential in the URL, and the SSO token is the wrong thing to put there: it is valid
+against every endpoint, it outlives the request, and a URL reaches the router's access log, this
+API's own log line and the user's history.
+
+So the token buys a **ticket** instead. `POST /api/v1/stream-tickets` takes the bearer token on a
+request that can carry one and returns an opaque credential worth almost nothing: **one** stream
+path, for ~60s, carrying an identity the caller already had. It is HMAC-signed rather than stored,
+because two replicas serve behind one Route and either may take the stream - a ticket held in the
+minting process's memory would fail about half the time.
+
+```
+POST /api/v1/stream-tickets            EventSource(url + "?ticket=…")
+  Authorization: Bearer <SSO token>  →   GET …/logs/stream?ticket=…
+  {"path": "/api/v1/…/logs/stream"}      (no header; none is possible)
+```
+
+The path is inside the signature, so a ticket for one workload's logs cannot be replayed against
+another's. Every refusal - expired, forged, wrong path - returns the same message, which helps
+exactly one kind of caller if it does not. Group authorization is **not** done at minting: the
+ticket conveys only who you already are, and the stream re-runs the same check the ordinary GET
+does, so a ticket for a group you are not in opens a stream that `404`s.
+
+`SERVERLESS_STREAM_TICKET_KEY` (Vault → ESO, the same value in every replica and site) enables
+this. Empty **disables minting**, exactly as an empty admin key disables key auth - the streams
+still accept the `Authorization` header, so a `curl -N` follow needs no configuration at all and
+only the browser path depends on the secret.
+
+### Errors after the first byte
+
+Everything that can fail with a status code is settled **before** the response begins: the slot is
+taken, the workload is read and authorized, and the first reading (or pod listing) is done. A
+missing workload is therefore a `404` **envelope**, not a stream that opens and immediately errors.
+
+Once bytes are flowing the status line is spent, so a later failure - the workload deleted, every
+site gone - arrives as an `error` event carrying the same `code` the envelope would have. `/info`
+publishes that vocabulary, so a client switches on one set of values however the failure reaches
+it.
 
 ---
 
@@ -818,9 +909,11 @@ Serverless/
 │   ├── core/
 │   │   └── config.py                # api Settings(CommonSettings) + SSO/CORS/route-domain fields
 │   ├── auth/                        # wiring only - the component is cloudlet_apis.auth
-│   │   └── deps.py                  # get_auth() from this service's settings; require_auth, CurrentUser
-│   ├── routers/                     # functions, containers, info (public)
-│   ├── models/                      # Pydantic schemas: common, function, container, info
+│   │   ├── deps.py                  # get_auth() from this service's settings; require_auth, CurrentUser
+│   │   └── tickets.py               # signed stream tickets (the browser's way into an SSE endpoint)
+│   ├── routers/                     # functions, containers, info (public), streams (ticket minting)
+│   │   └── sse.py                   # renders a service's events as an event-stream response
+│   ├── models/                      # Pydantic schemas: common, function, container, info, stream
 │   ├── services/                    # business logic
 │   │   ├── workloads.py             # shared build-once / deploy-both engine (orchestration)
 │   │   ├── offering.py              # Offering protocol: all that differs between fn/container
@@ -841,6 +934,11 @@ Serverless/
 │   │   │   ├── ownership.py         # is this workload the caller's - the one shared rule
 │   │   │   ├── summaries.py         # merge a group's per-site listings into one row each
 │   │   │   └── describe.py / metrics.py  # read-back spec (redacted) + pod usage
+│   │   ├── streams/                 # Server-Sent Events (ARCHITECTURE.md - Streaming)
+│   │   │   ├── capacity.py          # the stream thread pool + the admission gate
+│   │   │   ├── logs.py              # follow pod logs: per-pod tails, bounded hand-off, re-listing
+│   │   │   ├── stats.py             # push the live rollup on an interval
+│   │   │   └── sse.py               # the wire format, and the event type the streams yield
 │   │   └── builder/                 # the function image build
 │   │       ├── kpack_backend.py     # api-side BuildBackend (KpackBackend; future RemoteBackend)
 │   │       ├── runtimes.py          # available-runtimes registry (mounted ConfigMap)
@@ -913,7 +1011,7 @@ Serverless/
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
 | **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Degraded, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
-| **Observability** | Live state is **polled**, not streamed: `/stats` is the cheap poll target, and `/logs` returns a **local-site, point-in-time** snapshot (node-local, ephemeral). Two things remain to be designed. **Streaming** - an SSE `/logs` follow and a `/stats` stream would make logs and replica count event-driven rather than poll-driven, but need a bounded executor (a held-open stream holds a worker thread), a Route timeout annotation, and an auth scheme browsers can use without an `Authorization` header. **Durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) behind `/logs` - are the only way to get history and a cross-site view. |
+| **Observability** | **Streaming is built** (ARCHITECTURE.md: Streaming): `/logs/stream` and `/stats/stream` are SSE, with the bounded executor, the Route timeout and the ticket auth that were the open questions. What remains is **durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) behind `/logs` - are the only way to get history and a cross-site view. A logs stream still reads the **local site** only, for the same reason the snapshot does. |
 | **Audit logging** | Who deployed/changed/deleted what - likely required for enterprise/compliance. |
 | **Stronger isolation** | Optional move from shared-namespace to **namespace-per-group** for hard multi-tenancy. |
 | **Git webhook** | **Not implemented.** A per-function webhook endpoint would pin the pushed commit SHA to the function's build (`BuildRequest.revision` already carries the field), making a push-triggered rebuild idempotent by data. Until then a build follows the branch head and `POST .../functions/{name}/build` is the on-demand trigger (BUILDING.md: Who writes the ksvc image). |

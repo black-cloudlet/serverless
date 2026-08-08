@@ -9,6 +9,60 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Server-Sent Events on logs and stats.** `GET .../{name}/logs/stream` follows a
+  workload's pod logs and `GET .../{name}/stats/stream` pushes the live rollup, both
+  as `text/event-stream`. The bodies are the ones already published - a `stats` event
+  is a `WorkloadStatsResponse` - so this is a transport, not a second vocabulary.
+  Streaming was designed but deliberately not built (docs/ARCHITECTURE.md - Open
+  Questions), because three things had to be answered first; each is why a piece of
+  this looks the way it does.
+
+  **A held-open stream holds a thread.** The Kubernetes client is synchronous, so a
+  followed log is a thread blocked on a socket for as long as the client stays
+  connected - not for the length of a request. Left on the default executor that
+  `asyncio.to_thread` uses, a few idle log tails would sit on the threads every
+  ordinary create, read and delete needs, and the API would stop answering while
+  looking healthy. So streaming has a pool of its own and admission is capped before
+  that pool can be exhausted: `stream.maxConcurrent` (8) streams, `stream.maxPods` (5)
+  followed pods each, and the pool is *derived* from those rather than configured,
+  since one smaller than the admissions it must serve turns a bound into a stall. A
+  stream past the limit is refused with 503 and a retry - being told to come back is
+  strictly better than being connected and starved. Everything the bounds cost is
+  reported rather than hidden: pods past the cap, and lines dropped when a client
+  reads slower than the workload writes, both arrive as `warning` events.
+
+  **The router would have cut them.** OpenShift times a connection out after 30s by
+  default, which would sever every stream half a minute in while the client
+  reconnected forever without surfacing why. The chart now sets
+  `haproxy.router.openshift.io/timeout` from `api.route.timeout` (65m) and **fails to
+  render** if it does not exceed `stream.maxSeconds` - the two live in different
+  sections of `values.yaml`, so the relationship between them is asserted rather than
+  left to whoever edits one. Streams also end themselves at `stream.maxSeconds` and
+  let the client reconnect, which SSE does unprompted, and send a comment every
+  `stream.heartbeatSeconds` so nothing in the path reaps an idle one.
+
+  **Browsers cannot send an `Authorization` header.** `EventSource` has no API for
+  one, which leaves the credential in the URL - and the SSO token is the wrong thing
+  to put there: it is valid against every endpoint and a URL reaches the router's
+  access log, this API's own log line and the user's history. So the token buys a
+  ticket instead. `POST /api/v1/stream-tickets` takes the bearer token on a request
+  that *can* carry one and returns something worth almost nothing: one stream path,
+  for a minute, carrying an identity the caller already had. It is HMAC-signed rather
+  than stored, because two replicas serve behind one Route and either may take the
+  stream. Group authorization is not done at minting - the stream re-runs the check
+  the ordinary GET does, so a ticket for a group you are not in opens a stream that
+  404s. New secret `SERVERLESS_STREAM_TICKET_KEY` (Vault via ESO); empty disables
+  minting exactly as an empty admin key disables key auth, and the streams still take
+  the header, so a `curl -N` follow needs no new configuration at all.
+
+  Everything that can fail with a status code is settled before the response begins -
+  the slot, the authorization, the first reading - so a missing workload is a 404
+  envelope and not a stream that opens and immediately errors. After the first byte
+  the status line is spent, so a later failure arrives as an `error` event carrying
+  the same `code` the envelope would have, which `/info` already publishes. A logs
+  stream re-lists pods every `interval` seconds, so a scale-up or a new revision is
+  followed without reconnecting; the snapshot endpoints are untouched, and no new
+  RBAC (`pods/log` was already read for `/logs`).
 - `env[].name` and `files[].mountPath` are validated at the edge, the last two
   caller-supplied strings that reached a cluster without a rule. An env name now
   follows Kubernetes' own `IsEnvVarName` (`[-._a-zA-Z][-._a-zA-Z0-9]*`), which is

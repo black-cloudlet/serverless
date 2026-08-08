@@ -215,6 +215,37 @@ source, not images.)
 > rounding, so they need not equal the sum of the printed per-site figures; and a
 > total is `null` if any site could not be measured, rather than one quietly
 > missing a site. Usage is never fresher than the cluster's metrics-server scrape.
+>
+> **Or don't poll at all: `GET .../{name}/stats/stream`.** The same body, pushed as
+> Server-Sent Events every few seconds instead of returned on request, so one
+> connection replaces the poll loop. `GET .../{name}/logs/stream` does the same for
+> logs, and keeps up with the workload - a scale-up or a new revision starts being
+> followed without reconnecting, which the `/logs` snapshot cannot do.
+>
+> ```bash
+> curl -N -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/stream?sinceSeconds=60"
+> ```
+>
+> A browser cannot send that header (`EventSource` has no API for it), so it mints a
+> short-lived ticket first and puts that in the URL:
+>
+> ```js
+> const { ticket } = await (await fetch("/api/v1/stream-tickets", {
+>   method: "POST",
+>   headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+>   body: JSON.stringify({ path: `/api/v1/groups/${group}/functions/${name}/logs/stream` }),
+> })).json();
+>
+> const source = new EventSource(
+>   `/api/v1/groups/${group}/functions/${name}/logs/stream?ticket=${ticket}`);
+> source.addEventListener("log", (e) => append(JSON.parse(e.data)));
+> source.addEventListener("warning", (e) => notice(JSON.parse(e.data).message));
+> ```
+>
+> Listen for `warning` as well as `log`: it is how the stream says it is showing you
+> an incomplete picture - a workload wider than the per-stream pod limit, or lines
+> skipped because the client fell behind. See ARCHITECTURE.md: Streaming.
 
 ### Editing a workload: `PUT` request recipes
 

@@ -49,8 +49,21 @@ api:
     # -- Defaults to serverless.{global.baseDomain}.
     host: ""
     labels: {}
+    # -- How long HAProxy holds a connection open before cutting it.
+    # This exists for the SSE endpoints (/logs/stream, /stats/stream): the router
+    # default is 30s, which would sever every stream half a minute in, and the
+    # client would reconnect forever without ever noticing why. It MUST exceed
+    # `stream.maxSeconds` below, so a stream ends the way it intends to - itself,
+    # cleanly - rather than being cut mid-event by the router.
+    #
+    # The cost is that it applies to the whole Route, not just the streams:
+    # OpenShift has no per-path timeout. An ordinary request cannot actually sit
+    # here that long - the API bounds its own cluster work with
+    # `siteOpTimeout` - but a client that stops reading a response does hold a
+    # connection until this expires.
+    timeout: 65m
     # annotations:
-    #   haproxy.router.openshift.io/timeout: 60s
+    #   haproxy.router.openshift.io/balance: roundrobin
     annotations: {}
 
 # Rolls each finished build's digest onto the function's Knative Service in
@@ -107,6 +120,38 @@ routeDomain: serverless.example.com
 
 corsAllowOrigins: []
 #  - https://acme.service-now.com
+
+# Bounds on the Server-Sent Events endpoints (/logs/stream, /stats/stream).
+# These are not performance tuning. A followed pod log holds a worker thread for
+# as long as the client stays connected, so the API gives streaming a thread pool
+# of its own and refuses the stream that would overrun it, rather than letting
+# held-open connections take the threads ordinary requests need.
+# docs/ARCHITECTURE.md - Streaming.
+stream:
+  # Open streams one replica will serve. Beyond this a stream is refused with
+  # 503 and a retry, which is strictly better than being connected and starved.
+  # The thread pool is sized from this and maxPods, so raising either raises it.
+  maxConcurrent: 8
+  # Pods one logs stream will follow. The rest are named in a `warning` event.
+  maxPods: 5
+  # How often a stats stream re-reads, and a logs stream re-lists pods to pick
+  # up a scale-up or a new revision. A client may ask for its own within
+  # [minIntervalSeconds, maxIntervalSeconds]; anything outside is clamped.
+  intervalSeconds: 5
+  minIntervalSeconds: 1
+  maxIntervalSeconds: 60
+  # A quiet stream sends a comment this often so nothing in the path reaps it.
+  # Keep it well under api.route.timeout.
+  heartbeatSeconds: 15
+  # Log lines held for a client that reads slower than the workload writes.
+  # Past this, lines are dropped and the gap is reported - never grown into.
+  queueSize: 1000
+  # How long one stream lives before ending itself; the client reconnects on its
+  # own. MUST stay under api.route.timeout, so a stream is never cut mid-event.
+  maxSeconds: 3600
+  # Lifetime of a stream ticket. It is spent opening one connection, so this is
+  # a window, not a session.
+  ticketTtlSeconds: 60
 
 sso:
   issuer: https://sso.internal/realms/serverless
@@ -403,6 +448,15 @@ externalSecrets:
         - secretKey: SERVERLESS_ADMIN_API_KEY
           key: cloudlet/platforms/serverless
           property: admin-api-key
+        # HMAC key for stream tickets - what a browser opens an SSE endpoint
+        # with, since EventSource cannot send an Authorization header. Signed
+        # rather than stored, so both replicas and both sites verify a ticket
+        # any of them minted; that only works if they share this value.
+        # Leave the Vault property unset to disable ticket minting: the streams
+        # still take the Authorization header, so only the browser path goes.
+        - secretKey: SERVERLESS_STREAM_TICKET_KEY
+          key: cloudlet/platforms/serverless
+          property: stream-ticket-key
     # Quay OAuth token (Organization -> Applications), scoped `repo:admin`, for
     # deleting a deleted function's repositories (registry.deleteOnFunctionDelete).
     # NOT the push robot - robots cannot call Quay's management API.

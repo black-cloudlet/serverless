@@ -150,6 +150,43 @@ verifies against its vendored certifi, not the OS trust store or SSL_CERT_FILE
   value: {{ $path | quote }}
 {{- end -}}
 
+{{/* api.route.timeout as a number of seconds ("65m" -> 3900). */}}
+{{- define "serverless-api.routeTimeoutSeconds" -}}
+{{- $t := .Values.api.route.timeout | toString -}}
+{{- $n := regexFind "^[0-9]+" $t -}}
+{{- $u := regexFind "[a-zA-Z]+$" $t -}}
+{{- if not $n -}}
+{{- fail (printf "serverless-api: api.route.timeout %q must be a number followed by s, m or h (e.g. \"65m\")." $t) -}}
+{{- end -}}
+{{- if eq $u "h" -}}{{ mul (atoi $n) 3600 }}
+{{- else if eq $u "m" -}}{{ mul (atoi $n) 60 }}
+{{- else if eq $u "s" -}}{{ atoi $n }}
+{{- else -}}
+{{- fail (printf "serverless-api: api.route.timeout %q must end in s, m or h (e.g. \"65m\")." $t) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Fail fast when the router would cut streams before they end themselves.
+
+A stream that runs to `stream.maxSeconds` and is severed by HAProxy at the
+route timeout instead is the failure nobody diagnoses: the client just
+reconnects, forever, losing whatever was mid-flight each time. The two values
+live in different sections of values.yaml, so the relationship between them is
+asserted here rather than left to whoever edits one of them. */}}
+{{- define "serverless-api.validateStream" -}}
+{{- $route := include "serverless-api.routeTimeoutSeconds" . | int -}}
+{{- $stream := .Values.stream.maxSeconds | int -}}
+{{- if le $route $stream -}}
+{{- fail (printf "serverless-api: api.route.timeout (%s = %ds) must exceed stream.maxSeconds (%ds), or the router will cut every stream before it ends on its own." (.Values.api.route.timeout | toString) $route $stream) -}}
+{{- end -}}
+{{- if ge (.Values.stream.heartbeatSeconds | int) $route -}}
+{{- fail (printf "serverless-api: stream.heartbeatSeconds (%d) must be well under api.route.timeout (%ds), or an idle stream is reaped between heartbeats." (.Values.stream.heartbeatSeconds | int) $route) -}}
+{{- end -}}
+{{- if gt (.Values.stream.minIntervalSeconds | int) (.Values.stream.maxIntervalSeconds | int) -}}
+{{- fail "serverless-api: stream.minIntervalSeconds must not exceed stream.maxIntervalSeconds." -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Fail fast on build config that would render unusable manifests. */}}
 {{- define "serverless-api.validateBuild" -}}
 {{- if .Values.build.enabled -}}

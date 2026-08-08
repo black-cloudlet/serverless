@@ -21,7 +21,9 @@ that is the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import sys
+from collections.abc import AsyncIterator, Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -36,6 +38,7 @@ from api.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     LogsResponse,
+    LogStreamOpen,
     PodLogs,
     SiteStats,
     SiteStatus,
@@ -54,6 +57,7 @@ from api.services.sites.deployer import (
     Deployer,
     aggregate,
     overall_status_for_sites,
+    run_on,
     status_code_for,
 )
 from api.services.state import describe as describe_svc
@@ -61,6 +65,10 @@ from api.services.state import ksvc_state, ownership
 from api.services.state import metrics as metrics_svc
 from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
+from api.services.streams import logs as logs_stream
+from api.services.streams import stats as stats_stream
+from api.services.streams.capacity import StreamCapacity
+from api.services.streams.sse import StreamEvent
 from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
@@ -177,17 +185,28 @@ class ApplyRequest:
 class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
-    def __init__(self, settings: Settings, deployer: Deployer, builder: BuildBackend):
+    def __init__(
+        self,
+        settings: Settings,
+        deployer: Deployer,
+        builder: BuildBackend,
+        capacity: StreamCapacity | None = None,
+    ):
         """Initialize the engine.
 
         Args:
             settings: Global settings.
             deployer: The multi-site fan-out helper.
             builder: The function image build backend.
+            capacity: The stream pool and admission gate. Defaulted from
+                ``settings`` rather than required, so the non-streaming paths -
+                which is all of them until a client asks for a stream - can be
+                constructed without one.
         """
         self.settings = settings
         self.deployer = deployer
         self.builder = builder
+        self.capacity = capacity or StreamCapacity(settings.stream)
 
     def assert_group(self, user: Principal, group: str) -> None:
         """Reject the request unless the caller may act for ``group``.
@@ -809,7 +828,13 @@ class WorkloadService:
         return offering.fetched_response(common, obj, spec, build)
 
     async def stats(
-        self, offering: Offering, name: str, user: Principal, group: str
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        executor: Executor | None = None,
     ) -> WorkloadStatsResponse:
         """Read a workload's live state: rollup, and per-site replicas and usage.
 
@@ -829,6 +854,10 @@ class WorkloadService:
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
+            executor: Pool the per-site reads run on; None takes the default.
+                The stats stream passes its own, because a reading it repeats for
+                as long as a client is connected must not compete for the threads
+                every ordinary request needs.
 
         Returns:
             The live stats view.
@@ -863,7 +892,7 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.fanout(targets, fetch)
+        results = await self.deployer.fanout(targets, fetch, executor=executor)
         statuses = [s for s in results if s is not None]  # drop sites without it
 
         if not reps:
@@ -877,8 +906,13 @@ class WorkloadService:
 
         overall = overall_status_for_sites(statuses)
         if offering.has_build:
-            build = await asyncio.to_thread(
-                offering.build_status, self.builder, self.deployer.local_cluster(), name, group
+            build = await run_on(
+                executor,
+                offering.build_status,
+                self.builder,
+                self.deployer.local_cluster(),
+                name,
+                group,
             )
             overall = ksvc_state.with_build_status(overall, build)
             statuses = ksvc_state.sites_with_build_status(statuses, build)
@@ -1056,6 +1090,159 @@ class WorkloadService:
             site=self.deployer.local_site(),
             pods=pods,
         )
+
+    async def stream_logs(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        container: str,
+        since_seconds: int | None,
+        interval: float | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Follow the workload's pod logs on the local site, as a stream of events.
+
+        The streaming counterpart to :meth:`logs`, and the same single-site rule:
+        logs are node-local, so there is nowhere else to read them from.
+
+        Everything that can fail with a status code is done here, before the
+        first event - the slot is taken, the workload is read and authorized, and
+        its pods are listed. That is deliberate. Once a stream has begun the
+        response is committed and a 404 can only be described in an event, so a
+        deleted workload or a full pool has to be settled while an error envelope
+        is still possible.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            container: The pod container to read.
+            since_seconds: How far back each pod's log starts, so a client sees
+                recent context rather than only what arrives after it connected.
+            interval: Seconds between pod re-listings; None takes the configured
+                default.
+
+        Returns:
+            The event stream, beginning with an ``open`` event.
+
+        Raises:
+            NotFoundError: If the workload isn't on the local site or the caller
+                can't access it (hidden as 404, matching GET).
+            ServiceUnavailableError: If no stream slot is free.
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+        config = self.capacity.config
+
+        def authorize() -> dict[str, str | None]:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            if not ownership.owned_by(obj, user, kind):
+                raise _hidden_404("stream logs of", kind, name, user, obj)
+            return logs_stream.list_pods(cluster, oname)
+
+        # Held for the life of the generator below, not of this call - which is
+        # why the context manager is entered by hand: `with` here would give the
+        # slot back before a single line had been read.
+        slot = self.capacity.slot()
+        slot.__enter__()
+        try:
+            pods = await self.capacity.run(authorize)
+        except BaseException:
+            slot.__exit__(*sys.exc_info())
+            raise
+
+        opening = LogStreamOpen(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            container=container,
+            pods=sorted(pods),
+        )
+
+        async def stream() -> AsyncIterator[StreamEvent]:
+            try:
+                async for event in logs_stream.follow(
+                    cluster=cluster,
+                    capacity=self.capacity,
+                    config=config,
+                    opening=opening,
+                    oname=oname,
+                    pods=pods,
+                    since_seconds=since_seconds,
+                    interval=self.capacity.interval(interval),
+                ):
+                    yield event
+            finally:
+                slot.__exit__(None, None, None)
+
+        return stream()
+
+    async def stream_stats(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        interval: float | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Push the workload's live state on an interval, as a stream of events.
+
+        The streaming counterpart to :meth:`stats`, and identical in what it
+        reports - the same rollup, the same per-site replicas and usage, a
+        function's build read for the same reason. Only the transport differs.
+
+        The first reading is taken here rather than in the stream: it is what
+        authorizes the request, so a workload that does not exist is a 404 with
+        an envelope instead of a stream that opens and immediately errors.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            interval: Seconds between readings; None takes the configured default.
+
+        Returns:
+            The event stream, beginning with a ``stats`` event.
+
+        Raises:
+            NotFoundError: If the workload exists on no reachable site.
+            ServiceUnavailableError: If no stream slot is free, or the workload
+                can't be confirmed absent because a site was unreachable.
+        """
+        config = self.capacity.config
+
+        async def read() -> WorkloadStatsResponse:
+            return await self.stats(offering, name, user, group, executor=self.capacity.executor)
+
+        slot = self.capacity.slot()
+        slot.__enter__()
+        try:
+            first = await read()
+        except BaseException:
+            slot.__exit__(*sys.exc_info())
+            raise
+
+        async def stream() -> AsyncIterator[StreamEvent]:
+            try:
+                async for event in stats_stream.follow(
+                    config=config,
+                    first=first,
+                    read=read,
+                    interval=self.capacity.interval(interval),
+                ):
+                    yield event
+            finally:
+                slot.__exit__(None, None, None)
+
+        return stream()
 
     async def list(
         self, offering: Offering, user: Principal, group: str, sort: str = "name"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from cloudlet_apis.auth import Principal
 from pydantic import ValidationError as PydanticValidationError
 
@@ -10,6 +12,7 @@ from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services.builder.runtimes import RuntimeRegistry
 from api.services.offering import FUNCTION
 from api.services.state import describe as describe_svc
+from api.services.streams.sse import StreamEvent
 from api.services.workloads import ApplyRequest, WorkloadService
 from common.build import BuildPlan, BuildRequest
 from common.errors import ValidationError
@@ -544,6 +547,55 @@ class FunctionService:
             since_seconds=since_seconds,
             limit_bytes=limit_bytes,
         )
+
+    async def stream_logs(
+        self,
+        name: str,
+        group: str,
+        user: Principal,
+        *,
+        container: str,
+        since_seconds: int | None,
+        interval: float | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Follow the function's pod logs on the current site.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            container: The pod container to read.
+            since_seconds: How far back each pod's log starts, if set.
+            interval: Seconds between pod re-listings; None takes the default.
+
+        Returns:
+            The event stream.
+        """
+        return await self._engine.stream_logs(
+            FUNCTION,
+            name,
+            user,
+            group,
+            container=container,
+            since_seconds=since_seconds,
+            interval=interval,
+        )
+
+    async def stream_stats(
+        self, name: str, group: str, user: Principal, *, interval: float | None
+    ) -> AsyncIterator[StreamEvent]:
+        """Push the function's live state on an interval.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            interval: Seconds between readings; None takes the default.
+
+        Returns:
+            The event stream.
+        """
+        return await self._engine.stream_stats(FUNCTION, name, user, group, interval=interval)
 
     async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
         """List the group's functions.

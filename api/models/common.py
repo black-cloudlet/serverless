@@ -531,6 +531,110 @@ class LogsResponse(BaseModel):
     pods: list[PodLogs] = []
 
 
+class LogLine(BaseModel):
+    """One line from a followed pod log (the ``log`` event of a logs stream).
+
+    The streaming counterpart to :class:`PodLogs`, which carries a whole
+    snapshot as one blob. A follow has no blob to return, and a line is the unit
+    a client actually renders, so the node's timestamp is split off into its own
+    field here rather than left as a prefix the client has to parse.
+
+    Attributes:
+        pod: The pod the line came from.
+        container: The container it was read from.
+        revision: The Knative revision the pod belongs to, if labelled.
+        time: When the node recorded the line; None if it carried no parseable
+            timestamp.
+        message: The line itself, without the timestamp prefix.
+    """
+
+    pod: str
+    container: str
+    revision: str | None = None
+    time: datetime | None = None
+    message: str
+
+
+class LogStreamOpen(BaseModel):
+    """The ``open`` event: what this logs stream is, sent before any line.
+
+    Identity mirrors :class:`LogsResponse`, so a client that already renders the
+    snapshot needs nothing new to label the stream.
+
+    Attributes:
+        name: The workload name.
+        group: The owning group.
+        type: The offering.
+        site: The site being followed (always the local one).
+        container: The container being read.
+        pods: The pods being followed at the moment the stream opened. Empty
+            means the workload is deployed here but scaled to zero - the stream
+            stays open and starts following as soon as a pod appears.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    site: str
+    container: str
+    pods: list[str] = []
+
+
+class PodChange(BaseModel):
+    """The ``pods`` event: the followed set changed (a scale event, or a rollout).
+
+    Sent instead of leaving a client to infer it from which pod names lines
+    stop arriving for, which is unreadable on a workload that scales.
+
+    Attributes:
+        added: Pods now being followed.
+        removed: Pods whose logs ended (scaled down, or replaced by a revision).
+        following: The full set after the change, so a client never has to
+            reconstruct it from the deltas.
+    """
+
+    added: list[str] = []
+    removed: list[str] = []
+    following: list[str] = []
+
+
+class StreamWarning(BaseModel):
+    """The ``warning`` event: the stream is degraded but still running.
+
+    Its own event because the alternative is silence. A logs stream that hit its
+    pod cap, or that dropped lines because the client could not keep up, is
+    showing an incomplete picture; a client that is not told reads the gap as
+    "the workload logged nothing".
+
+    Attributes:
+        message: What was degraded, in a form worth showing a user.
+        pods: The pods a cap left unfollowed, when that is what happened.
+        droppedLines: Lines discarded because the client read too slowly.
+    """
+
+    message: str
+    pods: list[str] = []
+    droppedLines: int | None = None
+
+
+class StreamError(BaseModel):
+    """The ``error`` event: the stream is ending, and why.
+
+    Once the response has begun there is no status code left to send, so this is
+    the only way a stream can report that the workload was deleted or a site
+    stopped answering. It carries the same ``code`` vocabulary as the error
+    envelope (``/info`` publishes it), so a client switches on one set of values
+    whichever way the failure reaches it.
+
+    Attributes:
+        code: The machine-readable error code (e.g. ``NOT_FOUND``).
+        message: The human-readable message.
+    """
+
+    code: str
+    message: str
+
+
 class WorkloadSpec(BaseModel):
     """The desired-state spec read back from a deployed workload, secrets redacted.
 

@@ -13,6 +13,7 @@ from api.services.builder.runtimes import RuntimeRegistry, load_runtimes
 from api.services.container import ContainerService
 from api.services.function import FunctionService
 from api.services.sites.deployer import Deployer
+from api.services.streams.capacity import StreamCapacity
 from api.services.workloads import WorkloadService
 
 
@@ -34,10 +35,26 @@ def get_deployer() -> Deployer:
 
 
 @lru_cache
+def get_stream_capacity() -> StreamCapacity:
+    """The cached stream pool and admission gate (one per process).
+
+    Separate from the engine that uses it because it owns threads: ``api.main``
+    shuts it down with the app, which needs a handle that does not depend on
+    having built the service graph.
+    """
+    return StreamCapacity(get_settings().stream)
+
+
+@lru_cache
 def get_workload_service() -> WorkloadService:
     """The shared, offering-agnostic engine both offering services compose."""
     settings = get_settings()
-    return WorkloadService(settings, get_deployer(), KpackBackend(settings, get_runtimes()))
+    return WorkloadService(
+        settings,
+        get_deployer(),
+        KpackBackend(settings, get_runtimes()),
+        get_stream_capacity(),
+    )
 
 
 @lru_cache
