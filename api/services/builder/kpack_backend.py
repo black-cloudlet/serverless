@@ -58,6 +58,12 @@ class KpackBackend:
         """
         self._build = build
         self._runtimes = runtimes
+        # Both registries a build reads: this site's, and the kpack registry the
+        # run image comes from. Empty entries are dropped, so an install with one
+        # registry names one Secret.
+        self._registry_secrets = [
+            s for s in (build.registry_secret, build.kpack_registry_secret) if s
+        ]
 
     @property
     def pull_secret(self) -> str | None:
@@ -185,7 +191,7 @@ class KpackBackend:
                 tag=tag,
                 manifests=[
                     kpack.build_service_account(
-                        build_name, labels, git_secret, self._build.registry_secret
+                        build_name, labels, git_secret, self._registry_secrets
                     ),
                     kpack.build_image(
                         build_name,

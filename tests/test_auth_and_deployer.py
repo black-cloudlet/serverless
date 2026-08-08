@@ -2025,6 +2025,41 @@ async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
     assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
 
 
+async def test_delete_reclaims_every_sites_registry_with_that_sites_token(monkeypatch):
+    """Each site built its own image into its own registry, so each is reclaimed.
+
+    From whichever instance took the request: a delete lands on one API, and the
+    peer's repositories have nothing else that would ever address them.
+    """
+    from cloudlet_apis.auth import Principal
+
+    from api.services import offering as offering_svc
+    from common.config import RegistryConfig
+
+    calls = []
+    monkeypatch.setattr(
+        offering_svc.registry_svc,
+        "delete_function_repositories",
+        lambda registry, group, name: calls.append((registry.url, registry.api_token, name)),
+    )
+
+    site_a = _DeleteCluster(
+        "site-a", _ksvc("function"), registry=RegistryConfig(url="registry.a", api_token="tok-a")
+    )
+    site_b = _DeleteCluster(
+        "site-b", _ksvc("function"), registry=RegistryConfig(url="registry.b", api_token="tok-b")
+    )
+    engine = _workload_service({"site-a": site_a, "site-b": site_b}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await engine.delete(FUNCTION, "app", user, "team")
+
+    assert sorted(calls) == [
+        ("registry.a", "tok-a", "app"),
+        ("registry.b", "tok-b", "app"),
+    ]
+
+
 async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
     """An object_name collision resolving to another group must not delete anything.
 

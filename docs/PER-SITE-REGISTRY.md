@@ -159,7 +159,7 @@ function.
 | Registry credential | One Secret **name**, per-site **contents** | The name is written into every site's KSVC, so it must not vary |
 | kpack registry credential | A second Secret on the build ServiceAccounts, pull-only | The export step pulls the run image |
 | Registry cleanup | Delete the repositories in **every** site's registry on function delete | Best-effort, as today |
-| Single-registry installs | Still supported (sites inherit the global `registry`) but rejected at render time for a multi-site build install | See [Helm](#helm) |
+| Single-registry installs | Still supported, and still the default - sites inherit the global `registry` | See [Helm](#helm) |
 
 ### Why the KSVC image has to be resolved per site
 
@@ -357,7 +357,7 @@ that can write Knative Services in every cluster.
 
 | File | Change |
 |---|---|
-| `values.yaml` | `sites[].registry`; `build.kpackRegistry`; `build.allowSharedRegistry`; a per-site `registrySecret.key`; `perSiteRegistryTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
+| `values.yaml` | `sites[].registry`; `build.kpackRegistry`; a per-site `registrySecret.key`; `perSiteRegistryTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
 | `templates/configmap.yaml` | Serialize each site's `registry` into `SERVERLESS_SITES` alongside `name`/`cluster` |
 | `templates/_helpers.tpl` | `serverless-api.siteRegistry` resolves **this release's** site (`global.site`) against `sites[]`; `registryBase` and `builderImage` hang off it, so a Builder pushes locally. `validateBuild` gains the checks below |
 | `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host, and read its credentials from a per-site Vault path; add the kpack registry pull Secret |
@@ -392,14 +392,21 @@ empty here: they exist for an in-cluster registry or git server, which this
 platform will not have. Leave them in the chart for installs that do, but this
 design adds nothing to them.
 
-Two new render-time failures in `validateBuild`, both of which otherwise surface
-as a broken install hours later:
+One new render-time failure in `validateBuild`: **a site names a registry but
+`global.site` is not one of `sites`**, so the release cannot tell which registry
+it builds into. It silently keys this site's push credential to the platform
+default host, which surfaces as an unauthenticated push at the end of the first
+build. Guarded only when a site actually overrides its registry - without one
+everything resolves to the default anyway, so an unmatched `global.site` changes
+nothing.
 
-1. `build.enabled` with two sites resolving to the **same** registry base -
-   they would race to push one tag and thrash one `_cache:latest`. Overridable
-   with `build.allowSharedRegistry: true` for a deliberate single-registry lab.
-2. `global.site` naming a site absent from `sites[]` - the release cannot then
-   resolve its own registry.
+> **A second check was designed and dropped.** Two sites resolving to the *same*
+> registry was going to be a render failure, overridable with
+> `build.allowSharedRegistry`. It should not be: each site's KSVC runs the digest
+> its own controller pinned, not the tag, so a shared registry still *works* - it
+> flaps one tag and thrashes one `_cache:latest`. That is degraded, not broken,
+> and it is the configuration every existing install upgrades from. A check that
+> has to default to permissive to avoid breaking them earns nothing.
 
 ### The values file, in full
 
@@ -470,13 +477,6 @@ build:
       key: cloudlet/platforms/serverless
       usernameProperty: kpack-registry-username
       passwordProperty: kpack-registry-password
-
-  # ── NEW: escape hatch for a deliberate single-registry multi-site install ───
-  # Two sites resolving to one registry base race to push one `spec.tag` and
-  # thrash one `_cache:latest`. Each site still runs a valid digest (the KSVC is
-  # pinned to a digest, not the tag), so it works - it just wastes both caches.
-  # Left false, that configuration fails at render time instead.
-  allowSharedRegistry: false
 
   # ── UNCHANGED, but now relative to the SITE's registry base ────────────────
   # `{site registry base}/{builderRepository}/{name}` for a Builder,
@@ -807,15 +807,15 @@ Two properties make step 3 safe rather than delicate:
 | ~~3~~ | ~~Per-site KSVC composition and per-site build apply; delete `build_only`~~ **done** | 2 | With 2 |
 | ~~4~~ | ~~Controller: local-only write, delete `prune`~~ **done** | 3 | Yes |
 | ~~5~~ | ~~Per-site build status in `get`/`stats`/`list`~~ **done** | 3 | Yes |
-| 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` (needs `target.template` in `externalsecret.yaml`) | 1 | Yes |
-| 7 | Site-aware push credential (per-site Vault path, host from `global.site`) + kpack registry pull Secret on both ServiceAccount kinds | 1 | Yes |
+| ~~6~~ | ~~Per-site registry cleanup + per-site tokens~~ **done** | 1 | Yes |
+| ~~7~~ | ~~Site-aware push credential + kpack registry pull Secret~~ **done** | 1 | Yes |
 | 8 | Docs: BUILDING.md, ARCHITECTURE.md, FUNCTIONS.md, DEPLOYING.md; kpack README/examples | all | Last |
 
 2 and 3 are one commit - splitting them leaves a build plan nothing consumes.
 
 ---
 
-### Landed in slices 1-5
+### Landed in slices 1-7
 
 Two details the implementation settled that the design above did not spell out:
 
@@ -838,8 +838,12 @@ KSVC, so a GET adds no round trip and cannot attribute one site's build to
 another. Each row folds against its own build; the workload-level `build` is
 rolled up, and a failure anywhere wins over a `Ready` elsewhere.
 
-Still on the old behaviour until its slice lands: registry cleanup addresses
-one registry (6).
+A delete now reclaims each site's repositories with that site's token, from
+whichever instance took the request. The env var is
+`SERVERLESS_SITE_REGISTRY_TOKENS` - one underscore, so it cannot be confused
+with `SERVERLESS_REGISTRY__API_TOKEN`, which stays as the fallback.
+
+Only the docs (8) remain.
 
 **docs/BUILDING.md is stale from slice 3 onward** and is slice 8's job. It still
 describes builds as local-only, one `Image` per function, a cross-site digest

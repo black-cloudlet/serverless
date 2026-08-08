@@ -1030,14 +1030,16 @@ class WorkloadService:
         # even when nothing was deleted: that is the case where an earlier partial
         # delete orphaned them, and a leftover Image would keep rebuilding a
         # function nothing runs.
-        await asyncio.to_thread(
-            offering.after_delete,
-            DeleteContext(
-                cluster=self.deployer.local_cluster(),
-                oname=oname,
-                name=name,
-                group=group,
-            ),
+        # Per site, because what is left behind is per site: each built its own
+        # image, into its own registry, from its own build objects.
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    offering.after_delete,
+                    DeleteContext(cluster=cluster, oname=oname, name=name, group=group),
+                )
+                for cluster in targets
+            )
         )
         if all(s.status == "Absent" for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")

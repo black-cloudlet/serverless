@@ -182,17 +182,36 @@ build:
   # Bitbucket app passwords need the real username.
   gitUsername: x-access-token
 
+  # Read-only registry holding kpack's own images and the ClusterStack/
+  # ClusterStore content: pulled by every site, written by none, mirrored once.
+  # Empty `url` means it IS the site registry (today's behaviour) - no second
+  # Secret, nothing added to the build accounts.
+  kpackRegistry:
+    # The host the kpack release uses for `images.registry` and
+    # `clusterBuild.registry`. e.g. registry.kpack.internal
+    url: ""
+    # Pull-only, and needed on BOTH build accounts: `export` pulls the run image.
+    pullSecret:
+      name: kpack-registry-creds
+      # False when the Secret is provided out-of-band.
+      create: true
+      key: cloudlet/platforms/serverless
+      usernameProperty: kpack-registry-username
+      passwordProperty: kpack-registry-password
+
   # Identity the Builders run as - registry only, no git credential. Function
   # builds use a per-function account the API creates.
   serviceAccount:
     name: kpack-builder
-    # The one platform-wide build credential: kpack pushes with it, the build pod
-    # and every function's KSVC pull with it.
+    # This SITE's build credential: kpack pushes with it, the build pod and every
+    # function's KSVC here pull with it. The NAME is identical in every site - it
+    # is written into every site's KSVC - while the contents differ, so the Vault
+    # path is per site.
     registrySecret:
       name: serverless-registry-creds
       # False when the Secret is provided out-of-band.
       create: true
-      key: cloudlet/platforms/serverless
+      key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
       usernameProperty: registry-username
       passwordProperty: registry-password
 
@@ -410,11 +429,13 @@ externalSecrets:
     # Quay OAuth token (Organization -> Applications), scoped `repo:admin`, for
     # deleting a deleted function's repositories (registry.deleteOnFunctionDelete).
     # NOT the push robot - robots cannot call Quay's management API.
+    # One Vault entry per site, assembled into one variable: a delete reclaims
+    # repositories in every site from whichever instance took the request.
+    # `{site}` is substituted per site.
     - name: serverless-api-registry
-      data:
-        - secretKey: SERVERLESS_REGISTRY__API_TOKEN
-          key: cloudlet/platforms/serverless
-          property: registry-api-token
+      perSiteRegistryTokens:
+        key: "cloudlet/platforms/serverless/{site}"
+        property: registry-api-token
 
 # Default-deny NetworkPolicies for workload pods. Verify the namespace names and
 # CIDRs match your cluster.

@@ -86,6 +86,12 @@ spec:
             {{- if .Values.build.enabled }}
             - name: SERVERLESS_BUILD__REGISTRY_SECRET
               value: {{ .Values.build.serviceAccount.registrySecret.name | quote }}
+            {{- with .Values.build.kpackRegistry }}
+            {{- if and .url .pullSecret.name }}
+            - name: SERVERLESS_BUILD__KPACK_REGISTRY_SECRET
+              value: {{ .pullSecret.name | quote }}
+            {{- end }}
+            {{- end }}
             - name: SERVERLESS_BUILD__GIT_USERNAME
               value: {{ .Values.build.gitUsername | quote }}
             - name: SERVERLESS_BUILD__RESOURCES

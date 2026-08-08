@@ -16,6 +16,8 @@ Secret, which :mod:`api.services.manifests.secrets` builds in the shape kpack co
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 # Read by kpack off the latest Build, never the Image - a nonce in the Image
 # spec would rebuild on every apply (docs/BUILDING.md - What causes a new Build).
 BUILD_TRIGGER_ANNOTATION = "image.kpack.io/additionalBuildNeeded"
@@ -33,30 +35,36 @@ def build_object_name(workload: str) -> str:
 
 
 def build_service_account(
-    name: str, labels: dict[str, str], git_secret: str, registry_secret: str
+    name: str, labels: dict[str, str], git_secret: str, registry_secrets: Sequence[str]
 ) -> dict:
     """Build the per-function build ServiceAccount.
 
     Per function, not shared: each function's git token comes from its own caller, so
     a shared account would let one tenant's build authenticate as another. The
-    registry credential is platform-wide and appears in both lists - ``secrets`` to
-    push the built image, ``imagePullSecrets`` to pull the builder.
+    registry credentials appear in both lists - ``secrets`` to push the built image
+    and pull the stack, ``imagePullSecrets`` for the build pod's own images.
+
+    There is more than one because a build reads two registries: it pushes to the
+    site's own, and pulls the run image at ``export`` from the shared kpack
+    registry (docs/PER-SITE-REGISTRY.md). Docker auth is keyed by host, so both
+    are needed whenever those hosts differ.
 
     Args:
         name: The ServiceAccount name.
         labels: Labels to stamp on it.
         git_secret: The workload's basic-auth git Secret.
-        registry_secret: The shared registry dockerconfigjson Secret.
+        registry_secrets: The dockerconfigjson Secret names, in order.
 
     Returns:
         The ServiceAccount manifest dict.
     """
+    creds = [{"name": s} for s in registry_secrets]
     return {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
         "metadata": {"name": name, "labels": dict(labels)},
-        "secrets": [{"name": git_secret}, {"name": registry_secret}],
-        "imagePullSecrets": [{"name": registry_secret}],
+        "secrets": [{"name": git_secret}, *creds],
+        "imagePullSecrets": creds,
     }
 
 

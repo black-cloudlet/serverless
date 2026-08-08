@@ -219,12 +219,16 @@ class FunctionOffering:
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
 
     def after_delete(self, ctx: DeleteContext) -> None:
-        """Remove the build objects, then the repositories the build pushed to.
+        """Remove one site's build objects, then the repositories it pushed to.
 
-        Two kinds of leftover. The build objects are in a cluster but unowned on a
-        site that never ran the function, so nothing cascades to them. The registry
-        has no owner at all - no Kubernetes object references a repository - so it
-        is deleted by name (docs/BUILDING.md - Registry cleanup on delete).
+        Called once per site, because both leftovers are per site: each built its
+        own image into its own registry. The build objects normally cascade with
+        the KSVC and this is the sweep for ones that did not; the registry has no
+        owner at all - no Kubernetes object references a repository - so it is
+        deleted by name (docs/BUILDING.md - Registry cleanup on delete).
+
+        Where several sites share one registry the repository delete repeats and
+        the second call 404s, which :func:`delete_repositories` already tolerates.
         """
         site_apply.delete_build_objects(ctx.cluster, ctx.oname)
         registry_svc.delete_function_repositories(ctx.cluster.registry, ctx.group, ctx.name)

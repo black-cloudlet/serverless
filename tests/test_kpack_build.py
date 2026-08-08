@@ -110,10 +110,40 @@ def test_one_git_secret_serves_both_the_api_and_kpack():
 
 
 def test_service_account_carries_registry_in_both_lists():
-    sa = kpack.build_service_account("fn-x", {}, "x-git", "reg-creds")
+    sa = kpack.build_service_account("fn-x", {}, "x-git", ["reg-creds"])
     # `secrets` is what kpack pushes with; `imagePullSecrets` is the build pod's
     assert sa["secrets"] == [{"name": "x-git"}, {"name": "reg-creds"}]
     assert sa["imagePullSecrets"] == [{"name": "reg-creds"}]
+
+
+def test_the_build_account_also_carries_the_kpack_registry_credential():
+    """`export` pulls the run image from it, so a site credential alone fails
+    at the last phase of the first build. Docker auth is per host."""
+    sa = kpack.build_service_account("fn-x", {}, "x-git", ["reg-creds", "kpack-creds"])
+
+    assert sa["secrets"] == [{"name": "x-git"}, {"name": "reg-creds"}, {"name": "kpack-creds"}]
+    assert sa["imagePullSecrets"] == [{"name": "reg-creds"}, {"name": "kpack-creds"}]
+
+
+def test_an_unset_kpack_registry_names_one_credential():
+    """The single-registry install: nothing extra, exactly as before."""
+    plan = _plan(_builder(_settings(build={"registry_secret": "reg-creds"})))
+    sa = _by_kind(plan.manifests_for("site-a"), "ServiceAccount")
+
+    assert sa["imagePullSecrets"] == [{"name": "reg-creds"}]
+
+
+def test_a_configured_kpack_registry_reaches_the_per_function_account():
+    plan = _plan(
+        _builder(
+            _settings(
+                build={"registry_secret": "reg-creds", "kpack_registry_secret": "kpack-creds"}
+            )
+        )
+    )
+    sa = _by_kind(plan.manifests_for("site-a"), "ServiceAccount")
+
+    assert sa["imagePullSecrets"] == [{"name": "reg-creds"}, {"name": "kpack-creds"}]
 
 
 def test_image_never_sets_creation_time():
