@@ -36,7 +36,6 @@ from api.services.sites import site_apply, site_read
 from api.services.state import ksvc_state
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
-from common.config import RegistryConfig
 from common.labels import OFFERING_CONTAINER, OFFERING_FUNCTION
 
 if TYPE_CHECKING:  # a type hint only - importing it at runtime would be a cycle
@@ -49,22 +48,19 @@ class DeleteContext:
 
     An offering is stateless policy, so everything it touches is handed to it.
     Cleanup outgrew ``(cluster, oname)`` once it reached past the cluster: the
-    registry is addressed by ``{group}/{name}``, not by the object name, and it
-    needs settings an offering does not hold.
+    registry is addressed by ``{group}/{name}``, not by the object name.
 
     Attributes:
-        cluster: The local site, where the build objects are.
+        cluster: The site being cleaned up, carrying its own registry.
         oname: The object name (``{name}-{group}``).
         name: The workload name.
         group: The owning group.
-        registry: Registry settings, for deleting the repositories by name.
     """
 
     cluster: Cluster
     oname: str
     name: str
     group: str
-    registry: RegistryConfig
 
 
 class Offering(Protocol):
@@ -235,7 +231,7 @@ class FunctionOffering:
         is deleted by name (docs/BUILDING.md - Registry cleanup on delete).
         """
         site_apply.delete_build_objects(ctx.cluster, ctx.oname)
-        registry_svc.delete_function_repositories(ctx.registry, ctx.group, ctx.name)
+        registry_svc.delete_function_repositories(ctx.cluster.registry, ctx.group, ctx.name)
 
     def build_status(
         self, builder: BuildBackend, cluster: Cluster, name: str, group: str

@@ -1156,9 +1156,14 @@ async def test_list_of_containers_reads_no_build():
 class _ApplyCluster:
     """Records applied manifests; serves a preset existing KSVC (and Secrets)."""
 
-    def __init__(self, name, existing, secrets=None, images=None):
+    def __init__(self, name, existing, secrets=None, images=None, registry=None):
+        from common.config import RegistryConfig
+
         self.site = name
         self.name = name
+        # A real Cluster resolves its site's registry at construction; a fake
+        # that stands in for one has to carry it too.
+        self.registry = registry or RegistryConfig()
         self._existing = existing  # oname -> ksvc dict
         self._secrets = secrets or {}  # secret name -> secret dict (preset)
         self._images = images or {}  # kpack Image name -> object (preset)
@@ -1917,9 +1922,12 @@ async def test_accept_rejects_group_caller_is_not_member_of():
 class _DeleteCluster:
     """Records deletions; serves a preset KSVC (or none) by name."""
 
-    def __init__(self, name, ksvc):
+    def __init__(self, name, ksvc, registry=None):
+        from common.config import RegistryConfig
+
         self.name = name
         self.site = name
+        self.registry = registry or RegistryConfig()
         self._ksvc = ksvc  # the KSVC dict, or None if absent
         self.deleted = []  # [(ResourceKind, name)]
 

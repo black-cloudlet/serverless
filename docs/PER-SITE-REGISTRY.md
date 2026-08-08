@@ -575,6 +575,28 @@ What changes there is documentation:
 
 ## Code
 
+### `common/cluster.py`
+
+`Cluster` gains its site's registry, resolved once at construction beside the
+namespace and timeouts it already extracts:
+
+```python
+self.site = site_config.name
+self.registry = settings.registry_for(site_config.name)
+```
+
+A cluster is the handle callers pass around to mean "this site", so anything
+holding one has that site's registry rather than looking it up by the name of an
+object it is already holding. It also removes the opportunity for the mistake
+this design is most exposed to: the platform-default `settings.registry` stays a
+valid attribute that silently means the *wrong* registry on any per-site path.
+`DeleteContext` drops its `registry` field for the same reason - it already
+carried a cluster, and the two could disagree.
+
+The planner keeps taking site *names*: `BuildBackend.plan` and `image_ref` are
+pure, and handing them clusters would drag the Kubernetes client into unit tests
+of manifest composition.
+
 ### `common/config.py`
 
 ```python

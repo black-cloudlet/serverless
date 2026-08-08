@@ -639,9 +639,7 @@ class WorkloadService:
             # This site's registry: a reference on another host is somebody
             # else's repository, and reclaim already refuses to touch it.
             await asyncio.to_thread(
-                registry_svc.reclaim_moved_repositories,
-                self.settings.registry_for(cluster.site),
-                previous,
+                registry_svc.reclaim_moved_repositories, cluster.registry, previous
             )
 
     async def stamp_pull(self, name: str, group: str, stamp: str) -> list[SiteStatus]:
@@ -1031,7 +1029,6 @@ class WorkloadService:
                 oname=oname,
                 name=name,
                 group=group,
-                registry=self.settings.registry,
             ),
         )
         if all(s.status == "Absent" for s in statuses):

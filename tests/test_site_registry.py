@@ -124,6 +124,33 @@ def test_settings_carry_the_other_registry_fields_through():
     assert not reg.can_delete  # credentialed, but switched off
 
 
+def test_a_cluster_carries_its_own_sites_registry():
+    """So a caller holding a cluster cannot reach for the platform default.
+
+    That default is a real attribute that silently means the wrong registry on
+    any per-site path, which is the mistake this removes the opportunity for.
+    """
+    from common.cluster import clusters_for
+
+    settings = _settings(
+        sites=[
+            SiteConfig(
+                name="central",
+                cluster="central-0",
+                registry=SiteRegistry(url="registry.central.internal"),
+            ),
+            SiteConfig(name="south", cluster="south-0"),
+        ],
+        site_registry_tokens={"central": "tok-central"},
+    )
+    clusters = clusters_for(settings)
+
+    assert clusters["central"].registry.base == "registry.central.internal/acme/serverless"
+    assert clusters["central"].registry.api_token == "tok-central"
+    # the site with no override still resolves to the platform default
+    assert clusters["south"].registry.base == "registry.internal/acme/serverless"
+
+
 def test_sites_and_tokens_load_from_the_environment(monkeypatch):
     # The shape the chart renders: sites as JSON in a ConfigMap, tokens as a
     # site-keyed JSON object from the ExternalSecret.

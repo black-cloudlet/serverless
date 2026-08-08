@@ -14,7 +14,7 @@ from enum import Enum
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
-from common.config import CommonSettings, SiteConfig
+from common.config import CommonSettings, RegistryConfig, SiteConfig
 from common.errors import NotFoundError, ValidationError
 
 
@@ -66,6 +66,11 @@ class Cluster:
 
     The Kubernetes client is synchronous and the connection is established lazily
     (on first use) so one unreachable site can't fail or block startup.
+
+    It is also the handle callers pass around to mean "this site", which is why
+    :attr:`registry` hangs off it: the registry a site pushes to and pulls from
+    is part of what that site *is*, and a caller holding the cluster should not
+    have to look it up by name.
     """
 
     def __init__(self, site_config: SiteConfig, settings: CommonSettings):
@@ -74,10 +79,14 @@ class Cluster:
         Args:
             site_config: The site's name and cluster identifiers.
             settings: Shared connection settings (namespace, TLS material, base
-                domain, timeouts).
+                domain, timeouts, registry).
         """
         self.site: str = site_config.name
         self.name: str = site_config.cluster
+        # Resolved here so anything holding a cluster has that site's registry
+        # rather than reaching for the platform default, which on a per-site
+        # path is silently the wrong one.
+        self.registry: RegistryConfig = settings.registry_for(site_config.name)
         self._namespace: str = settings.workloads_namespace
 
         self._configuration = client.Configuration()
