@@ -18,6 +18,7 @@ a single shared registry, because nothing writes to it.
 - [The registry split](#the-registry-split)
 - [Design decisions](#design-decisions)
 - [Configuration model](#configuration-model)
+- [Where the credentials come from](#where-the-credentials-come-from)
 - [Helm](#helm)
 - [Code](#code)
 - [What gets deleted](#what-gets-deleted)
@@ -229,16 +230,125 @@ Resolution is `site.registry` merged over the global `registry`, so an install
 with one registry sets nothing new and behaves exactly as today.
 
 **Secrets stay out of the list.** `sites[]` is serialized into a ConfigMap, so a
-site override carries `url` / `organization` / `repository` only. The Quay OAuth
-token used for cleanup arrives separately, as a site-keyed JSON object from the
-existing ExternalSecret:
+site override carries `url` / `organization` / `repository` only. Every
+credential is covered in the next section.
 
-```
-SERVERLESS_REGISTRY_API_TOKENS = {"central":"...","south":"..."}
+---
+
+## Where the credentials come from
+
+Three distinct credentials, and they replicate differently. Getting this wrong
+is the failure mode that shows up as an unauthenticated pull minutes after a
+deploy, so it is worth being explicit about each one.
+
+| Credential | Lives in | Content | Same in every site? |
+|---|---|---|---|
+| `serverless-registry-creds` | `namespaces.workloads`, per cluster | dockerconfigjson for **that site's** registry | **Name yes, content no** |
+| `kpack-mirror-creds` | `namespaces.workloads`, per cluster | dockerconfigjson for the shared mirror, pull-only | Yes, both |
+| `SERVERLESS_REGISTRY_API_TOKENS` | `namespaces.api`, per cluster | Quay OAuth token **per site**, keyed by site name | Yes - every pod holds every site's |
+
+### The local site's push/pull Secret
+
+It already exists and is already local: `templates/kpack/externalsecret.yaml`
+creates `serverless-registry-creds` in the workloads namespace of **each**
+cluster, from Vault through the pre-existing `ClusterSecretStore`. Each site's
+release creates its own copy. What changes is only what goes *into* it:
+
+- **The host** it is keyed by comes from the local site's entry in `sites[]`,
+  resolved through `global.site`, instead of the global `registry.url`. Docker
+  auth is keyed by host, so this must be the site's own registry and nothing
+  else.
+- **The username and password** come from a per-site Vault path, because the
+  credential for `registry.central.internal` is not the credential for
+  `registry.south.internal`:
+
+  ```yaml
+  build:
+    serviceAccount:
+      registrySecret:
+        name: serverless-registry-creds              # identical in every site
+        key: cloudlet/platforms/serverless/{{ .Values.global.site }}
+        usernameProperty: registry-username
+        passwordProperty: registry-password
+  ```
+
+  (`key` runs through `tpl`, as `routeDomain` already does.)
+
+**The Secret name must stay identical in every site.** It is written into every
+site's KSVC `imagePullSecrets` and onto every per-function build
+`ServiceAccount`, and the API emits those for all sites from one place
+(`SERVERLESS_BUILD__REGISTRY_SECRET` is a name, not a reference it resolves).
+Contents vary by site; the name does not. A per-site *name* would push the same
+per-site composition problem into the pull secret that the KSVC image already
+has, for no benefit.
+
+Nothing here is cross-site: a site's registry credential exists only in the
+cluster that pushes to and pulls from that registry.
+
+### The mirror's pull Secret
+
+One mirror, one credential, so this one is genuinely uniform - one Vault entry,
+the same Secret in every cluster. It is added alongside the local credential on
+both kinds of build `ServiceAccount`:
+
+| Account | Needs |
+|---|---|
+| `kpack-builder` (chart) | mirror **pull** (stack + store) + local registry **push** (the composed builder image) |
+| `fn-{name}-{group}` (API, per function) | mirror **pull** (the run image, at `export`) + local registry **push/pull** + the function's git token |
+
+The per-function account is the one that is easy to miss: the `export` phase
+pulls the run image, which lives on the mirror, so a build account holding only
+the local credential fails at the last phase of the first build.
+
+### The Quay API tokens
+
+Unlike the two above, this one **is** needed for every site in every pod. A
+delete lands on whichever API instance the DNS record points at, and that
+instance is responsible for reclaiming the function's repositories in *all*
+sites (docs/BUILDING.md - Registry cleanup on delete), so it needs each site's
+token. The tokens differ per site, so this is one Vault entry per site,
+assembled by the chart into a single env var:
+
+```yaml
+externalSecrets:
+  secrets:
+    - name: serverless-api-registry
+      # Rendered over `sites[]`: one Vault entry per site, assembled into one
+      # env var because the API needs every site's token, not only its own.
+      perSiteRegistryTokens:
+        key: cloudlet/platforms/serverless/{site}     # {site} substituted per entry
+        property: registry-api-token
 ```
 
-falling back to `SERVERLESS_REGISTRY__API_TOKEN` for any site not named - which
-is what a single-registry install keeps using.
+rendering an ExternalSecret whose `target.template` builds the JSON:
+
+```yaml
+  target:
+    name: serverless-api-registry
+    template:
+      engineVersion: v2
+      data:
+        SERVERLESS_REGISTRY_API_TOKENS: '{"central":{{ .central | toJson }},"south":{{ .south | toJson }}}'
+  data:
+    - secretKey: central
+      remoteRef: { key: cloudlet/platforms/serverless/central, property: registry-api-token }
+    - secretKey: south
+      remoteRef: { key: cloudlet/platforms/serverless/south, property: registry-api-token }
+```
+
+`toJson` rather than bare quotes, so a token carrying a `"` or a `\` cannot
+produce a Secret the API fails to parse at startup.
+
+Two notes on shape. A site-keyed **JSON object** is used rather than one env var
+per site (`SERVERLESS_REGISTRY_API_TOKENS__CENTRAL`) because a site name is a
+DNS-1123 label and may contain `-`, which is not portable in an environment
+variable name. And `SERVERLESS_REGISTRY__API_TOKEN` stays as the fallback for any
+site the map does not name, which is what a single-registry install keeps using
+unchanged.
+
+This is the only credential that crosses a site boundary, and it is strictly
+less power than the API already holds: the same pod carries a client certificate
+that can write Knative Services in every cluster.
 
 ---
 
@@ -251,12 +361,37 @@ is what a single-registry install keeps using.
 | `values.yaml` | `sites[].registry`; new `mirror:` block; `build.serviceAccount.mirrorSecret`; **remove** `buildController.pruneOrphans` |
 | `templates/configmap.yaml` | Serialize each site's `registry` into `SERVERLESS_SITES` alongside `name`/`cluster` |
 | `templates/_helpers.tpl` | `serverless-api.siteRegistry` resolves **this release's** site (`global.site`) against `sites[]`; `registryBase` and `builderImage` hang off it, so a Builder pushes locally. `validateBuild` gains the checks below |
-| `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host; add the mirror pull Secret |
+| `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host, and read its credentials from a per-site Vault path; add the mirror pull Secret |
 | `templates/kpack/serviceaccount.yaml` | `kpack-builder` lists both Secrets - local registry (push + pull) and mirror (pull) |
-| `templates/externalsecret.yaml` | Add `SERVERLESS_REGISTRY_API_TOKENS` |
+| `templates/externalsecret.yaml` | Support `target.template` plus a `perSiteRegistryTokens` entry, so one Vault entry per site becomes one `SERVERLESS_REGISTRY_API_TOKENS` env var |
 | `templates/deployment.yaml` | Add `SERVERLESS_BUILD__MIRROR_SECRET`; the existing `SERVERLESS_REGISTRY__*` stay as the inherited default |
 | `templates/build-controller.yaml` | Drop the prune env var |
-| `templates/networkpolicy.yaml` | Build-pod egress must reach the mirror as well as the local registry (values only, if either is in-cluster) |
+| `templates/networkpolicy.yaml` | **Nothing** - see below |
+
+### NetworkPolicy: nothing to do
+
+The registry is never a Service or a Route - it is always off-cluster - so the
+existing `allow-egress-external` policy already covers it, and covers each new
+one for free:
+
+```yaml
+podSelector: {}                       # every pod in the namespace, build pods included
+egress:
+  - to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except: [10.128.0.0/14, 172.30.0.0/16]   # pod + service networks
+```
+
+Off-cluster is allowed by default and only *in-cluster* destinations are carved
+out, so a second registry host, a third, and the shared mirror all need no rule.
+The same applies to an OpenShift Route, which resolves to a router address
+outside those CIDRs.
+
+That also means `networkPolicy.build.egressNamespaces` / `egressCIDRs` stay
+empty here: they exist for an in-cluster registry or git server, which this
+platform will not have. Leave them in the chart for installs that do, but this
+design adds nothing to them.
 
 Two new render-time failures in `validateBuild`, both of which otherwise surface
 as a broken install hours later:
@@ -430,9 +565,10 @@ Worth stating plainly, because it is the bulk of the win:
   sized for concurrent builds in every site, not one.
 - **Cleanup reaches across sites.** Deleting a function calls each site's
   registry API from wherever the API instance runs, which is the one remaining
-  cross-site registry dependency. It is control-plane only and already
-  best-effort: an unreachable peer registry logs and leaks a repository, exactly
-  as a failed delete does today. Doing it from each site's controller instead was
+  cross-site registry dependency - and the only reason the API pod holds every
+  site's Quay token rather than just its own. It is control-plane only and
+  already best-effort: an unreachable peer registry logs and leaks a repository,
+  exactly as a failed delete does today. Doing it from each site's controller instead was
   rejected for the reason the existing docs give - it would have to derive
   "unowned" from a cluster read, and a read that wrongly returns empty deletes
   everything.
@@ -481,8 +617,8 @@ Two properties make step 3 safe rather than delicate:
 | 3 | Per-site KSVC composition and per-site build apply in `workloads.py` / `site_apply.py`; delete `build_only` | 2 | With 2 |
 | 4 | Controller: local-only write, delete `prune` | 3 | Yes |
 | 5 | Per-site build status in `get`/`stats`/`list` | 3 | Yes |
-| 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` | 1 | Yes |
-| 7 | Mirror pull Secret on both ServiceAccount kinds | 1 | Yes |
+| 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` (needs `target.template` in `externalsecret.yaml`) | 1 | Yes |
+| 7 | Site-aware push credential (per-site Vault path, host from `global.site`) + mirror pull Secret on both ServiceAccount kinds | 1 | Yes |
 | 8 | Docs: BUILDING.md, ARCHITECTURE.md, FUNCTIONS.md, DEPLOYING.md; kpack README/examples | all | Last |
 
 2 and 3 are one commit - splitting them leaves a build plan nothing consumes.
@@ -498,14 +634,20 @@ Two properties make step 3 safe rather than delicate:
    change. This proposal assumes shared, because the ask was explicitly to keep
    kpack and Paketo on one registry.
 2. **Can the API reach every site's registry over HTTP?** Only the delete path
-   needs it. If not, function deletes leak repositories in the peer site and we
-   need a different reclamation story.
+   needs it, and only for the Quay management API. Since a registry is always
+   off-cluster - never a Service, never a Route - there is no NetworkPolicy or
+   cluster-boundary obstacle; what remains to confirm is simply that the internal
+   network routes `registry.south.internal` from the central cluster. If it does
+   not, function deletes leak repositories in the peer site and we need a
+   different reclamation story.
 3. **Is per-site digest divergence acceptable to the operators?** It is the one
    irreversible property of this design.
-4. **How does the Quay OAuth token per site reach Vault** - one JSON property
-   holding a site-keyed object, or one property per site plus an ESO template?
-   The first is one Vault edit and no chart machinery; the second is more
-   conventional.
+4. ~~How does the Quay OAuth token per site reach Vault?~~ **Settled:** the
+   tokens differ per site, so it is one Vault entry per site, assembled by an ESO
+   `target.template` into one site-keyed env var (see
+   [Where the credentials come from](#where-the-credentials-come-from)). What is
+   still open is only the Vault path convention - `…/serverless/{site}` with a
+   `registry-api-token` property is assumed here.
 5. **Does a function pinned to `sites: [south]` build on south only?** This
    proposal says yes - build where you run - which is what deletes the unowned
    build-object path. The alternative (always also build locally) keeps a
