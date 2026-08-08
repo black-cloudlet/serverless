@@ -1,6 +1,7 @@
 # External exposure for the API itself. The serverless-api.{base_domain} DNS
 # record fronts the active instance across both clusters
 # (docs/ARCHITECTURE.md - Networking & Exposure).
+{{- include "serverless-api.validateStream" . }}
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -11,10 +12,14 @@ metadata:
     {{- with .Values.api.route.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- with .Values.api.route.annotations }}
   annotations:
+    # Held open for the SSE endpoints; the router's 30s default would cut every
+    # stream (values.yaml - api.route.timeout). Listed before the user's own
+    # annotations so an operator can still override it.
+    haproxy.router.openshift.io/timeout: {{ .Values.api.route.timeout | quote }}
+    {{- with .Values.api.route.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   host: {{ tpl (.Values.api.route.host | default (printf "serverless.%s" .Values.global.baseDomain)) . | quote }}
   to:

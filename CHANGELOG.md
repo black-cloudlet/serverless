@@ -9,6 +9,105 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Live observability is now Server-Sent Events, and logs are per pod.** Three
+  endpoints: `GET .../{name}/pods` (the workload's pods on the current site),
+  `GET .../{name}/logs/pods/{pod}` (follow one pod's log), and
+  `GET .../{name}/stats/stream` (the existing `/stats` body, pushed). The first
+  two **stream by default** and answer once under `?follow=false`; `/stats` keeps
+  its JSON form as the cheap poll target. Streaming was designed but deliberately not built
+  (docs/ARCHITECTURE.md - Open Questions), because three things had to be
+  answered first; each is why a piece of this looks the way it does.
+
+  **BREAKING: `GET .../{name}/logs` is gone**, replaced by
+  `GET .../{name}/logs/pods/{pod}` - the same read, aimed at one pod. The
+  workload-level follow is gone too: it has to reconcile a *set* of pods that
+  changes underneath it, which forced a per-stream pod cap and an arbitrary rule
+  for which pods win when a workload is wider than it. Per pod, a stream is one
+  pod, one thread, nothing to reconcile, and the client can say "just the noisy
+  one". The cost is that the client must learn a pod name first, which is what
+  `/pods` is for: until now nothing in the API returned one, and the only way to
+  find out was to read every pod's logs.
+
+  **`?follow=false`** on both endpoints answers once, in JSON, and ends. Not a
+  convenience: it is the only form available to a caller that cannot hold a
+  connection open, and the architecture has one - a ServiceNow workflow attaching
+  a failing function's logs to a ticket cannot consume an event stream. It is on
+  both deliberately, because a log snapshot alone would be unreachable: finding a
+  pod name would still require opening a stream. The snapshot returns the same
+  lines a follow would have delivered, so a client renders one shape either way,
+  and it takes **no stream slot** - it ends, so rationing it against the pool that
+  bounds held-open connections would let streams throttle a caller that is not
+  holding one. What it cannot skip is authorization: both forms go through one
+  `_pod_authorizer`, so `follow=false` is not a way around the pod-ownership
+  check. What a snapshot can return is still bounded by what the node holds -
+  Kubernetes keeps no ring buffer beyond its rotated file - so it is the recent
+  past, never the whole history, which is the same limit a follow starts from.
+
+  Streaming is the **default** on both because the answer expires - Knative
+  replaces a workload's pods on every revision and removes them all on
+  scale-to-zero - so a roster fetched once quietly stops being true. `/pods` reports
+  name, revision, phase, ready, restarts, startedAt and per-pod usage, joining
+  the metrics API on by name; a pod too new to have been scraped is still listed
+  with `usage: null`, because that is exactly the pod someone is most likely to
+  want to follow. Both are local-site only, like the logs they feed.
+
+  **A held-open stream holds a thread.** The Kubernetes client is synchronous, so
+  a followed log is a thread blocked on a socket for as long as the client stays
+  connected - not for the length of a request. Left on the default executor that
+  `asyncio.to_thread` uses, a few idle log tails would sit on the threads every
+  ordinary create, read and delete needs, and the API would stop answering while
+  looking healthy. So streaming has a pool of its own and admission is capped
+  before it can be exhausted: `stream.maxConcurrent` (32) streams, with the pool
+  derived from that rather than configured, since one smaller than the admissions
+  it must serve turns a bound into a stall. A stream past the limit is refused
+  with 503 and a retry. What the bounds cost is reported, never hidden: lines
+  dropped when a client reads slower than the pod logs arrive as a `warning`
+  event carrying the count.
+
+  **The router would have cut them.** OpenShift times a connection out after 30s
+  by default, severing every stream half a minute in while the client reconnects
+  forever without surfacing why. The chart sets
+  `haproxy.router.openshift.io/timeout` from `api.route.timeout` (65m) and
+  **fails to render** if it does not exceed `stream.maxSeconds` - the two live in
+  different sections of `values.yaml`, so the relationship is asserted rather
+  than left to whoever edits one. Streams end themselves at `maxSeconds` with an
+  `end` event and heartbeat so nothing in the path reaps an idle one.
+
+  **Browsers cannot send an `Authorization` header.** `EventSource` has no API
+  for one, which leaves the credential in the URL - and the SSO token is the
+  wrong thing to put there: valid against every endpoint, and a URL reaches the
+  router's access log, our own log line and the user's history. So the token buys
+  a ticket: `POST /api/v1/stream-tickets` spends it on a request that can carry a
+  header and returns something worth almost nothing - one path, one minute, an
+  identity the caller already had. Signed rather than stored, because two
+  replicas serve behind one Route and either may take the stream. New secret
+  `SERVERLESS_STREAM_TICKET_KEY`; empty disables minting the way an empty admin
+  key disables key auth, and the header still works, so a curl follow needs no
+  new configuration.
+
+  The mechanism itself is **`cloudlet_apis.auth.StreamTickets`** (cloudlet-apis
+  0.2.0), shared for the same reason token validation is: `EventSource` sends no
+  header anywhere, not just here. What stays in this repository is the half that
+  is ours - `STREAM_PATH` enumerates the paths a ticket may be minted for,
+  because a bearer credential in a URL should open a listed thing rather than an
+  inferred one, and those paths are this API's to know. **Requires cloudlet-apis
+  >= 0.2.**
+
+  Owning a workload is not owning every pod, and all workloads' pods share a
+  namespace - so the log stream checks the KSVC's ownership labels **and** that
+  the named pod carries this workload's service label. A pod that fails either is
+  a 404 identical to one that does not exist, so the response never confirms that
+  a pod by that name is running. The pod name is a path segment that reaches a
+  request to the cluster's API server, so it is constrained at the edge to what
+  Kubernetes itself accepts.
+
+  Everything that can fail with a status code is settled before the response
+  begins, so a missing workload is a 404 envelope and not a stream that opens and
+  immediately errors; after the first byte the status line is spent and a failure
+  arrives as an `error` event carrying the code `/info` already publishes. A pod's
+  log *ending* is an `end` event, not an error - on Knative a scale-down or a new
+  revision is routine, and a client that reddens for it reddens for a successful
+  deploy. No new RBAC: `pods/log` and `pods` were already read.
 - `env[].name` and `files[].mountPath` are validated at the edge, the last two
   caller-supplied strings that reached a cluster without a rule. An env name now
   follows Kubernetes' own `IsEnvVarName` (`[-._a-zA-Z][-._a-zA-Z0-9]*`), which is

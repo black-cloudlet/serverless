@@ -33,6 +33,7 @@ from common.names import (  # noqa: F401
     ImageRef,
     MountPath,
     Name,
+    PodName,
     SourcePath,
     normalize_group,
     validate_branch,
@@ -43,6 +44,7 @@ from common.names import (  # noqa: F401
     validate_image_ref,
     validate_mount_path,
     validate_name,
+    validate_pod_name,
     validate_source_path,
 )
 
@@ -500,35 +502,182 @@ class WorkloadResponse(WorkloadBase):
     files: list[FileView] = []
 
 
-class PodLogs(BaseModel):
-    """The current log snapshot of one workload pod's container.
+class PodInfo(BaseModel):
+    """One of the workload's pods on the local site.
+
+    Everything a client needs to pick a pod to follow, and to understand why one
+    it was following went away. ``usage`` comes from the metrics API and is
+    joined on by name, so it is null for a pod too new to have been scraped -
+    the pod is still listed, because for choosing a log stream the newest pod is
+    the one that matters most.
 
     Attributes:
-        pod: The pod name.
-        container: The container the log was read from.
-        revision: The Knative revision the pod belongs to, if labelled.
-        logs: The log text as the node currently holds it (timestamped).
+        pod: The pod name - the path segment ``/logs/pods/{pod}`` takes.
+        revision: The Knative revision it belongs to, if labelled.
+        phase: The pod phase (Running, Pending, Succeeded, Failed, Unknown).
+        ready: Whether its Ready condition is true - a Running pod is not
+            necessarily serving.
+        restarts: Restarts summed over the pod's containers. A rising count is
+            the symptom a log stream is usually opened to explain.
+        startedAt: When the pod started, in Israel local time.
+        usage: Live cpu/memory for this pod's user container(s), excluding the
+            queue-proxy sidecar; null when it has not been measured.
     """
 
     pod: str
-    container: str
     revision: str | None = None
-    logs: str
+    phase: str
+    ready: bool = False
+    restarts: int = 0
+    startedAt: datetime | None = None
+    usage: ResourceUsage | None = None
 
 
-class LogsResponse(BaseModel):
-    """A workload's pod logs from the local site (a point-in-time snapshot).
+class PodRoster(BaseModel):
+    """The ``pods`` event: which pods the workload has on this site, right now.
 
-    Logs are node-local and ephemeral: only the running pods on the current site
-    are read, and their history is bounded by the node's log rotation. Empty
-    ``pods`` means the workload is deployed here but scaled to zero.
+    The local site only, like the log streams it feeds: a pod name is only
+    useful where its log can be read. Empty ``pods`` is a normal state, not an
+    error - the workload is deployed here and scaled to zero - which is why this
+    is a stream rather than a lookup that would have to keep being repeated to
+    notice it stopped being true.
+
+    Attributes:
+        name: The workload name.
+        group: The owning group.
+        type: The offering.
+        site: The site these pods are on (always the local one).
+        pods: The current roster, ordered by name.
     """
 
     name: str
     group: str
     type: Literal["function", "container"]
     site: str
-    pods: list[PodLogs] = []
+    pods: list[PodInfo] = []
+
+
+class LogLine(BaseModel):
+    """One line from a followed pod log (the ``log`` event of a logs stream).
+
+    A line, not a blob: the node's timestamp is split off into its own field
+    rather than left as a prefix every client would have to re-parse.
+
+    Attributes:
+        pod: The pod the line came from.
+        container: The container it was read from.
+        revision: The Knative revision the pod belongs to, if labelled.
+        time: When the node recorded the line; None if it carried no parseable
+            timestamp.
+        message: The line itself, without the timestamp prefix.
+    """
+
+    pod: str
+    container: str
+    revision: str | None = None
+    time: datetime | None = None
+    message: str
+
+
+class PodLogStreamOpen(BaseModel):
+    """The ``open`` event: what this log stream is, sent before any line.
+
+    Attributes:
+        name: The workload name.
+        group: The owning group.
+        type: The offering.
+        site: The site the pod is on (always the local one).
+        pod: The pod being followed.
+        container: The container being read.
+        revision: The Knative revision the pod belongs to, if labelled.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    site: str
+    pod: str
+    container: str
+    revision: str | None = None
+
+
+class PodLogSnapshot(BaseModel):
+    """One pod's log as it stands right now (``follow=false``).
+
+    The same ``lines`` a follow would have delivered, returned once and ended -
+    for a caller that cannot hold a connection open. What it can return is
+    bounded by what the node still holds: Kubernetes keeps no buffer beyond the
+    node's rotated file, so this is the recent past, never the whole history.
+
+    Attributes:
+        name: The workload name.
+        group: The owning group.
+        type: The offering.
+        site: The site the pod is on (always the local one).
+        pod: The pod that was read.
+        container: The container it was read from.
+        revision: The Knative revision the pod belongs to, if labelled.
+        lines: The log, split into lines exactly as the stream splits them.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    site: str
+    pod: str
+    container: str
+    revision: str | None = None
+    lines: list[LogLine] = []
+
+
+class StreamEnd(BaseModel):
+    """The ``end`` event: the stream finished on purpose, and why.
+
+    Distinct from ``error`` because a pod's log ending is not a failure - it is
+    what happens when the pod is scaled down or replaced by a new revision, which
+    on Knative is routine. A client that treats it as an error shows the user a
+    red banner for a successful deploy; one that is told can go back to the
+    ``pods`` stream and pick the pod that replaced it.
+
+    Attributes:
+        reason: Why the stream ended, in a form worth showing a user.
+    """
+
+    reason: str
+
+
+class StreamWarning(BaseModel):
+    """The ``warning`` event: the stream is degraded but still running.
+
+    Its own event because the alternative is silence. A log stream that dropped
+    lines because the client could not keep up is showing an incomplete picture,
+    and a client that is not told reads the gap as "the pod logged nothing".
+
+    Attributes:
+        message: What was degraded, in a form worth showing a user.
+        droppedLines: Lines discarded because the client read too slowly.
+    """
+
+    message: str
+    droppedLines: int | None = None
+
+
+class StreamError(BaseModel):
+    """The ``error`` event: the stream is ending, and why.
+
+    Once the response has begun there is no status code left to send, so this is
+    the only way a stream can report that the workload was deleted or a site
+    stopped answering. It carries the same ``code`` vocabulary as the error
+    envelope (``/info`` publishes it), so a client switches on one set of values
+    whichever way the failure reaches it.
+
+    Attributes:
+        code: The machine-readable error code (e.g. ``NOT_FOUND``).
+        message: The human-readable message.
+    """
+
+    code: str
+    message: str
 
 
 class WorkloadSpec(BaseModel):

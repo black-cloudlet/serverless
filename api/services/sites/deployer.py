@@ -8,6 +8,9 @@ HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
+from concurrent.futures import Executor
 from typing import Callable
 
 from cloudlet_apis.logging import get_logger
@@ -21,6 +24,32 @@ logger = get_logger(__name__)
 
 # fn(cluster) -> SiteStatus  (may run blocking I/O; executed in a thread)
 SiteFn = Callable[[Cluster], SiteStatus]
+
+
+async def run_on(executor: Executor | None, fn, *args):
+    """Run blocking ``fn`` in a thread, on ``executor`` or the default pool.
+
+    ``asyncio.to_thread`` is exactly this against the default executor, and that
+    default is what a stream must not use: a held-open connection would take
+    threads from the pool every ordinary request shares. Passing an executor is
+    how the streaming paths keep to their own (see
+    :class:`~api.services.streams.capacity.StreamCapacity`).
+
+    The context copy is the part that is easy to lose by reaching for
+    ``run_in_executor`` directly - without it the request id the log filter reads
+    is absent from every line the worker writes.
+
+    Args:
+        executor: The pool to run on, or None for the default.
+        fn: The blocking callable.
+        *args: Positional arguments for ``fn``.
+
+    Returns:
+        Whatever ``fn`` returns.
+    """
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(executor, functools.partial(ctx.run, fn, *args))
 
 
 class Deployer:
@@ -86,7 +115,9 @@ class Deployer:
             targets.append(cluster)
         return targets
 
-    async def fanout(self, targets: list[Cluster], fn: SiteFn) -> list[SiteStatus]:
+    async def fanout(
+        self, targets: list[Cluster], fn: SiteFn, *, executor: Executor | None = None
+    ) -> list[SiteStatus]:
         """Run ``fn`` on every target concurrently, collecting per-site results.
 
         Each call runs in a thread with a timeout; a site that times out or raises
@@ -95,6 +126,9 @@ class Deployer:
         Args:
             targets: The clusters to run on.
             fn: The per-site operation returning a SiteStatus.
+            executor: Pool to run on; None takes the default one. A stream passes
+                its own so that repeating this fan-out for as long as a client
+                stays connected cannot starve ordinary requests.
 
         Returns:
             One SiteStatus per target.
@@ -105,7 +139,7 @@ class Deployer:
                 # Backstop: a down/slow site fails fast and is reported as an
                 # error rather than blocking the whole fan-out indefinitely.
                 return await asyncio.wait_for(
-                    asyncio.to_thread(fn, cluster), timeout=self._op_timeout
+                    run_on(executor, fn, cluster), timeout=self._op_timeout
                 )
             except asyncio.TimeoutError:
                 logger.warning("site %s operation timed out", cluster.site)

@@ -209,6 +209,76 @@ source, not images.)
 > rounding, so they need not equal the sum of the printed per-site figures; and a
 > total is `null` if any site could not be measured, rather than one quietly
 > missing a site. Usage is never fresher than the cluster's metrics-server scrape.
+>
+> **Or don't poll at all: `GET .../{name}/stats/stream`.** The same body, pushed as
+> Server-Sent Events every few seconds instead of returned on request, so one
+> connection replaces the poll loop.
+>
+> **Logs are per pod, and stream by default.** Two steps - find a pod, then follow
+> it:
+>
+> ```bash
+> # 1. the roster (also a stream; pods come and go on every revision)
+> curl -N -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/pods"
+> #   event: pods
+> #   data: {"name":"orders","site":"central","pods":[
+> #           {"pod":"orders-team-00003-deployment-6b9f4c5d7-x2wql","revision":"orders-team-00003",
+> #            "phase":"Running","ready":true,"restarts":0,
+> #            "usage":{"cpu":"120m","memory":"180Mi"}}]}
+>
+> # 2. follow one of them
+> curl -N -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
+> ```
+>
+> **`?follow=false` on either** answers once, in JSON, and ends - for a caller that
+> cannot hold a connection open (a ServiceNow workflow attaching logs to a ticket,
+> a script, a CI step). It is on both endpoints deliberately: a log snapshot alone
+> would be unreachable, since finding a pod name would still need a stream.
+>
+> ```bash
+> curl -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
+> curl -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
+> ```
+>
+> The snapshot returns the same `lines` a follow would have delivered, so a client
+> renders one shape either way - bounded by what the node still holds, which is the
+> recent past and never the whole history.
+>
+> A browser cannot send that header (`EventSource` has no API for it), so it mints a
+> short-lived ticket first and puts that in the URL:
+>
+> ```js
+> const open = async (path) => {
+>   const { ticket } = await (await fetch("/api/v1/stream-tickets", {
+>     method: "POST",
+>     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+>     body: JSON.stringify({ path }),
+>   })).json();
+>   return new EventSource(`${path}?ticket=${ticket}`);
+> };
+>
+> const base = `/api/v1/groups/${group}/functions/${name}`;
+> const pods = await open(`${base}/pods`);
+> pods.addEventListener("pods", (e) => renderPodPicker(JSON.parse(e.data).pods));
+>
+> const logs = await open(`${base}/logs/pods/${chosenPod}`);
+> logs.addEventListener("log", (e) => append(JSON.parse(e.data)));
+> logs.addEventListener("end", (e) => {
+>   // Not an error: the pod was scaled down or replaced by a new revision.
+>   notice(JSON.parse(e.data).reason);   // pick the replacement off the pods stream
+> });
+> logs.addEventListener("warning", (e) => notice(JSON.parse(e.data).message));
+> ```
+>
+> Listen for `end` and `warning`, not just `log`. `end` is a pod going away, which on
+> Knative is routine rather than a failure; `warning` is the stream saying it is
+> showing you an incomplete picture (lines skipped because the client fell behind).
+> Each open stream costs a slot against the per-replica limit, so close the ones the
+> user is not looking at. See ARCHITECTURE.md: Streaming.
 
 ### Editing a workload: `PUT` request recipes
 

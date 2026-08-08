@@ -51,6 +51,22 @@ spec:
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
               value: {{ toJson .Values.corsAllowOrigins | quote }}
+            - name: SERVERLESS_STREAM__MAX_CONCURRENT
+              value: {{ .Values.stream.maxConcurrent | quote }}
+            - name: SERVERLESS_STREAM__INTERVAL_SECONDS
+              value: {{ .Values.stream.intervalSeconds | quote }}
+            - name: SERVERLESS_STREAM__MIN_INTERVAL_SECONDS
+              value: {{ .Values.stream.minIntervalSeconds | quote }}
+            - name: SERVERLESS_STREAM__MAX_INTERVAL_SECONDS
+              value: {{ .Values.stream.maxIntervalSeconds | quote }}
+            - name: SERVERLESS_STREAM__HEARTBEAT_SECONDS
+              value: {{ .Values.stream.heartbeatSeconds | quote }}
+            - name: SERVERLESS_STREAM__QUEUE_SIZE
+              value: {{ .Values.stream.queueSize | quote }}
+            - name: SERVERLESS_STREAM__MAX_SECONDS
+              value: {{ .Values.stream.maxSeconds | quote }}
+            - name: SERVERLESS_STREAM__TICKET_TTL_SECONDS
+              value: {{ .Values.stream.ticketTtlSeconds | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_REGISTRY__DELETE_ON_FUNCTION_DELETE

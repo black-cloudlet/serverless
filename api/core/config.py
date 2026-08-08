@@ -13,7 +13,7 @@ from functools import lru_cache
 # The SSO model is shared - every API on the platform validates tokens the same
 # way - so it lives in cloudlet_apis and is re-exported here for existing importers.
 from cloudlet_apis.auth import SSOConfig  # noqa: F401
-from pydantic import Field
+from pydantic import BaseModel, Field, model_validator
 
 # Shared connection settings + sub-configs; re-exported for existing importers.
 from common.config import (  # noqa: F401
@@ -42,6 +42,76 @@ class SSOSettings(SSOConfig):
     swagger_client_id: str = "serverless-api-swagger"
 
 
+class StreamConfig(BaseModel):
+    """Bounds on the SSE streams (``/pods``, ``/logs/pods/{pod}``, ``/stats/stream``).
+
+    A held-open stream is not a request that ends, so none of these are
+    performance tuning - they are what stops streaming from consuming the
+    process. A followed pod log holds a worker thread for as long as the client
+    stays connected, so the threads are drawn from a pool of this module's own
+    (:class:`~api.services.streams.capacity.StreamCapacity`) rather than the
+    default executor every ordinary request shares, and admission is capped
+    before the pool can be exhausted.
+
+    Attributes:
+        max_concurrent: Open streams allowed at once, per process. A request
+            beyond it is refused with 503 rather than queued: a stream that
+            connects and then stalls behind others is worse than one told to
+            retry. Streams are per pod, so a client watching four pods of one
+            workload spends four of these.
+        interval_seconds: How often a pods or stats stream re-reads.
+        min_interval_seconds: Floor for a client-supplied ``interval``.
+        max_interval_seconds: Ceiling for a client-supplied ``interval``.
+        heartbeat_seconds: How long a stream may produce nothing before a
+            comment is sent to keep the connection from being reaped. Must stay
+            well under the Route's timeout (charts - ``api.route.timeout``).
+        queue_size: Lines buffered between the follower threads and the client.
+            Bounded on purpose: a workload logging faster than the client reads
+            must cost a reported gap, not the process's memory.
+        max_seconds: Hard lifetime of one stream. Reconnecting is cheap (SSE
+            does it on its own), and an immortal stream is how a leak survives
+            a client that never closes its side.
+        ticket_ttl_seconds: How long a stream ticket stays valid. Only ever
+            spent opening one connection, so this is a window, not a session.
+    """
+
+    max_concurrent: int = Field(32, ge=1)
+    interval_seconds: float = Field(5.0, gt=0)
+    min_interval_seconds: float = Field(1.0, gt=0)
+    max_interval_seconds: float = Field(60.0, gt=0)
+    heartbeat_seconds: float = Field(15.0, gt=0)
+    queue_size: int = Field(1000, ge=1)
+    max_seconds: int = Field(3600, ge=1)
+    ticket_ttl_seconds: int = Field(60, ge=1)
+
+    @property
+    def max_workers(self) -> int:
+        """Threads the stream pool is built with.
+
+        Derived, not configured, because a pool smaller than the admissions it
+        has to serve turns a bound into a deadlock - and getting that wrong by
+        hand is easy.
+
+        Two per admitted stream. A log stream holds exactly one thread for its
+        whole life (the follow). A pods or stats stream holds none between ticks
+        but needs one or two briefly on each, so the second per stream is what
+        keeps a tick from queueing behind the log follows.
+        """
+        return self.max_concurrent * 2
+
+    @model_validator(mode="after")
+    def _bounds(self) -> "StreamConfig":
+        """Validate that the interval bounds and the heartbeat make sense together."""
+        if self.max_interval_seconds < self.min_interval_seconds:
+            raise ValueError("stream max_interval_seconds must be >= min_interval_seconds")
+        if not (self.min_interval_seconds <= self.interval_seconds <= self.max_interval_seconds):
+            raise ValueError(
+                "stream interval_seconds must be between min_interval_seconds and "
+                "max_interval_seconds"
+            )
+        return self
+
+
 class Settings(CommonSettings):
     """API settings: the shared connection settings plus the API's own fields."""
 
@@ -63,6 +133,15 @@ class Settings(CommonSettings):
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth
     # rather than shipping a usable default credential.
     admin_api_key: str = ""
+
+    # What the SSE streams are allowed to consume. env: SERVERLESS_STREAM__*.
+    stream: StreamConfig = Field(default_factory=StreamConfig)
+    # HMAC key for stream tickets, from Vault via ESO. Empty (the default)
+    # disables ticket minting, exactly as an empty admin key disables key auth:
+    # the streams still authenticate off the Authorization header, so a CLI
+    # follow works with no extra configuration and only the browser path - which
+    # cannot set that header - needs this set.
+    stream_ticket_key: str = ""
 
 
 @lru_cache

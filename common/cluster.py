@@ -339,6 +339,59 @@ class Cluster:
                 raise NotFoundError(f"pod '{pod}' not found") from exc
             raise
 
+    def follow_pod_logs(
+        self,
+        pod: str,
+        *,
+        container: str,
+        since_seconds: int | None = None,
+    ) -> "LogFollow":
+        """Open a held-open stream of one pod container's log.
+
+        The counterpart to :meth:`pod_logs`, which returns what the node holds
+        right now and ends. This one does not end: the API server keeps writing
+        as the container writes, so the caller reads until the pod stops, the
+        stream is closed, or the connection drops.
+
+        ``_preload_content=False`` is what makes that possible - the generated
+        client would otherwise read the whole response into a string before
+        returning, which for ``follow=True`` never completes. The raw urllib3
+        response comes back instead, and :class:`LogFollow` owns it.
+
+        No read timeout is applied. A follow is idle between lines by design, so
+        the per-request timeout that protects an ordinary call would end this one
+        on a quiet workload; the caller bounds it instead (its own deadline, and
+        :meth:`LogFollow.close`).
+
+        Args:
+            pod: The pod name.
+            container: The container to read.
+            since_seconds: Start this many seconds back, so a client sees recent
+                context rather than only what arrives after it connected.
+
+        Returns:
+            The open stream.
+
+        Raises:
+            NotFoundError: If the pod is gone (404). Other errors propagate.
+        """
+        core = client.CoreV1Api(self._api_client)
+        try:
+            response = core.read_namespaced_pod_log(
+                name=pod,
+                namespace=self._namespace,
+                container=container,
+                timestamps=True,
+                since_seconds=since_seconds,
+                follow=True,
+                _preload_content=False,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise NotFoundError(f"pod '{pod}' not found") from exc
+            raise
+        return LogFollow(response)
+
     def close(self) -> None:
         """Release the underlying HTTP client (connection pool) for this site.
 
@@ -349,6 +402,68 @@ class Cluster:
             self._api_client_obj.close()
             self._api_client_obj = None
         self._dynamic_client_obj = None
+
+
+class LogFollow:
+    """A held-open pod log stream: lines as they arrive, and a way to end it.
+
+    Two threads touch one of these and they do different things. The worker
+    thread iterates :meth:`lines`, blocked on the socket in between. The event
+    loop calls :meth:`close`, which is the only way to end that block early -
+    setting a flag would not, because the flag is only read between lines and a
+    quiet workload produces none. Closing the socket makes the pending read fail,
+    the iteration stops, and the thread is returned to the pool.
+    """
+
+    def __init__(self, response):
+        """Wrap the raw streaming response.
+
+        Args:
+            response: The urllib3 response from a ``follow=True`` log read.
+        """
+        self._response = response
+        self._closed = False
+
+    def lines(self) -> Iterator[str]:
+        """Yield complete log lines as the container writes them (blocking).
+
+        Chunks are reassembled here rather than trusted to arrive line-aligned:
+        the transfer is chunked by the API server at whatever boundary it likes,
+        so a single write can be split across chunks and several can share one.
+
+        Yields:
+            One log line at a time, newline stripped. A trailing partial line is
+            emitted when the stream ends, so a final write with no newline is
+            not swallowed.
+        """
+        buffer = ""
+        for chunk in self._response.stream(amt=None, decode_content=True):
+            if self._closed:
+                break
+            buffer += chunk.decode("utf-8", errors="replace")
+            # Not splitlines(): it also breaks on \v, \f and U+2028, any of which
+            # a workload may legitimately log inside one line.
+            *complete, buffer = buffer.split("\n")
+            for line in complete:
+                yield line.rstrip("\r")
+        if buffer and not self._closed:
+            yield buffer.rstrip("\r")
+
+    def close(self) -> None:
+        """End the stream, unblocking a thread waiting on it. Idempotent.
+
+        Both calls matter and neither replaces the other: ``close`` drops the
+        socket, which is what interrupts the pending read, and ``release_conn``
+        is what stops the pool holding a connection that will never be reused.
+        Failures are swallowed - this only ever runs while tearing a stream
+        down, where there is nothing left to report to.
+        """
+        self._closed = True
+        for end in (self._response.close, self._response.release_conn):
+            try:
+                end()
+            except Exception:  # noqa: BLE001, S110 - teardown; nothing to report to
+                pass
 
 
 def clusters_for(settings: CommonSettings) -> dict[str, Cluster]:

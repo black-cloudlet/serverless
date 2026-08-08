@@ -4,18 +4,22 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, Query, Response
+from fastapi.responses import StreamingResponse
 
-from api.auth.deps import CurrentUser
+from api.auth.deps import CurrentUser, StreamUser
 from api.dependencies import FunctionDep
 from api.models.common import (
     Group,
-    LogsResponse,
     Name,
+    PodLogSnapshot,
+    PodName,
+    PodRoster,
     WorkloadStatsResponse,
     WorkloadSummary,
 )
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
+from api.routers import sse
 
 router = APIRouter(prefix="/api/v1/groups/{group}/functions", tags=["functions"])
 
@@ -159,36 +163,145 @@ async def get_function_stats(
     return await svc.stats(name, group, user)
 
 
-@router.get("/{name}/logs", response_model=LogsResponse)
-async def get_function_logs(
+@router.get("/{name}/pods", responses=sse.switchable(PodRoster, "`pods` and `error`"))
+async def stream_function_pods(
     group: Group,
     name: Name,
-    user: CurrentUser,
+    user: StreamUser,
     svc: FunctionDep,
-    container: str = "user-container",
-    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
-    limitBytes: Annotated[int | None, Query(gt=0)] = None,
-) -> LogsResponse:
-    """Snapshot the function's pod logs from the current site.
+    follow: bool = True,
+    interval: Annotated[float | None, Query(gt=0)] = None,
+) -> Response:
+    """The function's pods on the current site - streamed, or read once.
 
-    Point-in-time (not streamed) and local-site only; a scaled-to-zero workload
-    returns no pods.
+    Streams by default, because the answer expires: Knative replaces a workload's
+    pods on every revision and removes them all on scale-to-zero, so a roster
+    fetched once quietly stops being true. ``follow=false`` returns a single JSON
+    roster instead, for a caller that cannot hold a connection open.
+
+    Local site only, matching the log endpoint it feeds - a pod name is only
+    useful where its log can be read. This is where the ``{pod}`` for
+    ``/logs/pods/{pod}`` comes from; nothing else in the API returns one.
+
+    Events (when following): ``pods`` (the full roster, the first sent
+    immediately) and ``error``. Lines beginning with ``:`` are heartbeats. An
+    empty roster is normal - the workload is deployed here and scaled to zero.
+
+    Browsers authenticate a stream with ``?ticket=`` from
+    ``POST /api/v1/stream-tickets``; everything else sends the usual
+    ``Authorization`` header.
 
     Args:
         group: The owning group (from the request path).
         name: The workload name.
-        user: The authenticated caller (injected).
+        user: The authenticated caller, by header or ticket (injected).
         svc: The function service (injected).
-        container: The pod container to read (default the user-container).
-        sinceSeconds: Only return logs newer than this many seconds.
-        limitBytes: Cap the bytes read per pod.
+        follow: Stream the roster (default), or return it once.
+        interval: Seconds between listings when following; omit for the default.
 
     Returns:
-        The function's per-pod logs from the local site.
+        The event stream, or the roster.
     """
-    return await svc.logs(
-        name, group, user, container=container, since_seconds=sinceSeconds, limit_bytes=limitBytes
+    if not follow:
+        return await svc.pods(name, group, user)
+    return sse.stream(await svc.stream_pods(name, group, user, interval=interval))
+
+
+@router.get(
+    "/{name}/logs/pods/{pod}",
+    responses=sse.switchable(PodLogSnapshot, "`open`, `log`, `warning`, `end` and `error`"),
+)
+async def stream_function_pod_logs(
+    group: Group,
+    name: Name,
+    pod: PodName,
+    user: StreamUser,
+    svc: FunctionDep,
+    follow: bool = True,
+    container: str = "user-container",
+    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
+    limitBytes: Annotated[int | None, Query(gt=0)] = None,
+) -> Response:
+    """Follow one of the function's pods' logs, or read what it holds right now.
+
+    Current site only, either way: Kubernetes keeps no log buffer beyond the node
+    that wrote it. Get ``pod`` from ``GET .../{name}/pods``.
+
+    Following is the default. ``follow=false`` returns a single JSON snapshot of
+    whatever the node still holds - bounded by its log rotation, so it is the
+    recent past and never the whole history - for a caller that cannot hold a
+    connection open. ``limitBytes`` applies only to that form.
+
+    A followed stream ends with an ``end`` event when the pod's log does - a
+    scale-down or a new revision, which on Knative is routine and is not reported
+    as an error. Pick the replacement pod off the ``pods`` endpoint.
+
+    Events (when following): ``open``, ``log`` (one line), ``warning`` (lines
+    dropped because the client read too slowly), ``end``, ``error``. Lines
+    beginning with ``:`` are heartbeats. The snapshot returns those same lines in
+    one body, so a client renders one shape either way.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        pod: The pod to read. A pod that is not this workload's is a 404.
+        user: The authenticated caller, by header or ticket (injected).
+        svc: The function service (injected).
+        follow: Stream the log (default), or return what the node holds now.
+        container: The pod container to read (default the user-container).
+        sinceSeconds: Start the log this many seconds back.
+        limitBytes: Cap the bytes read; ``follow=false`` only.
+
+    Returns:
+        The event stream, or the snapshot.
+    """
+    if not follow:
+        return await svc.pod_logs(
+            name,
+            group,
+            user,
+            pod=pod,
+            container=container,
+            since_seconds=sinceSeconds,
+            limit_bytes=limitBytes,
+        )
+    return sse.stream(
+        await svc.stream_pod_logs(
+            name, group, user, pod=pod, container=container, since_seconds=sinceSeconds
+        )
     )
+
+
+@router.get("/{name}/stats/stream", responses=sse.RESPONSES, response_class=StreamingResponse)
+async def stream_function_stats(
+    group: Group,
+    name: Name,
+    user: StreamUser,
+    svc: FunctionDep,
+    interval: Annotated[float | None, Query(gt=0)] = None,
+) -> StreamingResponse:
+    """Follow the function's live state (Server-Sent Events).
+
+    The streaming form of ``/stats``, reporting exactly the same body on an
+    interval instead of on request. One connection replaces a client's poll
+    loop, so the fan-out happens once per interval however many clients are
+    watching.
+
+    Events: ``stats`` (a :class:`WorkloadStatsResponse`, the first sent
+    immediately) and ``error`` (the workload is gone, or no site could answer).
+    Lines beginning with ``:`` are heartbeats.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        user: The authenticated caller, by header or ticket (injected).
+        svc: The function service (injected).
+        interval: Seconds between readings; omit for the default.
+
+    Returns:
+        The event stream.
+    """
+    return sse.stream(await svc.stream_stats(name, group, user, interval=interval))
 
 
 @router.delete("/{name}", status_code=204)

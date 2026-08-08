@@ -21,7 +21,9 @@ that is the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+import sys
+from collections.abc import AsyncIterator, Mapping, Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -36,8 +38,10 @@ from api.models.common import (
     LABEL_GROUP,
     LABEL_OFFERING,
     BuildStatusView,
-    LogsResponse,
-    PodLogs,
+    LogLine,
+    PodLogSnapshot,
+    PodLogStreamOpen,
+    PodRoster,
     SiteStats,
     SiteStatus,
     WorkloadResponse,
@@ -62,6 +66,11 @@ from api.services.state import ksvc_state, ownership
 from api.services.state import metrics as metrics_svc
 from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
+from api.services.streams import logs as logs_stream
+from api.services.streams import pods as pods_stream
+from api.services.streams import stats as stats_stream
+from api.services.streams.capacity import StreamCapacity
+from api.services.streams.sse import StreamEvent
 from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
 from common.config import RegistryConfig
@@ -198,17 +207,28 @@ class ApplyRequest:
 class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
-    def __init__(self, settings: Settings, deployer: Deployer, builder: BuildBackend):
+    def __init__(
+        self,
+        settings: Settings,
+        deployer: Deployer,
+        builder: BuildBackend,
+        capacity: StreamCapacity | None = None,
+    ):
         """Initialize the engine.
 
         Args:
             settings: Global settings.
             deployer: The multi-site fan-out helper.
             builder: The function image build backend.
+            capacity: The stream pool and admission gate. Defaulted from
+                ``settings`` rather than required, so the non-streaming paths -
+                which is all of them until a client asks for a stream - can be
+                constructed without one.
         """
         self.settings = settings
         self.deployer = deployer
         self.builder = builder
+        self.capacity = capacity or StreamCapacity(settings.stream)
 
     def assert_group(self, user: Principal, group: str) -> None:
         """Reject the request unless the caller may act for ``group``.
@@ -866,7 +886,13 @@ class WorkloadService:
         return offering.fetched_response(common, obj, spec, build)
 
     async def stats(
-        self, offering: Offering, name: str, user: Principal, group: str
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        executor: Executor | None = None,
     ) -> WorkloadStatsResponse:
         """Read a workload's live state: rollup, and per-site replicas and usage.
 
@@ -886,6 +912,10 @@ class WorkloadService:
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
+            executor: Pool the per-site reads run on; None takes the default.
+                The stats stream passes its own, because a reading it repeats for
+                as long as a client is connected must not compete for the threads
+                every ordinary request needs.
 
         Returns:
             The live stats view.
@@ -923,7 +953,7 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.fanout(targets, fetch)
+        results = await self.deployer.fanout(targets, fetch, executor=executor)
         statuses = [s for s in results if s is not None]  # drop sites without it
 
         if not reps:
@@ -939,6 +969,8 @@ class WorkloadService:
         # Not reported here, but it is what makes a running build read as
         # `Building` instead of the `Degraded` its unpullable image would
         # otherwise produce (docs/FUNCTIONS.md - Function Status Resolution).
+        # Read per site inside `fetch`, so it rides the same fan-out - and so a
+        # stats *stream* pays for it on its own pool, like every other read here.
         overall = ksvc_state.with_build_status(overall, ksvc_state.roll_up_builds(builds.values()))
         statuses = ksvc_state.sites_with_build_status(statuses, builds)
 
@@ -1044,34 +1076,145 @@ class WorkloadService:
         if all(s.status == "Absent" for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 
-    async def logs(
+    async def stream_pods(
         self,
         offering: Offering,
         name: str,
         user: Principal,
         group: str,
         *,
-        container: str,
-        since_seconds: int | None,
-        limit_bytes: int | None,
-    ) -> LogsResponse:
-        """Snapshot the workload's pod logs from the local site only.
+        interval: float | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream which pods the workload has on the local site.
 
-        Single-site and point-in-time: reads the running pods on the current
-        cluster (Kubernetes keeps no log buffer beyond the node). A workload
-        deployed here but scaled to zero returns an empty ``pods`` list.
+        The endpoint that makes per-pod log streaming usable: a pod name is what
+        ``stream_pod_logs`` takes, and nothing else in the API returns one.
+
+        Local site only, matching the log streams it feeds - a pod name is only
+        useful where its log can be read.
+
+        The first roster is read here rather than in the stream, because it is
+        also what authorizes the request: a workload that does not exist is a 404
+        with an envelope, not a stream that opens and immediately errors.
 
         Args:
             offering: The offering being read.
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
-            container: The pod container to read (e.g. the user-container).
-            since_seconds: Only logs newer than this many seconds, if set.
-            limit_bytes: Cap on the bytes read per pod, if set.
+            interval: Seconds between listings; None takes the configured default.
 
         Returns:
-            The workload's per-pod logs from the local site.
+            The event stream, beginning with a ``pods`` event.
+
+        Raises:
+            NotFoundError: If the workload isn't on the local site or the caller
+                can't access it (hidden as 404, matching GET).
+            ServiceUnavailableError: If no stream slot is free.
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+
+        def read() -> list:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            if not ownership.owned_by(obj, user, kind):
+                raise _hidden_404("stream pods of", kind, name, user, obj)
+            return pods_stream.read_roster(cluster, oname)
+
+        # Held for the life of the generator below, not of this call - which is
+        # why the context manager is entered by hand: `with` here would give the
+        # slot back before a single event had been sent.
+        slot = self.capacity.slot()
+        slot.__enter__()
+        try:
+            roster = await self.capacity.run(read)
+        except BaseException:
+            slot.__exit__(*sys.exc_info())
+            raise
+
+        first = PodRoster(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pods=roster,
+        )
+
+        async def stream() -> AsyncIterator[StreamEvent]:
+            try:
+                async for event in pods_stream.follow(
+                    cluster=cluster,
+                    capacity=self.capacity,
+                    config=self.capacity.config,
+                    first=first,
+                    oname=oname,
+                    interval=self.capacity.interval(interval),
+                ):
+                    yield event
+            finally:
+                slot.__exit__(None, None, None)
+
+        return stream()
+
+    def _pod_authorizer(
+        self, cluster: Cluster, oname: str, pod: str, kind: str, name: str, user: Principal
+    ):
+        """The check both log reads run, as one blocking callable.
+
+        Shared rather than written twice because the second half is the security
+        boundary: owning the workload is not owning every pod, and the pods of
+        every workload on the platform sit in one namespace. Two copies of that
+        rule is one copy that gets fixed.
+
+        Args:
+            cluster: The local site.
+            oname: The object name (``{name}-{group}``).
+            pod: The pod the caller named.
+            kind: The offering label ("function"/"container").
+            name: The workload name, for the error message.
+            user: The authenticated caller.
+
+        Returns:
+            A callable returning the pod's revision, to run off the event loop.
+        """
+
+        def authorize() -> str | None:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            if not ownership.owned_by(obj, user, kind):
+                raise _hidden_404("read logs of", kind, name, user, obj)
+            found = cluster.get(ResourceKind.POD, pod)
+            labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
+            if labels.get(pods_stream.SERVICE_LABEL) != oname:
+                # Someone else's pod, or none of ours. Same answer as absent: the
+                # response must not confirm that a pod by this name exists.
+                logger.debug("pod '%s' is not a pod of %s '%s'; hidden as 404", pod, kind, name)
+                raise NotFoundError(f"pod '{pod}' not found")
+            return labels.get(pods_stream.REVISION_LABEL)
+
+        return authorize
+
+    async def pods(self, offering: Offering, name: str, user: Principal, group: str) -> PodRoster:
+        """The workload's pods on the local site, read once (``follow=false``).
+
+        The non-streaming half of :meth:`stream_pods`, and the same reads. It
+        exists for the caller that cannot hold a connection - without it, a
+        server-side client could not learn a pod name, and so could not use the
+        log snapshot either.
+
+        No stream slot: this is an ordinary bounded request that ends, and
+        charging it against the streaming pool would let held-open connections
+        throttle a caller that is not holding one.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+
+        Returns:
+            The roster.
 
         Raises:
             NotFoundError: If the workload isn't on the local site or the caller
@@ -1082,40 +1225,238 @@ class WorkloadService:
         oname = object_name(name, group)
         cluster = self.deployer.local_cluster()
 
-        def read() -> list[PodLogs]:
-            # Authorize off the KSVC on the local site; a genuine 404 (not
-            # deployed here) and a cross-group/offering hit both surface as 404.
+        def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             if not ownership.owned_by(obj, user, kind):
-                raise NotFoundError(f"{kind} '{name}' not found")
-            pods = cluster.get(
-                ResourceKind.POD, label_selector=f"serving.knative.dev/service={oname}"
-            )
-            out: list[PodLogs] = []
-            for pod in pods:
-                meta = pod.get("metadata", {}) or {}
-                pod_name = meta.get("name", "")
-                revision = (meta.get("labels", {}) or {}).get("serving.knative.dev/revision")
-                try:
-                    text = cluster.pod_logs(
-                        pod_name,
-                        container=container,
-                        since_seconds=since_seconds,
-                        limit_bytes=limit_bytes,
-                    )
-                except NotFoundError:
-                    continue  # pod vanished between list and read
-                out.append(PodLogs(pod=pod_name, container=container, revision=revision, logs=text))
-            return out
+                raise _hidden_404("read pods of", kind, name, user, obj)
+            return pods_stream.read_roster(cluster, oname)
 
-        pods = await asyncio.to_thread(read)
-        return LogsResponse(
+        return PodRoster(
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
             site=self.deployer.local_site(),
-            pods=pods,
+            pods=await asyncio.to_thread(read),
         )
+
+    async def pod_logs(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        pod: str,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> PodLogSnapshot:
+        """One pod's log as it stands, read once (``follow=false``).
+
+        The non-streaming half of :meth:`stream_pod_logs`, through the same
+        authorization, so the pod-ownership rule cannot differ between them. What
+        it returns is bounded by what the node still holds - there is no history
+        behind that, whichever way it is read.
+
+        No stream slot: the read ends, so it is not a stream and must not be
+        rationed as one.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            pod: The pod to read.
+            container: The pod container to read.
+            since_seconds: Only lines newer than this, if set.
+            limit_bytes: Cap on the bytes read, if set.
+
+        Returns:
+            The snapshot.
+
+        Raises:
+            NotFoundError: If the workload or the pod isn't here, the pod is not
+                this workload's, or the caller can't access it (all hidden as 404).
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+        authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
+
+        def read() -> tuple[str | None, str]:
+            revision = authorize()
+            return revision, cluster.pod_logs(
+                pod,
+                container=container,
+                since_seconds=since_seconds,
+                limit_bytes=limit_bytes,
+            )
+
+        revision, text = await asyncio.to_thread(read)
+        # Split exactly as the stream splits, so a client renders one shape
+        # whichever way it read the log.
+        lines = [
+            LogLine(
+                pod=pod,
+                container=container,
+                revision=revision,
+                time=stamp,
+                message=message,
+            )
+            for stamp, message in (logs_stream.split_timestamp(line) for line in text.splitlines())
+        ]
+        return PodLogSnapshot(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pod=pod,
+            container=container,
+            revision=revision,
+            lines=lines,
+        )
+
+    async def stream_pod_logs(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        pod: str,
+        container: str,
+        since_seconds: int | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Follow one of the workload's pods' logs, on the local site.
+
+        Local site only: Kubernetes keeps no log buffer beyond the node that
+        wrote it, so there is nowhere else to read from.
+
+        The pod is authorized twice over, and the second check is the one that
+        matters. Owning the workload is not enough - the caller names a pod, and
+        the pods of every workload on the platform share one namespace - so the
+        named pod must also carry this workload's service label. Without that,
+        any authenticated user could read any pod in the namespace by guessing
+        its name.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            pod: The pod to follow, as ``stream_pods`` named it.
+            container: The pod container to read.
+            since_seconds: How far back the log starts, so a client sees recent
+                context rather than only what arrives after it connected.
+
+        Returns:
+            The event stream, beginning with an ``open`` event.
+
+        Raises:
+            NotFoundError: If the workload or the pod isn't here, the pod is not
+                this workload's, or the caller can't access it (all hidden as 404).
+            ServiceUnavailableError: If no stream slot is free.
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+        authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
+
+        slot = self.capacity.slot()
+        slot.__enter__()
+        try:
+            revision = await self.capacity.run(authorize)
+        except BaseException:
+            slot.__exit__(*sys.exc_info())
+            raise
+
+        opening = PodLogStreamOpen(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pod=pod,
+            container=container,
+            revision=revision,
+        )
+
+        async def stream() -> AsyncIterator[StreamEvent]:
+            try:
+                async for event in logs_stream.follow(
+                    cluster=cluster,
+                    capacity=self.capacity,
+                    config=self.capacity.config,
+                    opening=opening,
+                    since_seconds=since_seconds,
+                ):
+                    yield event
+            finally:
+                slot.__exit__(None, None, None)
+
+        return stream()
+
+    async def stream_stats(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        interval: float | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Push the workload's live state on an interval, as a stream of events.
+
+        The streaming counterpart to :meth:`stats`, and identical in what it
+        reports - the same rollup, the same per-site replicas and usage, a
+        function's build read for the same reason. Only the transport differs.
+
+        The first reading is taken here rather than in the stream: it is what
+        authorizes the request, so a workload that does not exist is a 404 with
+        an envelope instead of a stream that opens and immediately errors.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            interval: Seconds between readings; None takes the configured default.
+
+        Returns:
+            The event stream, beginning with a ``stats`` event.
+
+        Raises:
+            NotFoundError: If the workload exists on no reachable site.
+            ServiceUnavailableError: If no stream slot is free, or the workload
+                can't be confirmed absent because a site was unreachable.
+        """
+        config = self.capacity.config
+
+        async def read() -> WorkloadStatsResponse:
+            return await self.stats(offering, name, user, group, executor=self.capacity.executor)
+
+        slot = self.capacity.slot()
+        slot.__enter__()
+        try:
+            first = await read()
+        except BaseException:
+            slot.__exit__(*sys.exc_info())
+            raise
+
+        async def stream() -> AsyncIterator[StreamEvent]:
+            try:
+                async for event in stats_stream.follow(
+                    config=config,
+                    first=first,
+                    read=read,
+                    interval=self.capacity.interval(interval),
+                ):
+                    yield event
+            finally:
+                slot.__exit__(None, None, None)
+
+        return stream()
 
     async def list(
         self, offering: Offering, user: Principal, group: str, sort: str = "name"

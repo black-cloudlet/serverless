@@ -15,8 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import __version__
 from api.auth.deps import get_auth
 from api.core.config import Settings, get_settings
-from api.dependencies import get_runtimes, get_workload_service
-from api.routers import containers, functions, info
+from api.dependencies import get_runtimes, get_stream_capacity, get_workload_service
+from api.routers import containers, functions, info, streams
 from api.services.sites.deployer import Deployer
 
 logger = get_logger(__name__)
@@ -67,6 +67,10 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Streams first: their threads hold the cluster clients closed below, and a
+    # follower reading through a client that has just been shut under it logs a
+    # traceback for what is only an orderly shutdown.
+    get_stream_capacity().shutdown()
     service.deployer.close()  # release per-site cluster HTTP clients
 
 
@@ -107,6 +111,7 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health_router)
     app.include_router(info.router)
+    app.include_router(streams.router)
     app.include_router(functions.router)
     app.include_router(containers.router)
 
