@@ -9,7 +9,7 @@ prune the `Image` objects a switchover stranded there. This proposes the
 symmetric alternative: **every site builds every function it runs, pushes to its
 own registry, and publishes only to itself**. The mirrored content that builds
 *consume* - kpack's own images and the Paketo stack and buildpackages - stays on
-a single shared registry, because nothing writes to it.
+a single shared **kpack registry**, because nothing writes to it.
 
 ## Contents
 
@@ -82,7 +82,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    MIR[("Shared mirror<br/>kpack images + Paketo stack/store<br/>READ ONLY")]
+    MIR[("Shared kpack registry<br/>kpack images + Paketo stack/store<br/>READ ONLY")]
     subgraph A["Site central"]
         IA["Image central"]
         KA["KSVC central"]
@@ -118,8 +118,8 @@ the rule that answers it is **who writes**:
 
 | Content | Registry | Written by |
 |---|---|---|
-| kpack `controller`, `webhook`, `build-init`, `build-waiter`, `rebase`, `completion`, `lifecycle` | **shared mirror** | the mirror scripts, once |
-| `paketobuildpacks/build-jammy-base`, `run-jammy-base`, the buildpackages | **shared mirror** | the mirror scripts, once |
+| kpack `controller`, `webhook`, `build-init`, `build-waiter`, `rebase`, `completion`, `lifecycle` | **kpack registry** | the mirror scripts, once |
+| `paketobuildpacks/build-jammy-base`, `run-jammy-base`, the buildpackages | **kpack registry** | the mirror scripts, once |
 | Composed `Builder` images (`{base}/{builderRepository}/python`) | **per site** | that site's kpack |
 | Function images (`{base}/{group}/{name}:{branch}`) | **per site** | that site's kpack |
 | Build layer cache (`{base}/{group}/{name}_cache:latest`) | **per site** | that site's kpack |
@@ -141,8 +141,8 @@ function.
 > repository rather than mounting them cross-repo. Builds still work; the first
 > push per repository is heavier. If that cost matters, mirror the stack images
 > into each site registry as well and point `clusterBuild.registry` at the local
-> one - at which point the mirror holds only the kpack platform images. That is a
-> values change, not a code change.
+> one - at which point the kpack registry holds only kpack's own images. That is
+> a values change, not a code change.
 
 ---
 
@@ -157,7 +157,7 @@ function.
 | KSVC image field | Resolved **per site** at apply time | Was: one value composed once |
 | Git credential | Unchanged - already replicated to every site | Designed for this |
 | Registry credential | One Secret **name**, per-site **contents** | The name is written into every site's KSVC, so it must not vary |
-| Mirror credential | A second Secret on the build ServiceAccounts, pull-only | The export step pulls the run image |
+| kpack registry credential | A second Secret on the build ServiceAccounts, pull-only | The export step pulls the run image |
 | Registry cleanup | Delete the repositories in **every** site's registry on function delete | Best-effort, as today |
 | Single-registry installs | Still supported (sites inherit the global `registry`) but rejected at render time for a multi-site build install | See [Helm](#helm) |
 
@@ -217,10 +217,10 @@ sites:
 
 # Read-only content every site's builds pull. One copy, one mirror run.
 build:
-  mirror:
-    registry: registry.mirror.internal
+  kpackRegistry:
+    url: registry.kpack.internal
     pullSecret:
-      name: kpack-mirror-creds
+      name: kpack-registry-creds
       create: true
 ```
 
@@ -243,7 +243,7 @@ deploy, so it is worth being explicit about each one.
 | Credential | Lives in | Content | Same in every site? |
 |---|---|---|---|
 | `serverless-registry-creds` | `namespaces.workloads`, per cluster | dockerconfigjson for **that site's** registry | **Name yes, content no** |
-| `kpack-mirror-creds` | `namespaces.workloads`, per cluster | dockerconfigjson for the shared mirror, pull-only | Yes, both |
+| `kpack-registry-creds` | `namespaces.workloads`, per cluster | dockerconfigjson for the shared kpack registry, pull-only | Yes, both |
 | `SERVERLESS_REGISTRY_API_TOKENS` | `namespaces.api`, per cluster | Quay OAuth token **per site**, keyed by site name | Yes - every pod holds every site's |
 
 ### The local site's push/pull Secret
@@ -284,20 +284,20 @@ has, for no benefit.
 Nothing here is cross-site: a site's registry credential exists only in the
 cluster that pushes to and pulls from that registry.
 
-### The mirror's pull Secret
+### The kpack registry's pull Secret
 
-One mirror, one credential, so this one is genuinely uniform - one Vault entry,
-the same Secret in every cluster. It is added alongside the local credential on
-both kinds of build `ServiceAccount`:
+One kpack registry, one credential, so this one is genuinely uniform - one Vault
+entry, the same Secret in every cluster. It is added alongside the local
+credential on both kinds of build `ServiceAccount`:
 
 | Account | Needs |
 |---|---|
-| `kpack-builder` (chart) | mirror **pull** (stack + store) + local registry **push** (the composed builder image) |
-| `fn-{name}-{group}` (API, per function) | mirror **pull** (the run image, at `export`) + local registry **push/pull** + the function's git token |
+| `kpack-builder` (chart) | kpack registry **pull** (stack + store) + local registry **push** (the composed builder image) |
+| `fn-{name}-{group}` (API, per function) | kpack registry **pull** (the run image, at `export`) + local registry **push/pull** + the function's git token |
 
 The per-function account is the one that is easy to miss: the `export` phase
-pulls the run image, which lives on the mirror, so a build account holding only
-the local credential fails at the last phase of the first build.
+pulls the run image, which lives on the kpack registry, so a build account holding
+only the local credential fails at the last phase of the first build.
 
 ### The Quay API tokens
 
@@ -357,13 +357,13 @@ that can write Knative Services in every cluster.
 
 | File | Change |
 |---|---|
-| `values.yaml` | `sites[].registry`; `build.mirror`; `build.allowSharedRegistry`; a per-site `registrySecret.key`; `perSiteRegistryTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
+| `values.yaml` | `sites[].registry`; `build.kpackRegistry`; `build.allowSharedRegistry`; a per-site `registrySecret.key`; `perSiteRegistryTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
 | `templates/configmap.yaml` | Serialize each site's `registry` into `SERVERLESS_SITES` alongside `name`/`cluster` |
 | `templates/_helpers.tpl` | `serverless-api.siteRegistry` resolves **this release's** site (`global.site`) against `sites[]`; `registryBase` and `builderImage` hang off it, so a Builder pushes locally. `validateBuild` gains the checks below |
-| `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host, and read its credentials from a per-site Vault path; add the mirror pull Secret |
-| `templates/kpack/serviceaccount.yaml` | `kpack-builder` lists both Secrets - local registry (push + pull) and mirror (pull) |
+| `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host, and read its credentials from a per-site Vault path; add the kpack registry pull Secret |
+| `templates/kpack/serviceaccount.yaml` | `kpack-builder` lists both Secrets - local registry (push + pull) and kpack registry (pull) |
 | `templates/externalsecret.yaml` | Support `target.template` plus a `perSiteRegistryTokens` entry, so one Vault entry per site becomes one `SERVERLESS_REGISTRY_API_TOKENS` env var |
-| `templates/deployment.yaml` | Add `SERVERLESS_BUILD__MIRROR_SECRET`; the existing `SERVERLESS_REGISTRY__*` stay as the inherited default |
+| `templates/deployment.yaml` | Add `SERVERLESS_BUILD__KPACK_REGISTRY_SECRET`; the existing `SERVERLESS_REGISTRY__*` stay as the inherited default |
 | `templates/build-controller.yaml` | Drop the prune env var |
 | `templates/networkpolicy.yaml` | **Nothing** - see below |
 
@@ -383,8 +383,8 @@ egress:
 ```
 
 Off-cluster is allowed by default and only *in-cluster* destinations are carved
-out, so a second registry host, a third, and the shared mirror all need no rule.
-The same applies to an OpenShift Route, which resolves to a router address
+out, so a second registry host, a third, and the shared kpack registry all need no
+rule. The same applies to an OpenShift Route, which resolves to a router address
 outside those CIDRs.
 
 That also means `networkPolicy.build.egressNamespaces` / `egressCIDRs` stay
@@ -453,21 +453,23 @@ buildController:
 build:
   enabled: true
 
-  # ── NEW: the shared read-only mirror ───────────────────────────────────────
-  # ClusterStack/ClusterStore content, pulled by every site and written by none.
-  # Empty `registry` means the mirror IS the site registry (today's behaviour):
-  # no second Secret is created and nothing is added to the build accounts.
-  mirror:
-    # The same host the kpack release uses for `clusterBuild.registry`. Used
-    # only to key the pull Secret - docker auth is per host.
-    registry: ""            # e.g. registry.mirror.internal
+  # ── NEW: the shared, read-only kpack registry ──────────────────────────────
+  # kpack's own images and the ClusterStack/ClusterStore content: pulled by every
+  # site, written by none, mirrored once. Empty `url` means the kpack registry IS
+  # the site registry (today's behaviour) - no second Secret is created and
+  # nothing is added to the build accounts.
+  kpackRegistry:
+    # The same host the kpack release uses for `images.registry` and
+    # `clusterBuild.registry`. Used only to key the pull Secret - docker auth is
+    # per host, never per path.
+    url: ""                 # e.g. registry.kpack.internal
     pullSecret:
-      name: kpack-mirror-creds
+      name: kpack-registry-creds
       # False when the Secret is provided out-of-band.
       create: true
       key: cloudlet/platforms/serverless
-      usernameProperty: mirror-username
-      passwordProperty: mirror-password
+      usernameProperty: kpack-registry-username
+      passwordProperty: kpack-registry-password
 
   # ── NEW: escape hatch for a deliberate single-registry multi-site install ───
   # Two sites resolving to one registry base race to push one `spec.tag` and
@@ -518,7 +520,7 @@ externalSecrets:
 
 **Not changed, and worth saying so:** `networkPolicy`. A registry is always
 off-cluster, so `allow-egress-external` already reaches every one of these -
-including the mirror - and `networkPolicy.build.egressNamespaces` /
+including the kpack registry - and `networkPolicy.build.egressNamespaces` /
 `egressCIDRs` stay empty.
 
 ### What an existing install has to set
@@ -531,8 +533,8 @@ sites:
   - { name: south,   cluster: south-0,   registry: { url: registry.south.internal } }
 
 build:
-  mirror:
-    registry: registry.mirror.internal
+  kpackRegistry:
+    url: registry.kpack.internal
   serviceAccount:
     registrySecret:
       key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
@@ -546,7 +548,8 @@ externalSecrets:
 ```
 
 plus, in Vault: a `registry-username` / `registry-password` / `registry-api-token`
-per site path, and a `mirror-username` / `mirror-password` at the shared path.
+per site path, and a `kpack-registry-username` / `kpack-registry-password` at
+the shared path.
 The top-level `registry.url` stays as the inherited default and can be left
 pointing at the old registry - nothing resolves through it once every site
 overrides it, and leaving it is what makes the [migration](#migration) reversible
@@ -556,16 +559,17 @@ by removing two lines.
 
 **No functional change.** `images.registry` (kpack platform images) and
 `clusterBuild.registry` (Paketo stack and store) are already independent values;
-this design points both at the shared mirror, which is what they were built for.
+this design points both at the shared kpack registry, which is what they were
+built for.
 What changes there is documentation:
 
 - README "Cluster build content": state that the stack/store registry is
   read-only and may be shared by every site, while whatever composes `Builder`s
   pushes elsewhere.
 - `examples/clusterbuild-values.yaml`: a comment marking `clusterBuild.registry`
-  as the shared mirror.
-- `scripts/mirror/README.md`: the mirror is a single copy for the whole
-  platform, not one per site.
+  as the shared kpack registry.
+- `scripts/mirror/README.md`: the kpack registry is a single copy for the whole
+  platform, not one mirror run per site.
 
 ---
 
@@ -623,7 +627,7 @@ class BuildPlan:
 
 `build_service_account(..., registry_secret: str)` becomes
 `registry_secrets: Sequence[str]`, so the per-function account carries both the
-local push credential and the mirror pull credential.
+local push credential and the kpack registry pull credential.
 
 ### `api/services/builder/kpack_backend.py`
 
@@ -718,11 +722,11 @@ Worth stating plainly, because it is the bulk of the win:
   cross-site registry dependency - and the only reason the API pod holds every
   site's Quay token rather than just its own. It is control-plane only and
   already best-effort: an unreachable peer registry logs and leaks a repository,
-  exactly as a failed delete does today. Doing it from each site's controller instead was
-  rejected for the reason the existing docs give - it would have to derive
+  exactly as a failed delete does today. Doing it from each site's controller
+  instead was rejected for the reason the existing docs give - it would have to derive
   "unowned" from a cluster read, and a read that wrongly returns empty deletes
   everything.
-- **Builds depend on the shared mirror.** If the mirror is down, no site can
+- **Builds depend on the shared kpack registry.** If it is down, no site can
   build; every site can still run and serve. That is a strictly smaller blast
   radius than today, where the single registry is also the runtime pull path.
 
@@ -732,9 +736,9 @@ Worth stating plainly, because it is the bulk of the win:
 
 The existing re-tag machinery does the work; no data migration and no outage.
 
-1. **Stand up the per-site registries.** The mirror is unchanged - it is the
-   registry the kpack release already points at.
-2. **Roll the chart** with `sites[].registry` and the mirror block. Existing
+1. **Stand up the per-site registries.** The kpack registry is unchanged - it is
+   the one the kpack release already points at.
+2. **Roll the chart** with `sites[].registry` and the kpack registry block. Existing
    functions keep running: their KSVCs still hold digests from the old registry,
    and nothing rewrites an image field on upgrade.
 3. **Touch each function once** - `POST /api/v1/groups/{group}/functions/{name}/build`
@@ -768,7 +772,7 @@ Two properties make step 3 safe rather than delicate:
 | 4 | Controller: local-only write, delete `prune` | 3 | Yes |
 | 5 | Per-site build status in `get`/`stats`/`list` | 3 | Yes |
 | 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` (needs `target.template` in `externalsecret.yaml`) | 1 | Yes |
-| 7 | Site-aware push credential (per-site Vault path, host from `global.site`) + mirror pull Secret on both ServiceAccount kinds | 1 | Yes |
+| 7 | Site-aware push credential (per-site Vault path, host from `global.site`) + kpack registry pull Secret on both ServiceAccount kinds | 1 | Yes |
 | 8 | Docs: BUILDING.md, ARCHITECTURE.md, FUNCTIONS.md, DEPLOYING.md; kpack README/examples | all | Last |
 
 2 and 3 are one commit - splitting them leaves a build plan nothing consumes.
@@ -777,9 +781,9 @@ Two properties make step 3 safe rather than delicate:
 
 ## Open questions
 
-1. **Is a shared mirror acceptable as a build-time dependency?** It is the only
-   thing left that crosses a site boundary during a build. The alternative -
-   a mirror per site - costs a second mirror run and a second copy of every
+1. **Is a shared kpack registry acceptable as a build-time dependency?** It is the
+   only thing left that crosses a site boundary during a build. The alternative -
+   one per site - costs a second mirror run and a second copy of every
    Paketo image, and it is a values change (`clusterBuild.registry`), not a code
    change. This proposal assumes shared, because the ask was explicitly to keep
    kpack and Paketo on one registry.
@@ -802,7 +806,7 @@ Two properties make step 3 safe rather than delicate:
    proposal says yes - build where you run - which is what deletes the unowned
    build-object path. The alternative (always also build locally) keeps a
    mechanism alive for a case nothing needs.
-6. **Should the composed `Builder` images be per site or on the mirror?** Per
-   site here, because composing is a push and two clusters pushing one builder
+6. **Should the composed `Builder` images be per site or on the kpack registry?**
+   Per site here, because composing is a push and two clusters pushing one builder
    tag is the race this whole design removes. Mirroring pre-composed builders
    instead would be a different (and larger) change.
