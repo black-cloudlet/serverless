@@ -13,17 +13,57 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class SiteRegistry(BaseModel):
+    """A site's own registry, overriding the platform default for that site.
+
+    Every site builds into and pulls from its own registry, so a site that only
+    *runs* a function still reads from storage it owns (docs/PER-SITE-REGISTRY.md).
+    Which registry that is has to be known by every instance, not just the one
+    sitting in that site: the API composes the manifests for all sites, so it
+    needs the peer's registry to write the peer's ``Image`` and KSVC. That is why
+    this lives in the sites list - identical in every cluster - rather than
+    beside the per-release ``local_site``.
+
+    It carries **no credentials**, deliberately: the sites list is serialized
+    into a ConfigMap. What a site needs to authenticate arrives separately - the
+    push credential as a Secret in that site's own cluster, the registry API
+    token through :attr:`CommonSettings.site_registry_tokens`.
+
+    Attributes:
+        url: The registry host (with an optional port). Required - a site
+            override that does not move the host is not an override.
+        organization: Overrides the platform's namespace segment. None inherits;
+            "" does not. The distinction is load-bearing, since "" is how an
+            install says a registry has no namespacing path at all, and a site
+            has to be able to say that too.
+        repository: Overrides the segment everything the platform builds sits
+            under, on the same None-inherits/""-overrides rule.
+    """
+
+    url: str
+    organization: str | None = None
+    repository: str | None = None
+
+
 class SiteConfig(BaseModel):
     """Connection profile for one site.
 
     A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
     *cluster* (e.g. ``central-0``) whose API server is derived as
     ``https://api.{cluster}.{base_domain}:6443``. The client certificate, CA
-    bundle, and workloads namespace are global (the same in every cluster).
+    bundle, and workloads namespace are global (the same in every cluster);
+    the registry is not.
+
+    Attributes:
+        name: The site (region) name.
+        cluster: The OpenShift cluster running it.
+        registry: That site's registry, or None to take the platform default -
+            which is what a single-registry install leaves it as.
     """
 
     name: str
     cluster: str
+    registry: SiteRegistry | None = None
 
 
 class CABundleConfig(BaseModel):
@@ -46,7 +86,14 @@ class CABundleConfig(BaseModel):
 
 
 class RegistryConfig(BaseModel):
-    """Internal (mirrored) container registry."""
+    """One internal (mirrored) container registry.
+
+    The platform default, and - once merged with a :class:`SiteRegistry` by
+    :meth:`CommonSettings.registry_for` - the resolved registry of one site.
+    Both are the same type on purpose: everything downstream wants a whole
+    registry (``base`` to build a reference, ``api_url``/``can_delete`` to
+    reclaim a repository), not a base plus a pile of overrides to re-apply.
+    """
 
     url: str = "registry.internal"
     organization: str = ""
@@ -127,7 +174,22 @@ class CommonSettings(BaseSettings):
 
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
+    # The platform default. A site may override the host and the path segments
+    # (SiteConfig.registry); resolve the pair with `registry_for`, never by
+    # reading this directly on a path that is about one site.
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
+    # Registry API token per site, keyed by site name, from
+    # SERVERLESS_SITE_REGISTRY_TOKENS as a JSON object. Every instance needs
+    # EVERY site's token, not just its own: a delete reclaims the function's
+    # repositories in all sites from whichever instance took the request. A site
+    # this does not name falls back to `registry.api_token`, which is what a
+    # single-registry install keeps using.
+    #
+    # A JSON object rather than one variable per site, because a site name is a
+    # DNS-1123 label and may contain '-', which is not portable in an
+    # environment variable name. Spelled with one underscore, so it cannot be
+    # confused with SERVERLESS_REGISTRY__API_TOKEN, which is the fallback above.
+    site_registry_tokens: dict[str, str] = Field(default_factory=dict)
     build: BuildConfig = Field(default_factory=BuildConfig)
 
     cluster_connect_timeout: float = 2.0
@@ -157,6 +219,43 @@ class CommonSettings(BaseSettings):
             The matching :class:`SiteConfig`, or None.
         """
         return next((z for z in self.sites if z.name == name), None)
+
+    def registry_for(self, site: str) -> RegistryConfig:
+        """The registry ``site`` builds into, pulls from, and is cleaned up in.
+
+        The one place a site's registry is derived, so the image reference a
+        build pushes to, the reference its KSVC pulls, and the repository a
+        delete reclaims cannot disagree about which registry they mean - the
+        same reason :attr:`RegistryConfig.path` is a single property.
+
+        An unknown site, or one with no override, resolves to the platform
+        default. That is not a fallback for a typo so much as the normal state
+        of a single-registry install, where no site names a registry at all.
+
+        Args:
+            site: The site name.
+
+        Returns:
+            The platform default with that site's overrides and API token
+            applied. A new object each call; neither this settings object nor
+            the default registry is mutated.
+        """
+        profile = self.site(site)
+        override = profile.registry if profile else None
+        # Falls back rather than defaulting to "": an empty token disables
+        # cleanup (`can_delete`), so a site absent from the map would silently
+        # stop reclaiming repositories instead of using the platform token.
+        update: dict[str, object] = {
+            "api_token": self.site_registry_tokens.get(site) or self.registry.api_token
+        }
+        if override is not None:
+            update["url"] = override.url
+            # None inherits, "" overrides with nothing - see SiteRegistry.
+            if override.organization is not None:
+                update["organization"] = override.organization
+            if override.repository is not None:
+                update["repository"] = override.repository
+        return self.registry.model_copy(update=update)
 
     @property
     def site_names(self) -> list[str]:

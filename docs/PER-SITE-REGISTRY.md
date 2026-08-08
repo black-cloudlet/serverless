@@ -580,14 +580,17 @@ What changes there is documentation:
 ```python
 class SiteRegistry(BaseModel):
     """Per-site registry override. No credentials - this is ConfigMap data."""
+
     url: str
     organization: str | None = None
     repository: str | None = None
+
 
 class SiteConfig(BaseModel):
     name: str
     cluster: str
     registry: SiteRegistry | None = None
+
 
 class CommonSettings(BaseSettings):
     ...
@@ -610,13 +613,14 @@ survives; what changes is that the non-replicated half is now a map:
 ```python
 @dataclass
 class SiteBuild:
-    tag: str                    # what THIS site pushes to
-    manifests: list[dict]       # its Image + build ServiceAccount
+    tag: str  # what THIS site pushes to
+    manifests: list[dict]  # its Image + build ServiceAccount
+
 
 @dataclass
 class BuildPlan:
-    replicated: list[dict]              # the git Secret - every site, unchanged
-    per_site: dict[str, SiteBuild]      # was: `tag: str` + `local: list[dict]`
+    replicated: list[dict]  # the git Secret - every site, unchanged
+    per_site: dict[str, SiteBuild]  # was: `tag: str` + `local: list[dict]`
 ```
 
 `BuildBackend.plan(req, labels, sites)` gains the target site names;

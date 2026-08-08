@@ -116,6 +116,9 @@ sso:
   adminGroups:
     - platform-admins
 
+# The platform default. A site may override the host (and, rarely, the path
+# segments) under `sites[].registry` below; what stays global is how repositories
+# are NAMED, since naming them differently per site would buy nothing.
 registry:
   url: registry.internal
   organization: ""
@@ -372,6 +375,22 @@ build:
 
 # A site is a region; its cluster's API server is DERIVED as
 # https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
+#
+# This list is IDENTICAL in every cluster - it is how an API instance composes
+# the peer's manifests - so nothing per-release belongs here; that is
+# `global.site`. A site may carry its own `registry`, overriding the block above
+# for everything built into and pulled from that site:
+#
+#   - name: central
+#     cluster: central-0
+#     registry:
+#       url: registry.central.internal
+#       # organization/repository are inherited unless set; "" overrides with
+#       # nothing, which is not the same as leaving them out.
+#
+# Credentials never appear here - this list is serialized into a ConfigMap.
+# NOTE: read by the API but not yet acted on; the build path still resolves one
+# platform registry (docs/PER-SITE-REGISTRY.md).
 sites:
   - name: central
     cluster: central-0
