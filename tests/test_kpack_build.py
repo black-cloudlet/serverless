@@ -430,12 +430,67 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
         ),
         SiteStatus(site="b", status="Ready", revision="fn-team-00001"),
     ]
-    folded = sites_with_build_status(sites, BuildStatusView(state="Building"))
+    folded = sites_with_build_status(
+        sites, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
+    )
 
     assert folded[0].status == "Building"
     assert folded[0].error is None
     assert folded[0].revision == "fn-team-00001"  # everything else is untouched
     assert folded[1].status == "Ready"  # a site that isn't failing is left alone
+
+
+def test_a_site_is_folded_against_its_own_build_not_a_neighbours():
+    """A build running in one site says nothing about another site's image.
+
+    Masking b's genuine failure because a happens to be building would hide it
+    behind a healthy neighbour - the failure mode per-site builds introduce.
+    """
+    from api.models.common import BuildStatusView, SiteStatus
+    from api.services.state.ksvc_state import sites_with_build_status
+
+    sites = [
+        SiteStatus(site="a", status="Failed", error="Unable to fetch image"),
+        SiteStatus(site="b", status="Failed", error="revision never became ready"),
+    ]
+    folded = sites_with_build_status(
+        sites, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
+    )
+
+    assert folded[0].status == "Building"
+    assert (folded[1].status, folded[1].error) == ("Failed", "revision never became ready")
+
+
+def test_a_failure_in_any_site_is_the_build_the_workload_reports():
+    """With its own message: it is the actionable state, and Ready elsewhere
+    would hide the site that did not manage it."""
+    from api.models.common import BuildStatusView
+    from api.services.state.ksvc_state import roll_up_builds
+
+    rolled = roll_up_builds(
+        [
+            BuildStatusView(state="Ready"),
+            BuildStatusView(state="Failed", message="detect failed"),
+            BuildStatusView(state="Building"),
+        ]
+    )
+    assert (rolled.state, rolled.message) == ("Failed", "detect failed")
+
+
+def test_a_build_still_running_anywhere_means_the_rollout_is_not_finished():
+    from api.models.common import BuildStatusView
+    from api.services.state.ksvc_state import roll_up_builds
+
+    rolled = roll_up_builds([BuildStatusView(state="Ready"), BuildStatusView(state="Building")])
+    assert rolled.state == "Building"
+
+
+def test_rolling_up_no_builds_at_all_is_none():
+    """Which is what makes the fold a no-op, exactly as a container's read is."""
+    from api.services.state.ksvc_state import roll_up_builds
+
+    assert roll_up_builds([]) is None
+    assert roll_up_builds([None, None]) is None
 
 
 @pytest.mark.parametrize("state", ["Failed", "Ready", "Unknown"])
@@ -450,8 +505,9 @@ def test_only_a_running_build_masks_a_failing_site(state):
 
     sites = [SiteStatus(site="a", status="Failed", error="boom")]
 
-    assert sites_with_build_status(sites, BuildStatusView(state=state)) == sites
-    assert sites_with_build_status(sites, None) == sites
+    assert sites_with_build_status(sites, {"a": BuildStatusView(state=state)}) == sites
+    assert sites_with_build_status(sites, {"a": None}) == sites
+    assert sites_with_build_status(sites, {}) == sites
 
 
 def test_building_is_a_non_terminal_poll_state():

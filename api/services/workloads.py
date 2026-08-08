@@ -35,6 +35,7 @@ from api.models.common import (
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
+    BuildStatusView,
     LogsResponse,
     PodLogs,
     SiteStats,
@@ -779,6 +780,9 @@ class WorkloadService:
         # The spec is uniform across sites, so read it back once from one
         # representative site (local if it has the workload) after the fan-out.
         reps: dict[str, tuple] = {}
+        # The build is NOT uniform: each site builds its own copy, so its state
+        # is read in the same per-site thread as that site's KSVC.
+        builds: dict[str, BuildStatusView | None] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
             # A 404 means not deployed here, so omit the site rather than fail it.
@@ -792,6 +796,8 @@ class WorkloadService:
                 if ann in annotations and key not in meta_holder:
                     meta_holder[key] = annotations[ann]
             reps[cluster.site] = (obj, cluster)
+            if offering.has_build:
+                builds[cluster.site] = offering.build_status(self.builder, cluster, name, group)
             status, revision = ksvc_state.ksvc_status(obj)
             # One read, and it earns its place twice over: the Revision carries the
             # live scale and the specific rollout-failure condition. The usage read
@@ -832,19 +838,14 @@ class WorkloadService:
         # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
-        # Independent reads of different objects - the spec's ConfigMaps and pull
-        # secret, and the build backend's Image - so they overlap instead of
-        # chaining two round trips onto the response. Branching on the declared
-        # capability, not on which offering this is: an offering with no build
-        # must not pay for a thread that would only return None.
-        spec_read = asyncio.to_thread(site_read.describe_spec, cluster, obj)
-        if offering.has_build:
-            build_read = asyncio.to_thread(
-                offering.build_status, self.builder, self.deployer.local_cluster(), name, group
-            )
-            spec, build = await asyncio.gather(spec_read, build_read)
-        else:
-            spec, build = await spec_read, None
+        # Build-first, per site and then rolled up: while a site is building, its
+        # KSVC cannot pull an image that does not exist there yet, so the row
+        # would contradict the headline it sits under (docs/FUNCTIONS.md -
+        # Function Status Resolution).
+        build = ksvc_state.roll_up_builds(builds.values())
+        statuses = ksvc_state.sites_with_build_status(statuses, builds)
+        overall = ksvc_state.with_build_status(overall, build)
+        spec = await asyncio.to_thread(site_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
         # (guarded above) and every entry holds an object, and describe_spec
         # always returns a WorkloadSpec. Guarding them would advertise a nullable
@@ -901,6 +902,7 @@ class WorkloadService:
         # Raw, because the workload total is summed from these rather than from
         # the rounded figures the response carries.
         usage_by_site: dict[str, site_read.SiteUsage] = {}
+        builds: dict[str, BuildStatusView | None] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
             try:
@@ -908,6 +910,8 @@ class WorkloadService:
             except NotFoundError:
                 return None  # not deployed here; omit the site rather than fail it
             reps[cluster.site] = obj
+            if offering.has_build:
+                builds[cluster.site] = offering.build_status(self.builder, cluster, name, group)
             status, revision = ksvc_state.ksvc_status(obj)
             usage_by_site[cluster.site] = site_read.site_usage(cluster, oname)
             rev = site_read.revision(cluster, revision)
@@ -932,12 +936,11 @@ class WorkloadService:
             raise _hidden_404("stats of", kind, name, user, obj)
 
         overall = overall_status_for_sites(statuses)
-        if offering.has_build:
-            build = await asyncio.to_thread(
-                offering.build_status, self.builder, self.deployer.local_cluster(), name, group
-            )
-            overall = ksvc_state.with_build_status(overall, build)
-            statuses = ksvc_state.sites_with_build_status(statuses, build)
+        # Not reported here, but it is what makes a running build read as
+        # `Building` instead of the `Degraded` its unpullable image would
+        # otherwise produce (docs/FUNCTIONS.md - Function Status Resolution).
+        overall = ksvc_state.with_build_status(overall, ksvc_state.roll_up_builds(builds.values()))
+        statuses = ksvc_state.sites_with_build_status(statuses, builds)
 
         # Both totals are null rather than partial when a site could not answer:
         # a single number quietly missing a whole site still reads as authoritative.
@@ -1146,20 +1149,19 @@ class WorkloadService:
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={kind}"
 
-        def fetch(cluster: Cluster) -> list[dict]:
-            return cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
+        def fetch(cluster: Cluster) -> tuple[list[dict], dict]:
+            # Both reads in one per-site thread: the build states belong to this
+            # site now, so pairing them costs no extra round trip and cannot
+            # attribute one site's builds to another. Branching on the declared
+            # capability, not on which offering this is - an offering with no
+            # build must not pay for a read that returns {}.
+            ksvcs = cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
+            if not offering.has_build:
+                return ksvcs, {}
+            return ksvcs, offering.build_states(self.builder, cluster, group)
 
-        listing = self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
-        # Branching on the declared capability, not on which offering this is: an
-        # offering with no build must not pay for a thread that returns {}.
-        if offering.has_build:
-            builds_read = asyncio.to_thread(
-                offering.build_states, self.builder, self.deployer.local_cluster(), group
-            )
-            results, builds = await asyncio.gather(listing, builds_read)
-        else:
-            results, builds = await listing, {}
-        if all(items is None for _, items in results):
+        results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
+        if all(read is None for _, read in results):
             # Same {site, message} shape as aggregate's total-failure; gather_each
             # keeps no per-site error, so message is None.
             raise SiteTotalFailure(
@@ -1168,10 +1170,10 @@ class WorkloadService:
             )
 
         return summaries_svc.merge(
-            results,
+            [(site, read[0] if read else None) for site, read in results],
             group=group,
             offering=kind,
-            builds=builds,
+            builds={site: read[1] for site, read in results if read},
             route_domain=self.settings.route_domain,
             sort=sort,
         )

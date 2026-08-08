@@ -33,7 +33,7 @@ def merge(
     *,
     group: str,
     offering: str,
-    builds: dict[str, BuildStatusView],
+    builds: dict[str, dict[str, BuildStatusView]],
     route_domain: str,
     sort: str = "name",
 ) -> list[WorkloadSummary]:
@@ -43,7 +43,9 @@ def merge(
         results: ``(site, ksvcs_or_None)`` per site; None means it did not answer.
         group: The owning group.
         offering: The offering being listed ("function"/"container").
-        builds: Build states keyed by object name, for the build-first rollup.
+        builds: Build states per site (``{site: {object_name: state}}``), for
+            the build-first rollup. Each site builds its own copy, so a
+            workload's state is rolled up across the sites that returned it.
             Empty for an offering with no build.
         route_domain: Used to derive a host for a workload whose KSVC carries no
             host annotation.
@@ -74,6 +76,7 @@ def merge(
                     "createdAt": None,
                     "sites": [],
                     "statuses": [],
+                    "builds": [],
                 },
             )
             entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
@@ -81,6 +84,7 @@ def merge(
             entry["createdAt"] = entry["createdAt"] or ksvc_state.creation_time(obj)
             entry["sites"].append(site)
             entry["statuses"].append(status)
+            entry["builds"].append(builds.get(site, {}).get(oname))
 
     summaries = [
         WorkloadSummary(
@@ -89,7 +93,7 @@ def merge(
             type=offering,
             hostname=entry["host"] or route_svc.host_for(name, group, route_domain),
             overallStatus=ksvc_state.with_build_status(
-                overall_status(entry["statuses"]), builds.get(entry["oname"])
+                overall_status(entry["statuses"]), ksvc_state.roll_up_builds(entry["builds"])
             ),
             size=entry["size"],
             createdAt=entry["createdAt"],

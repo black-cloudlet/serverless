@@ -179,12 +179,12 @@ class FunctionOffering:
     def fetched_response(
         self, common: dict, obj: dict, spec, build: BuildStatusView | None
     ) -> WorkloadResponse:
-        """The function response, with the build folded into the status rollup.
+        """The function response, carrying the build the engine rolled up.
 
-        Folded into the per-site rows too, and for the same reason: while the
-        build runs, every site is failing to pull an image that does not exist
-        yet, so a row left unfolded would contradict the headline it sits under
+        The build-first folding happens in the engine, against each site's own
+        build: it is per site now, and only the engine holds the per-site states
         (see :func:`~api.services.state.ksvc_state.sites_with_build_status`).
+        What is left here is reporting the rolled-up state on ``build``.
 
         No image is exposed: the built image is an internal artifact, so a client
         reads ``gitRepo``/``branch`` instead. The runtime and version come from
@@ -193,11 +193,7 @@ class FunctionOffering:
         """
         annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
         return FunctionResponse(
-            **{
-                **common,
-                "overallStatus": ksvc_state.with_build_status(common["overallStatus"], build),
-                "sites": ksvc_state.sites_with_build_status(common["sites"], build),
-            },
+            **common,
             runtime=annotations.get(ANNOTATION_RUNTIME),
             version=annotations.get(ANNOTATION_RUNTIME_VERSION),
             gitRepo=spec.gitRepo,

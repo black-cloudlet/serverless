@@ -806,7 +806,7 @@ Two properties make step 3 safe rather than delicate:
 | ~~2~~ | ~~`BuildPlan.per_site`, `plan(sites)`, per-site `Image`/SA in `KpackBackend`~~ **done** | 1 | No |
 | ~~3~~ | ~~Per-site KSVC composition and per-site build apply; delete `build_only`~~ **done** | 2 | With 2 |
 | ~~4~~ | ~~Controller: local-only write, delete `prune`~~ **done** | 3 | Yes |
-| 5 | Per-site build status in `get`/`stats`/`list` | 3 | Yes |
+| ~~5~~ | ~~Per-site build status in `get`/`stats`/`list`~~ **done** | 3 | Yes |
 | 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` (needs `target.template` in `externalsecret.yaml`) | 1 | Yes |
 | 7 | Site-aware push credential (per-site Vault path, host from `global.site`) + kpack registry pull Secret on both ServiceAccount kinds | 1 | Yes |
 | 8 | Docs: BUILDING.md, ARCHITECTURE.md, FUNCTIONS.md, DEPLOYING.md; kpack README/examples | all | Last |
@@ -815,7 +815,7 @@ Two properties make step 3 safe rather than delicate:
 
 ---
 
-### Landed in slices 1-4
+### Landed in slices 1-5
 
 Two details the implementation settled that the design above did not spell out:
 
@@ -833,8 +833,13 @@ The controller now reads and writes one cluster and holds one client, so
 `Reconciler.prune` and its three helpers are gone along with
 `buildController.pruneOrphans` and `SERVERLESS_PRUNE_ORPHANS`.
 
-Still on the old behaviour until their slices land: build status is read from
-the local site only (5), and registry cleanup addresses one registry (6).
+Build state is read in the per-site thread that already reads that site's
+KSVC, so a GET adds no round trip and cannot attribute one site's build to
+another. Each row folds against its own build; the workload-level `build` is
+rolled up, and a failure anywhere wins over a `Ready` elsewhere.
+
+Still on the old behaviour until its slice lands: registry cleanup addresses
+one registry (6).
 
 **docs/BUILDING.md is stale from slice 3 onward** and is slice 8's job. It still
 describes builds as local-only, one `Image` per function, a cross-site digest

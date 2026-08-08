@@ -3127,8 +3127,12 @@ async def test_stats_reads_revision_and_usage_on_the_fanout_thread():
     assert seen["usage"] == seen["ksvc"], "usage read spawned a thread"
 
 
-async def test_get_overlaps_the_spec_and_build_reads():
-    """The spec read and the build read are independent, so they must overlap.
+async def test_get_reads_every_sites_build_concurrently():
+    """Each site's build is read in that site's own fan-out thread.
+
+    The build is per site now, so a GET pays one build read per site. Run in
+    sequence that is N round trips added to every read; run inside the fan-out
+    each rides along with the KSVC read it belongs to.
 
     Asserted as overlapping intervals rather than elapsed time, so the result
     does not depend on how fast or loaded the machine is: run in sequence the
@@ -3139,12 +3143,10 @@ async def test_get_overlaps_the_spec_and_build_reads():
     from cloudlet_apis.auth import Principal
 
     from api.models.common import Scaling
-    from api.services.manifests.files import VolumeSpec
     from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
     from common.cluster import ResourceKind
 
-    # a function carrying one mounted file, so reading its spec costs a ConfigMap get
     ksvc = build_ksvc(
         name="app-team",
         group="team",
@@ -3153,9 +3155,7 @@ async def test_get_overlaps_the_spec_and_build_reads():
         offering="function",
         host="app-team.ex.com",
         env=[],
-        volumes=[
-            VolumeSpec("files-config", "configmap", "app-team-files", "/etc/a.conf", "etc-a.conf")
-        ],
+        volumes=[],
         scaling=Scaling(),
         size="small",
         runtime="python",
@@ -3164,32 +3164,29 @@ async def test_get_overlaps_the_spec_and_build_reads():
 
     spans: dict[str, list[float]] = {}
 
-    def _record(key):
-        spans[key] = [time.monotonic()]
-        time.sleep(0.05)
-        spans[key].append(time.monotonic())
-
-    class _SpecCluster:
-        site = name = "site-a"
+    class _Cluster:
+        def __init__(self, site):
+            self.site = self.name = site
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
-            if kind == ResourceKind.CONFIG_MAP:
-                _record("spec")
-                return {"data": {}}
             from common.errors import NotFoundError as _NF
 
             raise _NF("best-effort")
 
     class _SlowBuilder(_NullBuilder):
         def status(self, cluster, name, group):
-            _record("build")
+            spans[cluster.site] = [time.monotonic()]
+            time.sleep(0.05)
+            spans[cluster.site].append(time.monotonic())
             return BuildStatus(state="Ready")
 
-    engine = _workload_service({"site-a": _SpecCluster()}, builder=_SlowBuilder())
+    engine = _workload_service(
+        {"site-a": _Cluster("site-a"), "site-b": _Cluster("site-b")}, builder=_SlowBuilder()
+    )
     user = Principal(subject="u", username="alice", groups=["team"])
     await engine.get(FUNCTION, "app", user, "team")
 
-    (spec_start, spec_end), (build_start, build_end) = spans["spec"], spans["build"]
-    assert spec_start < build_end and build_start < spec_end, "reads did not overlap"
+    (a_start, a_end), (b_start, b_end) = spans["site-a"], spans["site-b"]
+    assert a_start < b_end and b_start < a_end, "the per-site build reads did not overlap"
