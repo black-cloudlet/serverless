@@ -288,8 +288,10 @@ absence).
   `site_op_timeout`.)
 - Operations are **idempotent** (Kubernetes **server-side apply** by object name), so a
   client can safely retry to heal a degraded deployment.
-- **Build once, deploy the same digest to both sites** (see FUNCTIONS.md: FaaS - Function as a Service) so the two sites are
-  identical.
+- **Every site builds what it runs**, into its own registry, and publishes only to itself
+  (see FUNCTIONS.md: FaaS - Function as a Service). The two sites run the same *commit*,
+  not the same digest: builds are not bit-reproducible, and the independence is what a
+  switchover needs (BUILDING.md: Active/Active Behaviour).
 
 > Cross-site traffic steering is handled by the **`*.serverless.{base_domain}` DNS record
 > forwarding to the active site** - not by the API.
@@ -848,7 +850,7 @@ Serverless/
 ├── controller/                      # the build controller (python -m controller.main)
 │   ├── main.py                      # entrypoint: signals + the resync/watch loop
 │   ├── config.py                    # ControllerSettings(CommonSettings) + loop pacing
-│   ├── reconciler.py                # watch local Images -> apply the digest to every site
+│   ├── reconciler.py                # watch this site's Images -> apply the digest here
 │   └── digest.py                    # which digests belong on a ksvc, and how to re-apply it
 ├── common/                          # shared by api + controller, in THIS repository
 │   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs

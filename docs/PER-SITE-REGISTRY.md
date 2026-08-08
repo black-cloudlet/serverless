@@ -1,15 +1,18 @@
-# Proposal: a registry per site
+# A registry per site
 
-**Status:** proposal, not implemented. Nothing in this document is settled until
-the open questions at the end are answered.
+**Status:** implemented. **docs/BUILDING.md is how the build path works**; this is
+the record of why it changed - the reasoning, the alternatives rejected, and the
+migration. Kept separate because that genre does not age the way a description of
+the system does, and because a second description of the same mechanism would
+drift from the first.
 
-Today one registry serves every site, exactly one site builds each function, and
-the build controller reaches into the other sites to publish the digest and to
-prune the `Image` objects a switchover stranded there. This proposes the
-symmetric alternative: **every site builds every function it runs, pushes to its
-own registry, and publishes only to itself**. The mirrored content that builds
-*consume* - kpack's own images and the Paketo stack and buildpackages - stays on
-a single shared **kpack registry**, because nothing writes to it.
+Before this, one registry served every site, exactly one site built each function,
+and the build controller reached into the other sites to publish the digest and to
+prune the `Image` objects a switchover stranded there. It is now symmetric: **every
+site builds every function it runs, pushes to its own registry, and publishes only
+to itself**. The mirrored content that builds *consume* - kpack's own images and the
+Paketo stack and buildpackages - stays on a single shared **kpack registry**,
+because nothing writes to it.
 
 ## Contents
 
@@ -24,7 +27,7 @@ a single shared **kpack registry**, because nothing writes to it.
 - [What gets deleted](#what-gets-deleted)
 - [Accepted consequences](#accepted-consequences)
 - [Migration](#migration)
-- [Work breakdown](#work-breakdown)
+- [What changed on the way](#what-changed-on-the-way)
 - [Open questions](#open-questions)
 
 ---
@@ -56,7 +59,7 @@ different bytes for the same source (see
 
 ## What changes, in one picture
 
-**Today**
+**Before**
 
 ```mermaid
 flowchart LR
@@ -78,7 +81,7 @@ flowchart LR
     KB -->|pull, cross-site| REG
 ```
 
-**Proposed**
+**Now**
 
 ```mermaid
 flowchart LR
@@ -798,26 +801,11 @@ Two properties make step 3 safe rather than delicate:
 
 ---
 
-## Work breakdown
+## What changed on the way
 
-| # | Slice | Depends on | Ships alone? |
-|---|---|---|---|
-| ~~1~~ | ~~`SiteRegistry` + `registry_for` + `SERVERLESS_SITES` serialization + chart values~~ **done** | - | Yes (no behaviour change until 2) |
-| ~~2~~ | ~~`BuildPlan.per_site`, `plan(sites)`, per-site `Image`/SA in `KpackBackend`~~ **done** | 1 | No |
-| ~~3~~ | ~~Per-site KSVC composition and per-site build apply; delete `build_only`~~ **done** | 2 | With 2 |
-| ~~4~~ | ~~Controller: local-only write, delete `prune`~~ **done** | 3 | Yes |
-| ~~5~~ | ~~Per-site build status in `get`/`stats`/`list`~~ **done** | 3 | Yes |
-| ~~6~~ | ~~Per-site registry cleanup + per-site tokens~~ **done** | 1 | Yes |
-| ~~7~~ | ~~Site-aware push credential + kpack registry pull Secret~~ **done** | 1 | Yes |
-| 8 | Docs: BUILDING.md, ARCHITECTURE.md, FUNCTIONS.md, DEPLOYING.md; kpack README/examples | all | Last |
-
-2 and 3 are one commit - splitting them leaves a build plan nothing consumes.
-
----
-
-### Landed in slices 1-7
-
-Two details the implementation settled that the design above did not spell out:
+Four things the implementation settled that the design above did not, or got
+wrong. They are here rather than folded silently into the design, because each
+one is a place the reasoning above was incomplete.
 
 - **The git Secret follows the workload's sites**, not every configured site.
   It was replicated so any site could rebuild after a switchover; now that a
@@ -828,26 +816,25 @@ Two details the implementation settled that the design above did not spell out:
   one representative image fanned out would point a peer at this site's
   registry - which it has no credential for and, airgapped, may not reach.
   `test_an_update_keeps_each_sites_own_image_rather_than_one_sites` guards it.
+- **The shared-registry render check was dropped**, not shipped - see the note
+  under [Helm](#helm). It would have had to default to permissive to avoid
+  failing every install that upgrades into this, which earns nothing.
+- **The build backend does not resolve registries.** It was briefly handed the
+  whole settings object so it could; it now takes `{site: registry}` from the
+  caller, which already holds the clusters that carry them. One resolution path
+  (settings -> `Cluster.registry` -> plan) rather than a second snapshot of it.
 
-The controller now reads and writes one cluster and holds one client, so
-`Reconciler.prune` and its three helpers are gone along with
-`buildController.pruneOrphans` and `SERVERLESS_PRUNE_ORPHANS`.
+Two things also worth knowing about the ESO template that assembles the per-site
+tokens. Site names are interpolated with `index . "name"`, because a site name may
+contain `-` and that is not a legal Go template field reference. And the values are
+manually quoted rather than passed through `toJson`: `toJson` is better *if* ESO
+hands the template strings rather than `[]byte`, and the manual form is the idiom
+this chart already proves works. A Quay OAuth token is alphanumeric, so the
+narrowing is theoretical - but it is a real difference from the design above.
 
-Build state is read in the per-site thread that already reads that site's
-KSVC, so a GET adds no round trip and cannot attribute one site's build to
-another. Each row folds against its own build; the workload-level `build` is
-rolled up, and a failure anywhere wins over a `Ready` elsewhere.
-
-A delete now reclaims each site's repositories with that site's token, from
-whichever instance took the request. The env var is
-`SERVERLESS_SITE_REGISTRY_TOKENS` - one underscore, so it cannot be confused
-with `SERVERLESS_REGISTRY__API_TOKEN`, which stays as the fallback.
-
-Only the docs (8) remain.
-
-**docs/BUILDING.md is stale from slice 3 onward** and is slice 8's job. It still
-describes builds as local-only, one `Image` per function, a cross-site digest
-write, and a `pruneOrphans` value that no longer exists.
+**Every chart change here is reviewed, not render-tested.** `helm` could not be
+installed in the environment this was written in, so `helm template` has never run
+against these values. CI's lint/kubeconform job is the first real check.
 
 ---
 
