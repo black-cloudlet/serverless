@@ -13,6 +13,7 @@ reconciled one has, and that is normal, not an error.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -71,8 +72,33 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     return overall
 
 
+def roll_up_builds(builds: Iterable[BuildStatusView | None]) -> BuildStatusView | None:
+    """Collapse the per-site build states into the one the workload reports.
+
+    Every site builds its own copy (docs/PER-SITE-REGISTRY.md), so "the
+    function's build" is no longer a single thing. A failure anywhere wins, and
+    carries its own message: it is the actionable state, and reporting ``Ready``
+    because the other site managed it would hide the site that did not. Failing
+    that, a build still running anywhere means the rollout is not finished.
+
+    Args:
+        builds: Each site's build status; None where a site has no build.
+
+    Returns:
+        The status to report, or None when no site has a build at all.
+    """
+    seen = [b for b in builds if b is not None]
+    if not seen:
+        return None
+    return (
+        next((b for b in seen if b.state == "Failed"), None)
+        or next((b for b in seen if b.state == "Building"), None)
+        or seen[0]
+    )
+
+
 def sites_with_build_status(
-    sites: list[SiteStatus], build: BuildStatusView | None
+    sites: list[SiteStatus], builds: Mapping[str, BuildStatusView | None]
 ) -> list[SiteStatus]:
     """Apply the build-first rule to the per-site rows, not just the rollup.
 
@@ -83,25 +109,31 @@ def sites_with_build_status(
     immediately below it, which reads as a broken deploy during what is a normal
     first build.
 
-    So while the build is in flight, a failing site reports ``Building`` and drops
-    the pull error: it is a symptom of the running build, not an independent
-    failure, and the build's own state is on ``build``. Only ``Building`` masks
-    anything - a ``Failed`` build leaves the rows untouched, because then the
-    image genuinely will not arrive and the site is telling the truth.
+    So while a site's build is in flight, that site reports ``Building`` and
+    drops the pull error: it is a symptom of the build running there, not an
+    independent failure. Only ``Building`` masks anything - a ``Failed`` build
+    leaves the row untouched, because then the image genuinely will not arrive
+    and the site is telling the truth.
+
+    Each row is folded against **its own** site's build. A build running in one
+    site says nothing about whether another site's image exists, so a shared
+    verdict would mask a real failure next to a healthy neighbour.
 
     Args:
         sites: The per-site statuses read from the KSVCs.
-        build: The local site's build status, or None if it has no build.
+        builds: Each site's build status, keyed by site name.
 
     Returns:
         The per-site statuses to report.
     """
-    if build is None or build.state != "Building":
-        return sites
-    return [
-        s.model_copy(update={"status": "Building", "error": None}) if s.status == "Failed" else s
-        for s in sites
-    ]
+    out = []
+    for site in sites:
+        build = builds.get(site.site)
+        if site.status == "Failed" and build is not None and build.state == "Building":
+            out.append(site.model_copy(update={"status": "Building", "error": None}))
+        else:
+            out.append(site)
+    return out
 
 
 def extract_image(obj: dict) -> str | None:

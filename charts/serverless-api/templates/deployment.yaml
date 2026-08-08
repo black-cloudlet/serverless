@@ -62,9 +62,9 @@ spec:
             # build.enabled guard below: it also addresses the repository a
             # deleted function's cleanup removes.
             - name: SERVERLESS_REGISTRY__REPOSITORY
-              value: {{ .Values.build.builderRepository | quote }}
+              value: {{ tpl .Values.build.builderRepository . | quote }}
             - name: SERVERLESS_SSO__ISSUER
-              value: {{ .Values.sso.issuer | quote }}
+              value: {{ tpl .Values.sso.issuer . | quote }}
             - name: SERVERLESS_SSO__AUDIENCE
               value: {{ .Values.sso.audience | quote }}
             - name: SERVERLESS_SSO__SWAGGER_CLIENT_ID
@@ -86,6 +86,12 @@ spec:
             {{- if .Values.build.enabled }}
             - name: SERVERLESS_BUILD__REGISTRY_SECRET
               value: {{ .Values.build.serviceAccount.registrySecret.name | quote }}
+            {{- with .Values.build.kpackRegistry }}
+            {{- if and .url .pullSecret.name }}
+            - name: SERVERLESS_BUILD__KPACK_REGISTRY_SECRET
+              value: {{ .pullSecret.name | quote }}
+            {{- end }}
+            {{- end }}
             - name: SERVERLESS_BUILD__GIT_USERNAME
               value: {{ .Values.build.gitUsername | quote }}
             - name: SERVERLESS_BUILD__RESOURCES
@@ -109,6 +115,18 @@ spec:
             {{- range .Values.externalSecrets.secrets }}
             - secretRef:
                 name: {{ .name }}
+            {{- end }}
+            {{- with .Values.registry.apiTokens }}
+            {{- if .create }}
+            - secretRef:
+                name: {{ .secretName }}
+                # ESO fails the WHOLE ExternalSecret if any one site's Vault path
+                # is missing, and `sites` is shared - so a site added before its
+                # entry exists would otherwise stop this pod starting in every
+                # cluster. Absent, registry cleanup is skipped, which is what it
+                # already does untokenised.
+                optional: true
+            {{- end }}
             {{- end }}
           volumeMounts:
             - name: {{ .Values.certificate.name }}

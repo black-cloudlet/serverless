@@ -141,12 +141,14 @@ class _FakeCluster:
         self.closed = True
 
 
-def _reconciler(clusters, local="central", prune=False):
-    """A Reconciler over fake sites (bypasses the real cluster construction)."""
+def _reconciler(clusters, local="central"):
+    """A Reconciler over fake sites (bypasses the real cluster construction).
+
+    Peers are still passed in even though the loop only wires the local one, so
+    a test can assert it never touches them.
+    """
     reconciler = object.__new__(Reconciler)
-    reconciler._clusters = clusters
     reconciler._local = clusters[local]
-    reconciler._prune_orphans = prune
     return reconciler
 
 
@@ -238,23 +240,18 @@ def test_with_image_changes_the_image_and_nothing_else():
 
 
 # --------------------------------------------------------------------------- #
-# reconcile: one Image, every site                                              #
+# reconcile: one Image, its own site                                            #
 # --------------------------------------------------------------------------- #
 
 
-def test_a_finished_build_is_rolled_out_to_every_site():
+def test_a_finished_build_is_rolled_out_to_the_local_ksvc_only():
+    """A site builds what it runs, so a peer's digest is not this loop's to write.
+
+    The peer has its own Image, its own build and its own controller; writing
+    to it would push a reference into a registry it does not pull from.
+    """
     central = _FakeCluster("central", {WORKLOAD: _ksvc()})
     south = _FakeCluster("south", {WORKLOAD: _ksvc()})
-
-    _reconciler({"central": central, "south": south}).reconcile(_image())
-
-    for cluster in (central, south):
-        assert deployed_image(cluster.applied[0]) == DIGEST
-
-
-def test_a_site_that_does_not_run_the_function_is_skipped_without_failing_the_rest():
-    central = _FakeCluster("central", {WORKLOAD: _ksvc()})
-    south = _FakeCluster("south", {})  # deployed to central only
 
     _reconciler({"central": central, "south": south}).reconcile(_image())
 
@@ -262,14 +259,20 @@ def test_a_site_that_does_not_run_the_function_is_skipped_without_failing_the_re
     assert south.applied == []
 
 
-def test_one_sites_apply_failure_does_not_stop_the_other():
+def test_an_image_whose_workload_is_gone_writes_nothing():
+    """A delete that has not finished cascading, or a pre-migration leftover."""
+    central = _FakeCluster("central", {})
+
+    assert _reconciler({"central": central}).reconcile(_image()) is False
+    assert central.applied == []
+
+
+def test_an_apply_failure_is_swallowed_so_the_loop_survives():
+    """The next resync retries; raising here would take the watch down with it."""
     broken = _FakeCluster("central", {WORKLOAD: _ksvc()}, fail_apply=True)
-    south = _FakeCluster("south", {WORKLOAD: _ksvc()})
 
-    _reconciler({"central": broken, "south": south}).reconcile(_image())
-
+    assert _reconciler({"central": broken}).reconcile(_image()) is False
     assert broken.applied == []
-    assert deployed_image(south.applied[0]) == DIGEST
 
 
 def test_an_image_that_has_never_built_writes_nothing():
@@ -306,18 +309,17 @@ def test_a_failing_build_still_propagates_the_last_successful_digest():
     assert deployed_image(central.applied[0]) == DIGEST
 
 
-def test_an_unreadable_site_is_logged_and_skipped():
+def test_an_unreadable_workload_is_logged_and_skipped():
+    """Not a 404 but a broken read: it must not take the watch down."""
+
     class _Unreadable(_FakeCluster):
         def get(self, kind, name=None, label_selector=None):
             raise RuntimeError("apiserver said no")
 
     unreadable = _Unreadable("central", {WORKLOAD: _ksvc()})
-    south = _FakeCluster("south", {WORKLOAD: _ksvc()})
 
-    _reconciler({"central": unreadable, "south": south}).reconcile(_image())
-
+    assert _reconciler({"central": unreadable}).reconcile(_image()) is False
     assert unreadable.applied == []
-    assert deployed_image(south.applied[0]) == DIGEST
 
 
 # --------------------------------------------------------------------------- #
@@ -368,12 +370,13 @@ def test_only_the_local_site_is_watched():
     assert len(south.watch_calls) == 1
 
 
-def test_close_releases_every_site():
+def test_close_releases_the_local_client():
     central, south = _FakeCluster("central"), _FakeCluster("south")
 
     _reconciler({"central": central, "south": south}).close()
 
-    assert central.closed and south.closed
+    assert central.closed
+    assert not south.closed  # never opened - the loop holds one site
 
 
 # --------------------------------------------------------------------------- #
@@ -410,7 +413,6 @@ def test_the_reconciler_watches_the_configured_local_site():
     reconciler = Reconciler(_settings("south"))
     try:
         assert reconciler.local.site == "south"
-        assert set(reconciler._clusters) == {"central", "south"}
     finally:
         reconciler.close()
 
@@ -470,113 +472,3 @@ def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch)
 
     assert set(signals) == {controller_main.signal.SIGTERM, controller_main.signal.SIGINT}
     assert closed == [True]
-
-
-# --------------------------------------------------------------------------- #
-# prune: the Images a switchover strands                                        #
-# --------------------------------------------------------------------------- #
-
-OLD, NEW = "2026-08-01T00:00:00Z", "2026-08-05T00:00:00Z"
-
-
-def _sites(local_created, remote_created, prune=True):
-    """Two sites holding an Image for the same function, built at different times."""
-    central = _FakeCluster("central", {WORKLOAD: _ksvc()}, images=[_image(created=local_created)])
-    south = _FakeCluster("south", {WORKLOAD: _ksvc()}, images=[_image(created=remote_created)])
-    return central, south, _reconciler({"central": central, "south": south}, prune=prune)
-
-
-async def test_the_newer_image_prunes_the_one_a_switchover_stranded():
-    central, south, reconciler = _sites(local_created=NEW, remote_created=OLD)
-
-    reconciler.resync()
-
-    assert south.deleted == [(ResourceKind.KPACK_IMAGE, f"fn-{WORKLOAD}")]
-    assert central.deleted == []
-
-
-async def test_the_older_site_prunes_nothing():
-    # The other half of the pair above: exactly one site acts, so the two can
-    # never delete each other's Images.
-    central, south, reconciler = _sites(local_created=OLD, remote_created=NEW)
-
-    reconciler.resync()
-
-    assert (central.deleted, south.deleted) == ([], [])
-
-
-async def test_two_images_of_the_same_age_are_both_left_alone():
-    # Clock skew between two API servers must not read as "superseded".
-    central, south, reconciler = _sites(local_created=NEW, remote_created=NEW)
-
-    reconciler.resync()
-
-    assert south.deleted == []
-
-
-async def test_an_image_with_no_timestamp_is_never_pruned():
-    central = _FakeCluster("central", images=[_image(created=NEW)])
-    south = _FakeCluster("south", images=[_image(created=None)])
-
-    _reconciler({"central": central, "south": south}, prune=True).resync()
-
-    assert south.deleted == []
-
-
-async def test_a_function_only_this_site_builds_is_not_touched():
-    # The normal case: one Image, one site, nothing to compare against.
-    central = _FakeCluster("central", images=[_image(created=NEW)])
-    south = _FakeCluster("south", images=[])
-
-    _reconciler({"central": central, "south": south}, prune=True).resync()
-
-    assert south.deleted == []
-
-
-async def test_a_site_holding_no_images_prunes_nothing():
-    """The dangerous case: an empty local site must not read as "I superseded it".
-
-    True of a controller starting on a site that has never built, and of one
-    whose own Images were pruned by the other side a moment ago.
-    """
-    empty = _FakeCluster("central", images=[])
-    holder = _FakeCluster("south", images=[_image(created=OLD)])
-
-    _reconciler({"central": empty, "south": holder}, prune=True).resync()
-
-    assert holder.deleted == []
-
-
-async def test_a_site_that_cannot_be_listed_stops_the_whole_prune():
-    # Deciding what is stranded from a partial view is how everything gets deleted.
-    central = _FakeCluster("central", images=[_image(created=NEW)])
-    unreadable = _FakeCluster("south", images=[_image(created=OLD)], fail_list=True)
-    third = _FakeCluster("west", images=[_image(created=OLD)])
-
-    _reconciler({"central": central, "south": unreadable, "west": third}, prune=True).resync()
-
-    assert third.deleted == []
-
-
-async def test_pruning_off_leaves_the_stranded_image_alone():
-    central, south, reconciler = _sites(local_created=NEW, remote_created=OLD, prune=False)
-
-    reconciler.resync()
-
-    assert south.deleted == []
-
-
-async def test_a_prune_failure_does_not_stop_the_rest():
-    class _Undeletable(_FakeCluster):
-        def delete(self, kind, name):
-            raise RuntimeError("delete refused")
-
-    central = _FakeCluster("central", images=[_image(created=NEW)])
-    broken = _Undeletable("south", images=[_image(created=OLD)])
-    west = _FakeCluster("west", images=[_image(created=OLD)])
-
-    pruned = _reconciler({"central": central, "south": broken, "west": west}, prune=True).prune(
-        [_image(created=NEW)]
-    )
-
-    assert pruned == 1 and west.deleted

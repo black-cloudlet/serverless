@@ -37,7 +37,7 @@ def get_deployer() -> Deployer:
 def get_workload_service() -> WorkloadService:
     """The shared, offering-agnostic engine both offering services compose."""
     settings = get_settings()
-    return WorkloadService(settings, get_deployer(), KpackBackend(settings, get_runtimes()))
+    return WorkloadService(settings, get_deployer(), KpackBackend(settings.build, get_runtimes()))
 
 
 @lru_cache

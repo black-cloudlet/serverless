@@ -21,6 +21,7 @@ protocol.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from cloudlet_apis.logging import get_logger
@@ -32,11 +33,12 @@ from common.build import (
     BuildPlan,
     BuildRequest,
     BuildStatus,
+    SiteBuild,
     cache_reference,
     image_reference,
 )
 from common.cluster import Cluster, ResourceKind
-from common.config import CommonSettings
+from common.config import BuildConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
 from common.labels import LABEL_GROUP, LABEL_OFFERING, LABEL_WORKLOAD, OFFERING_FUNCTION
 from common.names import object_name
@@ -47,16 +49,21 @@ logger = get_logger(__name__)
 class KpackBackend:
     """Emits the kpack manifests for a function build and reads their state."""
 
-    def __init__(self, settings: CommonSettings, runtimes: RuntimeRegistry):
+    def __init__(self, build: BuildConfig, runtimes: RuntimeRegistry):
         """Initialize the backend.
 
         Args:
-            settings: Shared settings (registry, build credentials).
+            build: Build settings (credentials, cache mode, resources, history).
             runtimes: Resolves a runtime to its kpack Builder and build environment.
         """
-        self._registry = settings.registry
-        self._build = settings.build
+        self._build = build
         self._runtimes = runtimes
+        # Both registries a build reads: this site's, and the kpack registry the
+        # run image comes from. Empty entries are dropped, so an install with one
+        # registry names one Secret.
+        self._registry_secrets = [
+            s for s in (build.registry_secret, build.kpack_registry_secret) if s
+        ]
 
     @property
     def pull_secret(self) -> str | None:
@@ -69,22 +76,27 @@ class KpackBackend:
         """
         return self._build.registry_secret or None
 
-    def image_ref(self, req: BuildRequest) -> str:
+    def image_ref(self, req: BuildRequest, registry: RegistryConfig) -> str:
         """The image reference a build pushes to (deterministic, no cluster call).
 
         Args:
             req: The build request.
+            registry: The registry that build pushes to - one site's.
 
         Returns:
             The fully-qualified image reference.
         """
-        return image_reference(self._registry.base, req)
+        return image_reference(registry.base, req)
 
-    def cache_ref(self, req: BuildRequest) -> str | None:
-        """Where this build caches its layers, or None to leave it to kpack.
+    def cache_ref(self, req: BuildRequest, registry: RegistryConfig) -> str | None:
+        """Where a build caches its layers, or None to leave it to kpack.
+
+        A sibling of the image repository in the same registry, so the cache
+        follows the image rather than being pulled across sites.
 
         Args:
             req: The build request.
+            registry: The registry that build pushes to.
 
         Returns:
             The registry cache reference, or None when ``build.cache`` is
@@ -92,7 +104,7 @@ class KpackBackend:
         """
         if self._build.cache != "registry":
             return None
-        return cache_reference(self._registry.base, req)
+        return cache_reference(registry.base, req)
 
     def _runtime_config(self, runtime: str, version: str | None = None) -> tuple[str, list[dict]]:
         """Resolve a runtime (and optional version) to ``(builder, build_env)``.
@@ -141,58 +153,70 @@ class KpackBackend:
                 env.append({"name": spec.versionEnv, "value": chosen})
         return spec.builder, env
 
-    def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
+    def plan(
+        self, req: BuildRequest, labels: dict[str, str], registries: Mapping[str, RegistryConfig]
+    ) -> BuildPlan:
         """The build manifests for one function, split by replication scope.
 
         Pure - no cluster call - so the caller can apply them in the same pass as
         the KSVC's other derived resources and have them owner-stamped.
 
-        The git Secret is ``replicated``, the Image and ServiceAccount are not. Only one
-        site builds, but EVERY site must be able to: nothing can recover a token whose
-        only copy was on the site that went away.
+        The git Secret is replicated; the Image and ServiceAccount are per site.
+        Each site pushes to its own registry, so the objects are identical but
+        for the tag and the cache reference, and no two sites contend for one
+        repository (docs/PER-SITE-REGISTRY.md).
 
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
+            registries: The registry each building site pushes to, keyed by site
+                name. Its keys are the sites that build - the workload's
+                targets. Passed in rather than resolved here: the caller holds
+                the clusters, and each carries its own registry.
 
         Returns:
-            The build plan; ``local`` is in dependency order.
+            The build plan; each site's manifests are in dependency order.
 
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
         oname = object_name(req.name, req.group)
         builder, env = self._runtime_config(req.runtime, req.version)
-        tag = self.image_ref(req)
         build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
+        per_site: dict[str, SiteBuild] = {}
+        for site, registry in registries.items():
+            tag = self.image_ref(req, registry)
+            per_site[site] = SiteBuild(
+                tag=tag,
+                manifests=[
+                    kpack.build_service_account(
+                        build_name, labels, git_secret, self._registry_secrets
+                    ),
+                    kpack.build_image(
+                        build_name,
+                        labels,
+                        tag=tag,
+                        builder=builder,
+                        service_account=build_name,
+                        git_url=req.git_url,
+                        revision=req.build_revision,
+                        sub_path=req.path,
+                        env=env,
+                        resources=self._build.resources,
+                        cache_tag=self.cache_ref(req, registry),
+                        success_history_limit=self._build.success_history_limit,
+                        failed_history_limit=self._build.failed_history_limit,
+                    ),
+                ],
+            )
         return BuildPlan(
-            tag=tag,
             replicated=[
                 secret_svc.build_git_secret(
                     git_secret, labels, req.git_token, req.git_url, self._build.git_username
                 )
             ],
-            local=[
-                kpack.build_service_account(
-                    build_name, labels, git_secret, self._build.registry_secret
-                ),
-                kpack.build_image(
-                    build_name,
-                    labels,
-                    tag=tag,
-                    builder=builder,
-                    service_account=build_name,
-                    git_url=req.git_url,
-                    revision=req.build_revision,
-                    sub_path=req.path,
-                    env=env,
-                    resources=self._build.resources,
-                    cache_tag=self.cache_ref(req),
-                    success_history_limit=self._build.success_history_limit,
-                    failed_history_limit=self._build.failed_history_limit,
-                ),
-            ],
+            per_site=per_site,
         )
 
     def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
