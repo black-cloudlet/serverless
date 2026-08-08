@@ -130,55 +130,48 @@ def apply_to_site(
     return SiteStatus(site=cluster.site, status=status, revision=revision)
 
 
-def apply_build_objects(
-    cluster: Cluster, manifests: list[dict], *, oname: str | None = None
-) -> None:
-    """Apply a function's build objects on their own, outside a workload apply.
+def apply_build_objects(cluster: Cluster, manifests: list[dict], *, oname: str) -> bool:
+    """Re-declare a function's build in one site, outside a workload apply.
 
-    Two callers, one shape: the create/update path when the local site is
-    excluded from the function's sites (the build still belongs here), and the
-    rebuild path, which re-declares the build without touching the KSVC.
-
-    Ownership follows the KSVC, and only ``oname`` can say whether there is one to
-    follow. Without it - or with a KSVC that is genuinely absent here - the
-    manifests are applied UNOWNED, which is not a choice: an ownerReference must
-    name an owner in the same cluster. Nothing then collects them, so
-    :func:`delete_build_objects` removes them by name.
+    The rebuild path (``POST .../build``), which touches no KSVC. A site builds
+    what it runs, so an absent KSVC means this site has no build to re-declare -
+    not that the objects should be applied unowned. Everything is owned by the
+    KSVC beside it and cascades on delete.
 
     Args:
-        cluster: The local site's cluster client.
+        cluster: The site to write to.
         manifests: The git Secret, build ServiceAccount and Image.
-        oname: The object name (``{name}-{group}``) to own them, when this site
-            may be running the workload; None to apply unowned.
+        oname: The object name (``{name}-{group}``) that owns them.
+
+    Returns:
+        True if the objects were applied; False if the workload does not run here.
 
     Raises:
         Exception: Any apply error. Failing here means the image would never
             be built, so it is surfaced rather than leaving a function whose
             tag nothing ever pushes.
     """
-    owner = None
-    if oname is not None:
-        try:
-            owner = res.owner_reference(cluster.get(ResourceKind.KNATIVE_SERVICE, oname))
-        except NotFoundError:
-            owner = None  # deployed elsewhere; the build is still ours to declare
+    try:
+        owner = res.owner_reference(cluster.get(ResourceKind.KNATIVE_SERVICE, oname))
+    except NotFoundError:
+        return False
     for manifest in manifests:
         cluster.apply(res.with_owner(manifest, owner))
+    return True
 
 
 def delete_build_objects(cluster: Cluster, oname: str) -> None:
-    """Remove a function's build objects from the local site, by name.
+    """Remove a function's build objects from one site, by name.
 
-    The build always runs here, and when the function is deployed elsewhere these
-    are unowned, so nothing cascades and a leftover Image would keep rebuilding a
-    deleted function. When the local site does run it, the KSVC delete already
-    cascaded and each call is a no-op 404.
+    Normally every call is a no-op 404: the objects are owned by the KSVC, so
+    its delete already cascaded. It stays as the sweep for objects applied
+    unowned before builds followed the workload, which nothing else collects.
 
     Best-effort: the KSVC is gone by now either way, and failing the delete
     over a build object would report a workload as undeleted when it is.
 
     Args:
-        cluster: The local site's cluster client.
+        cluster: The site to clean up.
         oname: The object name (``{name}-{group}``).
     """
     build_name = kpack.build_object_name(oname)

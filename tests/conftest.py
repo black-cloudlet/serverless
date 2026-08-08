@@ -34,6 +34,45 @@ runtimes:
 """
 
 
+def plan_for(sites, tag, *, replicated=(), image=False, labels=None):
+    """A BuildPlan covering `sites`, for the stub builders the suite uses.
+
+    Every stub needs the same shape - one SiteBuild per site, differing only in
+    whether it carries an Image - so building it here keeps them one line each.
+
+    Args:
+        sites: Site names the plan covers.
+        tag: The image reference each site builds to.
+        replicated: Manifests every site applies (the git Secret).
+        image: Whether to include a kpack Image, for tests that exercise the
+            re-tag comparison (it reads `spec.tag` off one).
+        labels: Ownership labels to stamp on that Image.
+
+    Returns:
+        The plan.
+    """
+    from common.build import BuildPlan, SiteBuild
+
+    def manifests():
+        if not image:
+            return []
+        return [
+            {
+                "apiVersion": "kpack.io/v1alpha2",
+                "kind": "Image",
+                "metadata": {"name": "fn-hello-payments", "labels": dict(labels or {})},
+                # A real tag: the engine compares it against the deployed
+                # Image's, since kpack makes spec.tag immutable.
+                "spec": {"tag": tag},
+            }
+        ]
+
+    return BuildPlan(
+        replicated=list(replicated),
+        per_site={s: SiteBuild(tag=tag, manifests=manifests()) for s in sites},
+    )
+
+
 def runtime_registry(names=("python", "go", "node"), builder="python"):
     """A registry for services built directly, without the DI layer.
 

@@ -12,6 +12,7 @@ docs/BUILDING.md - Buildpack Topology), and one spelling cannot mean both.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -78,22 +79,69 @@ class BuildRequest:
 
 
 @dataclass
+class SiteBuild:
+    """One site's half of a build plan.
+
+    Attributes:
+        tag: The image reference this site's build pushes to, in its own
+            registry.
+        manifests: Its ``Image`` and build ServiceAccount, in dependency order.
+    """
+
+    tag: str
+    manifests: list[dict]
+
+
+@dataclass
 class BuildPlan:
     """What declaring a build produces, split by how far each piece travels.
 
     Attributes:
-        tag: The image reference the build pushes to.
         replicated: Manifests every site needs. The git credential lives here:
-            a site that has never built the function still has to be able to,
-            which is the whole switchover story (docs/BUILDING.md - Active/Active).
-        local: Manifests for the one site that builds - the Image and its
-            ServiceAccount. Replicating these would have every site build the
-            same source and race to push the same tag (docs/BUILDING.md - Active/Active).
+            a site must be able to rebuild from a token it already holds, which
+            is the switchover story (docs/BUILDING.md - Active/Active).
+        per_site: The build objects each site applies, keyed by site name. Per
+            site because each pushes to its own registry, so the tag differs;
+            one shared tag would have two clusters racing to push it
+            (docs/PER-SITE-REGISTRY.md).
     """
 
-    tag: str
     replicated: list[dict]
-    local: list[dict]
+    per_site: dict[str, SiteBuild]
+
+    def tag_for(self, site: str) -> str | None:
+        """The image reference ``site`` builds to, or None if it does not build.
+
+        Args:
+            site: The site name.
+
+        Returns:
+            The tag, or None when the plan does not cover that site.
+        """
+        build = self.per_site.get(site)
+        return build.tag if build else None
+
+    def manifests_for(self, site: str) -> list[dict]:
+        """The build manifests ``site`` applies, empty if it does not build.
+
+        Args:
+            site: The site name.
+
+        Returns:
+            The manifests, in dependency order.
+        """
+        build = self.per_site.get(site)
+        return build.manifests if build else []
+
+    @property
+    def tags(self) -> dict[str, str]:
+        """The image reference each site builds to, keyed by site name."""
+        return {site: build.tag for site, build in self.per_site.items()}
+
+    @property
+    def manifests_by_site(self) -> dict[str, list[dict]]:
+        """Each site's build manifests, keyed by site name."""
+        return {site: build.manifests for site, build in self.per_site.items()}
 
 
 @dataclass
@@ -124,11 +172,11 @@ class BuildBackend(Protocol):
         """
         ...
 
-    def image_ref(self, req: BuildRequest) -> str:
-        """The image reference the build will push to (deterministic, no I/O)."""
+    def image_ref(self, req: BuildRequest, site: str) -> str:
+        """The image reference ``site`` builds to (deterministic, no I/O)."""
         ...
 
-    def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
+    def plan(self, req: BuildRequest, labels: dict[str, str], sites: Sequence[str]) -> BuildPlan:
         """The manifests declaring the build, split by replication scope.
 
         Pure: returning does not mean an image exists, or even that anything has
@@ -139,6 +187,8 @@ class BuildBackend(Protocol):
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
+            sites: The sites that build - the workload's targets, since a site
+                builds what it runs.
 
         Returns:
             The build plan.

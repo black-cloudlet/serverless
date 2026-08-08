@@ -21,7 +21,7 @@ that is the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -108,7 +108,9 @@ class ApplyRequest:
         name: Workload name.
         group: Owning group.
         user: The authenticated caller.
-        image: The image (or built tag) to deploy.
+        image: The image to deploy when every site runs the same one (a
+            container's). Empty for an offering built per site; ``images``
+            carries it then.
         env: Env vars to resolve onto the workload.
         files: File mounts to resolve onto the workload.
         scaling: Autoscaling settings.
@@ -129,12 +131,17 @@ class ApplyRequest:
             without a value keeps its stored value (update only).
         kept_files: Decoded existing files-Secret values, so a secret file sent
             without content keeps its stored content (update only).
-        extra_secrets: Owned Secrets applied to every site (the function's git
-            token). Not in the managed prune set, so omitting one keeps the
+        images: The image to run, per site name; takes precedence over
+            ``image``. A function builds in each site's own registry, so its
+            sites do not run one reference.
+        extra_secrets: Owned Secrets applied to every target site (the
+            function's git token), so any of them can rebuild after a
+            switchover. Not in the managed prune set, so omitting one keeps the
             stored copy.
-        local_resources: Owned manifests applied to the local site only (the
-            function's Image and build ServiceAccount). Fanning them out would
-            race two sites to push the same tag.
+        site_resources: Owned manifests applied to one site only, keyed by site
+            name (a function's ``Image`` and build ServiceAccount). A site
+            builds what it runs, so these go to the targets, and each is owned
+            by the KSVC beside it.
         runtime: Function runtime, stamped as an annotation.
         version: Requested language version, stamped as an annotation. None
             means the caller took the platform default.
@@ -162,8 +169,9 @@ class ApplyRequest:
     prev_host: str | None = None
     kept_env: dict[str, str] | None = None
     kept_files: dict[str, bytes] | None = None
+    images: Mapping[str, str] = field(default_factory=dict)
     extra_secrets: Sequence[dict] = field(default_factory=tuple)
-    local_resources: Sequence[dict] = field(default_factory=tuple)
+    site_resources: Mapping[str, Sequence[dict]] = field(default_factory=dict)
     # Build metadata, stamped as KSVC annotations so a read can report the source
     # a function was built from. All None for an offering that has no build.
     runtime: str | None = None
@@ -172,6 +180,17 @@ class ApplyRequest:
     branch: str | None = None
     path: str | None = None
     pull_stamp: str | None = None
+
+    def image_for(self, site: str) -> str:
+        """The image ``site`` should run.
+
+        Args:
+            site: The site name.
+
+        Returns:
+            That site's own image, falling back to the uniform ``image``.
+        """
+        return self.images.get(site) or self.image
 
 
 class WorkloadService:
@@ -424,29 +443,33 @@ class WorkloadService:
         resolved = resolve_files(oname, req.group, owner, req.files, req.kept_files)
         resolved_env = resolve_env(oname, req.group, owner, req.env, req.kept_env)
         backing = resolved.backing + resolved_env.backing + list(req.extra_secrets)
-        ksvc = ksvc_svc.build_ksvc(
-            name=oname,
-            group=req.group,
-            owner=owner,
-            image=req.image,
-            offering=offering.name,
-            host=host,
-            env=resolved_env.env,
-            volumes=resolved.volumes,
-            scaling=req.scaling,
-            size=req.size,
-            port=req.port,
-            pull_secret=req.pull_secret_name,
-            runtime=req.runtime,
-            version=req.version,
-            git_url=req.git_url,
-            branch=req.branch,
-            path=req.path,
-            ca_config_map=self.settings.ca_bundle.config_map,
-            ca_mount_path=self.settings.ca_bundle.mount_path,
-            ca_file=self.settings.ca_bundle.file,
-            pull_stamp=req.pull_stamp,
-        )
+
+        def ksvc_for(site: str) -> dict:
+            """Compose the KSVC for one site. Only the image varies."""
+            return ksvc_svc.build_ksvc(
+                name=oname,
+                group=req.group,
+                owner=owner,
+                image=req.image_for(site),
+                offering=offering.name,
+                host=host,
+                env=resolved_env.env,
+                volumes=resolved.volumes,
+                scaling=req.scaling,
+                size=req.size,
+                port=req.port,
+                pull_secret=req.pull_secret_name,
+                runtime=req.runtime,
+                version=req.version,
+                git_url=req.git_url,
+                branch=req.branch,
+                path=req.path,
+                ca_config_map=self.settings.ca_bundle.config_map,
+                ca_mount_path=self.settings.ca_bundle.mount_path,
+                ca_file=self.settings.ca_bundle.file,
+                pull_stamp=req.pull_stamp,
+            )
+
         mapping = route_svc.build_domain_mapping(
             name=oname, group=req.group, owner=owner, offering=offering.name, host=host
         )
@@ -467,30 +490,17 @@ class WorkloadService:
             applied_derived.add((ResourceKind.SECRET, req.pull_secret_name))
         to_prune = () if req.created else managed_derived - applied_derived
 
-        # Always built on the LOCAL site, whether or not the function runs here.
-        # The registry is shared, so a site that only runs it pulls what we pushed.
-        build_site = self.deployer.local_site() if req.local_resources else None
-        # A non-target local site gets the build objects only. No KSVC there to own
-        # them, so they are applied unowned and delete() reclaims them by name.
-        build_only = bool(req.local_resources) and not any(c.site == build_site for c in targets)
         # Before any apply: a moved tag cannot be applied over, only replaced.
-        if req.local_resources:
-            await self.retag_build(req.local_resources)
-        if build_only:
-            await asyncio.to_thread(
-                site_apply.apply_build_objects,
-                self.deployer.local_cluster(),
-                list(req.extra_secrets) + list(req.local_resources),
-            )
+        await self.retag_build(targets, req.site_resources)
 
         def apply(cluster: Cluster) -> SiteStatus:
+            # A site builds what it runs, so its build objects ride along with
+            # its KSVC and are owned by it - there is no unowned case left.
             return site_apply.apply_to_site(
                 cluster,
                 oname=oname,
-                ksvc=ksvc,
-                backing=(
-                    backing + list(req.local_resources) if cluster.site == build_site else backing
-                ),
+                ksvc=ksvc_for(cluster.site),
+                backing=backing + list(req.site_resources.get(cluster.site, ())),
                 pull_secret_manifest=req.pull_secret_manifest,
                 mapping=mapping,
                 to_prune=to_prune,
@@ -515,20 +525,29 @@ class WorkloadService:
         )
         return offering.applied_response(common, req), status_code_for(overall, created=req.created)
 
+    def target_site_names(self, requested: list[str] | None) -> list[str]:
+        """The site names a request targets, for planning a per-site build.
+
+        Args:
+            requested: Explicit site names, or None for all configured sites.
+
+        Returns:
+            The resolved site names.
+        """
+        return [c.site for c in self.deployer.resolve_targets(requested)]
+
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
-        """Re-declare a workload's build on the local site, then ask for a build.
+        """Re-declare a workload's build in every site that runs it, then ask for one.
 
         The rebuild path, and the one write in the engine that leaves the KSVC
-        alone: nothing about the workload's desired state changes, so a fan-out
-        would apply an identical spec to every site to say "build again" to one
-        of them. The build site is always the local one, whether or not the
-        function runs here (docs/BUILDING.md - Builds are local).
+        alone: nothing about the workload's desired state changes, so there is
+        no spec to fan out - only the build objects and the trigger.
 
         Applying before triggering is what makes this self-healing rather than
-        merely idempotent: a site that has never built the function - the
-        post-switchover case - gets the Image created here and builds from that,
-        and :meth:`~common.build.BuildBackend.trigger` finds nothing to annotate
-        and says so.
+        merely idempotent: a site that has never built the function gets the
+        Image created here and builds from that, and
+        :meth:`~common.build.BuildBackend.trigger` finds nothing to annotate and
+        says so.
 
         Args:
             name: The workload name.
@@ -537,21 +556,28 @@ class WorkloadService:
                 that builds can always clone).
 
         Returns:
-            True if an existing build was triggered; False if applying the plan
-            is itself what starts the build.
+            True if an existing build was triggered in any site; False if
+            applying the plan is itself what starts them.
         """
-        cluster = self.deployer.local_cluster()
         oname = object_name(name, group)
-        manifests = list(plan.replicated) + list(plan.local)
-        await self.retag_build(manifests)
+        targets = self.deployer.resolve_targets(None)
+        await self.retag_build(targets, plan.manifests_by_site)
 
-        def work() -> bool:
-            site_apply.apply_build_objects(cluster, manifests, oname=oname)
-            return self.builder.trigger(cluster, name, group)
+        def work(cluster: Cluster) -> SiteStatus:
+            manifests = list(plan.replicated) + plan.manifests_for(cluster.site)
+            # Skips a site the workload does not run in, which is also every
+            # site the plan does not cover.
+            if not site_apply.apply_build_objects(cluster, manifests, oname=oname):
+                return SiteStatus(site=cluster.site, status="Absent")
+            triggered = self.builder.trigger(cluster, name, group)
+            return SiteStatus(site=cluster.site, status="Building" if triggered else "Pending")
 
-        return await asyncio.to_thread(work)
+        statuses = await self.deployer.fanout(targets, work)
+        return any(s.status == "Building" for s in statuses)
 
-    async def retag_build(self, manifests: Sequence[dict]) -> None:
+    async def retag_build(
+        self, targets: list[Cluster], site_resources: Mapping[str, Sequence[dict]]
+    ) -> None:
         """Make way for an Image whose tag has moved, and reclaim what it left.
 
         ``spec.tag`` is **immutable** on a kpack Image, so applying a moved one is
@@ -560,20 +586,33 @@ class WorkloadService:
         the apply that follows recreates it; a new Image with no prior Build
         builds on its own, so nothing else has to ask for one.
 
-        The old repository and its cache are then reclaimed: cleanup on delete
-        derives the *current* layout, so nothing would ever address them again
-        (docs/BUILDING.md - Moving a function's repository).
+        Per site, because each site's tag moves independently - which is what
+        makes moving an install onto per-site registries a re-apply rather than
+        a migration (docs/PER-SITE-REGISTRY.md - Migration).
 
         A no-op in the normal case, which is what the tag comparison buys - the
-        cost is one GET on the build site per write.
+        cost is one GET per site per write.
 
         Args:
-            manifests: The build plan's manifests; the Image is picked out of them.
+            targets: The clusters being written to.
+            site_resources: Each site's build manifests; its Image is picked out.
+        """
+        if not site_resources:
+            return
+        await asyncio.gather(
+            *(self._retag_site(c, site_resources.get(c.site, ())) for c in targets)
+        )
+
+    async def _retag_site(self, cluster: Cluster, manifests: Sequence[dict]) -> None:
+        """Re-tag one site's Image, reclaiming the repository it leaves behind.
+
+        Args:
+            cluster: The site to re-tag in.
+            manifests: That site's build manifests.
         """
         desired = next((m for m in manifests if m.get("kind") == "Image"), None)
         if desired is None:
             return
-        cluster = self.deployer.local_cluster()
         name = (desired.get("metadata") or {}).get("name")
         want = (desired.get("spec") or {}).get("tag")
 
@@ -586,17 +625,23 @@ class WorkloadService:
             if not had or had == want:
                 return None
             cluster.delete(ResourceKind.KPACK_IMAGE, name)
-            logger.info("Image '%s' re-tagged from '%s' to '%s'", name, had, want)
+            logger.info(
+                "Image '%s' re-tagged from '%s' to '%s' in %s", name, had, want, cluster.site
+            )
             return had
 
         try:
             previous = await asyncio.to_thread(retag)
         except Exception:  # noqa: BLE001 - the apply below reports the real failure
-            logger.exception("could not re-tag Image '%s'", name)
+            logger.exception("could not re-tag Image '%s' in %s", name, cluster.site)
             return
         if previous:
+            # This site's registry: a reference on another host is somebody
+            # else's repository, and reclaim already refuses to touch it.
             await asyncio.to_thread(
-                registry_svc.reclaim_moved_repositories, self.settings.registry, previous
+                registry_svc.reclaim_moved_repositories,
+                self.settings.registry_for(cluster.site),
+                previous,
             )
 
     async def stamp_pull(self, name: str, group: str, stamp: str) -> list[SiteStatus]:
@@ -647,7 +692,8 @@ class WorkloadService:
             group: The owning group.
 
         Returns:
-            A dict with the image and carried-forward build/pull metadata.
+            A dict with the image, the image per site, and carried-forward
+            build/pull metadata.
 
         Raises:
             NotFoundError: If it doesn't exist or isn't this offering/group.
@@ -658,6 +704,7 @@ class WorkloadService:
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(None)
         found: dict = {}
+        images: dict[str, str] = {}
 
         def fetch(cluster: Cluster) -> SiteStatus:
             # Only a real 404 means absent; anything else must propagate so a down site
@@ -666,9 +713,14 @@ class WorkloadService:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
                 return SiteStatus(site=cluster.site, status="Absent")
-            # The KSVC is uniform across sites, so any responder's copy will do;
-            # setdefault is atomic under the concurrent fan-out.
+            # The spec is uniform across sites, so any responder's copy will do;
+            # setdefault is atomic under the concurrent fan-out. The image is the
+            # exception - each site runs what its own build pushed - so it is
+            # kept per site, and an update carries each one forward untouched.
             found.setdefault("obj", obj)
+            deployed = ksvc_state.extract_image(obj)
+            if deployed:
+                images[cluster.site] = deployed
             return SiteStatus(site=cluster.site, status="Present")
 
         statuses = await self.deployer.fanout(targets, fetch)
@@ -687,7 +739,8 @@ class WorkloadService:
             cluster = by_site[local if local in present else next(iter(present))]
             # Reading the backing Secrets is blocking cluster I/O; run it in a thread
             # so it doesn't stall the event loop (as get()/describe_spec do).
-            return await asyncio.to_thread(site_read.existing_state, obj, cluster, offering, oname)
+            state = await asyncio.to_thread(site_read.existing_state, obj, cluster, offering, oname)
+            return {**state, "images": images}
 
         # Absent on every site we could reach. If one was unreachable we can't be
         # sure it's truly gone -> fail closed (503), not a misleading 404.

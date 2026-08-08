@@ -155,7 +155,7 @@ function.
 | Digest propagation | Each site's controller writes **only its own** KSVC | Was: writes every site |
 | Pruning | **Removed.** A peer's `Image` is not stranded, it is that site's build | `pruneOrphans` deleted |
 | KSVC image field | Resolved **per site** at apply time | Was: one value composed once |
-| Git credential | Unchanged - already replicated to every site | Designed for this |
+| Git credential | Replicated to every site the workload runs in | Already was; the set is now the targets |
 | Registry credential | One Secret **name**, per-site **contents** | The name is written into every site's KSVC, so it must not vary |
 | kpack registry credential | A second Secret on the build ServiceAccounts, pull-only | The export step pulls the run image |
 | Registry cleanup | Delete the repositories in **every** site's registry on function delete | Best-effort, as today |
@@ -770,9 +770,9 @@ Two properties make step 3 safe rather than delicate:
 
 | # | Slice | Depends on | Ships alone? |
 |---|---|---|---|
-| 1 | `SiteRegistry` + `registry_for` + `SERVERLESS_SITES` serialization + chart values/helpers | - | Yes (no behaviour change until 2) |
-| 2 | `BuildPlan.per_site`, `plan(sites)`, per-site `Image`/SA in `KpackBackend` | 1 | No |
-| 3 | Per-site KSVC composition and per-site build apply in `workloads.py` / `site_apply.py`; delete `build_only` | 2 | With 2 |
+| ~~1~~ | ~~`SiteRegistry` + `registry_for` + `SERVERLESS_SITES` serialization + chart values~~ **done** | - | Yes (no behaviour change until 2) |
+| ~~2~~ | ~~`BuildPlan.per_site`, `plan(sites)`, per-site `Image`/SA in `KpackBackend`~~ **done** | 1 | No |
+| ~~3~~ | ~~Per-site KSVC composition and per-site build apply; delete `build_only`~~ **done** | 2 | With 2 |
 | 4 | Controller: local-only write, delete `prune` | 3 | Yes |
 | 5 | Per-site build status in `get`/`stats`/`list` | 3 | Yes |
 | 6 | Per-site registry cleanup + `SERVERLESS_REGISTRY_API_TOKENS` (needs `target.template` in `externalsecret.yaml`) | 1 | Yes |
@@ -780,6 +780,26 @@ Two properties make step 3 safe rather than delicate:
 | 8 | Docs: BUILDING.md, ARCHITECTURE.md, FUNCTIONS.md, DEPLOYING.md; kpack README/examples | all | Last |
 
 2 and 3 are one commit - splitting them leaves a build plan nothing consumes.
+
+---
+
+### Landed in slices 1-3
+
+Two details the implementation settled that the design above did not spell out:
+
+- **The git Secret follows the workload's sites**, not every configured site.
+  It was replicated so any site could rebuild after a switchover; now that a
+  site builds what it runs, "any site that runs it" is the same set. A site the
+  function was never deployed to has nothing to rebuild.
+- **An update carries each site's own image forward.** `load_existing` collects
+  the deployed image per site and `ApplyRequest.images` applies them, because
+  one representative image fanned out would point a peer at this site's
+  registry - which it has no credential for and, airgapped, may not reach.
+  `test_an_update_keeps_each_sites_own_image_rather_than_one_sites` guards it.
+
+Still on the old behaviour until their slices land: the build controller writes
+every site and prunes (4), build status is read from the local site only (5),
+and registry cleanup addresses one registry (6).
 
 ---
 

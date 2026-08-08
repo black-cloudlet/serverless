@@ -5,7 +5,7 @@ from api.models.common import SiteStatus
 from api.services.offering import CONTAINER, FUNCTION
 from api.services.sites.deployer import Deployer, aggregate, status_code_for
 from common.errors import SiteTotalFailure, ValidationError
-from tests.conftest import runtime_registry
+from tests.conftest import plan_for, runtime_registry
 
 
 def _auth_with_admin_key(monkeypatch, raw_key, admin_groups=("platform-admins",)):
@@ -233,13 +233,12 @@ class _NullBuilder:
 
     pull_secret = "reg-creds"
 
-    def image_ref(self, req):
+    def image_ref(self, req, site=None):
         return "reg/built:1"
 
-    def plan(self, req, labels):
-        from common.build import BuildPlan
+    def plan(self, req, labels, sites):
 
-        return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
+        return plan_for(sites, self.image_ref(req))
 
     def status(self, cluster, name, group):
         return None
@@ -1331,15 +1330,14 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         def __init__(self):
             self.calls = 0
 
-        def image_ref(self, req):
+        def image_ref(self, req, site=None):
             return "reg/built:rel"
 
-        def plan(self, req, labels):
-            from common.build import BuildPlan
+        def plan(self, req, labels, sites):
 
             self.calls += 1
             self.req = req
-            return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
+            return plan_for(sites, self.image_ref(req))
 
     existing = build_ksvc(
         name="fn-team",
@@ -1394,7 +1392,7 @@ async def test_function_update_without_token_keeps_image():
         def __init__(self):
             self.calls = 0
 
-        def plan(self, req, labels):
+        def plan(self, req, labels, sites):
             self.calls += 1
             raise AssertionError("no token stored -> nothing to declare a build with")
 
@@ -1445,14 +1443,13 @@ async def test_function_create_persists_git_secret():
     from api.services.manifests.secrets import GIT_TOKEN_KEY, build_git_secret
 
     class _StubBuilder(_NullBuilder):
-        def plan(self, req, labels):
-            from common.build import BuildPlan
+        def plan(self, req, labels, sites):
 
             # the git Secret is now part of what the builder declares
-            return BuildPlan(
-                tag=self.image_ref(req),
+            return plan_for(
+                sites,
+                self.image_ref(req),
                 replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
-                local=[],
             )
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
@@ -1485,12 +1482,11 @@ async def test_function_update_reuses_stored_git_token():
         def __init__(self):
             self.calls = 0
 
-        def plan(self, req, labels):
-            from common.build import BuildPlan
+        def plan(self, req, labels, sites):
 
             self.calls += 1
             self.req = req
-            return BuildPlan(tag="reg/built:rel", replicated=[], local=[])
+            return plan_for(sites, "reg/built:rel")
 
     existing = build_ksvc(
         name="fn-team",

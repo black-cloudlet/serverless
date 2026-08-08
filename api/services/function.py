@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from cloudlet_apis.auth import Principal
 from pydantic import ValidationError as PydanticValidationError
 
@@ -82,8 +84,8 @@ class FunctionService:
                 f"available versions: {', '.join(spec.versions)}"
             )
 
-    def _plan(self, req: BuildRequest, user: Principal) -> BuildPlan:
-        """The owned manifests that declare the build, and the tag they push to.
+    def _plan(self, req: BuildRequest, user: Principal, sites: Sequence[str]) -> BuildPlan:
+        """The owned manifests that declare the build, and the tags they push to.
 
         Includes the workload's ``{workload}-git`` Secret: one Secret serves both
         the API (reading the token back on a later edit) and kpack (cloning with
@@ -92,13 +94,14 @@ class FunctionService:
         Args:
             req: The build request.
             user: The authenticated caller, for the ownership labels.
+            sites: The sites that build - the function's targets.
 
         Returns:
-            The build plan.
+            The build plan, one tag and one set of manifests per site.
         """
         oname = object_name(req.name, req.group)
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
-        return self._engine.builder.plan(req, labels)
+        return self._engine.builder.plan(req, labels, sites)
 
     # Validate synchronously for an immediate 400/404/409, then build and deploy
     # in the background behind a 202 - a function build is slow.
@@ -299,7 +302,9 @@ class FunctionService:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
         req = self._build_request(name, group, existing, user)
-        await self._engine.apply_build(name, group, self._plan(req, user))
+        # Every configured site; apply_build skips the ones not running it.
+        sites = self._engine.target_site_names(None)
+        await self._engine.apply_build(name, group, self._plan(req, user, sites))
 
     async def create(
         self, group: str, spec: FunctionCreate, user: Principal
@@ -317,6 +322,8 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
+        # A site builds what it runs, so the plan covers exactly the targets.
+        sites = self._engine.target_site_names(spec.sites)
         plan = self._plan(
             BuildRequest(
                 name=spec.name,
@@ -330,6 +337,7 @@ class FunctionService:
                 owner=user.username,
             ),
             user,
+            sites,
         )
 
         # No absence probe here: apply_workload runs one combined host+absence pass
@@ -340,7 +348,10 @@ class FunctionService:
                 name=spec.name,
                 user=user,
                 group=group,
-                image=plan.tag,
+                # No single image: each site deploys at the tag its own build
+                # pushes to, and reads Building until something lands there.
+                image="",
+                images=plan.tags,
                 env=spec.env,
                 files=spec.files,
                 scaling=spec.scaling,
@@ -357,11 +368,10 @@ class FunctionService:
                 git_url=spec.gitRepo,
                 branch=spec.branch,
                 path=spec.path,
-                # The git credential goes to every site so any of them can rebuild
-                # after a switchover; only one site gets the Image
-                # (docs/BUILDING.md - Active/Active).
+                # The git credential goes to every site so any of them can
+                # rebuild; each site gets its own Image (docs/PER-SITE-REGISTRY.md).
                 extra_secrets=plan.replicated,
-                local_resources=plan.local,
+                site_resources=plan.manifests_by_site,
             ),
             FUNCTION,
         )
@@ -429,10 +439,14 @@ class FunctionService:
         # Never rewritten here, whatever changed. After the create, the image is
         # the controller's alone (docs/BUILDING.md - Digest propagation): the
         # build this update declares has not pushed yet, so anything written now
-        # is a revision of the code already running.
+        # is a revision of the code already running. Per site, because each runs
+        # what its own build pushed - one value would move a peer onto this
+        # site's registry.
         image = existing["image"]
+        images = dict(existing.get("images") or {})
+        sites = self._engine.target_site_names(None)
         replicated: list[dict] = []
-        local: list[dict] = []
+        site_resources: dict[str, list[dict]] = {}
         if token is not None:
             # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
             # not rebuild from, but it recreates a missing Image after a switchover.
@@ -449,8 +463,14 @@ class FunctionService:
                     owner=user.username,
                 ),
                 user,
+                sites,
             )
-            replicated, local = plan.replicated, plan.local
+            replicated = plan.replicated
+            site_resources = plan.manifests_by_site
+            # A site not running it yet deploys at its own tag and reads
+            # Building until its first build lands, exactly as a create does.
+            for site, tag in plan.tags.items():
+                images.setdefault(site, tag)
 
         body, code = await self._engine.apply_workload(
             ApplyRequest(
@@ -458,6 +478,7 @@ class FunctionService:
                 user=user,
                 group=group,
                 image=image,
+                images=images,
                 env=spec.env,
                 files=spec.files,
                 scaling=spec.scaling,
@@ -480,7 +501,7 @@ class FunctionService:
                 kept_env=existing.get("env_values"),
                 kept_files=existing.get("files_values"),
                 extra_secrets=replicated,
-                local_resources=local,
+                site_resources=site_resources,
             ),
             FUNCTION,
         )

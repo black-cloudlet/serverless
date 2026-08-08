@@ -63,7 +63,7 @@ class _FakeCluster:
 class _NullBuilder:
     pull_secret = "reg-creds"
 
-    def image_ref(self, req):
+    def image_ref(self, req, site=None):
         return "reg/built:1"
 
     def status(self, cluster, name, group):

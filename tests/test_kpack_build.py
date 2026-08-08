@@ -10,8 +10,9 @@ from api.services.builder.kpack_backend import KpackBackend
 from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
 from api.services.manifests import secrets as secret_svc
 from common import kpack
-from common.config import CommonSettings, SiteConfig
+from common.config import CommonSettings, SiteConfig, SiteRegistry
 from common.errors import NotFoundError, ValidationError
+from tests.conftest import plan_for
 
 pytestmark = pytest.mark.anyio
 
@@ -67,13 +68,13 @@ def _request(**over):
     return BuildRequest(**kwargs)
 
 
-def _plan(builder=None, **over):
-    return (builder or _builder()).plan(_request(**over), {"lbl": "v"})
+def _plan(builder=None, sites=("site-a",), **over):
+    return (builder or _builder()).plan(_request(**over), {"lbl": "v"}, list(sites))
 
 
-def _manifests(builder=None, **over):
+def _manifests(builder=None, site="site-a", **over):
     plan = _plan(builder, **over)
-    return plan.tag, plan.replicated + plan.local
+    return plan.tag_for(site), plan.replicated + plan.manifests_for(site)
 
 
 def _by_kind(manifests, kind):
@@ -236,8 +237,8 @@ def test_cache_repository_does_not_move_with_the_branch():
     builder = _builder()
     # one Image per function, so one cache: keying it by branch would start cold
     # on every branch change
-    assert builder.cache_ref(_request(branch="main")) == builder.cache_ref(
-        _request(branch="feature/login")
+    assert builder.cache_ref(_request(branch="main"), "site-a") == builder.cache_ref(
+        _request(branch="feature/login"), "site-a"
     )
 
 
@@ -266,13 +267,43 @@ def test_manifests_are_convergent_across_repeated_calls():
     assert _manifests(builder)[1] == _manifests(builder)[1]
 
 
-def test_the_git_credential_replicates_but_the_image_does_not():
-    plan = _plan()
-    # every site must be able to rebuild after a switchover, and a token is not
-    # recoverable if its only copy was on the site that went away
+def test_the_git_credential_replicates_and_every_site_gets_its_own_image():
+    plan = _plan(sites=("site-a", "site-b"))
+    # one token for the whole platform: it is not recoverable if its only copy
+    # was on the site that went away
     assert [m["kind"] for m in plan.replicated] == ["Secret"]
-    # ...but only one site builds, or both race to push the same tag
-    assert [m["kind"] for m in plan.local] == ["ServiceAccount", "Image"]
+    # ...and one Image per site, since each pushes to its own registry
+    assert sorted(plan.per_site) == ["site-a", "site-b"]
+    for site in ("site-a", "site-b"):
+        assert [m["kind"] for m in plan.manifests_for(site)] == ["ServiceAccount", "Image"]
+
+
+def test_each_sites_image_is_tagged_for_that_sites_registry():
+    """The whole point: two sites, two registries, two tags that cannot collide."""
+    settings = _settings(
+        sites=[
+            SiteConfig(name="site-a", cluster="a-0", registry=SiteRegistry(url="registry.a")),
+            SiteConfig(name="site-b", cluster="b-0", registry=SiteRegistry(url="registry.b")),
+        ]
+    )
+    plan = _plan(_builder(settings), sites=("site-a", "site-b"))
+
+    assert plan.tag_for("site-a") == "registry.a/acme/payments/hello:main"
+    assert plan.tag_for("site-b") == "registry.b/acme/payments/hello:main"
+    # each site's Image pushes to its own, and caches beside it rather than
+    # pulling a cache across sites
+    for site, host in (("site-a", "registry.a"), ("site-b", "registry.b")):
+        image = _by_kind(plan.manifests_for(site), "Image")
+        assert image["spec"]["tag"] == f"{host}/acme/payments/hello:main"
+        assert image["spec"]["cache"]["registry"]["tag"] == (
+            f"{host}/acme/payments/hello_cache:latest"
+        )
+
+
+def test_a_site_with_no_registry_of_its_own_builds_into_the_platform_default():
+    """The single-registry install, unchanged."""
+    plan = _plan(sites=("site-a", "site-b"))
+    assert plan.tag_for("site-a") == plan.tag_for("site-b")
 
 
 def test_pull_secret_is_the_credential_kpack_pushed_with():
@@ -466,31 +497,23 @@ class _RecordingBuilder:
         self.reqs = []
         self._state = state
 
-    def image_ref(self, req):
+    def image_ref(self, req, site=None):
         return "reg/acme/payments/hello:main"
 
-    def plan(self, req, labels):
-        from common.build import BuildPlan
+    def plan(self, req, labels, sites):
 
         self.calls += 1
         self.reqs.append(req)
-        return BuildPlan(
-            tag=self.image_ref(req),
+        return plan_for(
+            sites,
+            self.image_ref(req),
             replicated=[
                 secret_svc.build_git_secret(
                     "hello-payments-git", labels, req.git_token, req.git_url
                 )
             ],
-            local=[
-                {
-                    "apiVersion": "kpack.io/v1alpha2",
-                    "kind": "Image",
-                    "metadata": {"name": "fn-hello-payments", "labels": dict(labels)},
-                    # A real tag: the engine compares it against the deployed
-                    # Image's, since kpack makes spec.tag immutable.
-                    "spec": {"tag": self.image_ref(req)},
-                }
-            ],
+            image=True,
+            labels=labels,
         )
 
     def status(self, cluster, name, group):
@@ -575,7 +598,7 @@ def _git_secrets(cluster):
     return [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"].endswith("-git")]
 
 
-async def test_only_one_site_builds_but_every_site_gets_the_credential():
+async def test_every_site_builds_and_every_site_gets_the_credential():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("site-a", {})
@@ -585,23 +608,22 @@ async def test_only_one_site_builds_but_every_site_gets_the_credential():
     )
     await svc.create("payments", _create_spec(), _principal())
 
-    # one builder: fanning the Image out would have both sites build the same
-    # source and race to push the same tag (docs/BUILDING.md - Active/Active)
+    # every site builds what it runs, into its own registry - no two sites
+    # contend for one tag (docs/PER-SITE-REGISTRY.md)
     assert len(_applied_kind(local, "Image")) == 1
-    assert _applied_kind(remote, "Image") == []
-    assert len(_applied_kind(remote, "Service")) == 1  # ...but the KSVC goes everywhere
+    assert len(_applied_kind(remote, "Image")) == 1
+    assert len(_applied_kind(remote, "Service")) == 1
     # the token, though, must be everywhere: nothing can recover a token whose
     # only copy was on the site that went away (docs/BUILDING.md - Active/Active)
     assert len(_git_secrets(local)) == 1
     assert len(_git_secrets(remote)) == 1
 
 
-async def test_the_local_site_builds_even_when_it_runs_no_copy_of_the_function():
-    """The build site is the local one, always - deployment targets do not move it.
+async def test_a_site_that_runs_no_copy_of_the_function_does_not_build_one():
+    """A site builds what it runs, so a non-target site gets nothing to build with.
 
-    A function targeted elsewhere still builds here and pushes to the shared
-    registry, which the running site pulls from. The local site gets the build
-    objects and nothing else: no KSVC, no DomainMapping.
+    This is what retires the unowned-build-object path: an ownerReference must
+    name an owner in the same cluster, and now every Image has a KSVC beside it.
     """
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
@@ -614,23 +636,56 @@ async def test_the_local_site_builds_even_when_it_runs_no_copy_of_the_function()
     spec.sites = ["site-b"]  # the local site is not a target
     await svc.create("payments", spec, _principal())
 
-    assert len(_applied_kind(local, "Image")) == 1
-    assert _applied_kind(remote, "Image") == []
-    # ...and only the build: the workload itself runs where it was asked to
+    assert _applied_kind(local, "Image") == []
     assert _applied_kind(local, "Service") == []
     assert _applied_kind(local, "DomainMapping") == []
+    assert len(_applied_kind(remote, "Image")) == 1
     assert len(_applied_kind(remote, "Service")) == 1
-    # the builder needs the token on the site that clones
-    assert len(_git_secrets(local)) == 1
+    # The token follows the workload too, now that it is the sites running it
+    # that build. It still lands on every site the function is deployed to,
+    # which is what a switchover needs; a site the function was never on has
+    # nothing to rebuild.
+    assert _git_secrets(local) == []
+    assert len(_git_secrets(remote)) == 1
 
 
-async def test_build_objects_on_a_non_target_local_site_are_deleted_explicitly():
-    """Nothing owns them there, so nothing cascades when the function goes.
+async def test_an_update_keeps_each_sites_own_image_rather_than_one_sites():
+    """The failure per-site registries make possible, and the reason for `images`.
 
-    An ownerReference must name an owner in the same cluster, and the KSVC that
-    would be it was never applied here. A leftover Image would keep rebuilding a
-    function that no longer exists.
+    Each site runs what its own build pushed, so carrying one representative
+    image across the fan-out would point a peer at this site's registry - which
+    it has no credential for and, airgapped, may not reach at all.
     """
+    from api.models.function import FunctionUpdate
+    from api.services.state.ksvc_state import extract_image
+    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    a_digest = "registry.a/acme/payments/hello@sha256:" + "a" * 64
+    b_digest = "registry.b/acme/payments/hello@sha256:" + "b" * 64
+    site_a = _ApplyCluster(
+        "site-a", {"hello-payments": _ksvc(image=a_digest)}, secrets={"hello-payments-git": stored}
+    )
+    site_b = _ApplyCluster(
+        "site-b", {"hello-payments": _ksvc(image=b_digest)}, secrets={"hello-payments-git": stored}
+    )
+    svc = _function_service(
+        {"site-a": site_a, "site-b": site_b}, _RecordingBuilder(), local_site="site-a"
+    )
+
+    await svc.update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert extract_image(_applied_kind(site_a, "Service")[0]) == a_digest
+    assert extract_image(_applied_kind(site_b, "Service")[0]) == b_digest
+
+
+async def test_every_sites_build_objects_are_owned_by_the_ksvc_beside_them():
+    """Which is what deletes them - there is no cleanup code, and none needed."""
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("site-a", {})
@@ -638,17 +693,11 @@ async def test_build_objects_on_a_non_target_local_site_are_deleted_explicitly()
     svc = _function_service(
         {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
     )
-    spec = _create_spec()
-    spec.sites = ["site-b"]
-    await svc.create("payments", spec, _principal())
-    assert len(_applied_kind(local, "Image")) == 1
+    await svc.create("payments", _create_spec(), _principal())
 
-    await svc.delete("hello", "payments", _principal())
-
-    deleted = {(k.value[1], n) for k, n in local.deleted}
-    assert ("Image", "fn-hello-payments") in deleted
-    assert ("ServiceAccount", "fn-hello-payments") in deleted
-    assert ("Secret", "hello-payments-git") in deleted
+    for cluster in (local, remote):
+        image = _applied_kind(cluster, "Image")[0]
+        assert [o["name"] for o in image["metadata"]["ownerReferences"]] == ["hello-payments"]
 
 
 def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
@@ -821,11 +870,11 @@ def test_build_request_rejects_unusable_branches(bad):
 def test_a_slashed_branch_builds_that_ref_but_pushes_a_legal_tag():
     """`feature/login` is an everyday branch; `/` is illegal in an OCI tag."""
     plan = _plan(branch="feature/login")
-    assert plan.tag == "registry.internal/acme/payments/hello:feature-login"
+    assert plan.tag_for("site-a") == "registry.internal/acme/payments/hello:feature-login"
     # the git revision keeps the real ref - only the tag is a projection
-    image = _by_kind(plan.local, "Image")
+    image = _by_kind(plan.manifests_for("site-a"), "Image")
     assert image["spec"]["source"]["git"]["revision"] == "feature/login"
-    assert image["spec"]["tag"] == plan.tag
+    assert image["spec"]["tag"] == plan.tag_for("site-a")
 
 
 def test_image_tag_projection_rules():
@@ -885,7 +934,7 @@ def test_no_source_path_leaves_sub_path_off_the_image():
 
 def test_the_source_path_does_not_change_the_image_tag():
     """Two directories in one repo are two functions, told apart by name."""
-    assert _plan(path="services/api").tag == _plan().tag
+    assert _plan(path="services/api").tag_for("site-a") == _plan().tag_for("site-a")
 
 
 @pytest.mark.parametrize(
@@ -949,8 +998,8 @@ def test_an_explicit_version_in_build_env_is_not_overridden():
             )
         ]
     )
-    plan = KpackBackend(_settings(), runtimes).plan(_request(), {})
-    env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
+    plan = KpackBackend(_settings(), runtimes).plan(_request(), {}, ["site-a"])
+    env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
     versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
     assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"
 
@@ -968,8 +1017,8 @@ def _version_runtimes(**over):
 
 
 def _version_env(runtimes, **req):
-    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go", **req), {})
-    env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
+    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go", **req), {}, ["site-a"])
+    env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
     return [e["value"] for e in env if e["name"] == "BP_GO_VERSION"]
 
 
@@ -1003,15 +1052,17 @@ def test_a_caller_version_overrides_an_operator_build_env_pin():
 def test_exactly_one_version_entry_is_emitted():
     """Two entries for the same name would leave the build ambiguous."""
     pinned = _version_runtimes(buildEnv=[{"name": "BP_GO_VERSION", "value": "1.23"}])
-    plan = KpackBackend(_settings(), pinned).plan(_request(runtime="go", version="1.25"), {})
-    env = _by_kind(plan.local, "Image")["spec"]["build"]["env"]
+    plan = KpackBackend(_settings(), pinned).plan(
+        _request(runtime="go", version="1.25"), {}, ["site-a"]
+    )
+    env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
     assert [e["name"] for e in env].count("BP_GO_VERSION") == 1
 
 
 def test_a_runtime_naming_no_version_env_gets_none_invented():
     runtimes = RuntimeRegistry([RuntimeSpec(name="go", builder="go")])
-    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go"), {})
-    image = _by_kind(plan.local, "Image")
+    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go"), {}, ["site-a"])
+    image = _by_kind(plan.manifests_for("site-a"), "Image")
     env = (image["spec"].get("build") or {}).get("env") or []
     assert not [e for e in env if e["name"].startswith("BP_")]
 
@@ -1520,19 +1571,13 @@ async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
     assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
 
 
-async def test_build_on_a_site_that_runs_no_copy_applies_the_build_unowned():
-    """The build belongs to the local site; the KSVC may not be there at all.
-
-    An ownerReference must name an owner in the same cluster, so there is none to
-    give. ``delete`` reclaims these by name, as it does for a function targeted
-    away from the local site.
-    """
+async def test_a_rebuild_skips_a_site_that_runs_no_copy_of_the_function():
+    """No KSVC there means no build to re-declare - not an unowned one to apply."""
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     local = _RebuildCluster(existing={}, secrets={"hello-payments-git": stored}, builds=[])
-    # the token is on every site, which is what lets any of them build
-    # (docs/BUILDING.md - Active/Active Behaviour)
+    # the token is on every site, which is what lets any of them build later
     remote = _ApplyCluster(
         "site-b", {"hello-payments": _deployed_ksvc()}, secrets={"hello-payments-git": stored}
     )
@@ -1542,9 +1587,8 @@ async def test_build_on_a_site_that_runs_no_copy_applies_the_build_unowned():
 
     await _run_build(svc)
 
-    image = _applied_kind(local, "Image")[0]
-    assert "ownerReferences" not in image["metadata"]
-    assert _applied_kind(remote, "Image") == []  # one site builds, and it is the local one
+    assert _applied_kind(local, "Image") == []
+    assert len(_applied_kind(remote, "Image")) == 1
 
 
 async def test_build_without_a_stored_token_is_rejected_before_the_202():
@@ -1713,10 +1757,10 @@ def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
     """
     builder = _builder(_layout_settings(repository="serverless/builders"))
 
-    assert builder.image_ref(_request()) == (
+    assert builder.image_ref(_request(), "site-a") == (
         "registry.internal/acme/serverless/builders/payments/hello:main"
     )
-    assert builder.cache_ref(_request()) == (
+    assert builder.cache_ref(_request(), "site-a") == (
         "registry.internal/acme/serverless/builders/payments/hello_cache:latest"
     )
 
@@ -1791,8 +1835,11 @@ def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
     """The prefix is optional, so an install that never sets it is unaffected."""
     builder = _builder(_layout_settings())
 
-    assert builder.image_ref(_request()) == "registry.internal/acme/payments/hello:main"
-    assert builder.cache_ref(_request()) == "registry.internal/acme/payments/hello_cache:latest"
+    assert builder.image_ref(_request(), "site-a") == "registry.internal/acme/payments/hello:main"
+    assert (
+        builder.cache_ref(_request(), "site-a")
+        == "registry.internal/acme/payments/hello_cache:latest"
+    )
 
 
 async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
@@ -1807,7 +1854,7 @@ async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     class _MovedBuilder(_RecordingBuilder):
-        def image_ref(self, req):
+        def image_ref(self, req, site=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1848,7 +1895,7 @@ async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest()
     digest = "reg/acme/payments/hello@sha256:" + "b" * 64
 
     class _SameLayout(_RecordingBuilder):
-        def image_ref(self, req):
+        def image_ref(self, req, site=None):
             return "reg/acme/payments/hello:main"
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -2010,7 +2057,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
     reclaimed = _reclaimed(monkeypatch)
 
     class _MovedBuilder(_RecordingBuilder):
-        def image_ref(self, req):
+        def image_ref(self, req, site=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
     await _function_service({"site-a": cluster}, _MovedBuilder()).update(
@@ -2082,7 +2129,7 @@ async def test_the_build_endpoint_re_tags_too(monkeypatch):
     reclaimed = _reclaimed(monkeypatch)
 
     class _MovedTriggering(_TriggeringBuilder):
-        def image_ref(self, req):
+        def image_ref(self, req, site=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
     await _run_build(_build_service({"site-a": cluster}, _MovedTriggering()))

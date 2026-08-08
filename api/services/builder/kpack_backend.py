@@ -21,6 +21,7 @@ protocol.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from cloudlet_apis.logging import get_logger
@@ -32,6 +33,7 @@ from common.build import (
     BuildPlan,
     BuildRequest,
     BuildStatus,
+    SiteBuild,
     cache_reference,
     image_reference,
 )
@@ -51,10 +53,11 @@ class KpackBackend:
         """Initialize the backend.
 
         Args:
-            settings: Shared settings (registry, build credentials).
+            settings: Shared settings; the registry is resolved per site from
+                it, so the whole object is kept rather than one registry.
             runtimes: Resolves a runtime to its kpack Builder and build environment.
         """
-        self._registry = settings.registry
+        self._settings = settings
         self._build = settings.build
         self._runtimes = runtimes
 
@@ -69,22 +72,27 @@ class KpackBackend:
         """
         return self._build.registry_secret or None
 
-    def image_ref(self, req: BuildRequest) -> str:
-        """The image reference a build pushes to (deterministic, no cluster call).
+    def image_ref(self, req: BuildRequest, site: str) -> str:
+        """The image reference ``site`` builds to (deterministic, no cluster call).
 
         Args:
             req: The build request.
+            site: The site that builds; its registry is what the tag hangs off.
 
         Returns:
             The fully-qualified image reference.
         """
-        return image_reference(self._registry.base, req)
+        return image_reference(self._settings.registry_for(site).base, req)
 
-    def cache_ref(self, req: BuildRequest) -> str | None:
-        """Where this build caches its layers, or None to leave it to kpack.
+    def cache_ref(self, req: BuildRequest, site: str) -> str | None:
+        """Where ``site``'s build caches its layers, or None to leave it to kpack.
+
+        A sibling of that site's own image repository, so the cache follows the
+        image rather than being pulled across sites.
 
         Args:
             req: The build request.
+            site: The site that builds.
 
         Returns:
             The registry cache reference, or None when ``build.cache`` is
@@ -92,7 +100,7 @@ class KpackBackend:
         """
         if self._build.cache != "registry":
             return None
-        return cache_reference(self._registry.base, req)
+        return cache_reference(self._settings.registry_for(site).base, req)
 
     def _runtime_config(self, runtime: str, version: str | None = None) -> tuple[str, list[dict]]:
         """Resolve a runtime (and optional version) to ``(builder, build_env)``.
@@ -141,58 +149,65 @@ class KpackBackend:
                 env.append({"name": spec.versionEnv, "value": chosen})
         return spec.builder, env
 
-    def plan(self, req: BuildRequest, labels: dict[str, str]) -> BuildPlan:
+    def plan(self, req: BuildRequest, labels: dict[str, str], sites: Sequence[str]) -> BuildPlan:
         """The build manifests for one function, split by replication scope.
 
         Pure - no cluster call - so the caller can apply them in the same pass as
         the KSVC's other derived resources and have them owner-stamped.
 
-        The git Secret is ``replicated``, the Image and ServiceAccount are not. Only one
-        site builds, but EVERY site must be able to: nothing can recover a token whose
-        only copy was on the site that went away.
+        The git Secret is replicated; the Image and ServiceAccount are per site.
+        Each site pushes to its own registry, so the objects are identical but
+        for the tag and the cache reference, and no two sites contend for one
+        repository (docs/PER-SITE-REGISTRY.md).
 
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
+            sites: The sites that build - the workload's targets.
 
         Returns:
-            The build plan; ``local`` is in dependency order.
+            The build plan; each site's manifests are in dependency order.
 
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
         oname = object_name(req.name, req.group)
         builder, env = self._runtime_config(req.runtime, req.version)
-        tag = self.image_ref(req)
         build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
+        per_site: dict[str, SiteBuild] = {}
+        for site in sites:
+            tag = self.image_ref(req, site)
+            per_site[site] = SiteBuild(
+                tag=tag,
+                manifests=[
+                    kpack.build_service_account(
+                        build_name, labels, git_secret, self._build.registry_secret
+                    ),
+                    kpack.build_image(
+                        build_name,
+                        labels,
+                        tag=tag,
+                        builder=builder,
+                        service_account=build_name,
+                        git_url=req.git_url,
+                        revision=req.build_revision,
+                        sub_path=req.path,
+                        env=env,
+                        resources=self._build.resources,
+                        cache_tag=self.cache_ref(req, site),
+                        success_history_limit=self._build.success_history_limit,
+                        failed_history_limit=self._build.failed_history_limit,
+                    ),
+                ],
+            )
         return BuildPlan(
-            tag=tag,
             replicated=[
                 secret_svc.build_git_secret(
                     git_secret, labels, req.git_token, req.git_url, self._build.git_username
                 )
             ],
-            local=[
-                kpack.build_service_account(
-                    build_name, labels, git_secret, self._build.registry_secret
-                ),
-                kpack.build_image(
-                    build_name,
-                    labels,
-                    tag=tag,
-                    builder=builder,
-                    service_account=build_name,
-                    git_url=req.git_url,
-                    revision=req.build_revision,
-                    sub_path=req.path,
-                    env=env,
-                    resources=self._build.resources,
-                    cache_tag=self.cache_ref(req),
-                    success_history_limit=self._build.success_history_limit,
-                    failed_history_limit=self._build.failed_history_limit,
-                ),
-            ],
+            per_site=per_site,
         )
 
     def trigger(self, cluster: Cluster, name: str, group: str) -> bool:

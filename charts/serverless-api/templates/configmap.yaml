@@ -10,12 +10,8 @@ metadata:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
   # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
-  #
-  # A site's `registry` travels here rather than in the per-release values,
-  # because an API instance composes the manifests for EVERY site and so needs
-  # the peer's registry, not only its own. Credentials never do: this is a
-  # ConfigMap (docs/PER-SITE-REGISTRY.md - Where the credentials come from).
-  # Omitted for a site that has none, which is how it inherits `registry` above.
+  # A site's `registry` rides along so an instance can compose the peer's
+  # manifests; omitted when unset, which is how that site inherits the default.
   {{- $sites := list }}
   {{- range .Values.sites }}
   {{- $site := dict "name" .name "cluster" .cluster }}
