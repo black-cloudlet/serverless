@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping
 
 from cloudlet_apis.auth import Principal
 from pydantic import ValidationError as PydanticValidationError
@@ -14,6 +14,7 @@ from api.services.offering import FUNCTION
 from api.services.state import describe as describe_svc
 from api.services.workloads import ApplyRequest, WorkloadService
 from common.build import BuildPlan, BuildRequest
+from common.config import RegistryConfig
 from common.errors import ValidationError
 from common.labels import OFFERING_FUNCTION, workload_labels
 from common.names import object_name
@@ -84,7 +85,9 @@ class FunctionService:
                 f"available versions: {', '.join(spec.versions)}"
             )
 
-    def _plan(self, req: BuildRequest, user: Principal, sites: Sequence[str]) -> BuildPlan:
+    def _plan(
+        self, req: BuildRequest, user: Principal, registries: Mapping[str, RegistryConfig]
+    ) -> BuildPlan:
         """The owned manifests that declare the build, and the tags they push to.
 
         Includes the workload's ``{workload}-git`` Secret: one Secret serves both
@@ -94,14 +97,14 @@ class FunctionService:
         Args:
             req: The build request.
             user: The authenticated caller, for the ownership labels.
-            sites: The sites that build - the function's targets.
+            registries: The registry each targeted site builds into.
 
         Returns:
             The build plan, one tag and one set of manifests per site.
         """
         oname = object_name(req.name, req.group)
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
-        return self._engine.builder.plan(req, labels, sites)
+        return self._engine.builder.plan(req, labels, registries)
 
     # Validate synchronously for an immediate 400/404/409, then build and deploy
     # in the background behind a 202 - a function build is slow.
@@ -303,8 +306,8 @@ class FunctionService:
         """
         req = self._build_request(name, group, existing, user)
         # Every configured site; apply_build skips the ones not running it.
-        sites = self._engine.target_site_names(None)
-        await self._engine.apply_build(name, group, self._plan(req, user, sites))
+        registries = self._engine.target_registries(None)
+        await self._engine.apply_build(name, group, self._plan(req, user, registries))
 
     async def create(
         self, group: str, spec: FunctionCreate, user: Principal
@@ -323,7 +326,7 @@ class FunctionService:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
         # A site builds what it runs, so the plan covers exactly the targets.
-        sites = self._engine.target_site_names(spec.sites)
+        registries = self._engine.target_registries(spec.sites)
         plan = self._plan(
             BuildRequest(
                 name=spec.name,
@@ -337,7 +340,7 @@ class FunctionService:
                 owner=user.username,
             ),
             user,
-            sites,
+            registries,
         )
 
         # No absence probe here: apply_workload runs one combined host+absence pass
@@ -444,7 +447,7 @@ class FunctionService:
         # site's registry.
         image = existing["image"]
         images = dict(existing.get("images") or {})
-        sites = self._engine.target_site_names(None)
+        registries = self._engine.target_registries(None)
         replicated: list[dict] = []
         site_resources: dict[str, list[dict]] = {}
         if token is not None:
@@ -463,7 +466,7 @@ class FunctionService:
                     owner=user.username,
                 ),
                 user,
-                sites,
+                registries,
             )
             replicated = plan.replicated
             site_resources = plan.manifests_by_site

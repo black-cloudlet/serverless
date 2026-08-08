@@ -21,7 +21,7 @@ protocol.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from cloudlet_apis.logging import get_logger
@@ -38,7 +38,7 @@ from common.build import (
     image_reference,
 )
 from common.cluster import Cluster, ResourceKind
-from common.config import CommonSettings
+from common.config import BuildConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
 from common.labels import LABEL_GROUP, LABEL_OFFERING, LABEL_WORKLOAD, OFFERING_FUNCTION
 from common.names import object_name
@@ -49,16 +49,14 @@ logger = get_logger(__name__)
 class KpackBackend:
     """Emits the kpack manifests for a function build and reads their state."""
 
-    def __init__(self, settings: CommonSettings, runtimes: RuntimeRegistry):
+    def __init__(self, build: BuildConfig, runtimes: RuntimeRegistry):
         """Initialize the backend.
 
         Args:
-            settings: Shared settings; the registry is resolved per site from
-                it, so the whole object is kept rather than one registry.
+            build: Build settings (credentials, cache mode, resources, history).
             runtimes: Resolves a runtime to its kpack Builder and build environment.
         """
-        self._settings = settings
-        self._build = settings.build
+        self._build = build
         self._runtimes = runtimes
 
     @property
@@ -72,27 +70,27 @@ class KpackBackend:
         """
         return self._build.registry_secret or None
 
-    def image_ref(self, req: BuildRequest, site: str) -> str:
-        """The image reference ``site`` builds to (deterministic, no cluster call).
+    def image_ref(self, req: BuildRequest, registry: RegistryConfig) -> str:
+        """The image reference a build pushes to (deterministic, no cluster call).
 
         Args:
             req: The build request.
-            site: The site that builds; its registry is what the tag hangs off.
+            registry: The registry that build pushes to - one site's.
 
         Returns:
             The fully-qualified image reference.
         """
-        return image_reference(self._settings.registry_for(site).base, req)
+        return image_reference(registry.base, req)
 
-    def cache_ref(self, req: BuildRequest, site: str) -> str | None:
-        """Where ``site``'s build caches its layers, or None to leave it to kpack.
+    def cache_ref(self, req: BuildRequest, registry: RegistryConfig) -> str | None:
+        """Where a build caches its layers, or None to leave it to kpack.
 
-        A sibling of that site's own image repository, so the cache follows the
-        image rather than being pulled across sites.
+        A sibling of the image repository in the same registry, so the cache
+        follows the image rather than being pulled across sites.
 
         Args:
             req: The build request.
-            site: The site that builds.
+            registry: The registry that build pushes to.
 
         Returns:
             The registry cache reference, or None when ``build.cache`` is
@@ -100,7 +98,7 @@ class KpackBackend:
         """
         if self._build.cache != "registry":
             return None
-        return cache_reference(self._settings.registry_for(site).base, req)
+        return cache_reference(registry.base, req)
 
     def _runtime_config(self, runtime: str, version: str | None = None) -> tuple[str, list[dict]]:
         """Resolve a runtime (and optional version) to ``(builder, build_env)``.
@@ -149,7 +147,9 @@ class KpackBackend:
                 env.append({"name": spec.versionEnv, "value": chosen})
         return spec.builder, env
 
-    def plan(self, req: BuildRequest, labels: dict[str, str], sites: Sequence[str]) -> BuildPlan:
+    def plan(
+        self, req: BuildRequest, labels: dict[str, str], registries: Mapping[str, RegistryConfig]
+    ) -> BuildPlan:
         """The build manifests for one function, split by replication scope.
 
         Pure - no cluster call - so the caller can apply them in the same pass as
@@ -163,7 +163,10 @@ class KpackBackend:
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
-            sites: The sites that build - the workload's targets.
+            registries: The registry each building site pushes to, keyed by site
+                name. Its keys are the sites that build - the workload's
+                targets. Passed in rather than resolved here: the caller holds
+                the clusters, and each carries its own registry.
 
         Returns:
             The build plan; each site's manifests are in dependency order.
@@ -176,8 +179,8 @@ class KpackBackend:
         build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
         per_site: dict[str, SiteBuild] = {}
-        for site in sites:
-            tag = self.image_ref(req, site)
+        for site, registry in registries.items():
+            tag = self.image_ref(req, registry)
             per_site[site] = SiteBuild(
                 tag=tag,
                 manifests=[
@@ -195,7 +198,7 @@ class KpackBackend:
                         sub_path=req.path,
                         env=env,
                         resources=self._build.resources,
-                        cache_tag=self.cache_ref(req, site),
+                        cache_tag=self.cache_ref(req, registry),
                         success_history_limit=self._build.success_history_limit,
                         failed_history_limit=self._build.failed_history_limit,
                     ),

@@ -233,12 +233,12 @@ class _NullBuilder:
 
     pull_secret = "reg-creds"
 
-    def image_ref(self, req, site=None):
+    def image_ref(self, req, registry=None):
         return "reg/built:1"
 
-    def plan(self, req, labels, sites):
+    def plan(self, req, labels, registries):
 
-        return plan_for(sites, self.image_ref(req))
+        return plan_for(registries, self.image_ref(req))
 
     def status(self, cluster, name, group):
         return None
@@ -1335,14 +1335,14 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         def __init__(self):
             self.calls = 0
 
-        def image_ref(self, req, site=None):
+        def image_ref(self, req, registry=None):
             return "reg/built:rel"
 
-        def plan(self, req, labels, sites):
+        def plan(self, req, labels, registries):
 
             self.calls += 1
             self.req = req
-            return plan_for(sites, self.image_ref(req))
+            return plan_for(registries, self.image_ref(req))
 
     existing = build_ksvc(
         name="fn-team",
@@ -1397,7 +1397,7 @@ async def test_function_update_without_token_keeps_image():
         def __init__(self):
             self.calls = 0
 
-        def plan(self, req, labels, sites):
+        def plan(self, req, labels, registries):
             self.calls += 1
             raise AssertionError("no token stored -> nothing to declare a build with")
 
@@ -1448,11 +1448,11 @@ async def test_function_create_persists_git_secret():
     from api.services.manifests.secrets import GIT_TOKEN_KEY, build_git_secret
 
     class _StubBuilder(_NullBuilder):
-        def plan(self, req, labels, sites):
+        def plan(self, req, labels, registries):
 
             # the git Secret is now part of what the builder declares
             return plan_for(
-                sites,
+                registries,
                 self.image_ref(req),
                 replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
             )
@@ -1487,11 +1487,11 @@ async def test_function_update_reuses_stored_git_token():
         def __init__(self):
             self.calls = 0
 
-        def plan(self, req, labels, sites):
+        def plan(self, req, labels, registries):
 
             self.calls += 1
             self.req = req
-            return plan_for(sites, "reg/built:rel")
+            return plan_for(registries, "reg/built:rel")
 
     existing = build_ksvc(
         name="fn-team",

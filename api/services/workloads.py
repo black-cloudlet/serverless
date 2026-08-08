@@ -63,6 +63,7 @@ from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
 from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
+from common.config import RegistryConfig
 from common.errors import (
     ForbiddenError,
     NotFoundError,
@@ -525,16 +526,20 @@ class WorkloadService:
         )
         return offering.applied_response(common, req), status_code_for(overall, created=req.created)
 
-    def target_site_names(self, requested: list[str] | None) -> list[str]:
-        """The site names a request targets, for planning a per-site build.
+    def target_registries(self, requested: list[str] | None) -> dict[str, RegistryConfig]:
+        """The registry each targeted site builds into, keyed by site name.
+
+        What a build plan needs, taken off the clusters rather than re-resolved
+        from settings, so there is one answer per site and not two snapshots
+        of it.
 
         Args:
             requested: Explicit site names, or None for all configured sites.
 
         Returns:
-            The resolved site names.
+            ``{site: registry}`` for the targets.
         """
-        return [c.site for c in self.deployer.resolve_targets(requested)]
+        return {c.site: c.registry for c in self.deployer.resolve_targets(requested)}
 
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
         """Re-declare a workload's build in every site that runs it, then ask for one.

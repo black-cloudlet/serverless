@@ -49,7 +49,13 @@ def _runtimes():
 
 
 def _builder(settings=None):
-    return KpackBackend(settings or _settings(), _runtimes())
+    return KpackBackend((settings or _settings()).build, _runtimes())
+
+
+def _registries(*sites, settings=None):
+    """The {site: registry} map a plan takes, as the engine builds it."""
+    settings = settings or _settings()
+    return {s: settings.registry_for(s) for s in (sites or ("site-a",))}
 
 
 def _request(**over):
@@ -68,8 +74,8 @@ def _request(**over):
     return BuildRequest(**kwargs)
 
 
-def _plan(builder=None, sites=("site-a",), **over):
-    return (builder or _builder()).plan(_request(**over), {"lbl": "v"}, list(sites))
+def _plan(builder=None, registries=None, **over):
+    return (builder or _builder()).plan(_request(**over), {"lbl": "v"}, registries or _registries())
 
 
 def _manifests(builder=None, site="site-a", **over):
@@ -237,8 +243,9 @@ def test_cache_repository_does_not_move_with_the_branch():
     builder = _builder()
     # one Image per function, so one cache: keying it by branch would start cold
     # on every branch change
-    assert builder.cache_ref(_request(branch="main"), "site-a") == builder.cache_ref(
-        _request(branch="feature/login"), "site-a"
+    reg = _settings().registry
+    assert builder.cache_ref(_request(branch="main"), reg) == builder.cache_ref(
+        _request(branch="feature/login"), reg
     )
 
 
@@ -268,7 +275,7 @@ def test_manifests_are_convergent_across_repeated_calls():
 
 
 def test_the_git_credential_replicates_and_every_site_gets_its_own_image():
-    plan = _plan(sites=("site-a", "site-b"))
+    plan = _plan(registries=_registries("site-a", "site-b"))
     # one token for the whole platform: it is not recoverable if its only copy
     # was on the site that went away
     assert [m["kind"] for m in plan.replicated] == ["Secret"]
@@ -286,7 +293,7 @@ def test_each_sites_image_is_tagged_for_that_sites_registry():
             SiteConfig(name="site-b", cluster="b-0", registry=SiteRegistry(url="registry.b")),
         ]
     )
-    plan = _plan(_builder(settings), sites=("site-a", "site-b"))
+    plan = _plan(_builder(settings), _registries("site-a", "site-b", settings=settings))
 
     assert plan.tag_for("site-a") == "registry.a/acme/payments/hello:main"
     assert plan.tag_for("site-b") == "registry.b/acme/payments/hello:main"
@@ -302,7 +309,7 @@ def test_each_sites_image_is_tagged_for_that_sites_registry():
 
 def test_a_site_with_no_registry_of_its_own_builds_into_the_platform_default():
     """The single-registry install, unchanged."""
-    plan = _plan(sites=("site-a", "site-b"))
+    plan = _plan(registries=_registries("site-a", "site-b"))
     assert plan.tag_for("site-a") == plan.tag_for("site-b")
 
 
@@ -497,15 +504,14 @@ class _RecordingBuilder:
         self.reqs = []
         self._state = state
 
-    def image_ref(self, req, site=None):
+    def image_ref(self, req, registry=None):
         return "reg/acme/payments/hello:main"
 
-    def plan(self, req, labels, sites):
-
+    def plan(self, req, labels, registries):
         self.calls += 1
         self.reqs.append(req)
         return plan_for(
-            sites,
+            registries,
             self.image_ref(req),
             replicated=[
                 secret_svc.build_git_secret(
@@ -998,7 +1004,7 @@ def test_an_explicit_version_in_build_env_is_not_overridden():
             )
         ]
     )
-    plan = KpackBackend(_settings(), runtimes).plan(_request(), {}, ["site-a"])
+    plan = KpackBackend(_settings().build, runtimes).plan(_request(), {}, _registries())
     env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
     versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
     assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"
@@ -1017,7 +1023,9 @@ def _version_runtimes(**over):
 
 
 def _version_env(runtimes, **req):
-    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go", **req), {}, ["site-a"])
+    plan = KpackBackend(_settings().build, runtimes).plan(
+        _request(runtime="go", **req), {}, _registries()
+    )
     env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
     return [e["value"] for e in env if e["name"] == "BP_GO_VERSION"]
 
@@ -1052,8 +1060,8 @@ def test_a_caller_version_overrides_an_operator_build_env_pin():
 def test_exactly_one_version_entry_is_emitted():
     """Two entries for the same name would leave the build ambiguous."""
     pinned = _version_runtimes(buildEnv=[{"name": "BP_GO_VERSION", "value": "1.23"}])
-    plan = KpackBackend(_settings(), pinned).plan(
-        _request(runtime="go", version="1.25"), {}, ["site-a"]
+    plan = KpackBackend(_settings().build, pinned).plan(
+        _request(runtime="go", version="1.25"), {}, _registries()
     )
     env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
     assert [e["name"] for e in env].count("BP_GO_VERSION") == 1
@@ -1061,7 +1069,7 @@ def test_exactly_one_version_entry_is_emitted():
 
 def test_a_runtime_naming_no_version_env_gets_none_invented():
     runtimes = RuntimeRegistry([RuntimeSpec(name="go", builder="go")])
-    plan = KpackBackend(_settings(), runtimes).plan(_request(runtime="go"), {}, ["site-a"])
+    plan = KpackBackend(_settings().build, runtimes).plan(_request(runtime="go"), {}, _registries())
     image = _by_kind(plan.manifests_for("site-a"), "Image")
     env = (image["spec"].get("build") or {}).get("env") or []
     assert not [e for e in env if e["name"].startswith("BP_")]
@@ -1755,12 +1763,14 @@ def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
     A function cannot collide with a Builder - a Builder is one path component
     below the base (`base/python`) and a function is two (`base/{group}/{name}`).
     """
-    builder = _builder(_layout_settings(repository="serverless/builders"))
+    # The layout lives on the registry, not the backend - the same backend
+    # builds into whichever one the site it is planning for uses.
+    registry = _layout_settings(repository="serverless/builders").registry
 
-    assert builder.image_ref(_request(), "site-a") == (
+    assert _builder().image_ref(_request(), registry) == (
         "registry.internal/acme/serverless/builders/payments/hello:main"
     )
-    assert builder.cache_ref(_request(), "site-a") == (
+    assert _builder().cache_ref(_request(), registry) == (
         "registry.internal/acme/serverless/builders/payments/hello_cache:latest"
     )
 
@@ -1833,11 +1843,13 @@ async def test_no_api_path_writes_the_image_after_the_create():
 
 def test_an_unset_repository_leaves_the_layout_exactly_as_it_was():
     """The prefix is optional, so an install that never sets it is unaffected."""
-    builder = _builder(_layout_settings())
+    registry = _layout_settings().registry
 
-    assert builder.image_ref(_request(), "site-a") == "registry.internal/acme/payments/hello:main"
     assert (
-        builder.cache_ref(_request(), "site-a")
+        _builder().image_ref(_request(), registry) == "registry.internal/acme/payments/hello:main"
+    )
+    assert (
+        _builder().cache_ref(_request(), registry)
         == "registry.internal/acme/payments/hello_cache:latest"
     )
 
@@ -1854,7 +1866,7 @@ async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     class _MovedBuilder(_RecordingBuilder):
-        def image_ref(self, req, site=None):
+        def image_ref(self, req, registry=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -1895,7 +1907,7 @@ async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest()
     digest = "reg/acme/payments/hello@sha256:" + "b" * 64
 
     class _SameLayout(_RecordingBuilder):
-        def image_ref(self, req, site=None):
+        def image_ref(self, req, registry=None):
             return "reg/acme/payments/hello:main"
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
@@ -2057,7 +2069,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
     reclaimed = _reclaimed(monkeypatch)
 
     class _MovedBuilder(_RecordingBuilder):
-        def image_ref(self, req, site=None):
+        def image_ref(self, req, registry=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
     await _function_service({"site-a": cluster}, _MovedBuilder()).update(
@@ -2129,7 +2141,7 @@ async def test_the_build_endpoint_re_tags_too(monkeypatch):
     reclaimed = _reclaimed(monkeypatch)
 
     class _MovedTriggering(_TriggeringBuilder):
-        def image_ref(self, req, site=None):
+        def image_ref(self, req, registry=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
     await _run_build(_build_service({"site-a": cluster}, _MovedTriggering()))

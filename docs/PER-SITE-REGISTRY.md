@@ -645,8 +645,8 @@ class BuildPlan:
     per_site: dict[str, SiteBuild]  # was: `tag: str` + `local: list[dict]`
 ```
 
-`BuildBackend.plan(req, labels, sites)` gains the target site names;
-`image_ref(req, site)` gains the site. `image_reference()` and
+`BuildBackend.plan` takes `{site: registry}` - its keys are the sites that
+build - and `image_ref` takes the registry it pushes to. `image_reference()` and
 `cache_reference()` already take a registry base and need no change.
 
 ### `common/kpack.py`
@@ -657,9 +657,19 @@ local push credential and the kpack registry pull credential.
 
 ### `api/services/builder/kpack_backend.py`
 
-Holds `CommonSettings` rather than `settings.registry`, and emits one
-`(Image, ServiceAccount)` pair per target site, each against
-`settings.registry_for(site).base`.
+Emits one `(Image, ServiceAccount)` pair per target site, each tagged for that
+site's registry. The registries are **passed in**, not resolved here:
+
+```python
+def __init__(self, build: BuildConfig, runtimes: RuntimeRegistry)
+def plan(self, req, labels, registries: Mapping[str, RegistryConfig]) -> BuildPlan
+```
+
+The backend takes the one config slice it uses rather than the whole settings
+object, and the caller - which already holds the clusters, each carrying its own
+registry - supplies the rest. That keeps one resolution path in production
+(settings -> `Cluster.registry` -> plan) instead of a second snapshot of the
+same derivation, and `plan` stays pure enough to unit-test with a plain dict.
 
 ### `api/services/workloads.py`
 

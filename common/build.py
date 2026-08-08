@@ -12,12 +12,13 @@ docs/BUILDING.md - Buildpack Topology), and one spelling cannot mean both.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic.dataclasses import dataclass as validated_dataclass
 
+from common.config import RegistryConfig
 from common.names import (
     Branch,
     GitUrl,
@@ -172,11 +173,13 @@ class BuildBackend(Protocol):
         """
         ...
 
-    def image_ref(self, req: BuildRequest, site: str) -> str:
-        """The image reference ``site`` builds to (deterministic, no I/O)."""
+    def image_ref(self, req: BuildRequest, registry: RegistryConfig) -> str:
+        """The image reference a build pushes to (deterministic, no I/O)."""
         ...
 
-    def plan(self, req: BuildRequest, labels: dict[str, str], sites: Sequence[str]) -> BuildPlan:
+    def plan(
+        self, req: BuildRequest, labels: dict[str, str], registries: Mapping[str, RegistryConfig]
+    ) -> BuildPlan:
         """The manifests declaring the build, split by replication scope.
 
         Pure: returning does not mean an image exists, or even that anything has
@@ -187,8 +190,9 @@ class BuildBackend(Protocol):
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
-            sites: The sites that build - the workload's targets, since a site
-                builds what it runs.
+            registries: The registry each building site pushes to, keyed by
+                site name. Its keys are the sites that build - the workload's
+                targets, since a site builds what it runs.
 
         Returns:
             The build plan.
