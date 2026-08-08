@@ -11,7 +11,14 @@ from api.auth.deps import get_tickets, optional_auth, require_auth
 from api.auth.tickets import StreamTickets
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
-from api.models.common import StreamError, WorkloadStatsResponse
+from api.models.common import (
+    LogLine,
+    PodInfo,
+    PodLogSnapshot,
+    PodRoster,
+    StreamError,
+    WorkloadStatsResponse,
+)
 from api.services.streams.sse import StreamEvent
 
 KEY = "endpoint-test-signing-key"  # noqa: S105 - a fixture, not a credential
@@ -39,6 +46,41 @@ class FakeStreams:
         if self.raises:
             raise self.raises
         return _events(*(self.events or []))
+
+    async def pods(self, name, group, user):
+        self.seen = dict(name=name, group=group, user=user, follow=False)
+        if self.raises:
+            raise self.raises
+        return PodRoster(
+            name=name,
+            group=group,
+            type="function",
+            site="central",
+            pods=[PodInfo(pod="foo-team-00001-abcde", phase="Running", ready=True)],
+        )
+
+    async def pod_logs(self, name, group, user, *, pod, container, since_seconds, limit_bytes):
+        self.seen = dict(
+            name=name,
+            group=group,
+            user=user,
+            pod=pod,
+            container=container,
+            since_seconds=since_seconds,
+            limit_bytes=limit_bytes,
+            follow=False,
+        )
+        if self.raises:
+            raise self.raises
+        return PodLogSnapshot(
+            name=name,
+            group=group,
+            type="function",
+            site="central",
+            pod=pod,
+            container=container,
+            lines=[LogLine(pod=pod, container=container, message="from the snapshot")],
+        )
 
     async def stream_pod_logs(self, name, group, user, *, pod, container, since_seconds):
         self.seen = dict(
@@ -390,3 +432,81 @@ def _codes():
     from common.errors import error_catalog
 
     return [{"code": code, "status": status} for code, status in error_catalog()]
+
+
+# --- follow=false: the same endpoints, read once -----------------------------
+#
+# Both endpoints stream by default. `follow=false` exists for the caller that
+# cannot hold a connection open - and it has to be on BOTH, or the log snapshot
+# is unreachable: finding a pod name would still require a stream.
+
+
+def test_the_log_snapshot_is_json_not_an_event_stream():
+    response = build(FakeStreams()).get(f"{LOGS}?follow=false")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["pod"] == "foo-team-00001-abcde"
+    assert body["lines"][0]["message"] == "from the snapshot"
+
+
+def test_the_pods_snapshot_is_json_not_an_event_stream():
+    response = build(FakeStreams()).get(f"{PODS}?follow=false")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["pods"][0]["pod"] == "foo-team-00001-abcde"
+
+
+def test_following_is_the_default_on_both():
+    for path in (PODS, LOGS):
+        response = build(FakeStreams(events=[])).get(path)
+        assert response.headers["content-type"].startswith("text/event-stream"), path
+
+
+@pytest.mark.parametrize("value", ["true", "1", "yes"])
+def test_follow_true_is_still_a_stream(value):
+    response = build(FakeStreams(events=[])).get(f"{LOGS}?follow={value}")
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+
+def test_the_snapshot_passes_its_own_parameters_through():
+    svc = FakeStreams()
+    build(svc).get(f"{LOGS}?follow=false&container=queue-proxy&sinceSeconds=30&limitBytes=4096")
+
+    assert svc.seen["follow"] is False
+    assert svc.seen["container"] == "queue-proxy"
+    assert svc.seen["since_seconds"] == 30
+    # limitBytes is meaningful only here - a follow has no total to cap.
+    assert svc.seen["limit_bytes"] == 4096
+
+
+def test_a_snapshot_of_a_pod_that_is_not_ours_is_the_same_404_as_the_stream():
+    """follow=false must not be a way around the pod-ownership check."""
+    svc = FakeStreams(raises=NotFoundError("pod 'victim' not found"))
+    response = build(svc).get(f"{LOGS}?follow=false")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_a_snapshot_needs_no_stream_slot():
+    """It ends, so it is not a stream and must not be rationed as one."""
+    svc = FakeStreams(raises=ServiceUnavailableError("too many open streams (32)"))
+    # The stub raises for every call, so this only proves the route reaches the
+    # snapshot method; that it takes no slot is asserted against the engine in
+    # test_streaming.py.
+    assert build(svc).get(f"{LOGS}?follow=false").status_code == 503
+
+
+def test_both_forms_are_published_on_one_operation():
+    """A generated client that knew only one of them would be wrong half the time."""
+    schema = create_app().openapi()
+    for offering in ("functions", "containers"):
+        for suffix in ("pods", "logs/pods/{pod}"):
+            path = f"/api/v1/groups/{{group}}/{offering}/{{name}}/{suffix}"
+            content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+            assert set(content) == {"application/json", "text/event-stream"}, path
+            params = {p["name"] for p in schema["paths"][path]["get"]["parameters"]}
+            assert "follow" in params, path

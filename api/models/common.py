@@ -601,6 +601,35 @@ class PodLogStreamOpen(BaseModel):
     revision: str | None = None
 
 
+class PodLogSnapshot(BaseModel):
+    """One pod's log as it stands right now (``follow=false``).
+
+    The same ``lines`` a follow would have delivered, returned once and ended -
+    for a caller that cannot hold a connection open. What it can return is
+    bounded by what the node still holds: Kubernetes keeps no buffer beyond the
+    node's rotated file, so this is the recent past, never the whole history.
+
+    Attributes:
+        name: The workload name.
+        group: The owning group.
+        type: The offering.
+        site: The site the pod is on (always the local one).
+        pod: The pod that was read.
+        container: The container it was read from.
+        revision: The Knative revision the pod belongs to, if labelled.
+        lines: The log, split into lines exactly as the stream splits them.
+    """
+
+    name: str
+    group: str
+    type: Literal["function", "container"]
+    site: str
+    pod: str
+    container: str
+    revision: str | None = None
+    lines: list[LogLine] = []
+
+
 class StreamEnd(BaseModel):
     """The ``end`` event: the stream finished on purpose, and why.
 

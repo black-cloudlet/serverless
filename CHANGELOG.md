@@ -13,26 +13,39 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   endpoints: `GET .../{name}/pods` (the workload's pods on the current site),
   `GET .../{name}/logs/pods/{pod}` (follow one pod's log), and
   `GET .../{name}/stats/stream` (the existing `/stats` body, pushed). The first
-  two are **always** streams; `/stats` keeps its JSON form as the cheap poll
-  target. Streaming was designed but deliberately not built
+  two **stream by default** and answer once under `?follow=false`; `/stats` keeps
+  its JSON form as the cheap poll target. Streaming was designed but deliberately not built
   (docs/ARCHITECTURE.md - Open Questions), because three things had to be
   answered first; each is why a piece of this looks the way it does.
 
-  **BREAKING: `GET .../{name}/logs` is gone**, and so is the workload-level log
-  follow. A snapshot of a pod log is a lie by omission - Kubernetes keeps no ring
-  buffer beyond the node, so what a point-in-time read returns is whatever had
-  not rotated yet - and a workload-level follow has to reconcile a *set* of pods
-  that changes underneath it, which forced a per-stream pod cap and an arbitrary
-  rule for which pods win. Per pod, a stream is one pod, one thread, nothing to
-  reconcile, and the client can say "just the noisy one". The cost is that the
-  client must learn a pod name first, which is what `/pods` is for: until now
-  nothing in the API returned one, and the only way to find out was to read every
-  pod's logs. Note the consequence: a server-side caller that cannot hold a
-  connection has no way to read logs at all.
+  **BREAKING: `GET .../{name}/logs` is gone**, replaced by
+  `GET .../{name}/logs/pods/{pod}` - the same read, aimed at one pod. The
+  workload-level follow is gone too: it has to reconcile a *set* of pods that
+  changes underneath it, which forced a per-stream pod cap and an arbitrary rule
+  for which pods win when a workload is wider than it. Per pod, a stream is one
+  pod, one thread, nothing to reconcile, and the client can say "just the noisy
+  one". The cost is that the client must learn a pod name first, which is what
+  `/pods` is for: until now nothing in the API returned one, and the only way to
+  find out was to read every pod's logs.
 
-  `/pods` is a stream rather than a lookup because its answer expires - Knative
+  **`?follow=false`** on both endpoints answers once, in JSON, and ends. Not a
+  convenience: it is the only form available to a caller that cannot hold a
+  connection open, and the architecture has one - a ServiceNow workflow attaching
+  a failing function's logs to a ticket cannot consume an event stream. It is on
+  both deliberately, because a log snapshot alone would be unreachable: finding a
+  pod name would still require opening a stream. The snapshot returns the same
+  lines a follow would have delivered, so a client renders one shape either way,
+  and it takes **no stream slot** - it ends, so rationing it against the pool that
+  bounds held-open connections would let streams throttle a caller that is not
+  holding one. What it cannot skip is authorization: both forms go through one
+  `_pod_authorizer`, so `follow=false` is not a way around the pod-ownership
+  check. What a snapshot can return is still bounded by what the node holds -
+  Kubernetes keeps no ring buffer beyond its rotated file - so it is the recent
+  past, never the whole history, which is the same limit a follow starts from.
+
+  Streaming is the **default** on both because the answer expires - Knative
   replaces a workload's pods on every revision and removes them all on
-  scale-to-zero - so a roster fetched once quietly stops being true. It reports
+  scale-to-zero - so a roster fetched once quietly stops being true. `/pods` reports
   name, revision, phase, ready, restarts, startedAt and per-pod usage, joining
   the metrics API on by name; a pod too new to have been scraped is still listed
   with `usage: null`, because that is exactly the pod someone is most likely to

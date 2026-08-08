@@ -7,7 +7,12 @@ from collections.abc import AsyncIterator
 from cloudlet_apis.auth import Principal
 from pydantic import ValidationError as PydanticValidationError
 
-from api.models.common import WorkloadStatsResponse, WorkloadSummary
+from api.models.common import (
+    PodLogSnapshot,
+    PodRoster,
+    WorkloadStatsResponse,
+    WorkloadSummary,
+)
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services.builder.runtimes import RuntimeRegistry
 from api.services.offering import FUNCTION
@@ -514,6 +519,55 @@ class FunctionService:
             The rollup plus per-site replicas and usage.
         """
         return await self._engine.stats(FUNCTION, name, user, group)
+
+    async def pods(self, name: str, group: str, user: Principal) -> PodRoster:
+        """The function's pods on the current site, read once.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+
+        Returns:
+            The roster.
+        """
+        return await self._engine.pods(FUNCTION, name, user, group)
+
+    async def pod_logs(
+        self,
+        name: str,
+        group: str,
+        user: Principal,
+        *,
+        pod: str,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> PodLogSnapshot:
+        """One of the function's pods' logs as it stands, read once.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            pod: The pod to read.
+            container: The pod container to read.
+            since_seconds: Only lines newer than this, if set.
+            limit_bytes: Cap on the bytes read, if set.
+
+        Returns:
+            The snapshot.
+        """
+        return await self._engine.pod_logs(
+            FUNCTION,
+            name,
+            user,
+            group,
+            pod=pod,
+            container=container,
+            since_seconds=since_seconds,
+            limit_bytes=limit_bytes,
+        )
 
     async def stream_pods(
         self, name: str, group: str, user: Principal, *, interval: float | None

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, Query, Response
 from fastapi.responses import StreamingResponse
 
 from api.auth.deps import CurrentUser, StreamUser
@@ -12,7 +12,9 @@ from api.dependencies import FunctionDep
 from api.models.common import (
     Group,
     Name,
+    PodLogSnapshot,
     PodName,
+    PodRoster,
     WorkloadStatsResponse,
     WorkloadSummary,
 )
@@ -161,80 +163,108 @@ async def get_function_stats(
     return await svc.stats(name, group, user)
 
 
-@router.get("/{name}/pods", responses=sse.RESPONSES, response_class=StreamingResponse)
+@router.get("/{name}/pods", responses=sse.switchable(PodRoster, "`pods` and `error`"))
 async def stream_function_pods(
     group: Group,
     name: Name,
     user: StreamUser,
     svc: FunctionDep,
+    follow: bool = True,
     interval: Annotated[float | None, Query(gt=0)] = None,
-) -> StreamingResponse:
-    """Stream the function's pods on the current site (Server-Sent Events).
+) -> Response:
+    """The function's pods on the current site - streamed, or read once.
 
-    Always a stream, never a snapshot: Knative replaces a workload's pods on
-    every revision and removes them all on scale-to-zero, so a roster fetched
-    once quietly stops being true. Local site only, matching the log streams it
-    feeds - a pod name is only useful where its log can be read.
+    Streams by default, because the answer expires: Knative replaces a workload's
+    pods on every revision and removes them all on scale-to-zero, so a roster
+    fetched once quietly stops being true. ``follow=false`` returns a single JSON
+    roster instead, for a caller that cannot hold a connection open.
 
-    This is where the ``{pod}`` for ``/logs/pods/{pod}`` comes from; nothing
-    else in the API returns a pod name.
+    Local site only, matching the log endpoint it feeds - a pod name is only
+    useful where its log can be read. This is where the ``{pod}`` for
+    ``/logs/pods/{pod}`` comes from; nothing else in the API returns one.
 
-    Events: ``pods`` (the full roster, the first sent immediately) and ``error``.
-    Lines beginning with ``:`` are heartbeats. An empty roster is normal - the
-    workload is deployed here and scaled to zero.
+    Events (when following): ``pods`` (the full roster, the first sent
+    immediately) and ``error``. Lines beginning with ``:`` are heartbeats. An
+    empty roster is normal - the workload is deployed here and scaled to zero.
 
-    Browsers authenticate with ``?ticket=`` from ``POST /api/v1/stream-tickets``;
-    everything else sends the usual ``Authorization`` header.
+    Browsers authenticate a stream with ``?ticket=`` from
+    ``POST /api/v1/stream-tickets``; everything else sends the usual
+    ``Authorization`` header.
 
     Args:
         group: The owning group (from the request path).
         name: The workload name.
         user: The authenticated caller, by header or ticket (injected).
         svc: The function service (injected).
-        interval: Seconds between listings; omit for the default.
+        follow: Stream the roster (default), or return it once.
+        interval: Seconds between listings when following; omit for the default.
 
     Returns:
-        The event stream.
+        The event stream, or the roster.
     """
+    if not follow:
+        return await svc.pods(name, group, user)
     return sse.stream(await svc.stream_pods(name, group, user, interval=interval))
 
 
-@router.get("/{name}/logs/pods/{pod}", responses=sse.RESPONSES, response_class=StreamingResponse)
+@router.get(
+    "/{name}/logs/pods/{pod}",
+    responses=sse.switchable(PodLogSnapshot, "`open`, `log`, `warning`, `end` and `error`"),
+)
 async def stream_function_pod_logs(
     group: Group,
     name: Name,
     pod: PodName,
     user: StreamUser,
     svc: FunctionDep,
+    follow: bool = True,
     container: str = "user-container",
     sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
-) -> StreamingResponse:
-    """Follow one of the function's pods' logs (Server-Sent Events).
+    limitBytes: Annotated[int | None, Query(gt=0)] = None,
+) -> Response:
+    """Follow one of the function's pods' logs, or read what it holds right now.
 
-    Always a stream: Kubernetes keeps no log buffer beyond the node, so there is
-    no history to return and nowhere but the current site to read from. Get
-    ``pod`` from ``GET .../{name}/pods``.
+    Current site only, either way: Kubernetes keeps no log buffer beyond the node
+    that wrote it. Get ``pod`` from ``GET .../{name}/pods``.
 
-    The stream ends with an ``end`` event when the pod's log does - a scale-down
-    or a new revision, which on Knative is routine and is not reported as an
-    error. Pick the replacement pod off the ``pods`` stream.
+    Following is the default. ``follow=false`` returns a single JSON snapshot of
+    whatever the node still holds - bounded by its log rotation, so it is the
+    recent past and never the whole history - for a caller that cannot hold a
+    connection open. ``limitBytes`` applies only to that form.
 
-    Events: ``open``, ``log`` (one line), ``warning`` (lines dropped because the
-    client read too slowly), ``end``, ``error``. Lines beginning with ``:`` are
-    heartbeats.
+    A followed stream ends with an ``end`` event when the pod's log does - a
+    scale-down or a new revision, which on Knative is routine and is not reported
+    as an error. Pick the replacement pod off the ``pods`` endpoint.
+
+    Events (when following): ``open``, ``log`` (one line), ``warning`` (lines
+    dropped because the client read too slowly), ``end``, ``error``. Lines
+    beginning with ``:`` are heartbeats. The snapshot returns those same lines in
+    one body, so a client renders one shape either way.
 
     Args:
         group: The owning group (from the request path).
         name: The workload name.
-        pod: The pod to follow. A pod that is not this workload's is a 404.
+        pod: The pod to read. A pod that is not this workload's is a 404.
         user: The authenticated caller, by header or ticket (injected).
         svc: The function service (injected).
+        follow: Stream the log (default), or return what the node holds now.
         container: The pod container to read (default the user-container).
         sinceSeconds: Start the log this many seconds back.
+        limitBytes: Cap the bytes read; ``follow=false`` only.
 
     Returns:
-        The event stream.
+        The event stream, or the snapshot.
     """
+    if not follow:
+        return await svc.pod_logs(
+            name,
+            group,
+            user,
+            pod=pod,
+            container=container,
+            since_seconds=sinceSeconds,
+            limit_bytes=limitBytes,
+        )
     return sse.stream(
         await svc.stream_pod_logs(
             name, group, user, pod=pod, container=container, since_seconds=sinceSeconds

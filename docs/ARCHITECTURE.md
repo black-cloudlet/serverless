@@ -652,8 +652,8 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `POST` | `/api/v1/groups/{group}/containers/{name}/pull` | Pull the image **tag** again - no request body. Knative resolves a tag to a digest once, when the revision is created, so an image pushed over the same tag is never picked up; this cuts a new revision in every site, which resolves it again. Nothing else about the workload changes. A digest-pinned container is a `400` (nothing newer to pull). **202 Accepted** - poll the same `statusUrl`. |
 | `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/stats` | **The lightweight endpoint to poll.** Live state only: `overallStatus`, workload-wide `replicas` and `usage`, and the same three per site. No desired-state config, so a two-second refresh never re-reads the workload's backing Secret. Fans out to all sites; a function's build is still read, so `Building` is reported here as on the GET. Totals are summed before rounding (they need not equal the sum of the printed per-site figures) and are `null` if any site could not be measured. Scaled-to-zero -> `replicas: 0`, `usage: null`. Same `404`/`503` rules as the full GET. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/pods` | **Always a stream** (`text/event-stream`). The workload's pods on the **current site**, pushed every `interval` seconds: name, revision, phase, ready, restarts, startedAt and per-pod usage. This is where the `{pod}` below comes from - nothing else in the API returns a pod name. A stream rather than a lookup because the answer expires: Knative replaces pods on every revision and removes them all on scale-to-zero. Events: `pods`, `error`. An empty roster is normal (scaled to zero), not a `404`. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | **Always a stream.** Follows one pod's log on the current site - Kubernetes keeps no buffer beyond the node, so there is no history to return and nowhere else to read. Optional `container` (default `user-container`), `sinceSeconds`, `ticket`. Ends with an `end` event when the pod's log does (a scale-down or a new revision - routine, so not an `error`). A pod that is not this workload's is a `404`, and so is one that does not exist. Events: `open`, `log`, `warning`, `end`, `error`. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/pods` | The workload's pods on the **current site**: name, revision, phase, ready, restarts, startedAt and per-pod usage. This is where the `{pod}` below comes from - nothing else in the API returns a pod name. **Streams by default** (`text/event-stream`, a `pods` event every `interval` seconds), because the answer expires: Knative replaces pods on every revision and removes them all on scale-to-zero. **`?follow=false`** returns one JSON roster instead, for a caller that cannot hold a connection. Events: `pods`, `error`. An empty roster is normal (scaled to zero), not a `404`. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | One pod's log, from the current site - Kubernetes keeps no buffer beyond the node, so there is nowhere else to read and no history behind what it holds. **Follows by default**; **`?follow=false`** returns a JSON snapshot of what the node holds right now, which is the only form a caller that cannot hold a connection can use. Optional `container` (default `user-container`), `sinceSeconds`, `ticket`, and `limitBytes` (snapshot only). A follow ends with an `end` event when the pod's log does (a scale-down or a new revision - routine, so not an `error`). A pod that is not this workload's is a `404`, and so is one that does not exist. Events: `open`, `log`, `warning`, `end`, `error`. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/stats/stream` | **Follow** the live state as Server-Sent Events - the same body as `/stats`, pushed every `interval` seconds instead of on request, so one connection replaces a client's poll loop. Events: `stats` (the first sent immediately) and `error`. Optional `interval`, `ticket`. Same `404`/`503` rules as `/stats`, plus `503` when the stream pool is full. |
 | `POST` | `/api/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
 | `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
@@ -815,25 +815,41 @@ Live observability is **per pod and Server-Sent Events**. Not WebSockets: the tr
 one-directional, SSE is plain HTTP through the existing Route with no upgrade to negotiate, and
 browsers reconnect on their own.
 
-### Why per pod, and why always a stream
+### Why per pod, and why streaming is the default
 
-There is no `/logs` snapshot and no workload-level log follow. Both were tried and both were
-worse:
-
-- A **snapshot** of a pod log is a lie by omission. Kubernetes keeps no ring buffer beyond the
-  node, so what a point-in-time read returns is "whatever had not rotated yet", and a client that
-  wants to watch has to poll an endpoint that re-reads every pod's whole log each time.
-- A **workload-level** follow has to reconcile a *set* of pods that changes underneath it, which
-  means a per-stream pod cap, an arbitrary rule for which pods win when a workload is wider than
-  the cap, and a client that cannot say "just the noisy one".
+There is no workload-level log follow. It has to reconcile a *set* of pods that changes
+underneath it, which means a per-stream pod cap, an arbitrary rule for which pods win when a
+workload is wider than the cap, and a client that still cannot say "just the noisy one".
 
 Per pod, each stream is one pod, one thread, no set to reconcile - and the choice of what to
 watch moves to the side that knows what the user is looking at. The cost is that the client must
 first learn a pod name, which is what `/pods` is for.
 
-`/pods` is itself a stream rather than a lookup because its answer expires: Knative replaces a
+`/pods` **defaults** to streaming for the same reason its answer expires: Knative replaces a
 workload's pods on every revision and removes them all on scale-to-zero, so a roster fetched once
-quietly stops being true. A client would have to poll it at exactly the cadence this pushes at.
+quietly stops being true, and a client would have to poll it at exactly the cadence this pushes at.
+
+### `follow=false`
+
+Both endpoints take `?follow=false` and answer once, in JSON, instead. This is not a convenience -
+it is the only form available to a caller that cannot hold a connection open, and the architecture
+has one: a ServiceNow workflow attaching a failing function's logs to a ticket cannot consume an
+event stream.
+
+It has to be on **both**. A log snapshot alone would be unreachable, because finding a pod name
+would still require opening a stream.
+
+What the snapshot returns is bounded by what the node still holds - Kubernetes keeps no ring
+buffer beyond its rotated file - so it is the recent past, never the whole history. That is a
+property of the platform, not of this endpoint, and it is the same limit a follow starts from.
+The lines are split exactly as the stream splits them, so a client renders one shape either way.
+
+Two things follow from a snapshot being an ordinary request. It takes **no stream slot** - it
+ends, so rationing it against the pool that exists to bound held-open connections would let
+streams throttle a caller that is not holding one - and it runs on the default executor like every
+other request. What it does *not* get to skip is authorization: both forms go through the same
+`_pod_authorizer`, so `follow=false` is not a way around the check that the named pod is this
+workload's.
 
 Both are **local site only**. A pod name is only useful where its log can be read, and logs live
 on the node that wrote them. (`/stats` remains multi-site: it reports the rollup, which is a
@@ -1062,7 +1078,7 @@ Serverless/
 | **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
 | **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Degraded, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
-| **Observability** | **Streaming is built** (ARCHITECTURE.md: Streaming): `/pods`, `/logs/pods/{pod}` and `/stats/stream` are SSE, with the bounded executor, the Route timeout and the ticket auth that were the open questions. What remains is **durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) - are the only way to get history and a cross-site view. Until then logs are **local site** only and have no history at all, which is also why there is no snapshot endpoint: a point-in-time read could only return whatever had not yet rotated. A consequence worth naming: a server-side caller that cannot hold a connection (a ServiceNow workflow attaching logs to a ticket) has no way to read logs, and would need either a snapshot endpoint back or the log store above. |
+| **Observability** | **Streaming is built** (ARCHITECTURE.md: Streaming): `/pods`, `/logs/pods/{pod}` and `/stats/stream` are SSE, with the bounded executor, the Route timeout and the ticket auth that were the open questions; the first two also answer once under `?follow=false`, for a caller that cannot hold a connection. What remains is **durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) - are the only way to get history and a cross-site view. Until then logs are **local site** only and bounded by the node's rotation, whichever way they are read. |
 | **Audit logging** | Who deployed/changed/deleted what - likely required for enterprise/compliance. |
 | **Stronger isolation** | Optional move from shared-namespace to **namespace-per-group** for hard multi-tenancy. |
 | **Git webhook** | **Not implemented.** A per-function webhook endpoint would pin the pushed commit SHA to the function's build (`BuildRequest.revision` already carries the field), making a push-triggered rebuild idempotent by data. Until then a build follows the branch head and `POST .../functions/{name}/build` is the on-demand trigger (BUILDING.md: Who writes the ksvc image). |

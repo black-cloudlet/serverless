@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from cloudlet_apis.errors import APIError
 from cloudlet_apis.logging import get_logger
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from api.models.common import StreamError
 from api.services.streams import sse
@@ -29,6 +30,36 @@ RESPONSES: dict = {
         "content": {sse.MEDIA_TYPE: {"schema": {"type": "string"}}},
     }
 }
+
+
+def switchable(snapshot: type[BaseModel], events: str) -> dict:
+    """The OpenAPI 200 for a route that streams by default and can be asked not to.
+
+    One operation, two media types, chosen by ``follow``. Both are declared
+    because a generated client that only knew about one of them would be wrong
+    half the time - and the JSON half is the one a caller reaches for precisely
+    because it cannot handle the other.
+
+    Args:
+        snapshot: The model returned when ``follow=false``.
+        events: The named events the stream emits, for the description.
+
+    Returns:
+        The ``responses`` mapping for the route.
+    """
+    return {
+        200: {
+            "description": (
+                f"`follow=true` (the default): an event stream (text/event-stream) "
+                f"emitting {events}; a `:` line is a heartbeat and carries no event. "
+                f"`follow=false`: a single JSON {snapshot.__name__}, read once."
+            ),
+            "content": {
+                sse.MEDIA_TYPE: {"schema": {"type": "string"}},
+                "application/json": {"schema": snapshot.model_json_schema()},
+            },
+        }
+    }
 
 
 def stream(events: AsyncIterator[sse.StreamEvent]) -> StreamingResponse:

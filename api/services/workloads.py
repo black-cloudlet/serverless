@@ -37,6 +37,8 @@ from api.models.common import (
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
+    LogLine,
+    PodLogSnapshot,
     PodLogStreamOpen,
     PodRoster,
     SiteStats,
@@ -1100,6 +1102,165 @@ class WorkloadService:
 
         return stream()
 
+    def _pod_authorizer(
+        self, cluster: Cluster, oname: str, pod: str, kind: str, name: str, user: Principal
+    ):
+        """The check both log reads run, as one blocking callable.
+
+        Shared rather than written twice because the second half is the security
+        boundary: owning the workload is not owning every pod, and the pods of
+        every workload on the platform sit in one namespace. Two copies of that
+        rule is one copy that gets fixed.
+
+        Args:
+            cluster: The local site.
+            oname: The object name (``{name}-{group}``).
+            pod: The pod the caller named.
+            kind: The offering label ("function"/"container").
+            name: The workload name, for the error message.
+            user: The authenticated caller.
+
+        Returns:
+            A callable returning the pod's revision, to run off the event loop.
+        """
+
+        def authorize() -> str | None:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            if not ownership.owned_by(obj, user, kind):
+                raise _hidden_404("read logs of", kind, name, user, obj)
+            found = cluster.get(ResourceKind.POD, pod)
+            labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
+            if labels.get(pods_stream.SERVICE_LABEL) != oname:
+                # Someone else's pod, or none of ours. Same answer as absent: the
+                # response must not confirm that a pod by this name exists.
+                logger.debug("pod '%s' is not a pod of %s '%s'; hidden as 404", pod, kind, name)
+                raise NotFoundError(f"pod '{pod}' not found")
+            return labels.get(pods_stream.REVISION_LABEL)
+
+        return authorize
+
+    async def pods(self, offering: Offering, name: str, user: Principal, group: str) -> PodRoster:
+        """The workload's pods on the local site, read once (``follow=false``).
+
+        The non-streaming half of :meth:`stream_pods`, and the same reads. It
+        exists for the caller that cannot hold a connection - without it, a
+        server-side client could not learn a pod name, and so could not use the
+        log snapshot either.
+
+        No stream slot: this is an ordinary bounded request that ends, and
+        charging it against the streaming pool would let held-open connections
+        throttle a caller that is not holding one.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+
+        Returns:
+            The roster.
+
+        Raises:
+            NotFoundError: If the workload isn't on the local site or the caller
+                can't access it (hidden as 404, matching GET).
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+
+        def read() -> list:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            if not ownership.owned_by(obj, user, kind):
+                raise _hidden_404("read pods of", kind, name, user, obj)
+            return pods_stream.read_roster(cluster, oname)
+
+        return PodRoster(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pods=await asyncio.to_thread(read),
+        )
+
+    async def pod_logs(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        pod: str,
+        container: str,
+        since_seconds: int | None,
+        limit_bytes: int | None,
+    ) -> PodLogSnapshot:
+        """One pod's log as it stands, read once (``follow=false``).
+
+        The non-streaming half of :meth:`stream_pod_logs`, through the same
+        authorization, so the pod-ownership rule cannot differ between them. What
+        it returns is bounded by what the node still holds - there is no history
+        behind that, whichever way it is read.
+
+        No stream slot: the read ends, so it is not a stream and must not be
+        rationed as one.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            pod: The pod to read.
+            container: The pod container to read.
+            since_seconds: Only lines newer than this, if set.
+            limit_bytes: Cap on the bytes read, if set.
+
+        Returns:
+            The snapshot.
+
+        Raises:
+            NotFoundError: If the workload or the pod isn't here, the pod is not
+                this workload's, or the caller can't access it (all hidden as 404).
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+        authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
+
+        def read() -> tuple[str | None, str]:
+            revision = authorize()
+            return revision, cluster.pod_logs(
+                pod,
+                container=container,
+                since_seconds=since_seconds,
+                limit_bytes=limit_bytes,
+            )
+
+        revision, text = await asyncio.to_thread(read)
+        # Split exactly as the stream splits, so a client renders one shape
+        # whichever way it read the log.
+        lines = [
+            LogLine(
+                pod=pod,
+                container=container,
+                revision=revision,
+                time=stamp,
+                message=message,
+            )
+            for stamp, message in (logs_stream.split_timestamp(line) for line in text.splitlines())
+        ]
+        return PodLogSnapshot(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pod=pod,
+            container=container,
+            revision=revision,
+            lines=lines,
+        )
+
     async def stream_pod_logs(
         self,
         offering: Offering,
@@ -1145,19 +1306,7 @@ class WorkloadService:
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         cluster = self.deployer.local_cluster()
-
-        def authorize() -> str | None:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("stream logs of", kind, name, user, obj)
-            found = cluster.get(ResourceKind.POD, pod)
-            labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
-            if labels.get(pods_stream.SERVICE_LABEL) != oname:
-                # Someone else's pod, or none of ours. Same answer as absent: the
-                # response must not confirm that a pod by this name exists.
-                logger.debug("pod '%s' is not a pod of %s '%s'; hidden as 404", pod, kind, name)
-                raise NotFoundError(f"pod '{pod}' not found")
-            return labels.get(pods_stream.REVISION_LABEL)
+        authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
 
         slot = self.capacity.slot()
         slot.__enter__()

@@ -1025,3 +1025,165 @@ async def test_stream_stats_returns_the_slot_when_the_first_reading_fails(capaci
     with pytest.raises(NotFoundError):
         await engine.stream_stats(_offering(), "foo", _caller(), "team")
     assert capacity.open_streams == 0
+
+
+# --- follow=false: the same reads, without the stream ------------------------
+
+
+class SnapshotCluster(OwnedCluster):
+    """An OwnedCluster that also answers the one-shot log read."""
+
+    def __init__(self, *a, text="", **kw):
+        super().__init__(*a, **kw)
+        self.text = text
+        self.reads: list[tuple] = []
+
+    def pod_logs(self, pod, *, container, since_seconds=None, limit_bytes=None):
+        self.reads.append((pod, container, since_seconds, limit_bytes))
+        return self.text
+
+
+async def test_the_snapshot_returns_the_same_lines_the_stream_would(capacity):
+    """One shape either way, so a client renders the log the same however it read it."""
+    cluster = SnapshotCluster(
+        {"p1": "rev-7"},
+        text="2024-03-01T10:00:00Z first\n2024-03-01T10:00:01Z second\n",
+    )
+    engine = _engine(cluster, capacity)
+
+    snap = await engine.pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
+        limit_bytes=None,
+    )
+
+    assert [line.message for line in snap.lines] == ["first", "second"]
+    assert snap.lines[0].time is not None  # split off, as the stream splits it
+    assert snap.lines[0].revision == "rev-7"
+    assert snap.pod == "p1"
+    assert snap.site == "central"
+
+
+async def test_the_snapshot_passes_its_bounds_to_the_cluster(capacity):
+    cluster = SnapshotCluster({"p1": "r1"}, text="x\n")
+    engine = _engine(cluster, capacity)
+
+    await engine.pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="queue-proxy",
+        since_seconds=30,
+        limit_bytes=4096,
+    )
+    assert cluster.reads == [("p1", "queue-proxy", 30, 4096)]
+
+
+async def test_an_empty_log_is_no_lines_rather_than_one_empty_one(capacity):
+    engine = _engine(SnapshotCluster({"p1": "r1"}, text=""), capacity)
+    snap = await engine.pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
+        limit_bytes=None,
+    )
+    assert snap.lines == []
+
+
+async def test_the_snapshot_runs_the_same_pod_ownership_check_as_the_stream(capacity):
+    """follow=false must not be a way around the check that matters."""
+
+    class Foreign(SnapshotCluster):
+        def get(self, kind, name=None, label_selector=None):
+            from common.cluster import ResourceKind
+
+            if kind is ResourceKind.POD and name is not None:
+                return {
+                    "metadata": {
+                        "name": name,
+                        "labels": {pods_stream.SERVICE_LABEL: "someone-elses-workload"},
+                    }
+                }
+            return super().get(kind, name, label_selector)
+
+    cluster = Foreign({})
+    engine = _engine(cluster, capacity)
+
+    with pytest.raises(NotFoundError):
+        await engine.pod_logs(
+            _offering(),
+            "foo",
+            _caller(),
+            "team",
+            pod="victim",
+            container="user-container",
+            since_seconds=None,
+            limit_bytes=None,
+        )
+    assert cluster.reads == [], "the log was read before the check"
+
+
+async def test_the_snapshot_hides_another_group_s_workload_as_a_404(capacity):
+    engine = _engine(SnapshotCluster({"p1": "r1"}), capacity, owner_group="someone-else")
+
+    with pytest.raises(NotFoundError):
+        await engine.pod_logs(
+            _offering(),
+            "foo",
+            _caller(),
+            "team",
+            pod="p1",
+            container="user-container",
+            since_seconds=None,
+            limit_bytes=None,
+        )
+
+
+async def test_neither_snapshot_spends_a_stream_slot(capacity):
+    """They end, so they are not streams and must not be rationed as one."""
+    cluster = SnapshotCluster({"p1": "r1"}, text="x\n")
+    engine = _engine(cluster, capacity)
+
+    # Enough calls to exhaust the (tiny) admission budget several times over.
+    for _ in range(FAST.max_concurrent * 3):
+        await engine.pods(_offering(), "foo", _caller(), "team")
+        await engine.pod_logs(
+            _offering(),
+            "foo",
+            _caller(),
+            "team",
+            pod="p1",
+            container="user-container",
+            since_seconds=None,
+            limit_bytes=None,
+        )
+    assert capacity.open_streams == 0
+
+
+async def test_the_pods_snapshot_is_the_roster_the_stream_would_have_sent(capacity):
+    cluster = SnapshotCluster({"p2": "r1", "p1": "r1"})
+    engine = _engine(cluster, capacity)
+
+    roster = await engine.pods(_offering(), "foo", _caller(), "team")
+
+    assert [p.pod for p in roster.pods] == ["p1", "p2"]
+    assert roster.site == "central"
+    assert roster.name == "foo"
+
+
+async def test_the_pods_snapshot_hides_another_group_s_workload_as_a_404(capacity):
+    engine = _engine(SnapshotCluster({}), capacity, owner_group="someone-else")
+
+    with pytest.raises(NotFoundError):
+        await engine.pods(_offering(), "foo", _caller(), "team")

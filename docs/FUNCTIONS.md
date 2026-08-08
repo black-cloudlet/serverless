@@ -220,9 +220,8 @@ source, not images.)
 > Server-Sent Events every few seconds instead of returned on request, so one
 > connection replaces the poll loop.
 >
-> **Logs are per pod, and always a stream.** There is no snapshot: Kubernetes keeps
-> no buffer beyond the node, so a point-in-time read could only return whatever had
-> not yet rotated. Two steps - find a pod, then follow it:
+> **Logs are per pod, and stream by default.** Two steps - find a pod, then follow
+> it:
 >
 > ```bash
 > # 1. the roster (also a stream; pods come and go on every revision)
@@ -238,6 +237,22 @@ source, not images.)
 > curl -N -H "Authorization: Bearer $TOKEN" \
 >   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
 > ```
+>
+> **`?follow=false` on either** answers once, in JSON, and ends - for a caller that
+> cannot hold a connection open (a ServiceNow workflow attaching logs to a ticket,
+> a script, a CI step). It is on both endpoints deliberately: a log snapshot alone
+> would be unreachable, since finding a pod name would still need a stream.
+>
+> ```bash
+> curl -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
+> curl -H "Authorization: Bearer $TOKEN" \
+>   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
+> ```
+>
+> The snapshot returns the same `lines` a follow would have delivered, so a client
+> renders one shape either way - bounded by what the node still holds, which is the
+> recent past and never the whole history.
 >
 > A browser cannot send that header (`EventSource` has no API for it), so it mints a
 > short-lived ticket first and puts that in the URL:
