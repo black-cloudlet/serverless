@@ -115,10 +115,20 @@ registry:
   organization: ""
 
   # Delete a function's image and cache repositories when it is deleted - nothing
-  # in the cluster owns registry content. Needs a Quay OAuth token in the API
-  # namespace (externalSecrets below); without it, cleanup is skipped.
-  # docs/BUILDING.md - Registry cleanup on delete.
+  # in the cluster owns registry content. Needs the tokens below; without them,
+  # cleanup is skipped. docs/BUILDING.md - Registry cleanup on delete.
   deleteOnFunctionDelete: true
+
+  # One Quay OAuth token per site (Organization -> Applications, scoped
+  # `repo:admin` - NOT the push robot, which cannot call Quay's management API),
+  # read from one Vault entry each and assembled into a single variable: a delete
+  # reclaims repositories in every site from whichever instance took the request.
+  # `{site}` is substituted per site.
+  apiTokens:
+    create: true
+    secretName: serverless-api-registry-tokens
+    key: "cloudlet/platforms/serverless/{site}"
+    property: registry-api-token
 
 # Runtimes offered to clients, mounted as a file. Keys: builder (a build.builders
 # entry), versionEnv, defaultVersion, versions (must be a subset of what the
@@ -426,22 +436,6 @@ externalSecrets:
         - secretKey: SERVERLESS_ADMIN_API_KEY
           key: cloudlet/platforms/serverless
           property: admin-api-key
-    # Quay OAuth token (Organization -> Applications), scoped `repo:admin`, for
-    # deleting a deleted function's repositories (registry.deleteOnFunctionDelete).
-    # NOT the push robot - robots cannot call Quay's management API.
-    # One Vault entry per site, assembled into one variable: a delete reclaims
-    # repositories in every site from whichever instance took the request.
-    # `{site}` is substituted per site.
-    #
-    # Optional because ESO fails the WHOLE ExternalSecret if any one site's path
-    # is missing - and `sites` is shared, so adding a site before its Vault entry
-    # exists would otherwise stop the API pod starting in every cluster. Absent,
-    # registry cleanup is skipped, which is what it already does untokenised.
-    - name: serverless-api-registry
-      optional: true
-      perSiteRegistryTokens:
-        key: "cloudlet/platforms/serverless/{site}"
-        property: registry-api-token
 
 # Default-deny NetworkPolicies for workload pods. Verify the namespace names and
 # CIDRs match your cluster.

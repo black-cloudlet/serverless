@@ -207,6 +207,12 @@ registry:
   url: registry.internal
   organization: ""
   deleteOnFunctionDelete: true
+  # ── NEW: one Quay OAuth token per site, in its own ExternalSecret ──────────
+  apiTokens:
+    create: true
+    secretName: serverless-api-registry-tokens
+    key: "cloudlet/platforms/serverless/{site}"
+    property: registry-api-token
 
 sites:
   - name: central
@@ -312,25 +318,23 @@ token. The tokens differ per site, so this is one Vault entry per site,
 assembled by the chart into a single env var:
 
 ```yaml
-externalSecrets:
-  secrets:
-    - name: serverless-api-registry
-      # Rendered over `sites[]`: one Vault entry per site, assembled into one
-      # env var because the API needs every site's token, not only its own.
-      perSiteRegistryTokens:
-        key: cloudlet/platforms/serverless/{site}     # {site} substituted per entry
-        property: registry-api-token
+registry:
+  apiTokens:
+    create: true
+    secretName: serverless-api-registry-tokens
+    key: "cloudlet/platforms/serverless/{site}"     # {site} substituted per entry
+    property: registry-api-token
 ```
 
-rendering an ExternalSecret whose `target.template` builds the JSON:
+rendering an ExternalSecret - **its own template**, `registry-tokens.yaml` - whose
+`target.template` builds the JSON from one entry per site:
 
 ```yaml
   target:
-    name: serverless-api-registry
+    name: serverless-api-registry-tokens
     template:
-      engineVersion: v2
       data:
-        SERVERLESS_REGISTRY_API_TOKENS: '{"central":{{ .central | toJson }},"south":{{ .south | toJson }}}'
+        SERVERLESS_SITE_REGISTRY_TOKENS: '{"central":"{{ index . "central" }}","south":"{{ index . "south" }}"}'
   data:
     - secretKey: central
       remoteRef: { key: cloudlet/platforms/serverless/central, property: registry-api-token }
@@ -338,14 +342,21 @@ rendering an ExternalSecret whose `target.template` builds the JSON:
       remoteRef: { key: cloudlet/platforms/serverless/south, property: registry-api-token }
 ```
 
-**That entry is `optional: true` on the Deployment's `envFrom`.** ESO fails the
-*whole* ExternalSecret if any one site's path is missing, and `sites` is shared
-across clusters - so adding a site before its Vault entry exists would otherwise
-stop the API pod starting in every cluster, which is a spectacular blast radius
-for a config change aimed at one new site. Absent, registry cleanup is skipped,
-which is exactly what it already does untokenised. The other entries stay
-required: the admin API key going quietly missing is not a degradation anyone
-wants to discover later.
+It is deliberately **not** an entry in `externalSecrets.secrets`. That list is a
+fixed name -> Vault-property projection; this is keyed by `sites`, needs a
+`target.template` to assemble one value out of many, and fails in a way none of
+the others can. Forcing it in meant special-casing the generic loop twice - once
+for the per-site entries and once for an `optional` flag that exists for this
+object alone. In its own file the gate is local and the `optional: true` below is
+unconditional.
+
+**That `secretRef` is `optional: true` on the Deployment.** ESO fails the *whole*
+ExternalSecret if any one site's path is missing, and `sites` is shared across
+clusters - so adding a site before its Vault entry exists would otherwise stop the
+API pod starting in every cluster, a spectacular blast radius for a config change
+aimed at one new site. Absent, registry cleanup is skipped, which is exactly what
+it already does untokenised. The other entries stay required: the admin API key
+going quietly missing is not a degradation anyone wants to discover later.
 
 Two notes on shape. A site-keyed **JSON object** is used rather than one env var
 per site (`SERVERLESS_REGISTRY_API_TOKENS__CENTRAL`) because a site name is a
@@ -366,12 +377,12 @@ that can write Knative Services in every cluster.
 
 | File | Change |
 |---|---|
-| `values.yaml` | `sites[].registry`; `build.kpackRegistry`; a per-site `registrySecret.key`; `perSiteRegistryTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
+| `values.yaml` | `sites[].registry`; `build.kpackRegistry`; a per-site `registrySecret.key`; `registry.apiTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
 | `templates/configmap.yaml` | Serialize each site's `registry` into `SERVERLESS_SITES` alongside `name`/`cluster` |
 | `templates/_helpers.tpl` | `serverless-api.siteRegistry` resolves **this release's** site (`global.site`) against `sites[]`; `registryBase` and `builderImage` hang off it, so a Builder pushes locally. `validateBuild` gains the checks below |
 | `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host, and read its credentials from a per-site Vault path; add the kpack registry pull Secret |
 | `templates/kpack/serviceaccount.yaml` | `kpack-builder` lists both Secrets - local registry (push + pull) and kpack registry (pull) |
-| `templates/externalsecret.yaml` | Support `target.template` plus a `perSiteRegistryTokens` entry, so one Vault entry per site becomes one `SERVERLESS_REGISTRY_API_TOKENS` env var |
+| `templates/registry-tokens.yaml` | **New.** One Vault entry per site, assembled by an ESO `target.template` into one `SERVERLESS_SITE_REGISTRY_TOKENS` variable |
 | `templates/deployment.yaml` | Add `SERVERLESS_BUILD__KPACK_REGISTRY_SECRET`; the existing `SERVERLESS_REGISTRY__*` stay as the inherited default |
 | `templates/build-controller.yaml` | Drop the prune env var |
 | `templates/networkpolicy.yaml` | **Nothing** - see below |
@@ -516,15 +527,9 @@ externalSecrets:
         - secretKey: SERVERLESS_ADMIN_API_KEY
           key: cloudlet/platforms/serverless
           property: admin-api-key
-    # ── CHANGED: one Vault entry per site, assembled into one env var ─────────
-    # Not per-release: a delete reclaims repositories in EVERY site from
-    # whichever instance took the request, so every pod needs every site's
-    # token. `{site}` is substituted per entry from `sites[]`; the chart adds
-    # the ESO `target.template` that builds the site-keyed JSON.
-    - name: serverless-api-registry
-      perSiteRegistryTokens:
-        key: "cloudlet/platforms/serverless/{site}"
-        property: registry-api-token
+    # ── The registry token entry MOVED OUT of this list, to `registry.apiTokens`
+    # and its own template. It is keyed by `sites` rather than by a fixed name,
+    # so it does not fit this list's shape (see above).
 ```
 
 **Not changed, and worth saying so:** `networkPolicy`. A registry is always
@@ -548,12 +553,10 @@ build:
     registrySecret:
       key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
 
-externalSecrets:
-  secrets:
-    - name: serverless-api-registry
-      perSiteRegistryTokens:
-        key: "cloudlet/platforms/serverless/{site}"
-        property: registry-api-token
+registry:
+  apiTokens:
+    key: "cloudlet/platforms/serverless/{site}"
+    property: registry-api-token
 ```
 
 plus, in Vault: a `registry-username` / `registry-password` / `registry-api-token`

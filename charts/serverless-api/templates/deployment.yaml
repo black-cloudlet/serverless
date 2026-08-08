@@ -115,9 +115,18 @@ spec:
             {{- range .Values.externalSecrets.secrets }}
             - secretRef:
                 name: {{ .name }}
-                {{- with .optional }}
-                optional: {{ . }}
-                {{- end }}
+            {{- end }}
+            {{- with .Values.registry.apiTokens }}
+            {{- if .create }}
+            - secretRef:
+                name: {{ .secretName }}
+                # ESO fails the WHOLE ExternalSecret if any one site's Vault path
+                # is missing, and `sites` is shared - so a site added before its
+                # entry exists would otherwise stop this pod starting in every
+                # cluster. Absent, registry cleanup is skipped, which is what it
+                # already does untokenised.
+                optional: true
+            {{- end }}
             {{- end }}
           volumeMounts:
             - name: {{ .Values.certificate.name }}
