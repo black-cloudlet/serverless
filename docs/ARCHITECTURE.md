@@ -431,6 +431,8 @@ component owns:
 
 - SSO OIDC discovery + **JWKS fetch/cache** and **token validation** (`TokenValidator`),
 - **claims → group** mapping and admin/tenant policy (`principal_from_claims`, `Principal`),
+- **stream tickets** (`StreamTickets`) - the short-lived signed credential a browser opens an SSE
+  endpoint with, since `EventSource` cannot send a header (ARCHITECTURE.md: Streaming),
 - the **`SSOAuth.require_auth`** dependency (and the `CurrentUser` annotation) the routers
   use; per-group authorization is asserted in the service layer (`assert_group`).
 
@@ -920,6 +922,13 @@ path, for ~60s, carrying an identity the caller already had. It is HMAC-signed r
 because two replicas serve behind one Route and either may take the stream - a ticket held in the
 minting process's memory would fail about half the time.
 
+The mechanism is **`cloudlet_apis.auth.StreamTickets`**, shared with every API on the platform for
+the same reason token validation is (ARCHITECTURE.md: Auth as a shared library) - `EventSource`
+sends no header anywhere, not just here. What stays in this repository is the half that is ours:
+`STREAM_PATH` in `api/models/stream.py` enumerates the paths a ticket may be minted for, because a
+bearer credential in a URL should open a listed thing rather than an inferred one, and those paths
+are this API's to know.
+
 ```
 POST /api/v1/stream-tickets            EventSource(url + "?ticket=…")
   Authorization: Bearer <SSO token>  →   GET …/logs/pods/{pod}?ticket=…
@@ -974,9 +983,9 @@ Serverless/
 │   ├── dependencies.py              # FastAPI DI: cached service singletons
 │   ├── core/
 │   │   └── config.py                # api Settings(CommonSettings) + SSO/CORS/route-domain fields
-│   ├── auth/                        # wiring only - the component is cloudlet_apis.auth
-│   │   ├── deps.py                  # get_auth() from this service's settings; require_auth, CurrentUser
-│   │   └── tickets.py               # signed stream tickets (the browser's way into an SSE endpoint)
+│   ├── auth/                        # wiring only - the components are cloudlet_apis.auth
+│   │   └── deps.py                  # get_auth()/get_tickets() from this service's settings;
+│   │                                # require_auth + require_stream_auth (header or ?ticket=)
 │   ├── routers/                     # functions, containers, info (public), streams (ticket minting)
 │   │   └── sse.py                   # renders a service's events as an event-stream response
 │   ├── models/                      # Pydantic schemas: common, function, container, info, stream

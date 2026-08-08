@@ -85,6 +85,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   key disables key auth, and the header still works, so a curl follow needs no
   new configuration.
 
+  The mechanism itself is **`cloudlet_apis.auth.StreamTickets`** (cloudlet-apis
+  0.2.0), shared for the same reason token validation is: `EventSource` sends no
+  header anywhere, not just here. What stays in this repository is the half that
+  is ours - `STREAM_PATH` enumerates the paths a ticket may be minted for,
+  because a bearer credential in a URL should open a listed thing rather than an
+  inferred one, and those paths are this API's to know. **Requires cloudlet-apis
+  >= 0.2.**
+
   Owning a workload is not owning every pod, and all workloads' pods share a
   namespace - so the log stream checks the KSVC's ownership labels **and** that
   the named pod carries this workload's service label. A pod that fails either is

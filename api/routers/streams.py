@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
+from cloudlet_apis.auth import StreamTickets
 from fastapi import APIRouter, Depends
 
 from api.auth.deps import CurrentUser, get_tickets
-from api.auth.tickets import StreamTickets
 from api.models.stream import StreamTicketRequest, StreamTicketResponse
 from api.services.state.ksvc_state import ISRAEL_TZ
 

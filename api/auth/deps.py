@@ -12,11 +12,14 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated
 
-from cloudlet_apis.auth import Principal, SSOAuth  # noqa: F401 - Principal re-exported
+from cloudlet_apis.auth import (  # noqa: F401 - Principal re-exported
+    Principal,
+    SSOAuth,
+    StreamTickets,
+)
 from cloudlet_apis.errors import UnauthenticatedError
 from fastapi import Depends, Query, Request
 
-from api.auth.tickets import StreamTickets
 from api.core.config import get_settings
 
 

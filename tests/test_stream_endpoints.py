@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from cloudlet_apis.auth import Principal
+from cloudlet_apis.auth import Principal, StreamTickets
 from cloudlet_apis.errors import NotFoundError, ServiceUnavailableError
 from fastapi.testclient import TestClient
 
 from api.auth.deps import get_tickets, optional_auth, require_auth
-from api.auth.tickets import StreamTickets
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
 from api.models.common import (
