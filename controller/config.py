@@ -19,9 +19,6 @@ class ControllerSettings(CommonSettings):
     resync_seconds: int = Field(default=300, gt=0)
     # Only for a pass that raised; a watch that merely ended resyncs at once.
     error_backoff_seconds: float = Field(default=5.0, ge=0)
-    # Delete the Images a switchover stranded in the other sites. Off leaves them
-    # rebuilding (docs/BUILDING.md - Pruning stranded Images).
-    prune_orphans: bool = True
 
 
 @lru_cache

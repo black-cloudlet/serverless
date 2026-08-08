@@ -5,7 +5,7 @@ from api.models.common import SiteStatus
 from api.services.offering import CONTAINER, FUNCTION
 from api.services.sites.deployer import Deployer, aggregate, status_code_for
 from common.errors import SiteTotalFailure, ValidationError
-from tests.conftest import runtime_registry
+from tests.conftest import plan_for, runtime_registry
 
 
 def _auth_with_admin_key(monkeypatch, raw_key, admin_groups=("platform-admins",)):
@@ -233,13 +233,12 @@ class _NullBuilder:
 
     pull_secret = "reg-creds"
 
-    def image_ref(self, req):
+    def image_ref(self, req, registry=None):
         return "reg/built:1"
 
-    def plan(self, req, labels):
-        from common.build import BuildPlan
+    def plan(self, req, labels, registries):
 
-        return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
+        return plan_for(registries, self.image_ref(req))
 
     def status(self, cluster, name, group):
         return None
@@ -1157,9 +1156,14 @@ async def test_list_of_containers_reads_no_build():
 class _ApplyCluster:
     """Records applied manifests; serves a preset existing KSVC (and Secrets)."""
 
-    def __init__(self, name, existing, secrets=None, images=None):
+    def __init__(self, name, existing, secrets=None, images=None, registry=None):
+        from common.config import RegistryConfig
+
         self.site = name
         self.name = name
+        # A real Cluster resolves its site's registry at construction; a fake
+        # that stands in for one has to carry it too.
+        self.registry = registry or RegistryConfig()
         self._existing = existing  # oname -> ksvc dict
         self._secrets = secrets or {}  # secret name -> secret dict (preset)
         self._images = images or {}  # kpack Image name -> object (preset)
@@ -1331,15 +1335,14 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         def __init__(self):
             self.calls = 0
 
-        def image_ref(self, req):
+        def image_ref(self, req, registry=None):
             return "reg/built:rel"
 
-        def plan(self, req, labels):
-            from common.build import BuildPlan
+        def plan(self, req, labels, registries):
 
             self.calls += 1
             self.req = req
-            return BuildPlan(tag=self.image_ref(req), replicated=[], local=[])
+            return plan_for(registries, self.image_ref(req))
 
     existing = build_ksvc(
         name="fn-team",
@@ -1394,7 +1397,7 @@ async def test_function_update_without_token_keeps_image():
         def __init__(self):
             self.calls = 0
 
-        def plan(self, req, labels):
+        def plan(self, req, labels, registries):
             self.calls += 1
             raise AssertionError("no token stored -> nothing to declare a build with")
 
@@ -1445,14 +1448,13 @@ async def test_function_create_persists_git_secret():
     from api.services.manifests.secrets import GIT_TOKEN_KEY, build_git_secret
 
     class _StubBuilder(_NullBuilder):
-        def plan(self, req, labels):
-            from common.build import BuildPlan
+        def plan(self, req, labels, registries):
 
             # the git Secret is now part of what the builder declares
-            return BuildPlan(
-                tag=self.image_ref(req),
+            return plan_for(
+                registries,
+                self.image_ref(req),
                 replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
-                local=[],
             )
 
     cluster = _ApplyCluster("site-a", {})  # nothing exists yet
@@ -1485,12 +1487,11 @@ async def test_function_update_reuses_stored_git_token():
         def __init__(self):
             self.calls = 0
 
-        def plan(self, req, labels):
-            from common.build import BuildPlan
+        def plan(self, req, labels, registries):
 
             self.calls += 1
             self.req = req
-            return BuildPlan(tag="reg/built:rel", replicated=[], local=[])
+            return plan_for(registries, "reg/built:rel")
 
     existing = build_ksvc(
         name="fn-team",
@@ -1921,9 +1922,12 @@ async def test_accept_rejects_group_caller_is_not_member_of():
 class _DeleteCluster:
     """Records deletions; serves a preset KSVC (or none) by name."""
 
-    def __init__(self, name, ksvc):
+    def __init__(self, name, ksvc, registry=None):
+        from common.config import RegistryConfig
+
         self.name = name
         self.site = name
+        self.registry = registry or RegistryConfig()
         self._ksvc = ksvc  # the KSVC dict, or None if absent
         self.deleted = []  # [(ResourceKind, name)]
 
@@ -2019,6 +2023,41 @@ async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
     assert (ResourceKind.KPACK_IMAGE, "fn-app-team") in cluster.deleted
     assert (ResourceKind.SERVICE_ACCOUNT, "fn-app-team") in cluster.deleted
     assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
+
+
+async def test_delete_reclaims_every_sites_registry_with_that_sites_token(monkeypatch):
+    """Each site built its own image into its own registry, so each is reclaimed.
+
+    From whichever instance took the request: a delete lands on one API, and the
+    peer's repositories have nothing else that would ever address them.
+    """
+    from cloudlet_apis.auth import Principal
+
+    from api.services import offering as offering_svc
+    from common.config import RegistryConfig
+
+    calls = []
+    monkeypatch.setattr(
+        offering_svc.registry_svc,
+        "delete_function_repositories",
+        lambda registry, group, name: calls.append((registry.url, registry.api_token, name)),
+    )
+
+    site_a = _DeleteCluster(
+        "site-a", _ksvc("function"), registry=RegistryConfig(url="registry.a", api_token="tok-a")
+    )
+    site_b = _DeleteCluster(
+        "site-b", _ksvc("function"), registry=RegistryConfig(url="registry.b", api_token="tok-b")
+    )
+    engine = _workload_service({"site-a": site_a, "site-b": site_b}, builder=_NullBuilder())
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await engine.delete(FUNCTION, "app", user, "team")
+
+    assert sorted(calls) == [
+        ("registry.a", "tok-a", "app"),
+        ("registry.b", "tok-b", "app"),
+    ]
 
 
 async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
@@ -2887,8 +2926,12 @@ async def test_stats_reads_revision_and_usage_on_the_fanout_thread():
     assert seen["usage"] == seen["ksvc"], "usage read spawned a thread"
 
 
-async def test_get_overlaps_the_spec_and_build_reads():
-    """The spec read and the build read are independent, so they must overlap.
+async def test_get_reads_every_sites_build_concurrently():
+    """Each site's build is read in that site's own fan-out thread.
+
+    The build is per site now, so a GET pays one build read per site. Run in
+    sequence that is N round trips added to every read; run inside the fan-out
+    each rides along with the KSVC read it belongs to.
 
     Asserted as overlapping intervals rather than elapsed time, so the result
     does not depend on how fast or loaded the machine is: run in sequence the
@@ -2899,12 +2942,10 @@ async def test_get_overlaps_the_spec_and_build_reads():
     from cloudlet_apis.auth import Principal
 
     from api.models.common import Scaling
-    from api.services.manifests.files import VolumeSpec
     from api.services.manifests.ksvc import build_ksvc
     from common.build import BuildStatus
     from common.cluster import ResourceKind
 
-    # a function carrying one mounted file, so reading its spec costs a ConfigMap get
     ksvc = build_ksvc(
         name="app-team",
         group="team",
@@ -2913,9 +2954,7 @@ async def test_get_overlaps_the_spec_and_build_reads():
         offering="function",
         host="app-team.ex.com",
         env=[],
-        volumes=[
-            VolumeSpec("files-config", "configmap", "app-team-files", "/etc/a.conf", "etc-a.conf")
-        ],
+        volumes=[],
         scaling=Scaling(),
         size="small",
         runtime="python",
@@ -2924,32 +2963,29 @@ async def test_get_overlaps_the_spec_and_build_reads():
 
     spans: dict[str, list[float]] = {}
 
-    def _record(key):
-        spans[key] = [time.monotonic()]
-        time.sleep(0.05)
-        spans[key].append(time.monotonic())
-
-    class _SpecCluster:
-        site = name = "site-a"
+    class _Cluster:
+        def __init__(self, site):
+            self.site = self.name = site
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
-            if kind == ResourceKind.CONFIG_MAP:
-                _record("spec")
-                return {"data": {}}
             from common.errors import NotFoundError as _NF
 
             raise _NF("best-effort")
 
     class _SlowBuilder(_NullBuilder):
         def status(self, cluster, name, group):
-            _record("build")
+            spans[cluster.site] = [time.monotonic()]
+            time.sleep(0.05)
+            spans[cluster.site].append(time.monotonic())
             return BuildStatus(state="Ready")
 
-    engine = _workload_service({"site-a": _SpecCluster()}, builder=_SlowBuilder())
+    engine = _workload_service(
+        {"site-a": _Cluster("site-a"), "site-b": _Cluster("site-b")}, builder=_SlowBuilder()
+    )
     user = Principal(subject="u", username="alice", groups=["team"])
     await engine.get(FUNCTION, "app", user, "team")
 
-    (spec_start, spec_end), (build_start, build_end) = spans["spec"], spans["build"]
-    assert spec_start < build_end and build_start < spec_end, "reads did not overlap"
+    (a_start, a_end), (b_start, b_end) = spans["site-a"], spans["site-b"]
+    assert a_start < b_end and b_start < a_end, "the per-site build reads did not overlap"

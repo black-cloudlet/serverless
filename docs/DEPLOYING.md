@@ -47,7 +47,8 @@ flowchart LR
   the config is plain `env` on each), a `serverless-api-runtimes` **`ConfigMap`** holding the
   available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
   workloads namespace (ARCHITECTURE.md: Networking & Exposure), **two `Deployment`s** - the API and the build
-  controller (BUILDING.md: Digest propagation), configured under `api` and `buildController`
+  controller, which watches and writes this site only (BUILDING.md: Digest propagation),
+  configured under `api` and `buildController`
   respectively, sharing the root `image` section for registry and pull policy - a `Service`
   and `Route` for the API alone (the controller serves nothing, with a
   configurable host/labels/annotations), `Role`/`RoleBinding` (bound to the client-cert CN
@@ -96,8 +97,9 @@ serverless-api chart                            one release per cluster/site
 ├── Builder x3              ...... go | python | node   (workloads namespace)
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
-├── ExternalSecret          ...... the registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
-├── ExternalSecret          ...... the Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
+├── ExternalSecret          ...... this site's registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
+├── ExternalSecret          ...... the kpack registry's, pull-only (omitted when it is the site registry)
+├── ExternalSecret          ...... every site's Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
 ├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Network policy for build pods)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
 ├── SCC + ClusterRole       ...... build pods' CNB uid/gid, off by default (DEPLOYING.md: OpenShift SCC for builds)  [cluster-scoped]
@@ -124,7 +126,7 @@ rather than adding one:
 |---|---|
 | **Ownership** | A function's `Image` and build `ServiceAccount` are ordinary owned resources of its KSVC, carrying the same `ownerReference` as its env Secret and DomainMapping. Deleting the function garbage-collects them - no explicit cleanup path, and no way to orphan an `Image` that would rebuild a deleted function forever (BUILDING.md: Lifecycle & Cleanup). ownerReferences cannot cross namespaces, so this only works co-located. |
 | **One git credential** | The workload's `{workload}-git` Secret is the *only* copy of the token. It is `kubernetes.io/basic-auth` carrying `kpack.io/git`, which is the shape kpack clones with, and the API reads the password back to rebuild on a later edit. Split across namespaces this had to be two Secrets holding the same token. |
-| **One registry credential** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in one namespace, so one `ExternalSecret` rather than a projection per namespace (BUILDING.md: Registry & Git Credentials). |
+| **One registry credential per site** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in one namespace, so one `ExternalSecret` rather than a projection per namespace. The **name** is identical in every site because every site's KSVC references it; the contents are that site's, from a per-site Vault path (BUILDING.md: Registry & Git Credentials). |
 
 The cost is that build pods - which execute tenant source and resolve tenant dependency
 trees - are scheduled beside the running functions and share their namespace boundary.

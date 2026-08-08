@@ -66,9 +66,8 @@ api:
     #   haproxy.router.openshift.io/balance: roundrobin
     annotations: {}
 
-# Rolls each finished build's digest onto the function's Knative Service in
-# every site (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no
-# Service and no Route.
+# Rolls each finished build's digest onto the function's Knative Service in this
+# site (docs/PER-SITE-REGISTRY.md). Serves no HTTP, so no Service and no Route.
 buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
@@ -94,12 +93,6 @@ buildController:
 
   # How long each watch is held open, and so also the full-relist interval.
   resyncSeconds: 300
-
-  # Delete the Images a switchover stranded in the other sites, which would
-  # otherwise keep rebuilding and publishing digests that fight this site's.
-  # The newer Image wins, so only one site ever prunes.
-  # docs/BUILDING.md - Pruning stranded Images.
-  pruneOrphans: true
 
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
@@ -153,6 +146,7 @@ stream:
   ticketTtlSeconds: 60
 
 sso:
+  # Templated, so it can be derived rather than repeated per environment.
   issuer: https://sso.internal/realms/serverless
   audience: ""
   swaggerClientId: serverless-api
@@ -160,15 +154,26 @@ sso:
   adminGroups:
     - platform-admins
 
+# Platform default; a site may override the host under `sites[].registry`.
 registry:
   url: registry.internal
   organization: ""
 
   # Delete a function's image and cache repositories when it is deleted - nothing
-  # in the cluster owns registry content. Needs a Quay OAuth token in the API
-  # namespace (externalSecrets below); without it, cleanup is skipped.
-  # docs/BUILDING.md - Registry cleanup on delete.
+  # in the cluster owns registry content. Needs the tokens below; without them,
+  # cleanup is skipped. docs/BUILDING.md - Registry cleanup on delete.
   deleteOnFunctionDelete: true
+
+  # One Quay OAuth token per site (Organization -> Applications, scoped
+  # `repo:admin` - NOT the push robot, which cannot call Quay's management API),
+  # read from one Vault entry each and assembled into a single variable: a delete
+  # reclaims repositories in every site from whichever instance took the request.
+  # `{site}` is substituted per site.
+  apiTokens:
+    create: true
+    secretName: serverless-api-registry-tokens
+    key: "cloudlet/platforms/serverless/{site}"
+    property: registry-api-token
 
 # Runtimes offered to clients, mounted as a file. Keys: builder (a build.builders
 # entry), versionEnv, defaultVersion, versions (must be a subset of what the
@@ -225,24 +230,45 @@ build:
   # (reaching the API as SERVERLESS_REGISTRY__REPOSITORY). The repo must exist
   # and be writable by the build ServiceAccount. Changing it on an install that
   # already has functions is a migration, not a config edit
-  # (docs/BUILDING.md - Registry layout).
+  # (docs/BUILDING.md - Registry layout). Templated, but it must resolve to the
+  # SAME string in every site: only the registry HOST varies per site, and each
+  # release computes this path for its peers too.
   builderRepository: serverless/builders
 
   # Username paired with each caller's git token. GitHub/GitLab PATs ignore it;
   # Bitbucket app passwords need the real username.
   gitUsername: x-access-token
 
+  # Read-only registry holding kpack's own images and the ClusterStack/
+  # ClusterStore content: pulled by every site, written by none, mirrored once.
+  # Empty `url` means it IS the site registry (today's behaviour) - no second
+  # Secret, nothing added to the build accounts.
+  kpackRegistry:
+    # The host the kpack release uses for `images.registry` and
+    # `clusterBuild.registry`. e.g. registry.kpack.internal
+    url: ""
+    # Pull-only, and needed on BOTH build accounts: `export` pulls the run image.
+    pullSecret:
+      name: kpack-registry-creds
+      # False when the Secret is provided out-of-band.
+      create: true
+      key: cloudlet/platforms/serverless
+      usernameProperty: kpack-registry-username
+      passwordProperty: kpack-registry-password
+
   # Identity the Builders run as - registry only, no git credential. Function
   # builds use a per-function account the API creates.
   serviceAccount:
     name: kpack-builder
-    # The one platform-wide build credential: kpack pushes with it, the build pod
-    # and every function's KSVC pull with it.
+    # This SITE's build credential: kpack pushes with it, the build pod and every
+    # function's KSVC here pull with it. The NAME is identical in every site - it
+    # is written into every site's KSVC - while the contents differ, so the Vault
+    # path is per site.
     registrySecret:
       name: serverless-registry-creds
       # False when the Secret is provided out-of-band.
       create: true
-      key: cloudlet/platforms/serverless
+      key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
       usernameProperty: registry-username
       passwordProperty: registry-password
 
@@ -416,6 +442,16 @@ build:
 
 # A site is a region; its cluster's API server is DERIVED as
 # https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
+# Identical in every cluster - an instance composes the peer's manifests from it,
+# so nothing per-release goes here (that is `global.site`). A site builds into and
+# pulls from its own `registry`; omit it to inherit the one above. No credentials
+# here - this renders into a ConfigMap.
+#
+#   - name: central
+#     cluster: central-0
+#     registry:
+#       url: registry.central.internal
+#       organization: acme   # optional; inherited unless set
 sites:
   - name: central
     cluster: central-0
@@ -449,21 +485,15 @@ externalSecrets:
           property: admin-api-key
         # HMAC key for stream tickets - what a browser opens an SSE endpoint
         # with, since EventSource cannot send an Authorization header. Signed
-        # rather than stored, so both replicas and both sites verify a ticket
-        # any of them minted; that only works if they share this value.
+        # rather than stored, so every replica in every site verifies a ticket
+        # any of them minted; that only works if they share this value. Unlike
+        # the registry tokens below it is NOT per site - a stream can land on
+        # either, so a per-site key would fail about half of them.
         # Leave the Vault property unset to disable ticket minting: the streams
         # still take the Authorization header, so only the browser path goes.
         - secretKey: SERVERLESS_STREAM_TICKET_KEY
           key: cloudlet/platforms/serverless
           property: stream-ticket-key
-    # Quay OAuth token (Organization -> Applications), scoped `repo:admin`, for
-    # deleting a deleted function's repositories (registry.deleteOnFunctionDelete).
-    # NOT the push robot - robots cannot call Quay's management API.
-    - name: serverless-api-registry
-      data:
-        - secretKey: SERVERLESS_REGISTRY__API_TOKEN
-          key: cloudlet/platforms/serverless
-          property: registry-api-token
 
 # Default-deny NetworkPolicies for workload pods. Verify the namespace names and
 # CIDRs match your cluster.

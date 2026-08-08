@@ -13,17 +13,46 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class SiteRegistry(BaseModel):
+    """A site's own registry, overriding the platform default for that site.
+
+    Lives in the sites list - identical in every cluster - because an instance
+    composes the manifests for every site, not just its own. It carries no
+    credentials: the list is serialized into a ConfigMap.
+
+    Attributes:
+        url: The registry host, with an optional port.
+        organization: Overrides the platform's namespace segment. None inherits;
+            "" overrides with nothing, which is how a registry says it has no
+            namespacing path at all.
+        repository: Overrides the segment everything the platform builds sits
+            under, on the same None-inherits rule.
+    """
+
+    url: str
+    organization: str | None = None
+    repository: str | None = None
+
+
 class SiteConfig(BaseModel):
     """Connection profile for one site.
 
     A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
     *cluster* (e.g. ``central-0``) whose API server is derived as
     ``https://api.{cluster}.{base_domain}:6443``. The client certificate, CA
-    bundle, and workloads namespace are global (the same in every cluster).
+    bundle, and workloads namespace are global (the same in every cluster);
+    the registry is not.
+
+    Attributes:
+        name: The site (region) name.
+        cluster: The OpenShift cluster running it.
+        registry: That site's registry, or None to take the platform default -
+            which is what a single-registry install leaves it as.
     """
 
     name: str
     cluster: str
+    registry: SiteRegistry | None = None
 
 
 class CABundleConfig(BaseModel):
@@ -46,7 +75,13 @@ class CABundleConfig(BaseModel):
 
 
 class RegistryConfig(BaseModel):
-    """Internal (mirrored) container registry."""
+    """One internal (mirrored) container registry.
+
+    Both the platform default and, once merged with a :class:`SiteRegistry` by
+    :meth:`CommonSettings.registry_for`, one site's resolved registry - the same
+    type either way, since callers want a whole registry rather than a base plus
+    overrides to re-apply.
+    """
 
     url: str = "registry.internal"
     organization: str = ""
@@ -96,6 +131,9 @@ class BuildConfig(BaseModel):
     """kpack build settings (env ``SERVERLESS_BUILD__*``, set by the Helm chart)."""
 
     registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
+    # Pull-only credential for the shared kpack registry (stack, store, and the
+    # run image `export` pulls). Empty when it is the site registry.
+    kpack_registry_secret: str = ""  # noqa: S105 - a Secret name
     git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
     resources: dict = Field(default_factory=dict)
     # "registry" caches build layers in the registry the build already pushes to;
@@ -127,7 +165,13 @@ class CommonSettings(BaseSettings):
 
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
+    # Platform default; anything about one site goes through `registry_for`.
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
+    # Registry API token per site name (SERVERLESS_SITE_REGISTRY_TOKENS, JSON).
+    # Every instance holds every site's: a delete reclaims repositories in all
+    # sites from whichever one took the request. A JSON object rather than a
+    # variable per site, because a site name may contain '-'.
+    site_registry_tokens: dict[str, str] = Field(default_factory=dict)
     build: BuildConfig = Field(default_factory=BuildConfig)
 
     cluster_connect_timeout: float = 2.0
@@ -157,6 +201,36 @@ class CommonSettings(BaseSettings):
             The matching :class:`SiteConfig`, or None.
         """
         return next((z for z in self.sites if z.name == name), None)
+
+    def registry_for(self, site: str) -> RegistryConfig:
+        """The registry ``site`` builds into, pulls from, and is cleaned up in.
+
+        The single derivation, so what a build pushes to, what its KSVC pulls,
+        and what a delete reclaims cannot disagree. A site with no override -
+        the normal single-registry install - resolves to the platform default.
+
+        Args:
+            site: The site name.
+
+        Returns:
+            A new registry: the platform default with that site's overrides and
+            API token applied. Nothing here is mutated.
+        """
+        profile = self.site(site)
+        override = profile.registry if profile else None
+        # Falls back rather than defaulting to "": an empty token disables
+        # cleanup outright, so an unlisted site would silently stop reclaiming.
+        update: dict[str, object] = {
+            "api_token": self.site_registry_tokens.get(site) or self.registry.api_token
+        }
+        if override is not None:
+            update["url"] = override.url
+            # None inherits, "" overrides with nothing - see SiteRegistry.
+            if override.organization is not None:
+                update["organization"] = override.organization
+            if override.repository is not None:
+                update["repository"] = override.repository
+        return self.registry.model_copy(update=update)
 
     @property
     def site_names(self) -> list[str]:

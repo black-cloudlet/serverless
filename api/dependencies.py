@@ -52,7 +52,7 @@ def get_workload_service() -> WorkloadService:
     return WorkloadService(
         settings,
         get_deployer(),
-        KpackBackend(settings, get_runtimes()),
+        KpackBackend(settings.build, get_runtimes()),
         get_stream_capacity(),
     )
 

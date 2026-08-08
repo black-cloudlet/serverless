@@ -23,7 +23,7 @@ what functions share with containers is ARCHITECTURE.md.
 | `runtime` | yes | One of the platform's configured runtimes (the chart ships `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`api/services/builder/runtimes.py`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `branch`, and changing it rebuilds. |
 | `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/v1/functions/info`. |
-| `sites` | no | Which sites to deploy to; defaults to all of them (HA). The **build** always runs on the local site regardless (BUILDING.md: Ownership: API vs Build Service). |
+| `sites` | no | Which sites to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a site builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
 | `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `error`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
@@ -35,48 +35,42 @@ is the shape:
 1. The API validates the request and returns **`202 Accepted`**. Nothing is built yet.
 2. In the background it applies, to the **local** site only, the function's kpack `Image`
    plus the per-function build `ServiceAccount`; the `{workload}-git` Secret holding
-   `gitToken` goes to **every** site, so any of them can rebuild after a switchover.
+   `gitToken` goes to **every target site**, so each can build and rebuild on its own.
 3. **kpack** does the rest on its own: clone `gitRepo@branch`, run the runtime's `Builder`
    (the mirrored Paketo stack and buildpackages - ARCHITECTURE.md: Airgapped Considerations),
-   and push to the internal registry at
-   `{registry base}/{group}/{name}:{branch}` (BUILDING.md: Registry layout).
+   and push to **that site's** registry at
+   `{site registry base}/{group}/{name}:{branch}` (BUILDING.md: Registry layout).
 4. In the same pass as step 2, the API applies the **KSVC** to every target site, pointing
    at that **tag**. Until a build lands there is no image to pull, which is why a new
    function reads `Building` rather than `Degraded` (see *Function Status Resolution*).
-5. When the build finishes, the **build controller** - a separate Deployment watching
-   `Image.status.latestImage` - rolls the resulting **digest** onto the function's KSVC in
-   **every** site (BUILDING.md: Digest propagation). After the create, it is the only
-   thing that writes that field.
+5. When a build finishes, **that site's** build controller - a separate Deployment watching
+   `Image.status.latestImage` - rolls the resulting **digest** onto the function's KSVC
+   **there** (BUILDING.md: Digest propagation). After the create, it is the only thing that
+   writes that field.
 
 > The tag is a projection of the branch, not the commit: an OCI tag may not contain `/`,
 > so `feature/login` pushes to `feature-login` while the build still compiles that exact
-> ref. One site builds and every site pulls the same digest from the shared registry, so
-> the active/active pair runs identical bytes.
+> ref. Each site builds and pulls within itself, so nothing crosses a site boundary to run
+> a function - at the cost of the two sites holding different digests of the same commit.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as Client
     participant API as FastAPI API
-    participant KP as kpack (local site)
-    participant Reg as Internal Registry
-    participant BC as build controller
-    participant ZA as Site A (Knative)
-    participant ZB as Site B (Knative)
+    participant ZA as Site A (kpack + Knative + registry)
+    participant ZB as Site B (kpack + Knative + registry)
 
     U->>API: POST /api/v1/groups/{group}/functions (git, runtime, ...)
     API->>API: AuthN (JWT) + AuthZ (group) + pre-flight
     API-->>U: 202 Accepted { overallStatus: "Pending", statusUrl }
-    API->>KP: apply Image + build ServiceAccount (local site only)
-    par Deploy to all sites, at the branch tag
-        API->>ZA: apply KSVC + DomainMapping
-        API->>ZB: apply KSVC + DomainMapping
+    par Deploy to all target sites, each at its OWN registry's tag
+        API->>ZA: apply Image + build SA + KSVC + DomainMapping
+        API->>ZB: apply Image + build SA + KSVC + DomainMapping
     end
-    KP->>Reg: clone, build, push image @digest
-    BC->>KP: watch status.latestImage
-    par Roll the digest out everywhere
-        BC->>ZA: apply KSVC with @digest
-        BC->>ZB: apply KSVC with @digest
+    par Each site builds into its own registry and publishes to itself
+        ZA->>ZA: clone, build, push @digest -> its controller applies the KSVC
+        ZB->>ZB: clone, build, push @digest -> its controller applies the KSVC
     end
     U->>API: GET {statusUrl} (poll)
     API-->>U: 200 { overallStatus: "Building" -> "Ready" }
@@ -461,16 +455,22 @@ Two properties this gives us:
 
 - A function whose first build is still running reports **building** rather than a
   confusing "not ready" ksvc state.
-- After a switchover the local cluster has **no** `Image`, so step 1 finds nothing and the
-  handler falls through to the ksvc - correctly reporting the function as **serving**, since
-  it is still running the previously-built digest. The absence of a build is not an error.
+- A site with **no** `Image` - one the function was never deployed to, or whose build
+  objects have not landed yet - contributes nothing, and the handler falls through to its
+  ksvc. The absence of a build is not an error.
 
-Build detail is read from the local cluster only; there is no cross-site aggregation on this
-path (the ksvc fan-out in ARCHITECTURE.md: Multi-Site (Active/Active HA) Design is unchanged). That read is complete precisely
-because the build site is always local: if an `Image` exists at all, it exists here.
+**Build state is per site.** Every site builds its own copy, so it is read in the same
+per-site thread that already fetches that site's KSVC - no extra round trip, and no way to
+attribute one site's build to another. Each `sites[]` row folds against **its own** build:
+a build running in one site says nothing about whether another site's image exists, and a
+shared verdict would mask a real failure next to a healthy neighbour.
 
-**As implemented.** `KpackBackend.status` returns `None` when the local site has no `Image`
-- the switchover case above - and `with_build_status` folds the rest into the rollup:
+The workload-level `build` is then rolled up (`ksvc_state.roll_up_builds`): a **failure
+anywhere wins**, carrying its own message, then `Building`, then whatever is left.
+Reporting `Ready` because the other site managed it would hide the site that did not.
+
+**As implemented.** `KpackBackend.status` returns `None` for a site with no `Image`, and
+`with_build_status` folds the rollup:
 `Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
 hands the verdict back to the ksvc. The response carries a `build` object
 (`state`/`image`/`message`), so a failed build explains itself instead of surfacing as a
@@ -491,10 +491,10 @@ used to escape it, and both showed a red failure for a perfectly normal build:
   build leaves the rows untouched, because then the image genuinely never arrives.
 - The **listing**. `GET .../functions` had no build read at all, so every new function
   was `Degraded` on the list while being `Building` on its own GET. It now folds the same
-  way, using `BuildBackend.statuses` - one label-selected read of the local site's `Image`s
-  for the whole group, keyed by object name (`{name}-{group}`), overlapped with the ksvc
-  fan-out rather than chained onto it. A listing that cannot read kpack falls back to the
-  ksvc statuses, exactly as a single GET does.
+  way, using `BuildBackend.statuses` - one label-selected read per site for the whole
+  group, keyed by object name (`{name}-{group}`), paired with that site's ksvc read rather
+  than chained onto it, and rolled up across the sites that answered. A listing that cannot
+  read kpack falls back to the ksvc statuses, exactly as a single GET does.
 
 `Building` is therefore a *site* status as well as a workload one, and
 `GET /api/v1/functions/info` publishes it in both vocabularies (`statuses.workload` and

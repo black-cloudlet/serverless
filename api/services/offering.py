@@ -36,7 +36,6 @@ from api.services.sites import site_apply, site_read
 from api.services.state import ksvc_state
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
-from common.config import RegistryConfig
 from common.labels import OFFERING_CONTAINER, OFFERING_FUNCTION
 
 if TYPE_CHECKING:  # a type hint only - importing it at runtime would be a cycle
@@ -49,22 +48,19 @@ class DeleteContext:
 
     An offering is stateless policy, so everything it touches is handed to it.
     Cleanup outgrew ``(cluster, oname)`` once it reached past the cluster: the
-    registry is addressed by ``{group}/{name}``, not by the object name, and it
-    needs settings an offering does not hold.
+    registry is addressed by ``{group}/{name}``, not by the object name.
 
     Attributes:
-        cluster: The local site, where the build objects are.
+        cluster: The site being cleaned up, carrying its own registry.
         oname: The object name (``{name}-{group}``).
         name: The workload name.
         group: The owning group.
-        registry: Registry settings, for deleting the repositories by name.
     """
 
     cluster: Cluster
     oname: str
     name: str
     group: str
-    registry: RegistryConfig
 
 
 class Offering(Protocol):
@@ -183,12 +179,12 @@ class FunctionOffering:
     def fetched_response(
         self, common: dict, obj: dict, spec, build: BuildStatusView | None
     ) -> WorkloadResponse:
-        """The function response, with the build folded into the status rollup.
+        """The function response, carrying the build the engine rolled up.
 
-        Folded into the per-site rows too, and for the same reason: while the
-        build runs, every site is failing to pull an image that does not exist
-        yet, so a row left unfolded would contradict the headline it sits under
+        The build-first folding happens in the engine, against each site's own
+        build: it is per site now, and only the engine holds the per-site states
         (see :func:`~api.services.state.ksvc_state.sites_with_build_status`).
+        What is left here is reporting the rolled-up state on ``build``.
 
         No image is exposed: the built image is an internal artifact, so a client
         reads ``gitRepo``/``branch`` instead. The runtime and version come from
@@ -197,11 +193,7 @@ class FunctionOffering:
         """
         annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
         return FunctionResponse(
-            **{
-                **common,
-                "overallStatus": ksvc_state.with_build_status(common["overallStatus"], build),
-                "sites": ksvc_state.sites_with_build_status(common["sites"], build),
-            },
+            **common,
             runtime=annotations.get(ANNOTATION_RUNTIME),
             version=annotations.get(ANNOTATION_RUNTIME_VERSION),
             gitRepo=spec.gitRepo,
@@ -227,15 +219,19 @@ class FunctionOffering:
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
 
     def after_delete(self, ctx: DeleteContext) -> None:
-        """Remove the build objects, then the repositories the build pushed to.
+        """Remove one site's build objects, then the repositories it pushed to.
 
-        Two kinds of leftover. The build objects are in a cluster but unowned on a
-        site that never ran the function, so nothing cascades to them. The registry
-        has no owner at all - no Kubernetes object references a repository - so it
-        is deleted by name (docs/BUILDING.md - Registry cleanup on delete).
+        Called once per site, because both leftovers are per site: each built its
+        own image into its own registry. The build objects normally cascade with
+        the KSVC and this is the sweep for ones that did not; the registry has no
+        owner at all - no Kubernetes object references a repository - so it is
+        deleted by name (docs/BUILDING.md - Registry cleanup on delete).
+
+        Where several sites share one registry the repository delete repeats and
+        the second call 404s, which :func:`delete_repositories` already tolerates.
         """
         site_apply.delete_build_objects(ctx.cluster, ctx.oname)
-        registry_svc.delete_function_repositories(ctx.registry, ctx.group, ctx.name)
+        registry_svc.delete_function_repositories(ctx.cluster.registry, ctx.group, ctx.name)
 
     def build_status(
         self, builder: BuildBackend, cluster: Cluster, name: str, group: str

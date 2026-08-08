@@ -63,7 +63,30 @@ def test_a_running_build_wins_over_the_ksvc_status():
     out = _merge(
         [("central", [_ksvc("fn-team", ready=False)])],
         offering="function",
-        builds={"fn-team": BuildStatusView(state="Building")},
+        builds={"central": {"fn-team": BuildStatusView(state="Building")}},
+    )
+    assert out[0].overallStatus == "Building"
+
+
+def test_a_build_failing_in_one_site_is_what_the_listing_reports():
+    """Rolled up across sites: Ready in one is not the answer when another failed."""
+    out = _merge(
+        [("central", [_ksvc("fn-team")]), ("south", [_ksvc("fn-team")])],
+        offering="function",
+        builds={
+            "central": {"fn-team": BuildStatusView(state="Ready")},
+            "south": {"fn-team": BuildStatusView(state="Failed", message="detect failed")},
+        },
+    )
+    assert out[0].overallStatus == "Degraded"
+
+
+def test_a_build_state_is_not_attributed_across_sites():
+    """A site that returned the workload but has no build of it contributes None."""
+    out = _merge(
+        [("central", [_ksvc("fn-team", ready=False)]), ("south", [_ksvc("fn-team")])],
+        offering="function",
+        builds={"central": {"fn-team": BuildStatusView(state="Building")}, "south": {}},
     )
     assert out[0].overallStatus == "Building"
 
