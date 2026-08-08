@@ -338,8 +338,14 @@ rendering an ExternalSecret whose `target.template` builds the JSON:
       remoteRef: { key: cloudlet/platforms/serverless/south, property: registry-api-token }
 ```
 
-`toJson` rather than bare quotes, so a token carrying a `"` or a `\` cannot
-produce a Secret the API fails to parse at startup.
+**That entry is `optional: true` on the Deployment's `envFrom`.** ESO fails the
+*whole* ExternalSecret if any one site's path is missing, and `sites` is shared
+across clusters - so adding a site before its Vault entry exists would otherwise
+stop the API pod starting in every cluster, which is a spectacular blast radius
+for a config change aimed at one new site. Absent, registry cleanup is skipped,
+which is exactly what it already does untokenised. The other entries stay
+required: the admin API key going quietly missing is not a degradation anyone
+wants to discover later.
 
 Two notes on shape. A site-keyed **JSON object** is used rather than one env var
 per site (`SERVERLESS_REGISTRY_API_TOKENS__CENTRAL`) because a site name is a

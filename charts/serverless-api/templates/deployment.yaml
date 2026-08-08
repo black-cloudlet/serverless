@@ -115,6 +115,9 @@ spec:
             {{- range .Values.externalSecrets.secrets }}
             - secretRef:
                 name: {{ .name }}
+                {{- with .optional }}
+                optional: {{ . }}
+                {{- end }}
             {{- end }}
           volumeMounts:
             - name: {{ .Values.certificate.name }}

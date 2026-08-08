@@ -432,7 +432,13 @@ externalSecrets:
     # One Vault entry per site, assembled into one variable: a delete reclaims
     # repositories in every site from whichever instance took the request.
     # `{site}` is substituted per site.
+    #
+    # Optional because ESO fails the WHOLE ExternalSecret if any one site's path
+    # is missing - and `sites` is shared, so adding a site before its Vault entry
+    # exists would otherwise stop the API pod starting in every cluster. Absent,
+    # registry cleanup is skipped, which is what it already does untokenised.
     - name: serverless-api-registry
+      optional: true
       perSiteRegistryTokens:
         key: "cloudlet/platforms/serverless/{site}"
         property: registry-api-token

@@ -70,7 +70,14 @@ common/config.py; keep the two in step.
 */}}
 {{- define "serverless-api.siteRegistry" -}}
 {{- $site := fromYaml (include "serverless-api.site" .) -}}
-{{- $registry := mergeOverwrite (deepCopy .Values.registry) (default dict $site.registry) -}}
+{{- $registry := deepCopy .Values.registry -}}
+{{/* Key-present wins, key-absent inherits - including a present "", which is how
+a registry says it has no namespacing path. NOT mergeOverwrite: it treats an empty
+source value as unset, so `organization: ""` would silently inherit here while
+CommonSettings.registry_for overrode. A nil is skipped, matching None-inherits. */}}
+{{- range $k, $v := (default dict $site.registry) -}}
+{{- if not (kindIs "invalid" $v) -}}{{- $_ := set $registry $k $v -}}{{- end -}}
+{{- end -}}
 {{- toYaml $registry -}}
 {{- end -}}
 
