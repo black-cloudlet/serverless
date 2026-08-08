@@ -103,7 +103,6 @@ corsAllowOrigins: []
 
 sso:
   # Templated, so it can be derived rather than repeated per environment.
-  #   issuer: "https://sso.{{ .Values.global.baseDomain }}/realms/serverless"
   issuer: https://sso.internal/realms/serverless
   audience: ""
   swaggerClientId: serverless-api
@@ -187,12 +186,9 @@ build:
   # (reaching the API as SERVERLESS_REGISTRY__REPOSITORY). The repo must exist
   # and be writable by the build ServiceAccount. Changing it on an install that
   # already has functions is a migration, not a config edit
-  # (docs/BUILDING.md - Registry layout). Templated, like `sso.issuer`:
-  #   builderRepository: "{{ .Values.name }}/builders"
-  # It must resolve to the SAME string in every site - only the registry HOST
-  # varies per site. Templating it on `global.site` would have each release
-  # compute a different path for its peers, and the two would re-tag each
-  # other's Images forever.
+  # (docs/BUILDING.md - Registry layout). Templated, but it must resolve to the
+  # SAME string in every site: only the registry HOST varies per site, and each
+  # release computes this path for its peers too.
   builderRepository: serverless/builders
 
   # Username paired with each caller's git token. GitHub/GitLab PATs ignore it;
