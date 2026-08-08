@@ -216,18 +216,17 @@ sites:
       url: registry.south.internal
 
 # Read-only content every site's builds pull. One copy, one mirror run.
-mirror:
-  registry: registry.mirror.internal
-  pullSecret:
-    name: kpack-mirror-creds
-    create: true
-    key: cloudlet/platforms/serverless
-    usernameProperty: mirror-username
-    passwordProperty: mirror-password
+build:
+  mirror:
+    registry: registry.mirror.internal
+    pullSecret:
+      name: kpack-mirror-creds
+      create: true
 ```
 
 Resolution is `site.registry` merged over the global `registry`, so an install
-with one registry sets nothing new and behaves exactly as today.
+with one registry sets nothing new and behaves exactly as today. The full set of
+changed values is in [The values file, in full](#the-values-file-in-full).
 
 **Secrets stay out of the list.** `sites[]` is serialized into a ConfigMap, so a
 site override carries `url` / `organization` / `repository` only. Every
@@ -358,7 +357,7 @@ that can write Knative Services in every cluster.
 
 | File | Change |
 |---|---|
-| `values.yaml` | `sites[].registry`; new `mirror:` block; `build.serviceAccount.mirrorSecret`; **remove** `buildController.pruneOrphans` |
+| `values.yaml` | `sites[].registry`; `build.mirror`; `build.allowSharedRegistry`; a per-site `registrySecret.key`; `perSiteRegistryTokens`; **remove** `buildController.pruneOrphans`. In full [below](#the-values-file-in-full) |
 | `templates/configmap.yaml` | Serialize each site's `registry` into `SERVERLESS_SITES` alongside `name`/`cluster` |
 | `templates/_helpers.tpl` | `serverless-api.siteRegistry` resolves **this release's** site (`global.site`) against `sites[]`; `registryBase` and `builderImage` hang off it, so a Builder pushes locally. `validateBuild` gains the checks below |
 | `templates/kpack/externalsecret.yaml` | Key the dockerconfigjson by the **local** site's registry host, and read its credentials from a per-site Vault path; add the mirror pull Secret |
@@ -401,6 +400,157 @@ as a broken install hours later:
    with `build.allowSharedRegistry: true` for a deliberate single-registry lab.
 2. `global.site` naming a site absent from `sites[]` - the release cannot then
    resolve its own registry.
+
+### The values file, in full
+
+Every block that changes in `charts/serverless-api/values.yaml`. Anything not
+listed here is untouched - `api`, `namespaces`, `routeDomain`, `sso`, `runtimes`,
+`certificate`, `caBundle`, `networkPolicy`, and all of `build` beyond the four
+keys below.
+
+```yaml
+# ── CHANGED: now the DEFAULT every site inherits, not the one registry ────────
+# A site may override `url` (and, rarely, `organization`) in `sites[]` below.
+# What stays global: the layout rules. `organization` and `build.builderRepository`
+# describe how repositories are NAMED, and naming them differently per site would
+# buy nothing and break `RegistryConfig.path` being one derivation.
+registry:
+  url: registry.internal
+  organization: ""
+  deleteOnFunctionDelete: true
+
+# ── CHANGED: a site now carries the registry it builds into and pulls from ────
+# This list is IDENTICAL in every cluster - it is how an API instance composes
+# the peer's manifests. Per-release values go in `global.site`, never here.
+# Omit `registry` on a site to inherit the block above (single-registry install).
+sites:
+  - name: central
+    cluster: central-0
+    registry:
+      url: registry.central.internal
+  - name: south
+    cluster: south-0
+    registry:
+      url: registry.south.internal
+
+buildController:
+  enabled: true
+  repository: serverless/serverless-build-controller
+  tag: ""
+  replicaCount: 1
+  labels: {}
+  annotations: {}
+  podLabels: {}
+  podAnnotations: {}
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  resyncSeconds: 300
+  # ── REMOVED: pruneOrphans ──────────────────────────────────────────────────
+  # A peer's Image is no longer stranded - it is that site's own build. There is
+  # nothing to prune, and the controller no longer reads a peer cluster at all.
+
+build:
+  enabled: true
+
+  # ── NEW: the shared read-only mirror ───────────────────────────────────────
+  # ClusterStack/ClusterStore content, pulled by every site and written by none.
+  # Empty `registry` means the mirror IS the site registry (today's behaviour):
+  # no second Secret is created and nothing is added to the build accounts.
+  mirror:
+    # The same host the kpack release uses for `clusterBuild.registry`. Used
+    # only to key the pull Secret - docker auth is per host.
+    registry: ""            # e.g. registry.mirror.internal
+    pullSecret:
+      name: kpack-mirror-creds
+      # False when the Secret is provided out-of-band.
+      create: true
+      key: cloudlet/platforms/serverless
+      usernameProperty: mirror-username
+      passwordProperty: mirror-password
+
+  # ── NEW: escape hatch for a deliberate single-registry multi-site install ───
+  # Two sites resolving to one registry base race to push one `spec.tag` and
+  # thrash one `_cache:latest`. Each site still runs a valid digest (the KSVC is
+  # pinned to a digest, not the tag), so it works - it just wastes both caches.
+  # Left false, that configuration fails at render time instead.
+  allowSharedRegistry: false
+
+  # ── UNCHANGED, but now relative to the SITE's registry base ────────────────
+  # `{site registry base}/{builderRepository}/{name}` for a Builder,
+  # `{site registry base}/{builderRepository}/{group}/{name}` for a function.
+  builderRepository: serverless/builders
+
+  serviceAccount:
+    name: kpack-builder
+    registrySecret:
+      # ── UNCHANGED: the name is identical in every site, deliberately ───────
+      # It is written into every site's KSVC imagePullSecrets and onto every
+      # per-function build ServiceAccount, and the API emits those for all sites
+      # from one place. Contents vary by site; the name must not.
+      name: serverless-registry-creds
+      create: true
+      # ── CHANGED: a per-site path - central's credential is not south's ─────
+      # Rendered through `tpl`, as `routeDomain` already is.
+      key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
+      usernameProperty: registry-username
+      passwordProperty: registry-password
+
+externalSecrets:
+  clusterSecretStore: cloudlet-cloudlet
+  refreshInterval: 1h
+  secrets:
+    - name: serverless-api-keys
+      data:
+        - secretKey: SERVERLESS_ADMIN_API_KEY
+          key: cloudlet/platforms/serverless
+          property: admin-api-key
+    # ── CHANGED: one Vault entry per site, assembled into one env var ─────────
+    # Not per-release: a delete reclaims repositories in EVERY site from
+    # whichever instance took the request, so every pod needs every site's
+    # token. `{site}` is substituted per entry from `sites[]`; the chart adds
+    # the ESO `target.template` that builds the site-keyed JSON.
+    - name: serverless-api-registry
+      perSiteRegistryTokens:
+        key: "cloudlet/platforms/serverless/{site}"
+        property: registry-api-token
+```
+
+**Not changed, and worth saying so:** `networkPolicy`. A registry is always
+off-cluster, so `allow-egress-external` already reaches every one of these -
+including the mirror - and `networkPolicy.build.egressNamespaces` /
+`egressCIDRs` stay empty.
+
+### What an existing install has to set
+
+The delta for someone upgrading, rather than the full file:
+
+```yaml
+sites:
+  - { name: central, cluster: central-0, registry: { url: registry.central.internal } }
+  - { name: south,   cluster: south-0,   registry: { url: registry.south.internal } }
+
+build:
+  mirror:
+    registry: registry.mirror.internal
+  serviceAccount:
+    registrySecret:
+      key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
+
+externalSecrets:
+  secrets:
+    - name: serverless-api-registry
+      perSiteRegistryTokens:
+        key: "cloudlet/platforms/serverless/{site}"
+        property: registry-api-token
+```
+
+plus, in Vault: a `registry-username` / `registry-password` / `registry-api-token`
+per site path, and a `mirror-username` / `mirror-password` at the shared path.
+The top-level `registry.url` stays as the inherited default and can be left
+pointing at the old registry - nothing resolves through it once every site
+overrides it, and leaving it is what makes the [migration](#migration) reversible
+by removing two lines.
 
 ### kpack chart
 
