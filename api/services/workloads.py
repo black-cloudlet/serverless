@@ -37,9 +37,8 @@ from api.models.common import (
     ANNOTATION_SIZE,
     LABEL_GROUP,
     LABEL_OFFERING,
-    LogsResponse,
-    LogStreamOpen,
-    PodLogs,
+    PodLogStreamOpen,
+    PodRoster,
     SiteStats,
     SiteStatus,
     WorkloadResponse,
@@ -66,6 +65,7 @@ from api.services.state import metrics as metrics_svc
 from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
 from api.services.streams import logs as logs_stream
+from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
 from api.services.streams.capacity import StreamCapacity
 from api.services.streams.sse import StreamEvent
@@ -1018,115 +1018,36 @@ class WorkloadService:
         if all(s.status == "Absent" for s in statuses):
             raise NotFoundError(f"{kind} '{name}' not found")
 
-    async def logs(
+    async def stream_pods(
         self,
         offering: Offering,
         name: str,
         user: Principal,
         group: str,
         *,
-        container: str,
-        since_seconds: int | None,
-        limit_bytes: int | None,
-    ) -> LogsResponse:
-        """Snapshot the workload's pod logs from the local site only.
-
-        Single-site and point-in-time: reads the running pods on the current
-        cluster (Kubernetes keeps no log buffer beyond the node). A workload
-        deployed here but scaled to zero returns an empty ``pods`` list.
-
-        Args:
-            offering: The offering being read.
-            name: Workload name.
-            user: The authenticated caller.
-            group: Owning group.
-            container: The pod container to read (e.g. the user-container).
-            since_seconds: Only logs newer than this many seconds, if set.
-            limit_bytes: Cap on the bytes read per pod, if set.
-
-        Returns:
-            The workload's per-pod logs from the local site.
-
-        Raises:
-            NotFoundError: If the workload isn't on the local site or the caller
-                can't access it (hidden as 404, matching GET).
-        """
-        self.assert_group(user, group)
-        kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
-        cluster = self.deployer.local_cluster()
-
-        def read() -> list[PodLogs]:
-            # Authorize off the KSVC on the local site; a genuine 404 (not
-            # deployed here) and a cross-group/offering hit both surface as 404.
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            if not ownership.owned_by(obj, user, kind):
-                raise NotFoundError(f"{kind} '{name}' not found")
-            pods = cluster.get(
-                ResourceKind.POD, label_selector=f"serving.knative.dev/service={oname}"
-            )
-            out: list[PodLogs] = []
-            for pod in pods:
-                meta = pod.get("metadata", {}) or {}
-                pod_name = meta.get("name", "")
-                revision = (meta.get("labels", {}) or {}).get("serving.knative.dev/revision")
-                try:
-                    text = cluster.pod_logs(
-                        pod_name,
-                        container=container,
-                        since_seconds=since_seconds,
-                        limit_bytes=limit_bytes,
-                    )
-                except NotFoundError:
-                    continue  # pod vanished between list and read
-                out.append(PodLogs(pod=pod_name, container=container, revision=revision, logs=text))
-            return out
-
-        pods = await asyncio.to_thread(read)
-        return LogsResponse(
-            name=name,
-            group=group,
-            type=kind,  # type: ignore[arg-type]
-            site=self.deployer.local_site(),
-            pods=pods,
-        )
-
-    async def stream_logs(
-        self,
-        offering: Offering,
-        name: str,
-        user: Principal,
-        group: str,
-        *,
-        container: str,
-        since_seconds: int | None,
         interval: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Follow the workload's pod logs on the local site, as a stream of events.
+        """Stream which pods the workload has on the local site.
 
-        The streaming counterpart to :meth:`logs`, and the same single-site rule:
-        logs are node-local, so there is nowhere else to read them from.
+        The endpoint that makes per-pod log streaming usable: a pod name is what
+        ``stream_pod_logs`` takes, and nothing else in the API returns one.
 
-        Everything that can fail with a status code is done here, before the
-        first event - the slot is taken, the workload is read and authorized, and
-        its pods are listed. That is deliberate. Once a stream has begun the
-        response is committed and a 404 can only be described in an event, so a
-        deleted workload or a full pool has to be settled while an error envelope
-        is still possible.
+        Local site only, matching the log streams it feeds - a pod name is only
+        useful where its log can be read.
+
+        The first roster is read here rather than in the stream, because it is
+        also what authorizes the request: a workload that does not exist is a 404
+        with an envelope, not a stream that opens and immediately errors.
 
         Args:
             offering: The offering being read.
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
-            container: The pod container to read.
-            since_seconds: How far back each pod's log starts, so a client sees
-                recent context rather than only what arrives after it connected.
-            interval: Seconds between pod re-listings; None takes the configured
-                default.
+            interval: Seconds between listings; None takes the configured default.
 
         Returns:
-            The event stream, beginning with an ``open`` event.
+            The event stream, beginning with a ``pods`` event.
 
         Raises:
             NotFoundError: If the workload isn't on the local site or the caller
@@ -1137,32 +1058,123 @@ class WorkloadService:
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         cluster = self.deployer.local_cluster()
-        config = self.capacity.config
 
-        def authorize() -> dict[str, str | None]:
+        def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("stream logs of", kind, name, user, obj)
-            return logs_stream.list_pods(cluster, oname)
+                raise _hidden_404("stream pods of", kind, name, user, obj)
+            return pods_stream.read_roster(cluster, oname)
 
         # Held for the life of the generator below, not of this call - which is
         # why the context manager is entered by hand: `with` here would give the
-        # slot back before a single line had been read.
+        # slot back before a single event had been sent.
         slot = self.capacity.slot()
         slot.__enter__()
         try:
-            pods = await self.capacity.run(authorize)
+            roster = await self.capacity.run(read)
         except BaseException:
             slot.__exit__(*sys.exc_info())
             raise
 
-        opening = LogStreamOpen(
+        first = PodRoster(
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
             site=self.deployer.local_site(),
+            pods=roster,
+        )
+
+        async def stream() -> AsyncIterator[StreamEvent]:
+            try:
+                async for event in pods_stream.follow(
+                    cluster=cluster,
+                    capacity=self.capacity,
+                    config=self.capacity.config,
+                    first=first,
+                    oname=oname,
+                    interval=self.capacity.interval(interval),
+                ):
+                    yield event
+            finally:
+                slot.__exit__(None, None, None)
+
+        return stream()
+
+    async def stream_pod_logs(
+        self,
+        offering: Offering,
+        name: str,
+        user: Principal,
+        group: str,
+        *,
+        pod: str,
+        container: str,
+        since_seconds: int | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Follow one of the workload's pods' logs, on the local site.
+
+        Local site only: Kubernetes keeps no log buffer beyond the node that
+        wrote it, so there is nowhere else to read from.
+
+        The pod is authorized twice over, and the second check is the one that
+        matters. Owning the workload is not enough - the caller names a pod, and
+        the pods of every workload on the platform share one namespace - so the
+        named pod must also carry this workload's service label. Without that,
+        any authenticated user could read any pod in the namespace by guessing
+        its name.
+
+        Args:
+            offering: The offering being read.
+            name: Workload name.
+            user: The authenticated caller.
+            group: Owning group.
+            pod: The pod to follow, as ``stream_pods`` named it.
+            container: The pod container to read.
+            since_seconds: How far back the log starts, so a client sees recent
+                context rather than only what arrives after it connected.
+
+        Returns:
+            The event stream, beginning with an ``open`` event.
+
+        Raises:
+            NotFoundError: If the workload or the pod isn't here, the pod is not
+                this workload's, or the caller can't access it (all hidden as 404).
+            ServiceUnavailableError: If no stream slot is free.
+        """
+        self.assert_group(user, group)
+        kind = offering.name  # the API kind ("function"/"container") is the offering label
+        oname = object_name(name, group)
+        cluster = self.deployer.local_cluster()
+
+        def authorize() -> str | None:
+            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+            if not ownership.owned_by(obj, user, kind):
+                raise _hidden_404("stream logs of", kind, name, user, obj)
+            found = cluster.get(ResourceKind.POD, pod)
+            labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
+            if labels.get(pods_stream.SERVICE_LABEL) != oname:
+                # Someone else's pod, or none of ours. Same answer as absent: the
+                # response must not confirm that a pod by this name exists.
+                logger.debug("pod '%s' is not a pod of %s '%s'; hidden as 404", pod, kind, name)
+                raise NotFoundError(f"pod '{pod}' not found")
+            return labels.get(pods_stream.REVISION_LABEL)
+
+        slot = self.capacity.slot()
+        slot.__enter__()
+        try:
+            revision = await self.capacity.run(authorize)
+        except BaseException:
+            slot.__exit__(*sys.exc_info())
+            raise
+
+        opening = PodLogStreamOpen(
+            name=name,
+            group=group,
+            type=kind,  # type: ignore[arg-type]
+            site=self.deployer.local_site(),
+            pod=pod,
             container=container,
-            pods=sorted(pods),
+            revision=revision,
         )
 
         async def stream() -> AsyncIterator[StreamEvent]:
@@ -1170,12 +1182,9 @@ class WorkloadService:
                 async for event in logs_stream.follow(
                     cluster=cluster,
                     capacity=self.capacity,
-                    config=config,
+                    config=self.capacity.config,
                     opening=opening,
-                    oname=oname,
-                    pods=pods,
                     since_seconds=since_seconds,
-                    interval=self.capacity.interval(interval),
                 ):
                     yield event
             finally:

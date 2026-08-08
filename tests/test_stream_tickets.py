@@ -14,7 +14,7 @@ from api.auth.tickets import StreamTickets
 from api.models.stream import StreamTicketRequest
 
 KEY = "unit-test-signing-key"  # noqa: S105 - not a credential, a fixture
-PATH = "/api/v1/groups/team/functions/foo/logs/stream"
+PATH = "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
 
 
 def _principal(**over):
@@ -68,12 +68,12 @@ def test_expiry_is_the_configured_ttl():
 
 
 def test_a_ticket_is_refused_on_a_different_path():
-    """The binding that stops one workload's ticket reading another's logs."""
+    """The binding that stops one pod's ticket reading another pod's logs."""
     tickets = StreamTickets(KEY)
     ticket = tickets.mint(_principal(), PATH).value
 
     with pytest.raises(UnauthenticatedError):
-        tickets.verify(ticket, "/api/v1/groups/team/functions/other/logs/stream")
+        tickets.verify(ticket, "/api/v1/groups/team/functions/foo/logs/pods/another-pod")
 
 
 def test_a_ticket_signed_with_another_key_is_refused():
@@ -154,10 +154,12 @@ def test_no_key_refuses_every_ticket_including_one_signed_with_the_empty_key():
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/v1/groups/team/functions/foo/logs/stream",
+        "/api/v1/groups/team/functions/foo/pods",
         "/api/v1/groups/team/functions/foo/stats/stream",
-        "/api/v1/groups/team/containers/foo/logs/stream",
+        "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde",
+        "/api/v1/groups/team/containers/foo/pods",
         "/api/v1/groups/team/containers/foo/stats/stream",
+        "/api/v1/groups/team/containers/foo/logs/pods/foo-team-00001-abcde",
     ],
 )
 def test_the_streaming_paths_are_accepted(path):
@@ -168,11 +170,14 @@ def test_the_streaming_paths_are_accepted(path):
     "path",
     [
         "/api/v1/groups/team/functions/foo",  # not a stream
-        "/api/v1/groups/team/functions/foo/logs",  # the snapshot
-        "/api/v1/groups/team/functions/foo/logs/stream?ticket=x",  # query included
-        "/api/v1/groups/team/widgets/foo/logs/stream",  # not an offering
-        "api/v1/groups/team/functions/foo/logs/stream",  # not anchored
-        "/api/v1/groups/team/functions/foo/logs/stream/../../delete",  # traversal
+        "/api/v1/groups/team/functions/foo/logs",  # no such endpoint any more
+        "/api/v1/groups/team/functions/foo/logs/stream",  # the removed shape
+        "/api/v1/groups/team/functions/foo/logs/pods",  # a pod is required
+        "/api/v1/groups/team/functions/foo/pods?ticket=x",  # query included
+        "/api/v1/groups/team/widgets/foo/pods",  # not an offering
+        "api/v1/groups/team/functions/foo/pods",  # not anchored
+        "/api/v1/groups/team/functions/foo/pods/../../delete",  # traversal
+        "/api/v1/groups/team/functions/foo/logs/pods/a/b",  # two segments
         "",
     ],
 )

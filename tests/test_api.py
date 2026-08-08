@@ -84,17 +84,6 @@ class FakeFunctions:
     async def stats(self, name, group, user):
         return _stats("Building")
 
-    async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
-        from api.models.common import LogsResponse, PodLogs
-
-        return LogsResponse(
-            name=name,
-            group=group,
-            type="function",
-            site="site-a",
-            pods=[PodLogs(pod=f"{name}-{group}-00001-x", container=container, logs="hello")],
-        )
-
     async def list(self, group, user, sort="name"):
         from api.models.common import WorkloadSummary
 
@@ -129,17 +118,6 @@ class FakeContainers:
 
     async def stats(self, name, group, user):
         return _stats()
-
-    async def logs(self, name, group, user, *, container, since_seconds, limit_bytes):
-        from api.models.common import LogsResponse, PodLogs
-
-        return LogsResponse(
-            name=name,
-            group=group,
-            type="container",
-            site="site-a",
-            pods=[PodLogs(pod=f"{name}-{group}-00001-x", container=container, logs="hi")],
-        )
 
     async def list(self, group, user, sort="name"):
         from api.models.common import WorkloadSummary
@@ -458,32 +436,6 @@ def test_get_function_stats_reports_a_running_build(client):
 
 def test_stats_path_name_validated_at_the_edge(client):
     assert client.get("/api/v1/groups/team/functions/Bad_Name/stats").status_code == 400
-
-
-def test_get_function_logs(client):
-    r = client.get("/api/v1/groups/team/functions/foo/logs")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["name"] == "foo" and body["type"] == "function" and body["site"] == "site-a"
-    assert body["pods"][0]["container"] == "user-container"  # default
-    assert body["pods"][0]["logs"] == "hello"
-
-
-def test_get_container_logs_with_params(client):
-    r = client.get(
-        "/api/v1/groups/team/containers/foo/logs?container=queue-proxy"
-        "&sinceSeconds=300&limitBytes=4096"
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["type"] == "container"
-    assert body["pods"][0]["container"] == "queue-proxy"  # override honored
-
-
-def test_logs_rejects_non_positive_window(client):
-    # sinceSeconds must be > 0; the RequestValidationError maps to 400
-    assert client.get("/api/v1/groups/team/functions/foo/logs?sinceSeconds=0").status_code == 400
-    assert client.get("/api/v1/groups/team/containers/foo/logs?limitBytes=0").status_code == 400
 
 
 def test_path_name_validated_at_the_edge(client):

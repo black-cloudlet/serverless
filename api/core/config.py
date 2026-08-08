@@ -43,7 +43,7 @@ class SSOSettings(SSOConfig):
 
 
 class StreamConfig(BaseModel):
-    """Bounds on the Server-Sent Events streams (``/logs/stream``, ``/stats/stream``).
+    """Bounds on the SSE streams (``/pods``, ``/logs/pods/{pod}``, ``/stats/stream``).
 
     A held-open stream is not a request that ends, so none of these are
     performance tuning - they are what stops streaming from consuming the
@@ -57,12 +57,9 @@ class StreamConfig(BaseModel):
         max_concurrent: Open streams allowed at once, per process. A request
             beyond it is refused with 503 rather than queued: a stream that
             connects and then stalls behind others is worse than one told to
-            retry.
-        max_pods: Pods a single logs stream will follow. A workload scaled wide
-            would otherwise let one client take the whole pool; the pods past
-            the cap are named in a ``warning`` event, never dropped silently.
-        interval_seconds: How often a stats stream re-reads, and how often a
-            logs stream re-lists pods to pick up a scale-up or a new revision.
+            retry. Streams are per pod, so a client watching four pods of one
+            workload spends four of these.
+        interval_seconds: How often a pods or stats stream re-reads.
         min_interval_seconds: Floor for a client-supplied ``interval``.
         max_interval_seconds: Ceiling for a client-supplied ``interval``.
         heartbeat_seconds: How long a stream may produce nothing before a
@@ -78,8 +75,7 @@ class StreamConfig(BaseModel):
             spent opening one connection, so this is a window, not a session.
     """
 
-    max_concurrent: int = Field(8, ge=1)
-    max_pods: int = Field(5, ge=1)
+    max_concurrent: int = Field(32, ge=1)
     interval_seconds: float = Field(5.0, gt=0)
     min_interval_seconds: float = Field(1.0, gt=0)
     max_interval_seconds: float = Field(60.0, gt=0)
@@ -92,13 +88,16 @@ class StreamConfig(BaseModel):
     def max_workers(self) -> int:
         """Threads the stream pool is built with.
 
-        Derived, not configured: it is exactly what the admission bounds above
-        can ask for - every allowed stream following its full pod quota, plus
-        one thread each for the periodic re-list or the stats fan-out. Sizing it
-        by hand is how a pool ends up smaller than the admissions it has to
-        serve, which turns a bound into a deadlock.
+        Derived, not configured, because a pool smaller than the admissions it
+        has to serve turns a bound into a deadlock - and getting that wrong by
+        hand is easy.
+
+        Two per admitted stream. A log stream holds exactly one thread for its
+        whole life (the follow). A pods or stats stream holds none between ticks
+        but needs one or two briefly on each, so the second per stream is what
+        keeps a tick from queueing behind the log follows.
         """
-        return self.max_concurrent * (self.max_pods + 1)
+        return self.max_concurrent * 2
 
     @model_validator(mode="after")
     def _bounds(self) -> "StreamConfig":

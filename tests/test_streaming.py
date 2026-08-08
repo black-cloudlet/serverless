@@ -11,8 +11,14 @@ import pytest
 from cloudlet_apis.errors import NotFoundError, ServiceUnavailableError
 
 from api.core.config import StreamConfig
-from api.models.common import LogStreamOpen, StreamError, WorkloadStatsResponse
+from api.models.common import (
+    PodLogStreamOpen,
+    PodRoster,
+    StreamError,
+    WorkloadStatsResponse,
+)
 from api.services.streams import logs as logs_stream
+from api.services.streams import pods as pods_stream
 from api.services.streams import sse
 from api.services.streams import stats as stats_stream
 from api.services.streams.capacity import StreamCapacity
@@ -22,7 +28,6 @@ from common.cluster import LogFollow
 # same code paths the shipped defaults do.
 FAST = StreamConfig(
     max_concurrent=2,
-    max_pods=2,
     interval_seconds=0.05,
     min_interval_seconds=0.01,
     max_interval_seconds=1.0,
@@ -211,8 +216,12 @@ def test_close_is_idempotent_and_survives_a_response_that_raises():
 
 
 def test_the_pool_is_sized_for_every_stream_it_will_admit():
-    """A pool smaller than the admissions it serves turns a bound into a stall."""
-    assert FAST.max_workers >= FAST.max_concurrent * FAST.max_pods
+    """A pool smaller than the admissions it serves turns a bound into a stall.
+
+    Every admitted stream may hold one thread for its whole life (a log follow),
+    and a pods or stats stream needs one more, briefly, on each tick.
+    """
+    assert FAST.max_workers >= FAST.max_concurrent * 2
 
 
 def test_slots_are_handed_back_when_a_stream_ends(capacity):
@@ -301,13 +310,14 @@ async def test_a_wakeup_is_not_lost_when_a_put_races_a_drain():
     assert len(buf.drain()) == 1
 
 
-# --- following logs --------------------------------------------------------
+# --- following one pod's log ------------------------------------------------
 
 
 class FakeCluster:
-    """A local site with a fixed pod list and scripted per-pod log chunks."""
+    """A local site: a scripted pod roster, and scripted per-pod log chunks."""
 
     site = "central"
+    oname = "foo-team"
 
     def __init__(self, pods=None, chunks=None, *, live=False):
         self._pods = dict(pods or {})
@@ -315,7 +325,6 @@ class FakeCluster:
         self._live = live
         self.followed: list[str] = []
         self.follows: list[_Chunks] = []
-        self.blocks: list[threading.Event] = []
         self.list_calls = 0
         self._lock = threading.Lock()
 
@@ -323,62 +332,88 @@ class FakeCluster:
         with self._lock:
             self._pods = dict(pods)
 
+    def _pod_obj(self, name, revision):
+        return {
+            "metadata": {
+                "name": name,
+                "labels": {
+                    pods_stream.REVISION_LABEL: revision,
+                    # What the per-pod authorization checks: a pod is only this
+                    # workload's if it carries this workload's service label.
+                    pods_stream.SERVICE_LABEL: self.oname,
+                },
+            },
+            "status": {
+                "phase": "Running",
+                "startTime": "2024-03-01T10:00:00Z",
+                "conditions": [{"type": "Ready", "status": "True"}],
+                "containerStatuses": [{"restartCount": 1}],
+            },
+        }
+
     def get(self, kind, name=None, label_selector=None):
-        self.list_calls += 1
-        with self._lock:
+        from common.cluster import ResourceKind
+
+        if kind is ResourceKind.POD_METRICS:
             return [
                 {
-                    "metadata": {
-                        "name": pod,
-                        "labels": {logs_stream.REVISION_LABEL: revision},
-                    }
+                    "metadata": {"name": pod},
+                    "containers": [
+                        {"name": "user-container", "usage": {"cpu": "100m", "memory": "64Mi"}},
+                        {"name": "queue-proxy", "usage": {"cpu": "900m", "memory": "900Mi"}},
+                    ],
                 }
-                for pod, revision in self._pods.items()
+                for pod in self._pods
             ]
+        if name is not None:  # a get of one pod by name
+            with self._lock:
+                if name not in self._pods:
+                    raise NotFoundError(f"pod '{name}' not found")
+                return self._pod_obj(name, self._pods[name])
+        self.list_calls += 1
+        with self._lock:
+            return [self._pod_obj(pod, rev) for pod, rev in self._pods.items()]
 
     def follow_pod_logs(self, pod, *, container, since_seconds=None):
         self.followed.append(pod)
         block = threading.Event() if self._live else None
-        if block is not None:
-            self.blocks.append(block)
         response = _Chunks(self._chunks.get(pod, []), block=block)
         self.follows.append(response)
         return LogFollow(response)
 
 
-def _opening(container="user-container", pods=()):
-    return LogStreamOpen(
+def _opening(pod="p1", container="user-container", revision="r1"):
+    return PodLogStreamOpen(
         name="foo",
         group="team",
         type="function",
         site="central",
+        pod=pod,
         container=container,
-        pods=sorted(pods),
+        revision=revision,
     )
 
 
-def _follow(cluster, capacity, pods, **over):
+def _follow(cluster, capacity, **over):
     args = dict(
         cluster=cluster,
         capacity=capacity,
         config=FAST,
-        opening=_opening(pods=pods),
-        oname="foo-team",
-        pods=pods,
+        opening=_opening(),
         since_seconds=None,
-        interval=FAST.interval_seconds,
     )
     args.update(over)
     return logs_stream.follow(**args)
 
 
-async def test_the_stream_opens_by_saying_what_it_is_following(capacity):
-    cluster = FakeCluster({"p1": "foo-team-00001"}, {"p1": [b"hello\n"]})
-    events = await collect(_follow(cluster, capacity, {"p1": "foo-team-00001"}), 2)
+async def test_the_stream_opens_by_saying_which_pod_it_is_following(capacity):
+    cluster = FakeCluster({"p1": "r1"}, {"p1": [b"hello\n"]})
+    events = await collect(_follow(cluster, capacity), 2)
 
     assert events[0].name == "open"
-    assert events[0].data.pods == ["p1"]
+    assert events[0].data.pod == "p1"
     assert events[0].data.site == "central"
+    assert cluster.followed == ["p1"]
 
 
 async def test_log_lines_arrive_as_events_carrying_their_pod_and_revision(capacity):
@@ -386,7 +421,9 @@ async def test_log_lines_arrive_as_events_carrying_their_pod_and_revision(capaci
         {"p1": "foo-team-00007"},
         {"p1": [b"2024-03-01T10:00:00Z first\n2024-03-01T10:00:01Z second\n"]},
     )
-    events = await collect(_follow(cluster, capacity, {"p1": "foo-team-00007"}), 3)
+    events = await collect(
+        _follow(cluster, capacity, opening=_opening(revision="foo-team-00007")), 3
+    )
 
     logs = [e for e in events if e.name == "log"]
     assert [line.data.message for line in logs] == ["first", "second"]
@@ -396,140 +433,215 @@ async def test_log_lines_arrive_as_events_carrying_their_pod_and_revision(capaci
     assert logs[0].data.time is not None
 
 
-async def test_lines_from_several_pods_are_interleaved_into_one_stream(capacity):
-    cluster = FakeCluster({"p1": "r1", "p2": "r1"}, {"p1": [b"from-one\n"], "p2": [b"from-two\n"]})
-    events = await collect(_follow(cluster, capacity, {"p1": "r1", "p2": "r1"}), 3)
+async def test_only_the_named_pod_is_followed(capacity):
+    """The whole point of the per-pod shape: one stream, one pod, one thread."""
+    cluster = FakeCluster({"p1": "r1", "p2": "r1"}, {"p1": [b"mine\n"], "p2": [b"not mine\n"]})
+    events = await collect(_follow(cluster, capacity), 2)
 
-    assert {e.data.pod for e in events if e.name == "log"} == {"p1", "p2"}
-
-
-async def test_a_scaled_to_zero_workload_opens_and_waits_instead_of_failing(capacity):
-    """Empty pods is a normal state, not an error - the stream stays open."""
-    cluster = FakeCluster({})
-    events = await collect(_follow(cluster, capacity, {}), 2)
-
-    assert events[0].name == "open"
-    assert events[0].data.pods == []
-    assert events[1].name == "heartbeat"  # nothing to say, connection kept alive
+    assert cluster.followed == ["p1"]
+    assert [e.data.message for e in events if e.name == "log"] == ["mine"]
 
 
-async def test_a_pod_appearing_later_starts_being_followed(capacity):
-    """A scale-up mid-stream must not need the client to reconnect."""
-    cluster = FakeCluster({}, {"p-new": [b"i just started\n"]})
-    stream = _follow(cluster, capacity, {})
-    got = []
+async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
+    """A scale-down or a new revision - routine on Knative, so not an error."""
+    cluster = FakeCluster({"p1": "r1"}, {"p1": [b"last words\n"]})
+    events = [e async for e in _follow(cluster, capacity)]
 
-    async def run():
-        async for event in stream:
-            got.append(event)
-            if event.name == "open":
-                cluster.set_pods({"p-new": "r1"})
-            if event.name == "log":
-                return
-
-    try:
-        await asyncio.wait_for(run(), 5.0)
-    finally:
-        await stream.aclose()
-
-    assert "pods" in names(got)
-    change = next(e for e in got if e.name == "pods")
-    assert change.data.added == ["p-new"]
-    assert change.data.following == ["p-new"]
-    assert got[-1].data.message == "i just started"
+    assert names(events)[0] == "open"
+    assert names(events)[-1] == "end"
+    assert "replaced" in events[-1].data.reason
+    # ...and the final lines are delivered before it closes.
+    assert [e.data.message for e in events if e.name == "log"] == ["last words"]
 
 
-async def test_a_pod_going_away_is_reported_and_its_follow_ended(capacity):
-    cluster = FakeCluster({"p1": "r1"}, live=True)
-    stream = _follow(cluster, capacity, {"p1": "r1"})
-    got = []
-
-    async def run():
-        async for event in stream:
-            got.append(event)
-            if event.name == "open":
-                cluster.set_pods({})
-            if event.name == "pods":
-                return
-
-    try:
-        await asyncio.wait_for(run(), 5.0)
-    finally:
-        await stream.aclose()
-
-    change = next(e for e in got if e.name == "pods")
-    assert change.data.removed == ["p1"]
-    assert change.data.following == []
-    assert cluster.follows[0].closed  # the thread was actually released
-
-
-async def test_following_more_pods_than_the_cap_warns_and_names_them(capacity):
-    """Exceeding the cap must be visible; silence reads as "logged nothing"."""
-    pods = {f"p{i}": "r1" for i in range(5)}
-    cluster = FakeCluster(pods, live=True)
-    events = await collect(_follow(cluster, capacity, pods), 2)
-
-    warning = next(e for e in events if e.name == "warning")
-    assert len(warning.data.pods) == 5 - FAST.max_pods
-    assert len(cluster.followed) == FAST.max_pods
-
-
-async def test_a_pod_that_cannot_be_followed_warns_without_ending_the_stream(capacity):
+async def test_a_pod_that_cannot_be_read_warns_and_ends_rather_than_hanging(capacity):
     class Refusing(FakeCluster):
         def follow_pod_logs(self, pod, *, container, since_seconds=None):
-            if pod == "bad":
-                raise RuntimeError("forbidden")
-            return super().follow_pod_logs(pod, container=container, since_seconds=since_seconds)
+            raise RuntimeError("forbidden")
 
-    cluster = Refusing({"bad": "r1", "good": "r1"}, {"good": [b"still here\n"]})
-    events = await collect(_follow(cluster, capacity, {"bad": "r1", "good": "r1"}), 3)
+    events = [e async for e in _follow(Refusing({"p1": "r1"}), capacity)]
 
     assert "warning" in names(events)
-    assert any(e.name == "log" and e.data.message == "still here" for e in events)
+    assert names(events)[-1] == "end"
 
 
-async def test_a_pod_that_vanished_between_listing_and_reading_is_not_an_error(capacity):
-    class Raced(FakeCluster):
-        def follow_pod_logs(self, pod, *, container, since_seconds=None):
-            raise NotFoundError("pod 'gone' not found")
+async def test_teardown_closes_the_follow(capacity):
+    """The client going away must return the thread, not leak it."""
+    cluster = FakeCluster({"p1": "r1"}, live=True)
+    await collect(_follow(cluster, capacity), 1)
 
-    cluster = Raced({"gone": "r1"})
-    events = await collect(_follow(cluster, capacity, {"gone": "r1"}), 2)
-
-    assert names(events) == ["open", "heartbeat"]  # no warning; this is normal churn
-
-
-async def test_a_failed_re_list_does_not_end_the_stream(capacity):
-    class Flaky(FakeCluster):
-        def get(self, kind, name=None, label_selector=None):
-            self.list_calls += 1
-            if self.list_calls > 0:
-                raise RuntimeError("api server blipped")
-            return []
-
-    cluster = Flaky({})
-    events = await collect(_follow(cluster, capacity, {}), 3)
-
-    assert names(events) == ["open", "heartbeat", "heartbeat"]
-
-
-async def test_teardown_closes_every_follow(capacity):
-    """The client going away must return the threads, not leak them."""
-    pods = {"p1": "r1", "p2": "r1"}
-    cluster = FakeCluster(pods, live=True)
-    await collect(_follow(cluster, capacity, pods), 1)
-
-    assert len(cluster.follows) == 2
-    assert all(f.closed for f in cluster.follows)
+    assert len(cluster.follows) == 1
+    assert cluster.follows[0].closed
 
 
 async def test_the_slow_client_warning_reports_how_much_was_lost(capacity):
     cluster = FakeCluster({"p1": "r1"}, {"p1": [b"x\n" * 50]})
-    events = await collect(_follow(cluster, capacity, {"p1": "r1"}), 12, timeout=5.0)
+    events = await collect(_follow(cluster, capacity), 12, timeout=5.0)
 
     warnings = [e for e in events if e.name == "warning"]
     assert warnings, "a queue overflow has to be reported"
     assert warnings[0].data.droppedLines > 0
+
+
+async def test_a_quiet_pod_is_heartbeated_not_closed(capacity):
+    cluster = FakeCluster({"p1": "r1"}, live=True)
+    events = await collect(_follow(cluster, capacity), 3)
+
+    assert names(events) == ["open", "heartbeat", "heartbeat"]
+
+
+async def test_a_log_stream_ends_itself_at_the_lifetime_cap(capacity):
+    """An immortal stream is how a leaked client survives forever."""
+    cluster = FakeCluster({"p1": "r1"}, live=True)
+    config = FAST.model_copy(update={"max_seconds": 1, "heartbeat_seconds": 0.02})
+    events = [e async for e in _follow(cluster, capacity, config=config)]
+
+    assert names(events)[-1] == "end"
+    assert "time limit" in events[-1].data.reason
+
+
+# --- the pod roster ---------------------------------------------------------
+
+
+def test_the_roster_reports_what_a_client_needs_to_pick_a_pod():
+    cluster = FakeCluster({"p2": "r1", "p1": "r1"})
+    roster = pods_stream.read_roster(cluster, "foo-team")
+
+    assert [p.pod for p in roster] == ["p1", "p2"]  # ordered, not listing order
+    assert roster[0].revision == "r1"
+    assert roster[0].phase == "Running"
+    assert roster[0].ready is True
+    assert roster[0].restarts == 1
+    assert roster[0].startedAt is not None
+
+
+def test_the_roster_excludes_the_sidecar_from_usage():
+    """Same rule as /stats: the queue-proxy's usage is the platform's, not the user's."""
+    roster = pods_stream.read_roster(FakeCluster({"p1": "r1"}), "foo-team")
+    assert roster[0].usage.cpu == "100m"  # not 1000m
+    assert roster[0].usage.memory == "64Mi"
+
+
+def test_a_pod_with_no_metrics_yet_is_still_listed():
+    """The newest pod is the one a client most wants to follow, and the one
+    metrics-server has not scraped. Missing usage must never hide it."""
+
+    class NoMetrics(FakeCluster):
+        def get(self, kind, name=None, label_selector=None):
+            from common.cluster import ResourceKind
+
+            if kind is ResourceKind.POD_METRICS:
+                return []
+            return super().get(kind, name, label_selector)
+
+    roster = pods_stream.read_roster(NoMetrics({"p1": "r1"}), "foo-team")
+    assert [p.pod for p in roster] == ["p1"]
+    assert roster[0].usage is None
+
+
+def test_an_unreadable_metrics_api_does_not_empty_the_roster():
+    class BrokenMetrics(FakeCluster):
+        def get(self, kind, name=None, label_selector=None):
+            from common.cluster import ResourceKind
+
+            if kind is ResourceKind.POD_METRICS:
+                raise RuntimeError("metrics-server is down")
+            return super().get(kind, name, label_selector)
+
+    roster = pods_stream.read_roster(BrokenMetrics({"p1": "r1"}), "foo-team")
+    assert [p.pod for p in roster] == ["p1"]
+    assert roster[0].usage is None
+
+
+def test_a_pod_that_is_running_but_not_ready_says_so():
+    class NotReady(FakeCluster):
+        def _pod_obj(self, name, revision):
+            obj = super()._pod_obj(name, revision)
+            obj["status"]["conditions"] = [{"type": "Ready", "status": "False"}]
+            return obj
+
+    roster = pods_stream.read_roster(NotReady({"p1": "r1"}), "foo-team")
+    assert roster[0].phase == "Running"
+    assert roster[0].ready is False
+
+
+def _roster(pods=()):
+    return PodRoster(name="foo", group="team", type="function", site="central", pods=list(pods))
+
+
+def _pods_follow(cluster, capacity, **over):
+    args = dict(
+        cluster=cluster,
+        capacity=capacity,
+        config=FAST,
+        first=_roster(),
+        oname="foo-team",
+        interval=FAST.interval_seconds,
+    )
+    args.update(over)
+    return pods_stream.follow(**args)
+
+
+async def test_the_first_roster_is_sent_immediately(capacity):
+    """A client must be able to open a log stream without waiting an interval."""
+    cluster = FakeCluster({"p1": "r1"})
+    first = _roster(pods_stream.read_roster(cluster, "foo-team"))
+    events = await collect(_pods_follow(cluster, capacity, first=first), 1)
+
+    assert events[0].name == "pods"
+    assert [p.pod for p in events[0].data.pods] == ["p1"]
+
+
+async def test_the_roster_keeps_arriving_and_tracks_a_scale_up(capacity):
+    cluster = FakeCluster({"p1": "r1"})
+    stream = _pods_follow(cluster, capacity)
+    got = []
+
+    async def run():
+        async for event in stream:
+            got.append(event)
+            if len(got) == 1:
+                cluster.set_pods({"p1": "r1", "p2": "r1"})
+            if len(got) >= 2:
+                return
+
+    try:
+        await asyncio.wait_for(run(), 5.0)
+    finally:
+        await stream.aclose()
+
+    assert [p.pod for p in got[-1].data.pods] == ["p1", "p2"]
+
+
+async def test_a_scaled_to_zero_workload_streams_an_empty_roster(capacity):
+    """Empty is a normal state, not an error - and the reason this is a stream."""
+    events = await collect(_pods_follow(FakeCluster({}), capacity), 2)
+
+    assert names(events) == ["pods", "pods"]
+    assert events[0].data.pods == []
+
+
+async def test_a_deleted_workload_ends_the_roster_stream_with_its_envelope_code(capacity):
+    class Gone(FakeCluster):
+        def get(self, kind, name=None, label_selector=None):
+            raise NotFoundError("function 'foo' not found")
+
+    events = [e async for e in _pods_follow(Gone({}), capacity)]
+
+    assert names(events) == ["pods", "error"]
+    assert events[-1].data.code == "NOT_FOUND"
+
+
+async def test_an_unexpected_roster_failure_does_not_leak_its_text(capacity):
+    class Angry(FakeCluster):
+        def get(self, kind, name=None, label_selector=None):
+            raise RuntimeError("postgres://user:hunter2@db.internal")
+
+    events = [e async for e in _pods_follow(Angry({}), capacity)]
+
+    assert events[-1].name == "error"
+    assert events[-1].data.code == "INTERNAL"
+    assert "hunter2" not in events[-1].data.message
 
 
 # --- streaming stats -------------------------------------------------------
@@ -624,7 +736,7 @@ async def _drain_all(stream, into):
 
 # --- the engine's orchestration --------------------------------------------
 #
-# What the two service methods own is the order of operations: take a slot,
+# What the service methods own is the order of operations: take a slot,
 # authorize, and only then start streaming - so that everything with a status
 # code happens while an error envelope is still possible, and the slot comes
 # back whether or not it did.
@@ -677,44 +789,45 @@ def _caller(groups=("team",)):
     return Principal(subject="u", username="alice", groups=list(groups))
 
 
-async def test_stream_logs_authorizes_before_the_first_event(capacity):
-    cluster = OwnedCluster({"p1": "r1"}, {"p1": [b"hello\n"]})
-    engine = _engine(cluster, capacity)
+def _offering():
+    from api.services.offering import FUNCTION
 
-    stream = await engine.stream_logs(
-        _offering(), "foo", _caller(), "team", container="user-container", since_seconds=None
-    )
+    return FUNCTION
+
+
+# --- the pods stream --------------------------------------------------------
+
+
+async def test_stream_pods_authorizes_and_sends_the_roster(capacity):
+    engine = _engine(OwnedCluster({"p1": "r1"}), capacity)
+
+    stream = await engine.stream_pods(_offering(), "foo", _caller(), "team")
     try:
-        events = await collect(stream, 2)
+        events = await collect(stream, 1)
     finally:
-        pass
+        await stream.aclose()
 
-    assert events[0].name == "open"
+    assert events[0].name == "pods"
     assert events[0].data.name == "foo"
     assert events[0].data.site == "central"
+    assert [p.pod for p in events[0].data.pods] == ["p1"]
 
 
-async def test_stream_logs_404s_a_workload_that_is_not_here_and_keeps_the_slot(capacity):
-    """A 404 must be an envelope, and must not cost a slot that never opened."""
+async def test_stream_pods_404s_a_workload_that_is_not_here_and_keeps_the_slot(capacity):
     cluster = OwnedCluster({})
     engine = _engine(cluster, capacity)
-    engine.deployer._clusters["central"].ksvc = None
+    cluster.ksvc = None
 
     with pytest.raises(NotFoundError):
-        await engine.stream_logs(
-            _offering(), "foo", _caller(), "team", container="user-container", since_seconds=None
-        )
+        await engine.stream_pods(_offering(), "foo", _caller(), "team")
     assert capacity.open_streams == 0
 
 
-async def test_stream_logs_hides_another_group_s_workload_as_a_404(capacity):
-    cluster = OwnedCluster({})
-    engine = _engine(cluster, capacity, owner_group="someone-else")
+async def test_stream_pods_hides_another_group_s_workload_as_a_404(capacity):
+    engine = _engine(OwnedCluster({}), capacity, owner_group="someone-else")
 
     with pytest.raises(NotFoundError):
-        await engine.stream_logs(
-            _offering(), "foo", _caller(), "team", container="user-container", since_seconds=None
-        )
+        await engine.stream_pods(_offering(), "foo", _caller(), "team")
     assert capacity.open_streams == 0
 
 
@@ -725,24 +838,127 @@ async def test_a_caller_outside_the_group_is_refused_before_any_cluster_read(cap
     engine = _engine(cluster, capacity)
 
     with pytest.raises(ForbiddenError):
-        await engine.stream_logs(
+        await engine.stream_pods(_offering(), "foo", _caller(groups=["other"]), "team")
+    assert cluster.list_calls == 0
+    assert capacity.open_streams == 0
+
+
+# --- the per-pod log stream -------------------------------------------------
+
+
+async def test_stream_pod_logs_opens_on_the_named_pod(capacity):
+    cluster = OwnedCluster({"p1": "rev-7"}, {"p1": [b"hi\n"]})
+    engine = _engine(cluster, capacity)
+
+    stream = await engine.stream_pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
+    )
+    try:
+        events = await collect(stream, 2)
+    finally:
+        await stream.aclose()
+
+    assert events[0].name == "open"
+    assert events[0].data.pod == "p1"
+    # The revision is read off the pod, not guessed from the workload.
+    assert events[0].data.revision == "rev-7"
+
+
+async def test_a_pod_of_another_workload_is_a_404(capacity):
+    """The check that matters: owning the workload is not owning every pod.
+
+    All workloads' pods share one namespace, so without this any authenticated
+    caller could read any pod's log by naming it.
+    """
+
+    class Foreign(OwnedCluster):
+        def get(self, kind, name=None, label_selector=None):
+            from common.cluster import ResourceKind
+
+            if kind is ResourceKind.POD and name is not None:
+                return {
+                    "metadata": {
+                        "name": name,
+                        "labels": {pods_stream.SERVICE_LABEL: "someone-elses-workload"},
+                    }
+                }
+            return super().get(kind, name, label_selector)
+
+    engine = _engine(Foreign({}), capacity)
+
+    with pytest.raises(NotFoundError):
+        await engine.stream_pod_logs(
             _offering(),
             "foo",
-            _caller(groups=["other"]),
+            _caller(),
             "team",
+            pod="victim",
             container="user-container",
             since_seconds=None,
         )
-    assert cluster.list_calls == 0
     assert capacity.open_streams == 0
+
+
+async def test_a_pod_with_no_service_label_at_all_is_a_404(capacity):
+    class Unlabelled(OwnedCluster):
+        def get(self, kind, name=None, label_selector=None):
+            from common.cluster import ResourceKind
+
+            if kind is ResourceKind.POD and name is not None:
+                return {"metadata": {"name": name}}
+            return super().get(kind, name, label_selector)
+
+    engine = _engine(Unlabelled({}), capacity)
+
+    with pytest.raises(NotFoundError):
+        await engine.stream_pod_logs(
+            _offering(),
+            "foo",
+            _caller(),
+            "team",
+            pod="random",
+            container="user-container",
+            since_seconds=None,
+        )
+
+
+async def test_a_pod_that_does_not_exist_is_a_404_and_keeps_the_slot(capacity):
+    engine = _engine(OwnedCluster({}), capacity)
+
+    with pytest.raises(NotFoundError):
+        await engine.stream_pod_logs(
+            _offering(),
+            "foo",
+            _caller(),
+            "team",
+            pod="ghost",
+            container="user-container",
+            since_seconds=None,
+        )
+    assert capacity.open_streams == 0
+
+
+# --- admission across both stream kinds -------------------------------------
 
 
 async def test_the_slot_is_held_for_the_stream_and_returned_when_it_ends(capacity):
     cluster = OwnedCluster({"p1": "r1"}, live=True)
     engine = _engine(cluster, capacity)
 
-    stream = await engine.stream_logs(
-        _offering(), "foo", _caller(), "team", container="user-container", since_seconds=None
+    stream = await engine.stream_pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
     )
     assert capacity.open_streams == 1  # taken at open, not at the first event
     await collect(stream, 1)
@@ -750,39 +966,36 @@ async def test_the_slot_is_held_for_the_stream_and_returned_when_it_ends(capacit
 
 
 async def test_streams_past_the_limit_are_refused(capacity):
-    cluster = OwnedCluster({}, live=True)
+    """Per-pod means a user watching N pods spends N slots - so this bites sooner."""
+    cluster = OwnedCluster({"p1": "r1", "p2": "r1"}, live=True)
     engine = _engine(cluster, capacity)
     opened = []
-    for _ in range(FAST.max_concurrent):
+    for pod in ("p1", "p2")[: FAST.max_concurrent]:
         opened.append(
-            await engine.stream_logs(
+            await engine.stream_pod_logs(
                 _offering(),
                 "foo",
                 _caller(),
                 "team",
+                pod=pod,
                 container="user-container",
                 since_seconds=None,
             )
         )
     try:
         with pytest.raises(ServiceUnavailableError):
-            await engine.stream_logs(
-                _offering(),
-                "foo",
-                _caller(),
-                "team",
-                container="user-container",
-                since_seconds=None,
-            )
+            await engine.stream_pods(_offering(), "foo", _caller(), "team")
     finally:
         for stream in opened:
             await stream.aclose()
     assert capacity.open_streams == 0
 
 
+# --- the stats stream's orchestration ---------------------------------------
+
+
 async def test_stream_stats_takes_the_first_reading_before_opening(capacity):
-    cluster = OwnedCluster({})
-    engine = _engine(cluster, capacity)
+    engine = _engine(OwnedCluster({}), capacity)
     readings = []
 
     async def fake_stats(offering, name, user, group, *, executor=None):
@@ -812,9 +1025,3 @@ async def test_stream_stats_returns_the_slot_when_the_first_reading_fails(capaci
     with pytest.raises(NotFoundError):
         await engine.stream_stats(_offering(), "foo", _caller(), "team")
     assert capacity.open_streams == 0
-
-
-def _offering():
-    from api.services.offering import FUNCTION
-
-    return FUNCTION

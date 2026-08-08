@@ -30,6 +30,11 @@ from cloudlet_apis.names import (  # noqa: F401
 )
 from pydantic import AfterValidator, WithJsonSchema
 
+# DNS-1123 *subdomain* - Kubernetes' rule for a pod name. Dotted labels are
+# permitted because the rule permits them, not because Knative produces one.
+DNS1123_SUBDOMAIN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$")
+MAX_POD_NAME = 253
+
 # RFC-1123 hostname (FQDN): lowercase labels separated by dots, <=253 chars.
 HOSTNAME = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
@@ -200,6 +205,39 @@ def validate_branch(branch: str) -> str:
     if len(branch) > 255:
         raise ValueError("branch must be at most 255 characters")
     return branch
+
+
+def validate_pod_name(pod: str) -> str:
+    """Validate a pod name taken from the request path.
+
+    Not decoration. This value is interpolated into a request to the cluster's
+    API server, so it is the one caller-supplied string on the read path that
+    could reach somewhere other than the resource it names - ``..`` or a ``/``
+    in a path segment is how a get becomes a get of something else. Constraining
+    it to what Kubernetes itself accepts as a pod name settles that at the edge,
+    before any service sees it.
+
+    It is not an authorization check and does not pretend to be: whether the pod
+    is *this workload's* is decided against its labels, where the answer is.
+
+    Args:
+        pod: The pod name from the path.
+
+    Returns:
+        The name unchanged.
+
+    Raises:
+        ValueError: If it is empty, over-long, or not a DNS-1123 subdomain.
+    """
+    if not pod:
+        raise ValueError("pod name is required")
+    if len(pod) > MAX_POD_NAME:
+        raise ValueError(f"pod name must be at most {MAX_POD_NAME} characters")
+    if not DNS1123_SUBDOMAIN.match(pod):
+        raise ValueError(
+            "pod name must be a DNS-1123 subdomain: lowercase alphanumeric, '-' and '.'"
+        )
+    return pod
 
 
 def validate_source_path(path: str) -> str:
@@ -510,6 +548,16 @@ SourcePath = Annotated[
         "the repository root. Surrounding '/' are stripped and '..' is rejected.",
         "services/api",
         maxLength=255,
+    ),
+]
+PodName = Annotated[
+    str,
+    AfterValidator(validate_pod_name),
+    _schema(
+        "A pod name, as the pods stream reported it. DNS-1123 subdomain.",
+        "orders-team-00001-deployment-6b9f4c5d7-x2wql",
+        pattern=DNS1123_SUBDOMAIN.pattern,
+        maxLength=MAX_POD_NAME,
     ),
 ]
 EnvVarName = Annotated[

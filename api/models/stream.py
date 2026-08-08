@@ -9,11 +9,12 @@ from pydantic import BaseModel, field_validator
 
 # The only paths a ticket may be minted for. Anchored and explicit rather than
 # "any path this API serves": a ticket is a bearer credential in a URL, so what
-# it can open is enumerated, not inferred. The name/group segments are left
+# it can open is enumerated, not inferred. The name/group/pod segments are left
 # permissive - authorization is redone from the ticket's own Principal when the
 # stream opens, so this is about the shape, not the identity.
 STREAM_PATH = re.compile(
-    r"^/api/v1/groups/[^/]{1,63}/(?:functions|containers)/[^/]{1,63}/(?:logs|stats)/stream$"
+    r"^/api/v1/groups/[^/]{1,63}/(?:functions|containers)/[^/]{1,63}/"
+    r"(?:pods|stats/stream|logs/pods/[^/]{1,253})$"
 )
 
 
@@ -22,8 +23,8 @@ class StreamTicketRequest(BaseModel):
 
     Attributes:
         path: The exact path the ticket will be used on, e.g.
-            ``/api/v1/groups/payments/functions/orders/logs/stream``. Query
-            string excluded - the ticket travels in it.
+            ``/api/v1/groups/payments/functions/orders/pods``. Query string
+            excluded - the ticket travels in it.
     """
 
     path: str
@@ -34,8 +35,9 @@ class StreamTicketRequest(BaseModel):
         """Reject a path that is not one of the streaming endpoints."""
         if not STREAM_PATH.match(value):
             raise ValueError(
-                "path must be a streaming endpoint, "
-                "/api/v1/groups/{group}/{functions|containers}/{name}/{logs|stats}/stream"
+                "path must be a streaming endpoint under "
+                "/api/v1/groups/{group}/{functions|containers}/{name}/: "
+                "'pods', 'stats/stream', or 'logs/pods/{pod}'"
             )
         return value
 

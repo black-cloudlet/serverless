@@ -11,8 +11,8 @@ from api.auth.deps import CurrentUser, StreamUser
 from api.dependencies import ContainerDep
 from api.models.common import (
     Group,
-    LogsResponse,
     Name,
+    PodName,
     WorkloadStatsResponse,
     WorkloadSummary,
 )
@@ -160,59 +160,27 @@ async def get_container_stats(
     return await svc.stats(name, group, user)
 
 
-@router.get("/{name}/logs", response_model=LogsResponse)
-async def get_container_logs(
-    group: Group,
-    name: Name,
-    user: CurrentUser,
-    svc: ContainerDep,
-    container: str = "user-container",
-    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
-    limitBytes: Annotated[int | None, Query(gt=0)] = None,
-) -> LogsResponse:
-    """Snapshot the container's pod logs from the current site.
-
-    Point-in-time (not streamed) and local-site only; a scaled-to-zero workload
-    returns no pods.
-
-    Args:
-        group: The owning group (from the request path).
-        name: The workload name.
-        user: The authenticated caller (injected).
-        svc: The container service (injected).
-        container: The pod container to read (default the user-container).
-        sinceSeconds: Only return logs newer than this many seconds.
-        limitBytes: Cap the bytes read per pod.
-
-    Returns:
-        The container's per-pod logs from the local site.
-    """
-    return await svc.logs(
-        name, group, user, container=container, since_seconds=sinceSeconds, limit_bytes=limitBytes
-    )
-
-
-@router.get("/{name}/logs/stream", responses=sse.RESPONSES, response_class=StreamingResponse)
-async def stream_container_logs(
+@router.get("/{name}/pods", responses=sse.RESPONSES, response_class=StreamingResponse)
+async def stream_container_pods(
     group: Group,
     name: Name,
     user: StreamUser,
     svc: ContainerDep,
-    container: str = "user-container",
-    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
     interval: Annotated[float | None, Query(gt=0)] = None,
 ) -> StreamingResponse:
-    """Follow the container's pod logs from the current site (Server-Sent Events).
+    """Stream the container's pods on the current site (Server-Sent Events).
 
-    The streaming form of ``/logs``, and local-site only for the same reason -
-    logs live on the node that wrote them. Unlike the snapshot, this keeps up
-    with the workload: pods are re-listed every ``interval`` seconds, so a
-    scale-up or a new revision starts being followed without reconnecting.
+    Always a stream, never a snapshot: Knative replaces a workload's pods on
+    every revision and removes them all on scale-to-zero, so a roster fetched
+    once quietly stops being true. Local site only, matching the log streams it
+    feeds - a pod name is only useful where its log can be read.
 
-    Events: ``open`` (what is being followed), ``log`` (one line), ``pods`` (the
-    followed set changed), ``warning`` (degraded but still running - a pod cap
-    hit, or lines dropped because the client read too slowly), ``error`` (ending,
-    and why). Lines beginning with ``:`` are heartbeats.
+    This is where the ``{pod}`` for ``/logs/pods/{pod}`` comes from; nothing
+    else in the API returns a pod name.
+
+    Events: ``pods`` (the full roster, the first sent immediately) and ``error``.
+    Lines beginning with ``:`` are heartbeats. An empty roster is normal - the
+    workload is deployed here and scaled to zero.
 
     Browsers authenticate with ``?ticket=`` from ``POST /api/v1/stream-tickets``;
     everything else sends the usual ``Authorization`` header.
@@ -222,21 +190,53 @@ async def stream_container_logs(
         name: The workload name.
         user: The authenticated caller, by header or ticket (injected).
         svc: The container service (injected).
+        interval: Seconds between listings; omit for the default.
+
+    Returns:
+        The event stream.
+    """
+    return sse.stream(await svc.stream_pods(name, group, user, interval=interval))
+
+
+@router.get("/{name}/logs/pods/{pod}", responses=sse.RESPONSES, response_class=StreamingResponse)
+async def stream_container_pod_logs(
+    group: Group,
+    name: Name,
+    pod: PodName,
+    user: StreamUser,
+    svc: ContainerDep,
+    container: str = "user-container",
+    sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
+) -> StreamingResponse:
+    """Follow one of the container's pods' logs (Server-Sent Events).
+
+    Always a stream: Kubernetes keeps no log buffer beyond the node, so there is
+    no history to return and nowhere but the current site to read from. Get
+    ``pod`` from ``GET .../{name}/pods``.
+
+    The stream ends with an ``end`` event when the pod's log does - a scale-down
+    or a new revision, which on Knative is routine and is not reported as an
+    error. Pick the replacement pod off the ``pods`` stream.
+
+    Events: ``open``, ``log`` (one line), ``warning`` (lines dropped because the
+    client read too slowly), ``end``, ``error``. Lines beginning with ``:`` are
+    heartbeats.
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        pod: The pod to follow. A pod that is not this workload's is a 404.
+        user: The authenticated caller, by header or ticket (injected).
+        svc: The container service (injected).
         container: The pod container to read (default the user-container).
-        sinceSeconds: Start each pod's log this many seconds back.
-        interval: Seconds between pod re-listings; omit for the default.
+        sinceSeconds: Start the log this many seconds back.
 
     Returns:
         The event stream.
     """
     return sse.stream(
-        await svc.stream_logs(
-            name,
-            group,
-            user,
-            container=container,
-            since_seconds=sinceSeconds,
-            interval=interval,
+        await svc.stream_pod_logs(
+            name, group, user, pod=pod, container=container, since_seconds=sinceSeconds
         )
     )
 

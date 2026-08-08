@@ -50,7 +50,7 @@ api:
     host: ""
     labels: {}
     # -- How long HAProxy holds a connection open before cutting it.
-    # This exists for the SSE endpoints (/logs/stream, /stats/stream): the router
+    # This exists for the SSE endpoints (/pods, /logs/pods/{pod}, /stats/stream): the router
     # default is 30s, which would sever every stream half a minute in, and the
     # client would reconnect forever without ever noticing why. It MUST exceed
     # `stream.maxSeconds` below, so a stream ends the way it intends to - itself,
@@ -121,7 +121,7 @@ routeDomain: serverless.example.com
 corsAllowOrigins: []
 #  - https://acme.service-now.com
 
-# Bounds on the Server-Sent Events endpoints (/logs/stream, /stats/stream).
+# Bounds on the Server-Sent Events endpoints (/pods, /logs/pods/{pod}, /stats/stream).
 # These are not performance tuning. A followed pod log holds a worker thread for
 # as long as the client stays connected, so the API gives streaming a thread pool
 # of its own and refuses the stream that would overrun it, rather than letting
@@ -130,13 +130,12 @@ corsAllowOrigins: []
 stream:
   # Open streams one replica will serve. Beyond this a stream is refused with
   # 503 and a retry, which is strictly better than being connected and starved.
-  # The thread pool is sized from this and maxPods, so raising either raises it.
-  maxConcurrent: 8
-  # Pods one logs stream will follow. The rest are named in a `warning` event.
-  maxPods: 5
-  # How often a stats stream re-reads, and a logs stream re-lists pods to pick
-  # up a scale-up or a new revision. A client may ask for its own within
-  # [minIntervalSeconds, maxIntervalSeconds]; anything outside is clamped.
+  # The thread pool is sized from this (two threads each), so raising it raises
+  # the pool. Streams are per pod, so a user watching four pods of one workload
+  # spends four - which is why this is far above the old workload-level default.
+  maxConcurrent: 32
+  # How often a pods or stats stream re-reads. A client may ask for its own
+  # within [minIntervalSeconds, maxIntervalSeconds]; anything outside is clamped.
   intervalSeconds: 5
   minIntervalSeconds: 1
   maxIntervalSeconds: 60

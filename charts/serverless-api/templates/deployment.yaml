@@ -53,8 +53,6 @@ spec:
               value: {{ toJson .Values.corsAllowOrigins | quote }}
             - name: SERVERLESS_STREAM__MAX_CONCURRENT
               value: {{ .Values.stream.maxConcurrent | quote }}
-            - name: SERVERLESS_STREAM__MAX_PODS
-              value: {{ .Values.stream.maxPods | quote }}
             - name: SERVERLESS_STREAM__INTERVAL_SECONDS
               value: {{ .Values.stream.intervalSeconds | quote }}
             - name: SERVERLESS_STREAM__MIN_INTERVAL_SECONDS

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from cloudlet_apis.auth import Principal
 
-from api.models.common import LogsResponse, WorkloadStatsResponse, WorkloadSummary
+from api.models.common import WorkloadStatsResponse, WorkloadSummary
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.services.manifests import secrets as secret_svc
 from api.services.offering import CONTAINER
@@ -318,70 +318,53 @@ class ContainerService:
         """
         return await self._engine.stats(CONTAINER, name, user, group)
 
-    async def logs(
-        self,
-        name: str,
-        group: str,
-        user: Principal,
-        *,
-        container: str,
-        since_seconds: int | None,
-        limit_bytes: int | None,
-    ) -> LogsResponse:
-        """Snapshot the container's pod logs from the current site.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            container: The pod container to read.
-            since_seconds: Only logs newer than this, if set.
-            limit_bytes: Cap on bytes read per pod, if set.
-
-        Returns:
-            The container's per-pod logs from the local site.
-        """
-        return await self._engine.logs(
-            CONTAINER,
-            name,
-            user,
-            group,
-            container=container,
-            since_seconds=since_seconds,
-            limit_bytes=limit_bytes,
-        )
-
-    async def stream_logs(
-        self,
-        name: str,
-        group: str,
-        user: Principal,
-        *,
-        container: str,
-        since_seconds: int | None,
-        interval: float | None,
+    async def stream_pods(
+        self, name: str, group: str, user: Principal, *, interval: float | None
     ) -> AsyncIterator[StreamEvent]:
-        """Follow the container's pod logs on the current site.
+        """Stream which pods the container has on the current site.
 
         Args:
             name: The workload name.
             group: The owning group.
             user: The authenticated caller.
-            container: The pod container to read.
-            since_seconds: How far back each pod's log starts, if set.
-            interval: Seconds between pod re-listings; None takes the default.
+            interval: Seconds between listings; None takes the default.
 
         Returns:
             The event stream.
         """
-        return await self._engine.stream_logs(
+        return await self._engine.stream_pods(CONTAINER, name, user, group, interval=interval)
+
+    async def stream_pod_logs(
+        self,
+        name: str,
+        group: str,
+        user: Principal,
+        *,
+        pod: str,
+        container: str,
+        since_seconds: int | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Follow one of the container's pods' logs, on the current site.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            user: The authenticated caller.
+            pod: The pod to follow.
+            container: The pod container to read.
+            since_seconds: How far back the log starts, if set.
+
+        Returns:
+            The event stream.
+        """
+        return await self._engine.stream_pod_logs(
             CONTAINER,
             name,
             user,
             group,
+            pod=pod,
             container=container,
             since_seconds=since_seconds,
-            interval=interval,
         )
 
     async def stream_stats(

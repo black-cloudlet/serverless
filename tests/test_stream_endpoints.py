@@ -15,7 +15,8 @@ from api.models.common import StreamError, WorkloadStatsResponse
 from api.services.streams.sse import StreamEvent
 
 KEY = "endpoint-test-signing-key"  # noqa: S105 - a fixture, not a credential
-LOGS = "/api/v1/groups/team/functions/foo/logs/stream"
+PODS = "/api/v1/groups/team/functions/foo/pods"
+LOGS = "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
 STATS = "/api/v1/groups/team/functions/foo/stats/stream"
 CALLER = Principal(subject="u", username="alice", groups=["team"], is_admin=False)
 
@@ -33,14 +34,20 @@ class FakeStreams:
         self.events = events
         self.seen: dict = {}
 
-    async def stream_logs(self, name, group, user, *, container, since_seconds, interval):
+    async def stream_pods(self, name, group, user, *, interval):
+        self.seen = dict(name=name, group=group, user=user, interval=interval)
+        if self.raises:
+            raise self.raises
+        return _events(*(self.events or []))
+
+    async def stream_pod_logs(self, name, group, user, *, pod, container, since_seconds):
         self.seen = dict(
             name=name,
             group=group,
             user=user,
+            pod=pod,
             container=container,
             since_seconds=since_seconds,
-            interval=interval,
         )
         if self.raises:
             raise self.raises
@@ -170,40 +177,83 @@ def test_a_full_stream_pool_is_a_503_envelope():
 # --- parameters -------------------------------------------------------------
 
 
-def test_the_logs_stream_passes_its_parameters_through():
+def test_the_log_stream_passes_its_parameters_through():
     svc = FakeStreams(events=[])
-    build(svc).get(f"{LOGS}?container=queue-proxy&sinceSeconds=30&interval=2")
+    build(svc).get(f"{LOGS}?container=queue-proxy&sinceSeconds=30")
 
+    assert svc.seen["pod"] == "foo-team-00001-abcde"
     assert svc.seen["container"] == "queue-proxy"
     assert svc.seen["since_seconds"] == 30
-    assert svc.seen["interval"] == 2
     assert svc.seen["name"] == "foo"
     assert svc.seen["group"] == "team"
 
 
-def test_the_logs_stream_defaults_to_the_user_container():
+def test_the_log_stream_defaults_to_the_user_container():
     svc = FakeStreams(events=[])
     build(svc).get(LOGS)
 
     assert svc.seen["container"] == "user-container"
     assert svc.seen["since_seconds"] is None
+
+
+def test_the_pods_stream_passes_its_interval_through():
+    svc = FakeStreams(events=[])
+    build(svc).get(f"{PODS}?interval=2")
+    assert svc.seen["interval"] == 2
+
+    svc = FakeStreams(events=[])
+    build(svc).get(PODS)
     assert svc.seen["interval"] is None  # the service applies the configured default
 
 
-@pytest.mark.parametrize("query", ["sinceSeconds=0", "sinceSeconds=-1", "interval=0"])
+@pytest.mark.parametrize("query", ["sinceSeconds=0", "sinceSeconds=-1"])
 def test_non_positive_windows_are_rejected(query):
     assert build(FakeStreams(events=[])).get(f"{LOGS}?{query}").status_code == 400
 
 
-def test_both_offerings_stream(monkeypatch):
-    for path in (
+def test_a_non_positive_interval_is_rejected():
+    assert build(FakeStreams(events=[])).get(f"{PODS}?interval=0").status_code == 400
+
+
+@pytest.mark.parametrize(
+    "pod",
+    [
+        "..%2F..%2Fsecrets",  # an encoded separator, which routing does not fold away
+        "%2E%2E%2Fetc",
+        "UPPERCASE",
+        "has spaces",
+        "trailing-",
+        "under_score",
+    ],
+)
+def test_a_pod_name_that_is_not_a_pod_name_never_reaches_the_service(pod):
+    """The segment is interpolated into a request to the cluster's API server.
+
+    A bare ``../`` is folded away by URL normalization before routing even sees
+    it, so the cases that matter are the encoded ones - and the character classes
+    Kubernetes itself would not accept as a pod name.
+    """
+    svc = FakeStreams(events=[])
+    response = build(svc).get(f"/api/v1/groups/team/functions/foo/logs/pods/{pod}")
+    assert response.status_code in (400, 404), pod
+    assert svc.seen == {}, f"{pod} reached the service"
+
+
+def test_both_offerings_stream():
+    for base in (
         "/api/v1/groups/team/functions/foo",
         "/api/v1/groups/team/containers/foo",
     ):
-        for kind in ("logs", "stats"):
+        for suffix in ("pods", "stats/stream", "logs/pods/foo-team-00001-abcde"):
             svc = FakeStreams(events=[])
-            response = build(svc).get(f"{path}/{kind}/stream")
-            assert response.status_code == 200, f"{path}/{kind}/stream"
+            response = build(svc).get(f"{base}/{suffix}")
+            assert response.status_code == 200, f"{base}/{suffix}"
+
+
+def test_the_snapshot_logs_endpoint_is_gone():
+    """Replaced by the per-pod stream; a stale client must not get a silent 200."""
+    response = build(FakeStreams(events=[])).get("/api/v1/groups/team/functions/foo/logs")
+    assert response.status_code == 404
 
 
 # --- authenticating a stream ------------------------------------------------
@@ -305,25 +355,28 @@ def test_no_signing_key_refuses_every_ticket():
 
 def test_the_streams_document_themselves_as_event_streams():
     schema = create_app().openapi()
-    for path in (
-        "/api/v1/groups/{group}/functions/{name}/logs/stream",
-        "/api/v1/groups/{group}/functions/{name}/stats/stream",
-        "/api/v1/groups/{group}/containers/{name}/logs/stream",
-        "/api/v1/groups/{group}/containers/{name}/stats/stream",
-    ):
-        content = schema["paths"][path]["get"]["responses"]["200"]["content"]
-        assert "text/event-stream" in content, path
+    for offering in ("functions", "containers"):
+        for suffix in ("pods", "stats/stream", "logs/pods/{pod}"):
+            path = f"/api/v1/groups/{{group}}/{offering}/{{name}}/{suffix}"
+            content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+            assert "text/event-stream" in content, path
 
 
-def test_the_snapshot_endpoints_keep_their_own_contract():
-    """Adding a stream must not change what /logs and /stats already return."""
+def test_the_stats_snapshot_keeps_its_own_contract():
+    """Streaming must not change what the one remaining JSON read returns."""
+    schema = create_app().openapi()
+    path = "/api/v1/groups/{group}/functions/{name}/stats"
+    content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+    assert list(content) == ["application/json"]
+
+
+def test_the_removed_log_paths_are_not_published():
     schema = create_app().openapi()
     for path in (
         "/api/v1/groups/{group}/functions/{name}/logs",
-        "/api/v1/groups/{group}/functions/{name}/stats",
+        "/api/v1/groups/{group}/functions/{name}/logs/stream",
     ):
-        content = schema["paths"][path]["get"]["responses"]["200"]["content"]
-        assert list(content) == ["application/json"], path
+        assert path not in schema["paths"], path
 
 
 def test_the_error_event_shares_the_envelope_s_code_vocabulary():
