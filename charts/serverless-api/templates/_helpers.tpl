@@ -114,7 +114,7 @@ The image a Builder composes and pushes.
   {{ include "serverless-api.builderImage" (dict "root" $ "name" "python") }}
 */}}
 {{- define "serverless-api.builderImage" -}}
-{{- printf "%s/%s/%s" (include "serverless-api.registryBase" .root) .root.Values.build.builderRepository .name -}}
+{{- printf "%s/%s/%s" (include "serverless-api.registryBase" .root) (tpl .root.Values.build.builderRepository .root) .name -}}
 {{- end -}}
 
 {{/*
