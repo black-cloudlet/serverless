@@ -30,6 +30,36 @@ Start with **[docs/](docs/README.md)**, which indexes the set:
 The code is the source of truth; where a document disagrees with it, the document is
 the bug.
 
+## Status at a glance
+
+One vocabulary covers the workload rollup and the per-site rows, published on
+`GET /api/v1/{type}/info` (`statuses`) so no client hardcodes it: `Pending`,
+`Building`, `Deploying`, `Ready`, `Failed`, `BuildFailed`, `Terminating` - with
+`Ready`, `Failed` and `BuildFailed` terminal for a poller. A failure carries a
+machine-readable `reason` (`ImagePullFailed`, `CrashLooping`, `ConfigError`,
+`ProgressDeadlineExceeded`; null when unrecognized); a failed *build* is specific
+enough to be its own status, `BuildFailed`. The lightweight poll target,
+`GET .../{name}/stats` (also pushed as SSE on `/stats/stream`), reads:
+
+```json
+{
+  "status": "Failed",
+  "reason": "ImagePullFailed",
+  "replicas": 2,
+  "usage": null,
+  "sites": [
+    { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
+      "usage": { "cpu": "120m", "memory": "180Mi" } },
+    { "site": "south", "status": "Failed", "reason": "ImagePullFailed",
+      "replicas": 0, "usage": null }
+  ]
+}
+```
+
+The full GET adds the desired-state config, each site's `revision`, and the raw
+failure text on the site's `error` (docs/FUNCTIONS.md - Function Status
+Resolution; docs/ARCHITECTURE.md - REST API Specification).
+
 ## Layout
 
 ```

@@ -191,19 +191,41 @@ source, not images.)
 > ```json
 > {
 >   "status": "Ready",
+>   "reason": null,
 >   "replicas": 3,
 >   "usage": { "cpu": "210m", "memory": "355Mi" },
 >   "sites": [
->     { "site": "central", "status": "Ready", "replicas": 2,
+>     { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
 >       "usage": { "cpu": "120m", "memory": "180Mi" } },
->     { "site": "south", "status": "Ready", "replicas": 1,
+>     { "site": "south", "status": "Ready", "reason": null, "replicas": 1,
 >       "usage": { "cpu": "90m", "memory": "175Mi" } }
 >   ]
 > }
 > ```
 >
-> `status` matches the full GET's, `Building` included - the build is still
-> read, it is just not a field here. Usage covers each pod's user container only,
+> And when a site is failing, the same shape carries the cause:
+>
+> ```json
+> {
+>   "status": "Failed",
+>   "reason": "ImagePullFailed",
+>   "replicas": 2,
+>   "usage": null,
+>   "sites": [
+>     { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
+>       "usage": { "cpu": "120m", "memory": "180Mi" } },
+>     { "site": "south", "status": "Failed", "reason": "ImagePullFailed",
+>       "replicas": 0, "usage": null }
+>   ]
+> }
+> ```
+>
+> `status` matches the full GET's, `Building` and `BuildFailed` included - the
+> build is still read, it is just not a field here. `reason` is the
+> machine-readable cause behind a failure (one of `/info`'s `statuses.reasons`),
+> null when nothing failed or the cause was not recognized; the raw condition
+> text stays on the full GET's per-site `error`, which `/stats` deliberately
+> does not carry. Usage covers each pod's user container only,
 > never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
 > API could not be read. The top-level totals are summed across sites **before**
 > rounding, so they need not equal the sum of the printed per-site figures; and a
