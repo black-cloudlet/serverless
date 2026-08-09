@@ -69,6 +69,7 @@ from common.errors import (
     ForbiddenError,
     NotFoundError,
     SiteTotalFailure,
+    ValidationError,
 )
 from common.names import object_name
 
@@ -111,8 +112,8 @@ class ApplyRequest:
         group: Owning group.
         user: The authenticated caller.
         image: The image to deploy when every site runs the same one (a
-            container's). Empty for an offering built per site; ``images``
-            carries it then.
+            container's). Empty for an offering built per site, which fills
+            ``images`` for every site it targets instead (see `image_for`).
         env: Env vars to resolve onto the workload.
         files: File mounts to resolve onto the workload.
         scaling: Autoscaling settings.
@@ -186,13 +187,31 @@ class ApplyRequest:
     def image_for(self, site: str) -> str:
         """The image ``site`` should run.
 
+        An offering that builds per site fills ``images`` for exactly the sites
+        this request targets - both come from one ``resolve_targets`` call on the
+        same argument - so the lookup hits and ``image`` is never reached. It is
+        not a fallback for that offering; it is the value for offerings whose
+        image is the same everywhere.
+
         Args:
             site: The site name.
 
         Returns:
-            That site's own image, falling back to the uniform ``image``.
+            That site's own image, else the uniform one.
+
+        Raises:
+            ValidationError: If neither is set. That means the two site sets
+                drifted apart, and it is worth saying so here: an empty image
+                otherwise reaches the API server, which rejects it with a
+                message about the container and no hint of the real cause.
         """
-        return self.images.get(site) or self.image
+        image = self.images.get(site) or self.image
+        if not image:
+            raise ValidationError(
+                f"no image to deploy to site '{site}': the request targets it but "
+                f"`images` covers {sorted(self.images) or 'no sites'}"
+            )
+        return image
 
 
 class WorkloadService:

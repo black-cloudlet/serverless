@@ -741,6 +741,34 @@ async def test_a_site_that_runs_no_copy_of_the_function_does_not_build_one():
     assert len(_git_secrets(remote)) == 1
 
 
+def test_a_site_with_no_image_is_a_loud_failure_not_an_empty_container():
+    """A function passes image="" and fills `images` per target site. If those
+    two site sets ever drifted, the empty string would reach the API server and
+    come back as a complaint about the container - nowhere near the cause."""
+    from api.models.common import Scaling
+    from api.services.workloads import ApplyRequest
+
+    req = ApplyRequest(
+        name="hello",
+        group="payments",
+        user=_principal(),
+        image="",
+        images={"site-a": "registry.a/acme/payments/hello:main"},
+        env=[],
+        files=[],
+        scaling=Scaling(),
+        size="small",
+        hostname=None,
+        sites=None,
+        port=8080,
+        created=True,
+    )
+
+    assert req.image_for("site-a") == "registry.a/acme/payments/hello:main"
+    with pytest.raises(ValidationError, match="site-b"):
+        req.image_for("site-b")
+
+
 async def test_an_update_keeps_each_sites_own_image_rather_than_one_sites():
     """The failure per-site registries make possible, and the reason for `images`.
 
