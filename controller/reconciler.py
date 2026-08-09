@@ -11,6 +11,8 @@ stream drops. No leader election (docs/BUILDING.md - Digest propagation).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from cloudlet_apis.logging import get_logger
 from kubernetes.client.exceptions import ApiException
 
@@ -26,6 +28,7 @@ from common.labels import (
     OFFERING_FUNCTION,
 )
 from controller.digest import needs_image, with_image
+from controller.gc import TagGC
 
 logger = get_logger(__name__)
 
@@ -36,11 +39,19 @@ IMAGE_SELECTOR = f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE},{LABEL_OFFERING}={OFFER
 class Reconciler:
     """Propagates ``Image.status.latestImage`` to the function's KSVC in this site."""
 
-    def __init__(self, settings: CommonSettings):
+    def __init__(
+        self,
+        settings: CommonSettings,
+        gc_factory: Callable[[str], TagGC] | None = None,
+    ):
         """Build the client for the site this controller sits in.
 
         Args:
             settings: Shared settings (sites, local site, TLS material).
+            gc_factory: Builds the tag GC from the *resolved* site name - a
+                factory because ``local_site`` may be unset or a cluster name,
+                and the GC must prune the registry of the site actually
+                watched. None runs the loop without GC.
 
         Raises:
             ValidationError: If no sites are configured.
@@ -48,6 +59,7 @@ class Reconciler:
         # Every site is constructed only to pick this one out; the rest are
         # dropped unconnected, since nothing here touches a peer.
         self._local = select_local(clusters_for(settings), settings.local_site)
+        self._gc = gc_factory(self._local.site) if gc_factory else None
 
     @property
     def local(self) -> Cluster:
@@ -71,6 +83,11 @@ class Reconciler:
         for image in images:
             self.reconcile(image)
         logger.info("resynced %d image(s) in %s", len(images), self._local.site)
+        if self._gc is not None:
+            # After the rollouts, on the same listing: the GC judges tags
+            # against each Image's latest state, so it rides the relist that
+            # just fetched it and costs no second LIST. Paced internally.
+            self._gc.maybe_sweep(images)
         return version
 
     def follow(self, timeout_seconds: int) -> None:

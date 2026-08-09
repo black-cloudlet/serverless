@@ -440,6 +440,42 @@ def repository_of(image: str) -> str:
     return f"{head}{sep}{tail.split(':', 1)[0]}" if sep else repo.split(":", 1)[0]
 
 
+def tag_of(image: str) -> str | None:
+    """The tag half of an image reference, or None when it carries none.
+
+    The counterpart of :func:`repository_of`, splitting the same grammar the
+    same way: the digest is cut first, and a ``:`` counts as a tag separator
+    only past the last ``/`` - a registry host may carry a port. Here, beside
+    the functions it mirrors, so a fix to one edge cannot miss the other.
+
+    Args:
+        image: An image reference (already validated).
+
+    Returns:
+        The tag, or None for a bare or digest-only reference.
+    """
+    untagged = image.split("@", 1)[0]
+    tail = untagged.rpartition("/")[2]
+    if ":" not in tail:
+        return None
+    return tail.split(":", 1)[1]
+
+
+def digest_of(image: str | None) -> str | None:
+    """The digest an image reference pins, or None when it names none.
+
+    Args:
+        image: An image reference, or None.
+
+    Returns:
+        The ``algorithm:hex`` half - the form a registry's tag listing reports
+        as the manifest digest, so the two compare directly.
+    """
+    if image and "@" in image:
+        return image.rsplit("@", 1)[1]
+    return None
+
+
 def image_repository(group: str, name: str) -> str:
     """The repository a function's images are pushed to: ``{group}/{name}``.
 

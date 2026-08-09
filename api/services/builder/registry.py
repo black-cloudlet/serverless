@@ -6,19 +6,20 @@ being deleted, and its tag moving to a new repository, which leaves the old one
 behind with nothing to ever address it again
 (docs/BUILDING.md - Moving a function's repository).
 
-Quay's management API, ``DELETE /api/v1/repository/{namespace}/{repository}``,
-which removes the repository itself rather than only its manifests. That is a
-Quay-specific call and needs a Quay OAuth token: robot accounts are registry
-credentials and cannot authenticate here (docs/BUILDING.md - Registry cleanup on delete).
+Policy only - *which* repositories a function event reclaims, and that the
+whole cleanup is best-effort. How the registry is spoken to is
+:class:`common.registry.RegistryClient`, shared with the build controller so
+the two services cannot drift in how they address Quay
+(docs/BUILDING.md - Registry cleanup on delete).
 """
 
 from __future__ import annotations
 
-import httpx
 from cloudlet_apis.logging import get_logger
 
 from common.config import RegistryConfig
-from common.names import CACHE_SUFFIX, cache_repository, image_repository, repository_of
+from common.names import CACHE_SUFFIX, cache_repository, image_repository
+from common.registry import RegistryClient, repository_path
 
 logger = get_logger(__name__)
 
@@ -67,9 +68,9 @@ def reclaim_moved_repositories(registry: RegistryConfig, previous_tag: str) -> N
 def moved_repositories(registry: RegistryConfig, previous_tag: str) -> list[str]:
     """The host-relative image and cache repositories ``previous_tag`` pushed to.
 
-    Empty when the reference is on a different host: this API and this token
-    address one registry, and deleting a path on another one would either 404 or,
-    worse, hit a same-named repository there.
+    Empty when the reference is on a different host - the shared derivation
+    (:func:`common.registry.repository_path`) refuses those, and the refusal is
+    logged here because only this caller knows it means "not reclaiming".
 
     Args:
         registry: Registry settings, carrying the host.
@@ -78,12 +79,10 @@ def moved_repositories(registry: RegistryConfig, previous_tag: str) -> list[str]
     Returns:
         The two repository paths, or an empty list.
     """
-    host = registry.url.strip("/")
-    repository = repository_of(previous_tag)
-    if not repository.startswith(f"{host}/"):
-        logger.info("not reclaiming '%s': it is not on %s", previous_tag, host)
+    path = repository_path(registry, previous_tag)
+    if path is None:
+        logger.info("not reclaiming '%s': it is not on %s", previous_tag, registry.host)
         return []
-    path = repository[len(host) + 1 :]
     return [path, f"{path}{CACHE_SUFFIX}"]
 
 
@@ -97,41 +96,9 @@ def delete_repositories(registry: RegistryConfig, repos: list[str], *, subject: 
     """
     if not registry.can_delete:
         return
-    headers = {"Authorization": f"Bearer {registry.api_token}"}
     try:
-        with httpx.Client(base_url=registry.api_url, timeout=registry.timeout) as client:
+        with RegistryClient(registry) as client:
             for repo in repos:
-                _delete_repository(client, headers, repo)
+                client.delete_repository(repo)
     except Exception:  # noqa: BLE001 - a leftover repository is logged, not fatal
         logger.exception("registry cleanup failed for %s", subject)
-
-
-def _delete_repository(client: httpx.Client, headers: dict, repo: str) -> None:
-    """Delete one repository.
-
-    The outcomes are read off httpx rather than compared against literals:
-    ``is_success`` is the whole 2xx class, which is what "deleted" means here.
-    Quay answers a repository delete with 204, but listing the codes we happen
-    to have seen would quietly log a successful 200 as a failure.
-
-    Args:
-        client: The registry HTTP client.
-        headers: Authorization headers carrying the OAuth token.
-        repo: The ``{namespace}/{repository}`` path the Quay route expects.
-    """
-    resp = client.delete(f"/api/v1/repository/{repo}", headers=headers)
-    if resp.is_success:
-        logger.info("deleted registry repository '%s'", repo)
-    elif resp.status_code == httpx.codes.NOT_FOUND:
-        pass  # never pushed, or already gone
-    elif resp.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
-        # The token acts as the user who authorized it: that user needs admin on
-        # this namespace, and with no `registry.organization` every group is one.
-        logger.warning(
-            "not authorized to delete registry repository '%s' (%s); "
-            "the API token needs admin on that namespace",
-            repo,
-            resp.status_code,
-        )
-    else:
-        logger.warning("could not delete registry repository '%s': %s", repo, resp.status_code)

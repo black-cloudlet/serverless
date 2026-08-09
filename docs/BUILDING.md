@@ -43,6 +43,7 @@ the build flow, and what the API owns versus the build controller.
 | Registry credential | **One** ESO-managed secret per site - kpack **push** + function **pull** - under one name everywhere and different contents; plus a pull-only secret for the kpack registry (BUILDING.md: Registry & Git Credentials) |
 | Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
 | Registry cleanup | Function delete **deletes both repositories in every site's registry** through Quay's management API, with a per-site OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
+| Registry tag GC | The **build controller** prunes kpack's per-build tags, **its own site's registry only**, on an hours-scale sweep off the loop thread. Kept per function: the branch tag, every tag on the serving digest, the newest N builds beyond those. Requires **one site per registry** - enforced at render and re-checked by the controller (BUILDING.md: Registry tag GC) |
 | Registry layout | Each site's own `registry.url` (from `sites[].registry`) + optional `registry.organization` + `build.builderRepository`. **One** root for the Builders this platform composes and the functions it builds; the mirrored kpack and Paketo content sits on a separate, shared registry nothing writes to (BUILDING.md: Registry layout) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
@@ -834,6 +835,7 @@ twice means.
 |-------|--------|
 | Function delete | Nothing to do *in any cluster*: each site's `Image` and build `ServiceAccount` are owned by its KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
 | Function delete (registry) | Nothing in a cluster owns registry content, so the API deletes both repositories in **every** site's registry, by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
+| Old build tags | Each site's **build controller** prunes them from its own registry on an hours-scale sweep, keeping what is still addressable or recent (BUILDING.md: Registry tag GC). |
 | Switchover | Nothing to clean up. Each site already held its own build objects for the workloads it runs. |
 
 ### Build history
@@ -904,7 +906,9 @@ variable per site, because a site name may contain `-`.
 
 **Wiring that secret is what enables cleanup** - without it the step is skipped, so an
 install that never adds it is unaffected by the upgrade.
-`registry.deleteOnFunctionDelete: false` switches it off with the tokens still mounted.
+`registry.deleteOnFunctionDelete: false` switches it off with the tokens still mounted -
+and it is the platform-wide switch: the build controller's tag GC (BUILDING.md: Registry tag GC)
+honors the same flag, so false stops **every** registry delete the platform makes.
 
 This is the **one** thing left that crosses a site boundary, and it is control-plane only:
 the data path never does. It is also why the API pod holds every site's token rather than
@@ -918,6 +922,14 @@ repository half of an image reference, where `image_tag` is the tag half. They t
 the validated `{group}`/`{name}` labels, never request input, and the call runs only for
 the function offering - a container's image was built elsewhere and is not the platform's
 to delete.
+
+The `/api/v1` mechanics themselves - how a repository or a tag is addressed, and how each
+HTTP outcome is judged (2xx deleted, 404 already gone, 401/403 names the token's missing
+namespace admin) - live in `common.registry.RegistryClient`, a domain module either
+service may import. `api.services.builder.registry` keeps only the policy of *what* a
+function event reclaims; anything else the platform reclaims through the management API
+(the build controller's tag pruning) speaks to Quay through the same client, so the two
+services cannot drift in how they address it.
 
 #### Accepted consequences
 
@@ -938,6 +950,95 @@ to delete.
   time-machine window has passed.
 - **Quay-specific.** `/api/v1` is Quay's own API; moving to another registry means
   reimplementing this against that registry's equivalent.
+
+### Registry tag GC
+
+kpack pushes every successful build **twice**: the branch tag moves to the new digest, and
+a unique `b{n}.{date}.{time}` tag is added beside it. The branch tag overwrites; the build
+tags accumulate, one per build, for the life of the function - and `STACK`/`BUILDPACK` CVE
+rebuilds and `POST .../build` create builds without a user touching anything, so they grow
+even for functions nobody edits. They count against registry quota and, until this GC,
+nothing reclaimed them short of deleting the function. A branch change leaks the same way:
+the old branch's projected tag stays behind permanently.
+
+The **build controller** prunes them (`controller/gc.py`), because the problem is shaped
+like the controller:
+
+- **Per-site, local only.** A site builds what it runs into its own registry, so each
+  site's controller prunes exactly the registry its site filled, with its own token. The
+  one cross-site call stays the API's delete cleanup; the GC adds none.
+- **It already holds the ground truth.** The sweep rides the resync's Image listing - no
+  second LIST - and judges tags against `spec.tag` and `status.latestImage` as just
+  fetched.
+- **Reconciled**, unlike the fire-once cleanup on delete: garbage is re-derived from live
+  state on every sweep, so a crash or an unreachable registry leaks nothing permanently -
+  the next sweep collects it. One function failing is logged and skipped, never the end
+  of the sweep - the listing order is stable, so an aborting error would starve every
+  function after it, deterministically, on every sweep.
+
+**One site per registry is the safety premise, and it is enforced twice.** A controller
+pruning a repository protects only its *own* site's serving digest; two sites on one
+registry would each delete tags the other still serves. So the chart requires
+`sites[].registry.url` on every site and refuses to render two sites on one registry
+(docs/PER-SITE-REGISTRY.md), and the controller independently refuses to sweep - loudly,
+naming the sites and the shared host - when its resolved registry matches another
+site's, as the backstop for a hand-rolled config.
+
+Per function repository, a sweep **keeps**: the current **branch tag** (a create deploys
+at it; a switchover site rebuilds into it); every tag on the **digest of
+`status.latestImage`** (deleting the last tag on a manifest lets Quay collect it, and the
+digest-pinned KSVC could no longer pull on a node change); the newest
+**`buildController.gc.keepBuilds`** build tags **beyond all of those** (default **3**,
+mirroring `build.history.success` - protected tags never consume a slot, so the retained
+history is exactly what the knob says); and any tag the listing reports **without a
+digest**, which cannot be proven safe. A function whose Image records **no successful
+build** is skipped outright: a fresh Image (created, re-created, or post-switchover) can
+sit over a repository still holding a previous incarnation's tags, and with nothing
+digest-protected, pruning would be a guess. Everything else - older build tags, stale
+branch tags - is deleted. The cache repository is never addressed: it reuses one
+`latest` tag and does not accumulate (BUILDING.md: Open Questions).
+
+**Wiring.** The controller mounts the same per-site tokens Secret the API holds
+(`registry.apiTokens`, optional for the same ESO reason) and resolves only its own site's
+token; `buildController.gc.{enabled,intervalSeconds,keepBuilds}` are the knobs, and
+`registry.deleteOnFunctionDelete: false` - the platform-wide "may we delete registry
+content" switch - stops the GC exactly as it stops cleanup on delete. The sweep fires on
+an hours-scale interval (default 6h) and runs on its **own daemon thread**: it is
+registry-bound I/O that must never sit between the reconcile loop's relist and its
+watch, where every minute spent is a minute no digest rolls out. The next deadline is
+set when a sweep starts, so a failing registry retries at the next *due* resync; a sweep
+still running when the next is due is logged and not doubled. The tag listing itself is
+page-capped (`common/registry.py`), so paging that never terminates - a proxy dropping
+the `page` param - becomes a warning and an empty listing (no listing = no deletes),
+never a wedged thread.
+
+**The logs are the feature's UI.** Startup states whether the GC is on - and if off,
+*why*: disabled by configuration (said once), or a loud reason re-said once per interval
+(`deleteOnFunctionDelete` off, a missing token, a shared registry), so a state that an
+operator likely wants fixed is never deduced from silence. A token that syncs *after*
+the pod started needs a pod restart to be seen - env is injected at container start -
+which the log line says outright. Each sweep logs a per-function verdict
+(`pruned 4 of 8 tag(s) in 'payments/hello'`), names every deleted tag individually, and
+closes with a summary (`swept 12 function repositories in 'central', pruned 31 tag(s),
+0 failed`). Skips are named too: a tag on a foreign host is a warning, an Image with no
+successful build yet is an info line, a repository already deleted mid-sweep is silent
+by design.
+
+#### Accepted consequences
+
+- **An old revision can outlive its tags.** Only the serving digest is protected; a
+  revision pinned to an older one that re-pulls after its tags are pruned *and* after
+  Quay's time-machine window has passed will fail. `keepBuilds` plus the time machine is
+  the buffer. Deliberate: the RBAC for reading Revisions already exists (the Role grants
+  `revisions: get/list` for `/stats`), so the cost would only be a Revision list per
+  sweep - it is the retention window's coverage of the edge, not RBAC, that makes the
+  simpler rule enough for now.
+- **Quota returns late.** A deleted tag sits in Quay's time machine until
+  `DEFAULT_TAG_EXPIRATION` passes; the sweep frees the listing at once and the bytes later.
+- **A container pinned to a function's build tag breaks** - the same accepted consequence
+  as the repository delete above, one tag at a time.
+- **Quay-specific**, exactly as the cleanup above: `/api/v1` again, same token, same
+  caveat about other registries.
 
 ---
 

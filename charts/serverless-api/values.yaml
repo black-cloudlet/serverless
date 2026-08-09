@@ -1,6 +1,10 @@
 global:
   baseDomain: example.com
-  site: example
+  # Which of `sites` below THIS release is. Now that every site names its own
+  # registry, the release must always be able to tell which one it builds
+  # into, so this must match a `sites[].name` (or its cluster) for the chart
+  # to render.
+  site: central
 
 # Base name for everything the chart creates. The build controller's objects are
 # named `{name}-build-controller`.
@@ -94,6 +98,23 @@ buildController:
   # How long each watch is held open, and so also the full-relist interval.
   resyncSeconds: 300
 
+  # Prune the unique b{n}.{date}.{time} tag kpack pushes per build, in this
+  # site's registry only - they accumulate for the life of the function and
+  # count against quota (docs/BUILDING.md - Registry tag GC). Runs only when
+  # `registry.deleteOnFunctionDelete` is true (the platform-wide "may we
+  # delete registry content" switch) and a registry.apiTokens token exists;
+  # otherwise the controller logs the GC off and does nothing. Kept per
+  # function: the current branch tag, every tag on the digest still serving,
+  # and the `keepBuilds` newest build tags beyond those.
+  gc:
+    enabled: true
+    # Hours-scale: garbage accrues one tag per build, and every sweep
+    # re-derives everything, so nothing is lost by waiting.
+    intervalSeconds: 21600
+    # Newest per-build tags kept beyond the protected ones; matches
+    # build.history.success's default, so images track the Build history.
+    keepBuilds: 3
+
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
   api: serverless-api
@@ -159,9 +180,11 @@ registry:
   url: registry.internal
   organization: ""
 
-  # Delete a function's image and cache repositories when it is deleted - nothing
-  # in the cluster owns registry content. Needs the tokens below; without them,
-  # cleanup is skipped. docs/BUILDING.md - Registry cleanup on delete.
+  # May the platform delete registry content at all? Governs both cleanups:
+  # a deleted function's repositories AND the build controller's tag GC
+  # (buildController.gc). False stops every registry delete with the tokens
+  # still mounted. Needs the tokens below; without them, both are skipped.
+  # docs/BUILDING.md - Registry cleanup on delete, Registry tag GC.
   deleteOnFunctionDelete: true
 
   # One Quay OAuth token per site (Organization -> Applications, scoped
@@ -443,20 +466,23 @@ build:
 # A site is a region; its cluster's API server is DERIVED as
 # https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
 # Identical in every cluster - an instance composes the peer's manifests from it,
-# so nothing per-release goes here (that is `global.site`). A site builds into and
-# pulls from its own `registry`; omit it to inherit the one above. No credentials
+# so nothing per-release goes here (that is `global.site`). No credentials
 # here - this renders into a ConfigMap.
 #
-#   - name: central
-#     cluster: central-0
-#     registry:
-#       url: registry.central.internal
-#       organization: acme   # optional; inherited unless set
+# Every site MUST set `registry.url`, and no two sites may share one: a site
+# builds into and prunes its own registry (docs/BUILDING.md - Registry tag GC),
+# and two sites on one registry would garbage-collect each other's serving
+# images. The chart refuses to render either mistake. `organization` and
+# `repository` are optional and inherited from `registry` above unless set.
 sites:
   - name: central
     cluster: central-0
+    registry:
+      url: registry.central.internal
   - name: south
     cluster: south-0
+    registry:
+      url: registry.south.internal
 
 certificate:
   name: serverless-client-cert

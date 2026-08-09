@@ -51,6 +51,23 @@ spec:
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
               value: {{ .Values.buildController.resyncSeconds | quote }}
+            # Tag GC: prune kpack's per-build tags in THIS site's registry
+            # (docs/BUILDING.md - Registry tag GC). This site's registry comes
+            # from the sites ConfigMap below and its token from the tokens
+            # Secret; only what the GC reads is passed - the URL (the default
+            # the token fallback compares against) and the platform-wide
+            # deletion switch, which governs the GC exactly as it governs
+            # cleanup on function delete.
+            - name: SERVERLESS_GC_ENABLED
+              value: {{ .Values.buildController.gc.enabled | quote }}
+            - name: SERVERLESS_GC_INTERVAL_SECONDS
+              value: {{ .Values.buildController.gc.intervalSeconds | quote }}
+            - name: SERVERLESS_GC_KEEP_BUILDS
+              value: {{ .Values.buildController.gc.keepBuilds | quote }}
+            - name: SERVERLESS_REGISTRY__URL
+              value: {{ .Values.registry.url | quote }}
+            - name: SERVERLESS_REGISTRY__DELETE_ON_FUNCTION_DELETE
+              value: {{ .Values.registry.deleteOnFunctionDelete | quote }}
             - name: SERVERLESS_CLIENT_CERT_DIR
               value: {{ .Values.certificate.mountPath | quote }}
             - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
@@ -67,6 +84,17 @@ spec:
             # The same sites list the API reads.
             - configMapRef:
                 name: "{{ .Values.name }}-sites"
+            {{- with .Values.registry.apiTokens }}
+            {{- if .create }}
+            # The same per-site Quay OAuth tokens the API holds; the GC resolves
+            # only its own site's out of the map. `optional` for the same reason
+            # as on the API: ESO fails the whole Secret if one site's Vault path
+            # is missing, and an untokenised controller just skips the GC.
+            - secretRef:
+                name: {{ .secretName }}
+                optional: true
+            {{- end }}
+            {{- end }}
           volumeMounts:
             - name: {{ .Values.certificate.name }}
               mountPath: {{ .Values.certificate.mountPath }}

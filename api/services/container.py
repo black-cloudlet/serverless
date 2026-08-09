@@ -22,7 +22,7 @@ from api.services.streams.sse import StreamEvent
 from api.services.workloads import ApplyRequest, WorkloadService
 from common.errors import ValidationError
 from common.labels import OFFERING_CONTAINER, workload_labels
-from common.names import object_name
+from common.names import digest_of, object_name
 
 logger = get_logger(__name__)
 
@@ -278,7 +278,7 @@ class ContainerService:
         """
         existing = await self._engine.load_existing(name, CONTAINER, user, group)
         image = existing.get("image") or ""
-        if "@sha256:" in image:
+        if digest_of(image):
             raise ValidationError(
                 f"container '{name}' runs a digest ({image}); there is no newer image to "
                 "pull. Send a PUT with a tag to track one."

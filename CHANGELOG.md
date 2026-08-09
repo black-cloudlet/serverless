@@ -32,7 +32,52 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
     interesting cause is an additive reason string, never a breaking change to
     the status vocabulary.
 
+- **The Quay management-API mechanics moved to `common.registry.RegistryClient`,
+  shared by both services.** `api.services.builder.registry` keeps only the
+  policy of what a function delete or a moved tag reclaims; how a repository or
+  a tag is addressed - and now also listed and deleted per tag - is one client
+  either service may import, groundwork for pruning kpack's per-build tags in
+  the build controller. `httpx` moved from the `[api]` extra into the base
+  dependencies, so the controller image carries it too. No API or chart change.
+
 ### Added
+
+- **The build controller now garbage-collects old registry tags.** kpack
+  pushes a unique `b{n}.{date}.{time}` tag per build; they accumulated for the
+  life of the function, counting against registry quota, and were only
+  reclaimed when the function was deleted. Each site's controller now prunes
+  its own registry on an hours-scale sweep (on its own thread - never between
+  the reconcile loop's relist and its watch), keeping per function: the
+  current branch tag, every tag on the digest still serving, and the
+  `buildController.gc.keepBuilds` newest build tags beyond those (default 3,
+  mirroring `build.history.success`; protected tags never consume a slot);
+  stale branch tags left by a branch change go too. A function whose Image
+  records no successful build yet is skipped outright, one failing function
+  never aborts the rest of the sweep, and the cache repository is never
+  touched. Needs the same `registry.apiTokens` Secret the API uses - the
+  controller now mounts it and resolves only its own site's token - and honors
+  `registry.deleteOnFunctionDelete` as the platform-wide "may we delete
+  registry content" switch. The logs are deliberate UI: startup says on/off
+  and why, off-states an operator likely wants fixed are re-said once per
+  interval, every deleted tag is named, and each sweep ends in a one-line
+  summary (docs/BUILDING.md - Registry tag GC).
+
+  **BREAKING: every site must now set `sites[].registry.url`, and no two
+  sites may share a registry.** The chart refuses to render otherwise, and the
+  controller independently refuses to sweep a registry another site resolves
+  to. A controller pruning a shared repository would protect only its own
+  site's serving digest and delete the tags the peer still serves - the
+  configuration PER-SITE-REGISTRY.md previously tolerated as "degraded, not
+  broken" becomes broken with a GC, so it is now rejected outright. An
+  upgrading single-registry install must give each site its own registry
+  first.
+
+  Also: "is this reference on our registry?" now compares canonical hosts
+  (scheme-stripped) everywhere - the reference-building path, the moved-tag
+  reclaim, and the per-site token fallback. An install that pasted a scheme
+  into `registry.url` previously never matched its own references, so the
+  moved-tag reclaim silently never deleted anything there; it now does, and
+  the tag GC prunes there too.
 
 - **Live observability is now Server-Sent Events, and logs are per pod.** Three
   endpoints: `GET .../{name}/pods` (the workload's pods on the current site),

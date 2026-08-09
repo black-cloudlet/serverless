@@ -8,6 +8,7 @@ import time
 from cloudlet_apis.logging import configure_logging, get_logger
 
 from controller.config import ControllerSettings, get_settings
+from controller.gc import TagGC
 from controller.reconciler import Reconciler
 
 logger = get_logger(__name__)
@@ -58,7 +59,7 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _terminate)
     signal.signal(signal.SIGINT, _terminate)
 
-    reconciler = Reconciler(settings)
+    reconciler = Reconciler(settings, gc_factory=lambda site: TagGC(settings, site))
     logger.info("build controller watching kpack Images in %s", reconciler.local.site)
     try:
         loop(reconciler, settings)
