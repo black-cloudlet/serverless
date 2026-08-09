@@ -1,6 +1,10 @@
 global:
   baseDomain: example.com
-  site: example
+  # Which of `sites` below THIS release is. Now that every site names its own
+  # registry, the release must always be able to tell which one it builds
+  # into, so this must match a `sites[].name` (or its cluster) for the chart
+  # to render.
+  site: central
 
 # Base name for everything the chart creates. The build controller's objects are
 # named `{name}-build-controller`.
