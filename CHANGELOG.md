@@ -32,6 +32,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
     interesting cause is an additive reason string, never a breaking change to
     the status vocabulary.
 
+- **The Quay management-API mechanics moved to `common.registry.RegistryClient`,
+  shared by both services.** `api.services.builder.registry` keeps only the
+  policy of what a function delete or a moved tag reclaims; how a repository or
+  a tag is addressed - and now also listed and deleted per tag - is one client
+  either service may import, groundwork for pruning kpack's per-build tags in
+  the build controller. `httpx` moved from the `[api]` extra into the base
+  dependencies, so the controller image carries it too. No API or chart change.
+
 ### Added
 
 - **Live observability is now Server-Sent Events, and logs are per pod.** Three

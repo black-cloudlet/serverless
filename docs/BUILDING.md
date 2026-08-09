@@ -919,6 +919,14 @@ the validated `{group}`/`{name}` labels, never request input, and the call runs 
 the function offering - a container's image was built elsewhere and is not the platform's
 to delete.
 
+The `/api/v1` mechanics themselves - how a repository or a tag is addressed, and how each
+HTTP outcome is judged (2xx deleted, 404 already gone, 401/403 names the token's missing
+namespace admin) - live in `common.registry.RegistryClient`, a domain module either
+service may import. `api.services.builder.registry` keeps only the policy of *what* a
+function event reclaims; anything else the platform reclaims through the management API
+(the build controller's tag pruning) speaks to Quay through the same client, so the two
+services cannot drift in how they address it.
+
 #### Accepted consequences
 
 - **A crash leaks a repository.** Cleanup is best-effort and fired once, after every site

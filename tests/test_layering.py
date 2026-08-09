@@ -26,6 +26,8 @@ DOMAIN = [
     "common.config",
     "common.build",
     "common.kpack",
+    # httpx, no kubernetes: the registry client both services reclaim through.
+    "common.registry",
     # The shared core, reached through this repository's re-exports: bare, it
     # must stay as light as the modules that import it.
     "cloudlet_apis.errors",

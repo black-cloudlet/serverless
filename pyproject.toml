@@ -17,18 +17,20 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "kubernetes>=36.0.3",
+    # Both services speak to Quay's management API through common.registry: the
+    # API deletes a deleted function's repositories, the controller prunes tags.
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
-# The API's own: serving HTTP, reading the runtimes file and calling the
-# registry. `pip install ".[api]"` is what its image runs. Token validation and
-# the shared web wiring come from cloudlet-apis' extras, which is where
+# The API's own: serving HTTP and reading the runtimes file.
+# `pip install ".[api]"` is what its image runs. Token validation and the
+# shared web wiring come from cloudlet-apis' extras, which is where
 # pyjwt[crypto] now enters - the controller image still never sees it.
 api = [
     "cloudlet-apis[web,auth]>=0.3,<1",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.0",
-    "httpx>=0.28.1",
     "pyyaml>=6.0.3",
     "tzdata>=2026.3",
 ]

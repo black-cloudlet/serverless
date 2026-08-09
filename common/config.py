@@ -97,12 +97,17 @@ class RegistryConfig(BaseModel):
     timeout: float = 10.0
 
     @property
-    def _host(self) -> str:
+    def host(self) -> str:
         """The configured registry host, tolerant of a pasted scheme.
 
         The chart asks for a bare host, but ``https://registry.internal`` is an
         easy operator mistake - un-stripped it would double the scheme in
         :attr:`api_url` and put ``https://`` inside every image reference.
+
+        Public because it is also the test for "is this reference ours":
+        :func:`common.registry.repository_path` matches references against this
+        same host, so what the platform pushes and what it may reclaim cannot
+        disagree on where the host ends and the repository begins.
         """
         url = self.url.strip("/")
         return url.split("://", 1)[-1]
@@ -110,7 +115,7 @@ class RegistryConfig(BaseModel):
     @property
     def api_url(self) -> str:
         """Registry base URL. Always https - internal TLS is trusted via the CA bundle."""
-        return f"https://{self._host}"
+        return f"https://{self.host}"
 
     @property
     def can_delete(self) -> bool:
@@ -134,7 +139,7 @@ class RegistryConfig(BaseModel):
     @property
     def base(self) -> str:
         """Registry host plus :attr:`path`, the prefix every image ref hangs off."""
-        url = self._host
+        url = self.host
         return f"{url}/{self.path}" if self.path else url
 
 
