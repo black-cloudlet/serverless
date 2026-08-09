@@ -303,13 +303,13 @@ class ContainerService:
         # response left to land in. Say so in the log - without this an
         # all-sites-failed pull completes silently and the client's statusUrl
         # just never shows a new revision.
-        failed = [s for s in statuses if s.error]
+        failed = [s for s in statuses if s.message]
         if failed:
             logger.warning(
                 "pull of '%s' (group '%s') failed in %s",
                 name,
                 group,
-                ", ".join(f"{s.site}: {s.error}" for s in failed),
+                ", ".join(f"{s.site}: {s.message}" for s in failed),
             )
 
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:

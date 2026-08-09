@@ -895,17 +895,17 @@ class WorkloadService:
             replicas = ksvc_state.revision_replicas(rev)
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
-            error = None
+            message = None
             reason = None
             if status == "Failed":
-                error = revision_failure_message(rev) or ksvc_failure_message(obj)
+                message = revision_failure_message(rev) or ksvc_failure_message(obj)
                 reason = ksvc_state.failure_cause(rev, obj)
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
-                error=error,
                 reason=reason,
+                message=message,
                 replicas=replicas,
             )
 
@@ -940,10 +940,13 @@ class WorkloadService:
         build = ksvc_state.roll_up_builds(list(builds.values()))
         statuses = ksvc_state.sites_with_build_status(statuses, builds)
         overall = ksvc_state.with_build_status(overall, build)
-        # The first recognized per-site cause becomes the headline's reason - a
-        # BuildFailed rollup already names its cause, so it carries none.
-        status_reason = None
-        if overall != "BuildFailed":
+        # The headline reason, Kubernetes-style: the build verdict is
+        # authoritative (a failed build IS the cause, wherever the rows stand -
+        # sites still serving their previous revision stay Ready), else the
+        # first recognized per-site cause.
+        if build is not None and build.state == "Failed":
+            status_reason = "BuildFailed"
+        else:
             status_reason = next((s.reason for s in statuses if s.reason), None)
         spec = await asyncio.to_thread(site_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
@@ -1030,7 +1033,7 @@ class WorkloadService:
                 site=cluster.site,
                 status=status,
                 replicas=ksvc_state.revision_replicas(rev),
-                error=revision_failure_message(rev) if status == "Failed" else None,
+                message=revision_failure_message(rev) if status == "Failed" else None,
                 reason=ksvc_state.failure_cause(rev, obj) if status == "Failed" else None,
             )
 
@@ -1069,10 +1072,11 @@ class WorkloadService:
         if all(s.replicas is not None for s in statuses):
             replicas = sum(s.replicas for s in statuses)
 
-        # As on the full GET: the first recognized per-site cause is the headline
-        # reason; a BuildFailed rollup already names its cause, so it carries none.
-        reason = None
-        if overall != "BuildFailed":
+        # As on the full GET: the build verdict is authoritative, else the
+        # first recognized per-site cause.
+        if rolled is not None and rolled.state == "Failed":
+            reason = "BuildFailed"
+        else:
             reason = next((s.reason for s in statuses if s.reason), None)
 
         return WorkloadStatsResponse(

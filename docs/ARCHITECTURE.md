@@ -270,7 +270,7 @@ polling `GET {statusUrl}` (or `/stats`), not from the status code of the write.
 | Scenario | What the poll reports |
 |----------|-----------------------|
 | Every site succeeds | `status = Ready`. A mixed `Ready` + `Deploying` is a normal rollout with one site ahead, **not** a failure. |
-| One site fails | `status = Failed`; that site's entry in `sites[]` carries the `error`. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
+| One site fails | `status = Failed`; that site's entry in `sites[]` carries the `reason`/`message` pair. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
 | Every site fails | `status = Failed` with an error on every site. The background deploy raises `SITE_TOTAL_FAILURE` internally; it is logged with the request id rather than returned, because the caller already holds a `202`. |
 
 Re-apply is idempotent (server-side apply), so a retry heals any partial state.
@@ -670,9 +670,10 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 sent), `statuses.site` the per-site set, `statuses.terminal` the subset a poller stops on - anything
 else is still in flight - and `statuses.reasons` the values of the machine-readable `reason` field
 (on the workload and on each failing site row, in the full GET and `/stats` alike): the cause behind
-a `Failed` status, derived best-effort from the failing Kubernetes/Knative conditions, null when
-unrecognized. A failed *build* is the one cause specific enough to be a status of its own,
-`BuildFailed` - terminal, since the image will not arrive until a build input changes. `errorCodes` is walked off the `APIError` subclasses, so an error added in code
+a `Failed` status, Kubernetes' reason/message pair one level up. `BuildFailed` is set
+authoritatively off the kpack Image; the rest are derived best-effort from the failing
+Kubernetes/Knative conditions, so an unrecognized cause is null with the raw text on the site's
+`message`. `errorCodes` is walked off the `APIError` subclasses, so an error added in code
 is published without a second edit. `naming` carries the one rule no per-field schema can
 express: `name` and `group` are each valid at 63 characters, but it is `{name}-{group}` that
 becomes the KSVC name and the first DNS label, and `group` is a path parameter rather than a

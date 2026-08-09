@@ -32,14 +32,16 @@ the bug.
 
 ## Status at a glance
 
-One vocabulary covers the workload rollup and the per-site rows, published on
-`GET /api/v1/{type}/info` (`statuses`) so no client hardcodes it: `Pending`,
-`Building`, `Deploying`, `Ready`, `Failed`, `BuildFailed`, `Terminating` - with
-`Ready`, `Failed` and `BuildFailed` terminal for a poller. A failure carries a
-machine-readable `reason` (`ImagePullFailed`, `CrashLooping`, `ConfigError`,
-`ProgressDeadlineExceeded`; null when unrecognized); a failed *build* is specific
-enough to be its own status, `BuildFailed`. The lightweight poll target,
-`GET .../{name}/stats` (also pushed as SSE on `/stats/stream`), reads:
+The status model is Kubernetes' reason/message split, one level up. `status`
+is a closed phase set - `Pending`, `Building`, `Deploying`, `Ready`, `Failed`,
+`Terminating`, with `Ready` and `Failed` terminal for a poller - and causes
+never get promoted into it: a failure names its cause on the machine-readable
+`reason` (`BuildFailed`, `ImagePullFailed`, `CrashLooping`, `ConfigError`,
+`ProgressDeadlineExceeded`; null when unrecognized) with the human detail on
+the full GET's per-site `message`. All of it is published on
+`GET /api/v1/{type}/info` (`statuses`) so no client hardcodes a vocabulary.
+The lightweight poll target, `GET .../{name}/stats` (also pushed as SSE on
+`/stats/stream`), reads:
 
 ```json
 {
@@ -57,7 +59,7 @@ enough to be its own status, `BuildFailed`. The lightweight poll target,
 ```
 
 The full GET adds the desired-state config, each site's `revision`, and the raw
-failure text on the site's `error` (docs/FUNCTIONS.md - Function Status
+failure text on the site's `message` (docs/FUNCTIONS.md - Function Status
 Resolution; docs/ARCHITECTURE.md - REST API Specification).
 
 ## Layout

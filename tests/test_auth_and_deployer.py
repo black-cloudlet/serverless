@@ -93,14 +93,14 @@ def test_aggregate_still_rolling_out():
 def test_aggregate_partial():
     statuses = [
         SiteStatus(site="a", status="Ready"),
-        SiteStatus(site="b", status="Failed", error="boom"),  # unreachable -> Failed
+        SiteStatus(site="b", status="Failed", message="boom"),  # unreachable -> Failed
     ]
     assert aggregate(statuses) == "Failed"
     assert status_code_for("Failed", created=True) == 207
 
 
 def test_aggregate_total_failure():
-    statuses = [SiteStatus(site="a", status="Failed", error="x")]
+    statuses = [SiteStatus(site="a", status="Failed", message="x")]
     with pytest.raises(SiteTotalFailure):
         aggregate(statuses)
 
@@ -194,7 +194,7 @@ async def test_fanout_captures_per_site_errors():
     statuses = await d.fanout(d.resolve_targets(None), fn)
     by_site = {s.site: s for s in statuses}
     assert by_site["site-a"].status == "Ready"
-    assert by_site["site-b"].error == "kaboom"
+    assert by_site["site-b"].message == "kaboom"
 
 
 async def test_fanout_times_out_unreachable_site():
@@ -213,7 +213,7 @@ async def test_fanout_times_out_unreachable_site():
     # the healthy site still returns; the slow one is reported, not blocking
     assert by_site["site-a"].status == "Ready"
     assert by_site["site-b"].status == "Timeout"
-    assert by_site["site-b"].error is not None
+    assert by_site["site-b"].message is not None
 
 
 class _FakeCluster:
@@ -912,7 +912,7 @@ async def test_get_function_building_image_reports_building():
     # The per-site row agrees with the headline instead of contradicting it: the
     # KSVC's pull failure IS the running build, not a second, independent one.
     assert body.sites[0].status == "Building"
-    assert body.sites[0].error is None
+    assert body.sites[0].message is None
     assert body.path is None  # no sub-directory -> built from the repository root
     assert body.version is None  # took the platform default; /info says what that is
 
@@ -983,12 +983,12 @@ async def test_get_failed_site_surfaces_ready_condition_message():
 
     site = body.sites[0]
     assert site.status == "Failed"
-    assert site.error == 'Revision "app-team-00001" failed: image pull backoff'
+    assert site.message == 'Revision "app-team-00001" failed: image pull backoff'
 
     # Falls back to the reason code when the condition carries no message.
     ksvc["status"]["conditions"][0].pop("message")
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.sites[0].error == "RevisionFailed"
+    assert body.sites[0].message == "RevisionFailed"
 
 
 async def test_get_failed_site_prefers_revision_specific_reason():
@@ -1045,7 +1045,7 @@ async def test_get_failed_site_prefers_revision_specific_reason():
 
     site = body.sites[0]
     assert site.status == "Failed"
-    assert site.error == 'Unable to fetch image "reg/app:1": not found'
+    assert site.message == 'Unable to fetch image "reg/app:1": not found'
     assert site.replicas == 0  # same Revision read still feeds the replica count
 
 
@@ -1070,7 +1070,7 @@ async def test_get_ready_site_has_no_error():
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.sites[0].status == "Ready" and body.sites[0].error is None
+    assert body.sites[0].status == "Ready" and body.sites[0].message is None
 
 
 async def test_list_overall_status_per_workload():
@@ -1130,7 +1130,7 @@ async def test_list_folds_the_build_state_in_like_get_does():
 
     assert summaries["fn"] == "Building"
     # a failed build is the honest cause of the same symptom -> still Failed
-    assert summaries["bad"] == "BuildFailed"
+    assert summaries["bad"] == "Failed"
     # no build in flight -> the KSVC has the last word, as after a switchover
     assert summaries["old"] == "Ready"
     assert reads == [("site-a", "team")]  # local site only, once

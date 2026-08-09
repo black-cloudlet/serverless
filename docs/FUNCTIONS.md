@@ -24,7 +24,7 @@ what functions share with containers is ARCHITECTURE.md.
 | `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `branch`, and changing it rebuilds. |
 | `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/v1/functions/info`. |
 | `sites` | no | Which sites to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a site builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
-| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `error`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
+| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
 **Build flow (kpack / Cloud Native Buildpacks):**
@@ -220,12 +220,12 @@ source, not images.)
 > }
 > ```
 >
-> `status` matches the full GET's, `Building` and `BuildFailed` included - the
-> build is still read, it is just not a field here. `reason` is the
-> machine-readable cause behind a failure (one of `/info`'s `statuses.reasons`),
-> null when nothing failed or the cause was not recognized; the raw condition
-> text stays on the full GET's per-site `error`, which `/stats` deliberately
-> does not carry. Usage covers each pod's user container only,
+> `status` matches the full GET's, `Building` included - the build is still
+> read, it is just not a field here. `reason` is the machine-readable cause
+> behind a failure (one of `/info`'s `statuses.reasons`, `BuildFailed`
+> included), null when nothing failed or the cause was not recognized; the raw
+> condition text stays on the full GET's per-site `message`, which `/stats`
+> deliberately does not carry. Usage covers each pod's user container only,
 > never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
 > API could not be read. The top-level totals are summed across sites **before**
 > rounding, so they need not equal the sum of the printed per-site figures; and a
@@ -464,20 +464,20 @@ info only (no live usage/replicas; use the single-workload GET for those):
 GET /functions/{name}
   1. look up each site's Image (in the same per-site pass as its KSVC)
        Building -> status "Building"
-       Failed   -> status "BuildFailed" (+ the condition message on build.message)
+       Failed   -> status "Failed", reason "BuildFailed" (+ the build's text on message)
   2. no Image found, or the build succeeded
        -> fall through to the Knative Service status
 ```
 
-`BuildFailed` is **terminal** (published in `/info`'s `statuses.terminal`): the image will
-not arrive until a build input changes or a rebuild is asked for, so a poller stops there.
-It is also the one failure specific enough to be a status of its own - it comes from the
-kpack `Image`, authoritatively. Every other failure keeps the `Failed` / per-site
-`Failed` statuses and instead carries a best-effort machine-readable cause on
-`reason` (and each failing site's `reason`): one of `/info`'s `statuses.reasons`
-(`ImagePullFailed`, `CrashLooping`, `ConfigError`, `ProgressDeadlineExceeded`), derived
-from the failing Revision/KSVC conditions, or null when the cause was not recognized -
-the raw condition text is always on the site's `error`.
+The status model is Kubernetes' shape, one level up: `status` is a closed phase set
+that causes are never promoted into, and every failure names its cause on the
+machine-readable `reason` - one of `/info`'s `statuses.reasons` - with the human text on
+the site's `message`. `BuildFailed` is the one authoritative reason (read off the kpack
+`Image`; the image will not arrive until a build input changes); `ImagePullFailed`,
+`CrashLooping`, `ConfigError` and `ProgressDeadlineExceeded` are derived best-effort from
+the failing Revision/KSVC conditions, so an unrecognized cause carries `reason: null`
+and only the raw `message`. A poller stops on `Failed` whatever the cause - the reason
+is for the UI, not the loop.
 
 The `build` object on the response carries `state` and `message` only. Per-phase build
 logs are not on this endpoint - they live in the `Build`'s pod, one container per
@@ -502,12 +502,13 @@ anywhere wins**, carrying its own message, then `Building`, then whatever is lef
 Reporting `Ready` because the other site managed it would hide the site that did not.
 
 **As implemented.** `KpackBackend.status` returns `None` for a site with no `Image`, and
-`with_build_status` folds the rollup:
-`Building` wins over whatever the ksvc says, `Failed` reports `BuildFailed`, and anything
-else hands the verdict back to the ksvc. A failing site whose own build failed likewise
-reads `BuildFailed`, with the build's message as its `error` - the pull error alone points
-at the registry when the cause is the build. The response still carries the `build` object
-(`state`/`message`). `Building` maps to HTTP `202`, like `Deploying`.
+`with_build_status` folds the rollup: `Building` wins over whatever the ksvc says, a
+failed build keeps the rollup `Failed` while the caller stamps `reason: "BuildFailed"`,
+and anything else hands the verdict back to the ksvc. A failing site whose own build
+failed likewise carries `reason: "BuildFailed"` with the build's text as its `message` -
+the pull error alone points at the registry when the cause is the build. The response
+still carries the `build` object (`state`/`message`). `Building` maps to HTTP `202`,
+like `Deploying`.
 
 The first build is the case that motivates the ordering: the ksvc is already applied and is
 failing to pull an image kpack has not pushed yet. Read deployment-first, every new function

@@ -94,7 +94,7 @@ class Deployer:
         """Run ``fn`` on every target concurrently, collecting per-site results.
 
         Each call runs in a thread with a timeout; a site that times out or raises
-        yields a ``SiteStatus`` with ``error`` set rather than aborting the others.
+        yields a ``SiteStatus`` with ``message`` set rather than aborting the others.
 
         Args:
             targets: The clusters to run on.
@@ -119,11 +119,11 @@ class Deployer:
                 return SiteStatus(
                     site=cluster.site,
                     status="Timeout",
-                    error=f"site unreachable (timed out after {self._op_timeout}s)",
+                    message=f"site unreachable (timed out after {self._op_timeout}s)",
                 )
             except Exception as exc:  # noqa: BLE001 - surfaced as per-site error
                 logger.exception("site %s operation failed", cluster.site)
-                return SiteStatus(site=cluster.site, status="Failed", error=str(exc))
+                return SiteStatus(site=cluster.site, status="Failed", message=str(exc))
 
         return await asyncio.gather(*(run(c) for c in targets))
 
@@ -173,10 +173,10 @@ def aggregate(statuses: list[SiteStatus]) -> str:
     Raises:
         SiteTotalFailure: If every site failed.
     """
-    if all(s.error is not None for s in statuses):
+    if all(s.message is not None for s in statuses):
         raise SiteTotalFailure(
             "Deployment failed in all sites.",
-            details=[{"site": s.site, "message": s.error} for s in statuses],
+            details=[{"site": s.site, "message": s.message} for s in statuses],
         )
     return overall_status_for_sites(statuses)
 
@@ -193,7 +193,7 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
     Returns:
         The overall status (Ready/Deploying/Failed).
     """
-    return overall_status([s.status if s.error is None else "Failed" for s in statuses])
+    return overall_status([s.status if s.message is None else "Failed" for s in statuses])
 
 
 def overall_status(statuses: list[str]) -> str:

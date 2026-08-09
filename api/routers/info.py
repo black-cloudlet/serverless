@@ -36,9 +36,9 @@ router = APIRouter(prefix="/api/v1", tags=["info"])
 
 # A poll ends here; every other workload status is still in flight. Derived from
 # the same Literal, so a new status cannot be added without landing on one side.
-# BuildFailed is terminal: the image will not arrive until the caller changes a
-# build input (or rebuilds), so polling past it only repeats the answer.
-TERMINAL_STATUSES = ("Ready", "Failed", "BuildFailed")
+# Two values and done, Kubernetes-style: a poller stops on Failed whatever the
+# cause - the cause (reason) is for the UI, not the loop.
+TERMINAL_STATUSES = ("Ready", "Failed")
 
 
 def _port_rules() -> PortCapability:

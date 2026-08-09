@@ -78,7 +78,7 @@ def test_a_build_failing_in_one_site_is_what_the_listing_reports():
             "south": {"fn-team": BuildStatusView(state="Failed", message="detect failed")},
         },
     )
-    assert out[0].status == "BuildFailed"
+    assert out[0].status == "Failed"
 
 
 def test_a_build_state_is_not_attributed_across_sites():

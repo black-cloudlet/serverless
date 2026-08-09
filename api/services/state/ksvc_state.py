@@ -54,9 +54,10 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     The build is checked FIRST: a function whose image does not exist yet is not
     broken, but its KSVC is failing to pull one, which would read as ``Failed`` for
     a whole normal first build. A failed build is the honest cause of that same
-    symptom, so it reports as its own status - ``BuildFailed``, terminal, with
-    the reason on ``build.message`` - rather than hiding inside the generic
-    ``Failed`` a client cannot tell from an infrastructure failure.
+    symptom, so the rollup still reads ``Failed`` - the phase set stays closed,
+    Kubernetes-style - and the caller names the cause on ``reason``
+    ("BuildFailed", authoritative from the kpack Image) with the build's own
+    text on ``message``.
 
     Args:
         overall: The rollup of the per-site KSVC statuses.
@@ -70,7 +71,7 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     if build.state == "Building":
         return "Building"
     if build.state == "Failed":
-        return "BuildFailed"
+        return "Failed"
     return overall
 
 
@@ -113,11 +114,12 @@ def sites_with_build_status(
 
     So while a site's build is in flight, that site reports ``Building`` and
     drops the pull error: it is a symptom of the build running there, not an
-    independent failure. A ``Failed`` build turns the same symptom into
-    ``BuildFailed``, with the build's own message as the error - the image
-    genuinely will not arrive, and the pull error alone points at the registry
-    when the cause is the build. A row that is not failing is left alone either
-    way: a site still serving its previous revision is telling the truth.
+    independent failure. A ``Failed`` build keeps the row ``Failed`` but names
+    the cause - ``reason: "BuildFailed"``, with the build's own text as the
+    message - because the image genuinely will not arrive, and the pull error
+    alone points at the registry when the cause is the build. A row that is not
+    failing is left alone either way: a site still serving its previous
+    revision is telling the truth.
 
     Each row is folded against **its own** site's build. A build running in one
     site says nothing about whether another site's image exists, so a shared
@@ -134,11 +136,11 @@ def sites_with_build_status(
     for site in sites:
         build = builds.get(site.site)
         if site.status == "Failed" and build is not None and build.state == "Building":
-            out.append(site.model_copy(update={"status": "Building", "error": None}))
+            out.append(site.model_copy(update={"status": "Building", "message": None}))
         elif site.status == "Failed" and build is not None and build.state == "Failed":
             out.append(
                 site.model_copy(
-                    update={"status": "BuildFailed", "error": build.message or site.error}
+                    update={"reason": "BuildFailed", "message": build.message or site.message}
                 )
             )
         else:
@@ -182,7 +184,7 @@ def failure_cause(rev: dict | None, ksvc: dict | None = None) -> str | None:
 
     Best-effort by design: the reasons and messages this reads are stable-ish
     Kubernetes and Knative codes, not a contract, so an unrecognized failure
-    returns None and the caller reports only the raw ``error`` text. The
+    returns None and the caller reports only the raw ``message`` text. The
     Revision is scanned before the KSVC for the same reason
     :func:`revision_failure_message` prefers it - its sub-conditions name the
     real cause where the KSVC's aggregate repeats the verdict.

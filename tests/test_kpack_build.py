@@ -420,10 +420,10 @@ def test_the_built_image_never_reaches_a_function_response():
         # which must read as Building rather than Failed
         ("Failed", "Building", "Building"),
         ("Deploying", "Building", "Building"),
-        # a failed build is the honest cause of the same symptom, named as
-        # itself rather than hidden inside the generic Failed
-        ("Failed", "Failed", "BuildFailed"),
-        ("Ready", "Failed", "BuildFailed"),
+        # a failed build is the honest cause of the same symptom; the phase set
+        # stays closed, so the rollup reads Failed and the cause goes on reason
+        ("Failed", "Failed", "Failed"),
+        ("Ready", "Failed", "Failed"),
         # a finished build hands the verdict back to the KSVC rollup
         ("Ready", "Ready", "Ready"),
         ("Failed", "Ready", "Failed"),
@@ -457,7 +457,7 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
             site="a",
             status="Failed",
             revision="fn-team-00001",
-            error='Unable to fetch image "reg/team/fn:main": not found',
+            message='Unable to fetch image "reg/team/fn:main": not found',
         ),
         SiteStatus(site="b", status="Ready", revision="fn-team-00001"),
     ]
@@ -466,7 +466,7 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
     )
 
     assert folded[0].status == "Building"
-    assert folded[0].error is None
+    assert folded[0].message is None
     assert folded[0].revision == "fn-team-00001"  # everything else is untouched
     assert folded[1].status == "Ready"  # a site that isn't failing is left alone
 
@@ -481,15 +481,15 @@ def test_a_site_is_folded_against_its_own_build_not_a_neighbours():
     from api.services.state.ksvc_state import sites_with_build_status
 
     sites = [
-        SiteStatus(site="a", status="Failed", error="Unable to fetch image"),
-        SiteStatus(site="b", status="Failed", error="revision never became ready"),
+        SiteStatus(site="a", status="Failed", message="Unable to fetch image"),
+        SiteStatus(site="b", status="Failed", message="revision never became ready"),
     ]
     folded = sites_with_build_status(
         sites, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
     )
 
     assert folded[0].status == "Building"
-    assert (folded[1].status, folded[1].error) == ("Failed", "revision never became ready")
+    assert (folded[1].status, folded[1].message) == ("Failed", "revision never became ready")
 
 
 def test_a_failure_in_any_site_is_the_build_the_workload_reports():
@@ -530,7 +530,7 @@ def test_a_settled_build_leaves_a_failing_site_untouched(state):
     from api.models.common import BuildStatusView, SiteStatus
     from api.services.state.ksvc_state import sites_with_build_status
 
-    sites = [SiteStatus(site="a", status="Failed", error="boom")]
+    sites = [SiteStatus(site="a", status="Failed", message="boom")]
 
     assert sites_with_build_status(sites, {"a": BuildStatusView(state=state)}) == sites
     assert sites_with_build_status(sites, {"a": None}) == sites
@@ -543,13 +543,14 @@ def test_a_failed_build_renames_its_failing_site_and_carries_the_cause():
     from api.models.common import BuildStatusView, SiteStatus
     from api.services.state.ksvc_state import sites_with_build_status
 
-    sites = [SiteStatus(site="a", status="Failed", error="unable to fetch image")]
+    sites = [SiteStatus(site="a", status="Failed", message="unable to fetch image")]
     folded = sites_with_build_status(
         sites, {"a": BuildStatusView(state="Failed", message="compile error")}
     )
 
-    assert folded[0].status == "BuildFailed"
-    assert folded[0].error == "compile error"
+    assert folded[0].status == "Failed"
+    assert folded[0].reason == "BuildFailed"
+    assert folded[0].message == "compile error"
 
     # A site still serving (Ready) is telling the truth; a failed build does not rename it.
     serving = [SiteStatus(site="a", status="Ready")]
@@ -2310,4 +2311,7 @@ def test_every_reason_the_mapper_returns_is_published():
     from api.models.common import STATUS_REASONS
     from api.services.state.ksvc_state import _REASON_RULES
 
-    assert {cause for cause, _ in _REASON_RULES} == set(STATUS_REASONS)
+    # The mapper's causes are a subset: BuildFailed is published too, but set
+    # authoritatively off the kpack Image, never derived from conditions.
+    assert {cause for cause, _ in _REASON_RULES} <= set(STATUS_REASONS)
+    assert "BuildFailed" in STATUS_REASONS
