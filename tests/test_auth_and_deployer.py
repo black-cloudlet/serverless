@@ -1130,7 +1130,7 @@ async def test_list_folds_the_build_state_in_like_get_does():
 
     assert summaries["fn"] == "Building"
     # a failed build is the honest cause of the same symptom -> still Degraded
-    assert summaries["bad"] == "Degraded"
+    assert summaries["bad"] == "BuildFailed"
     # no build in flight -> the KSVC has the last word, as after a switchover
     assert summaries["old"] == "Ready"
     assert reads == [("site-a", "team")]  # local site only, once

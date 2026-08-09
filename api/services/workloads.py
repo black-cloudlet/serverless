@@ -896,13 +896,16 @@ class WorkloadService:
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
             error = None
+            reason = None
             if status == "Failed":
                 error = revision_failure_message(rev) or ksvc_failure_message(obj)
+                reason = ksvc_state.failure_cause(rev, obj)
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
                 error=error,
+                reason=reason,
                 replicas=replicas,
             )
 
@@ -937,6 +940,11 @@ class WorkloadService:
         build = ksvc_state.roll_up_builds(list(builds.values()))
         statuses = ksvc_state.sites_with_build_status(statuses, builds)
         overall = ksvc_state.with_build_status(overall, build)
+        # The first recognized per-site cause becomes the headline's reason - a
+        # BuildFailed rollup already names its cause, so it carries none.
+        status_reason = None
+        if overall != "BuildFailed":
+            status_reason = next((s.reason for s in statuses if s.reason), None)
         spec = await asyncio.to_thread(site_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
         # (guarded above) and every entry holds an object, and describe_spec
@@ -948,6 +956,7 @@ class WorkloadService:
             type=kind,
             hostname=host,
             overallStatus=overall,
+            statusReason=status_reason,
             size=meta_holder.get("size"),
             createdAt=ksvc_state.creation_time(obj),
             sites=statuses,

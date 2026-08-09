@@ -440,12 +440,22 @@ info only (no live usage/replicas; use the single-workload GET for those):
 
 ```
 GET /functions/{name}
-  1. look up the Image in the LOCAL cluster
+  1. look up each site's Image (in the same per-site pass as its KSVC)
        Building -> overallStatus "Building"
-       Failed   -> overallStatus "Degraded" (+ the condition message on build.message)
+       Failed   -> overallStatus "BuildFailed" (+ the condition message on build.message)
   2. no Image found, or the build succeeded
        -> fall through to the Knative Service status
 ```
+
+`BuildFailed` is **terminal** (published in `/info`'s `statuses.terminal`): the image will
+not arrive until a build input changes or a rebuild is asked for, so a poller stops there.
+It is also the one failure specific enough to be a status of its own - it comes from the
+kpack `Image`, authoritatively. Every other failure keeps the `Degraded` / per-site
+`Failed` statuses and instead carries a best-effort machine-readable cause on
+`statusReason` (and each failing site's `reason`): one of `/info`'s `statuses.reasons`
+(`ImagePullFailed`, `CrashLooping`, `ConfigError`, `ProgressDeadlineExceeded`), derived
+from the failing Revision/KSVC conditions, or null when the cause was not recognized -
+the raw condition text is always on the site's `error`.
 
 The `build` object on the response carries `state` and `message` only. Per-phase build
 logs are not on this endpoint - they live in the `Build`'s pod, one container per
@@ -471,10 +481,11 @@ Reporting `Ready` because the other site managed it would hide the site that did
 
 **As implemented.** `KpackBackend.status` returns `None` for a site with no `Image`, and
 `with_build_status` folds the rollup:
-`Building` wins over whatever the ksvc says, `Failed` reports `Degraded`, and anything else
-hands the verdict back to the ksvc. The response carries a `build` object
-(`state`/`image`/`message`), so a failed build explains itself instead of surfacing as a
-bare image-pull error. `Building` maps to HTTP `202`, like `Deploying`.
+`Building` wins over whatever the ksvc says, `Failed` reports `BuildFailed`, and anything
+else hands the verdict back to the ksvc. A failing site whose own build failed likewise
+reads `BuildFailed`, with the build's message as its `error` - the pull error alone points
+at the registry when the cause is the build. The response still carries the `build` object
+(`state`/`message`). `Building` maps to HTTP `202`, like `Deploying`.
 
 The first build is the case that motivates the ordering: the ksvc is already applied and is
 failing to pull an image kpack has not pushed yet. Read deployment-first, every new function

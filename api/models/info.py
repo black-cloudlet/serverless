@@ -62,11 +62,15 @@ class StatusVocabulary(BaseModel):
         site: Values of a per-site ``status`` inside ``sites[]``.
         terminal: The subset of ``workload`` that a poller should stop on;
             anything else is still in flight.
+        reasons: Values of ``statusReason`` / a site's ``reason`` - the
+            machine-readable causes behind a failure. Best-effort: a failure
+            whose cause was not recognized carries no reason, only ``error``.
     """
 
     workload: list[str]
     site: list[str]
     terminal: list[str]
+    reasons: list[str] = []
 
 
 class PortCapability(BaseModel):

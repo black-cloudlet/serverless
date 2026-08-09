@@ -100,7 +100,12 @@ WorkloadSize = Literal["small", "medium", "large"]
 
 # The rollup a client polls on. A Literal, not a comment, so it is enforced on
 # every response and /info can advertise it instead of a portal hardcoding it.
-WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded", "Terminating"]
+# "BuildFailed" is the one failure with its own status rather than a reason:
+# it comes from the kpack Image (authoritative), not from interpreting
+# conditions, and it is terminal - the image will not arrive until a rebuild.
+WorkloadStatus = Literal[
+    "Pending", "Building", "Deploying", "Ready", "Degraded", "BuildFailed", "Terminating"
+]
 # Per-site values that reach a response. SiteStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
@@ -108,7 +113,20 @@ WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded"
 # function's image is still being built, every site's KSVC is failing to pull an
 # image that does not exist yet, and reporting that as "Failed" describes the
 # symptom instead of the cause (docs/FUNCTIONS.md - Function Status Resolution).
-SITE_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
+SITE_STATUSES = (
+    "Ready",
+    "Building",
+    "Deploying",
+    "Failed",
+    "BuildFailed",
+    "Terminating",
+    "Timeout",
+)
+# Machine-readable causes behind a Failed site / Degraded rollup, published on
+# /info so a UI can switch on them. Derived from the failing conditions'
+# reason/message - stable-ish Kubernetes and Knative codes, but not a contract -
+# so anything unrecognized carries no reason and only the raw `error` text.
+STATUS_REASONS = ("ImagePullFailed", "CrashLooping", "ConfigError", "ProgressDeadlineExceeded")
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -361,6 +379,9 @@ class SiteStatus(BaseModel):
         status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
         revision: The Knative revision the site is serving, if known.
         error: The failure message when the site errored, else None.
+        reason: Machine-readable cause behind a Failed status, one of
+            ``STATUS_REASONS``; None when the cause was not recognized (the raw
+            detail is still on ``error``).
         replicas: Running pods at this site (None if unknown).
     """
 
@@ -368,6 +389,7 @@ class SiteStatus(BaseModel):
     status: str
     revision: str | None = None
     error: str | None = None
+    reason: str | None = None
     replicas: int | None = None
 
 
@@ -496,6 +518,10 @@ class WorkloadResponse(WorkloadBase):
 
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
+    # The first recognized per-site `reason`, so a client that only reads the
+    # headline still learns *why* a Degraded rollup degraded. None when no
+    # site's cause was recognized (or nothing failed).
+    statusReason: str | None = None
     # desired-state config common to both offerings (secret values redacted)
     scaling: Scaling | None = None
     env: list[EnvVarView] = []

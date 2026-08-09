@@ -420,9 +420,10 @@ def test_the_built_image_never_reaches_a_function_response():
         # which must read as Building rather than Degraded
         ("Degraded", "Building", "Building"),
         ("Deploying", "Building", "Building"),
-        # a failed build is the honest cause of the same symptom
-        ("Degraded", "Failed", "Degraded"),
-        ("Ready", "Failed", "Degraded"),
+        # a failed build is the honest cause of the same symptom, named as
+        # itself rather than hidden inside the generic Degraded
+        ("Degraded", "Failed", "BuildFailed"),
+        ("Ready", "Failed", "BuildFailed"),
         # a finished build hands the verdict back to the KSVC rollup
         ("Ready", "Ready", "Ready"),
         ("Degraded", "Ready", "Degraded"),
@@ -523,13 +524,9 @@ def test_rolling_up_no_builds_at_all_is_none():
     assert roll_up_builds([None, None]) is None
 
 
-@pytest.mark.parametrize("state", ["Failed", "Ready", "Unknown"])
-def test_only_a_running_build_masks_a_failing_site(state):
-    """A build that is not in flight leaves the rows exactly as the KSVC read them.
-
-    A failed build is the case that matters: then the image genuinely never
-    arrives, so the site's pull error is the truth and must stay visible.
-    """
+@pytest.mark.parametrize("state", ["Ready", "Unknown"])
+def test_a_settled_build_leaves_a_failing_site_untouched(state):
+    """A finished build leaves the rows exactly as the KSVC read them."""
     from api.models.common import BuildStatusView, SiteStatus
     from api.services.state.ksvc_state import sites_with_build_status
 
@@ -538,6 +535,25 @@ def test_only_a_running_build_masks_a_failing_site(state):
     assert sites_with_build_status(sites, {"a": BuildStatusView(state=state)}) == sites
     assert sites_with_build_status(sites, {"a": None}) == sites
     assert sites_with_build_status(sites, {}) == sites
+
+
+def test_a_failed_build_renames_its_failing_site_and_carries_the_cause():
+    """The image genuinely never arrives, and the build's message is the cause -
+    the pull error alone points at the registry when the build is what broke."""
+    from api.models.common import BuildStatusView, SiteStatus
+    from api.services.state.ksvc_state import sites_with_build_status
+
+    sites = [SiteStatus(site="a", status="Failed", error="unable to fetch image")]
+    folded = sites_with_build_status(
+        sites, {"a": BuildStatusView(state="Failed", message="compile error")}
+    )
+
+    assert folded[0].status == "BuildFailed"
+    assert folded[0].error == "compile error"
+
+    # A site still serving (Ready) is telling the truth; a failed build does not rename it.
+    serving = [SiteStatus(site="a", status="Ready")]
+    assert sites_with_build_status(serving, {"a": BuildStatusView(state="Failed")}) == serving
 
 
 def test_building_is_a_non_terminal_poll_state():
@@ -2234,3 +2250,64 @@ async def test_the_build_endpoint_re_tags_too(monkeypatch):
 
     assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
     assert reclaimed == ["reg/acme/payments/hello:main"]
+
+
+# --- failure_cause: the machine-readable reason behind a Failed site ---------
+
+
+@pytest.mark.parametrize(
+    ("reason", "message", "expected"),
+    [
+        ("ImagePullBackOff", "Back-off pulling image", "ImagePullFailed"),
+        ("", "Unable to fetch image 'reg/x': manifest unknown", "ImagePullFailed"),
+        ("", "Revision failed with: Container failed with: exit code 1", "CrashLooping"),
+        ("CreateContainerConfigError", "couldn't find key FOO in Secret", "ConfigError"),
+        ("ProgressDeadlineExceeded", "did not become ready", "ProgressDeadlineExceeded"),
+        ("SomethingNovel", "an error nobody mapped", None),
+    ],
+)
+def test_failure_cause_maps_conditions_to_a_published_reason(reason, message, expected):
+    from api.services.state.ksvc_state import failure_cause
+
+    rev = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "False", "reason": reason, "message": message}
+            ]
+        }
+    }
+    assert failure_cause(rev, None) == expected
+
+
+def test_failure_cause_ignores_conditions_that_are_not_failing():
+    from api.services.state.ksvc_state import failure_cause
+
+    rev = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "True", "reason": "ImagePullBackOff"},
+            ]
+        }
+    }
+    assert failure_cause(rev, None) is None
+    assert failure_cause(None, None) is None
+
+
+def test_failure_cause_reads_the_ksvc_when_the_revision_says_nothing():
+    from api.services.state.ksvc_state import failure_cause
+
+    ksvc = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "False", "message": "Unable to fetch image"},
+            ]
+        }
+    }
+    assert failure_cause(None, ksvc) == "ImagePullFailed"
+
+
+def test_every_reason_the_mapper_returns_is_published():
+    from api.models.common import STATUS_REASONS
+    from api.services.state.ksvc_state import _REASON_RULES
+
+    assert {cause for cause, _ in _REASON_RULES} == set(STATUS_REASONS)
