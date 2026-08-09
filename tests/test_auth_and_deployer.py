@@ -93,14 +93,14 @@ def test_aggregate_still_rolling_out():
 def test_aggregate_partial():
     statuses = [
         SiteStatus(site="a", status="Ready"),
-        SiteStatus(site="b", status="Failed", error="boom"),  # unreachable -> Failed
+        SiteStatus(site="b", status="Failed", message="boom"),  # unreachable -> Failed
     ]
-    assert aggregate(statuses) == "Degraded"
-    assert status_code_for("Degraded", created=True) == 207
+    assert aggregate(statuses) == "Failed"
+    assert status_code_for("Failed", created=True) == 207
 
 
 def test_aggregate_total_failure():
-    statuses = [SiteStatus(site="a", status="Failed", error="x")]
+    statuses = [SiteStatus(site="a", status="Failed", message="x")]
     with pytest.raises(SiteTotalFailure):
         aggregate(statuses)
 
@@ -110,12 +110,12 @@ def test_overall_status_rollup():
 
     assert overall_status(["Ready", "Ready"]) == "Ready"
     assert overall_status(["Deploying", "Deploying"]) == "Deploying"
-    # a normal rollout where one site is ahead is still in-progress, not Degraded
+    # a normal rollout where one site is ahead is still in-progress, not Failed
     assert overall_status(["Ready", "Deploying"]) == "Deploying"
-    # any failed (or unreachable, mapped to Failed) site -> Degraded
-    assert overall_status(["Ready", "Failed"]) == "Degraded"
-    assert overall_status(["Deploying", "Failed"]) == "Degraded"
-    assert overall_status([]) == "Degraded"
+    # any failed (or unreachable, mapped to Failed) site -> Failed
+    assert overall_status(["Ready", "Failed"]) == "Failed"
+    assert overall_status(["Deploying", "Failed"]) == "Failed"
+    assert overall_status([]) == "Failed"
 
 
 def test_stats_code_for_deploying_is_non_terminal():
@@ -176,9 +176,11 @@ def test_local_cluster_selection():
     # match by cluster name (Cluster.name), not just site name
     d._local_site = "site-b-0"
     assert d.local_cluster().site == "site-b"
-    # unknown value -> deterministic fallback to the first site
+    # unknown value -> an error, not a silent adoption of the first site: a
+    # process serving as a site it is not would build and reconcile wrongly.
     d._local_site = "nope"
-    assert d.local_cluster().site == "site-a"
+    with pytest.raises(ValidationError):
+        d.local_cluster()
 
 
 async def test_fanout_captures_per_site_errors():
@@ -192,7 +194,7 @@ async def test_fanout_captures_per_site_errors():
     statuses = await d.fanout(d.resolve_targets(None), fn)
     by_site = {s.site: s for s in statuses}
     assert by_site["site-a"].status == "Ready"
-    assert by_site["site-b"].error == "kaboom"
+    assert by_site["site-b"].message == "kaboom"
 
 
 async def test_fanout_times_out_unreachable_site():
@@ -211,7 +213,7 @@ async def test_fanout_times_out_unreachable_site():
     # the healthy site still returns; the slow one is reported, not blocking
     assert by_site["site-a"].status == "Ready"
     assert by_site["site-b"].status == "Timeout"
-    assert by_site["site-b"].error is not None
+    assert by_site["site-b"].message is not None
 
 
 class _FakeCluster:
@@ -409,7 +411,7 @@ async def test_accept_container_returns_pending_and_schedules():
         name="app", image="reg/x:1", port=8080, registryUsername="u", registryToken="t"
     )
     body = await svc.accept("team", spec, user, bg)
-    assert body.overallStatus == "Pending"
+    assert body.status == "Pending"
     assert body.statusUrl == "/api/v1/groups/team/containers/app"
     assert len(bg.tasks) == 1  # deploy scheduled in the background
 
@@ -519,7 +521,7 @@ async def test_stats_returns_live_state_and_reads_nothing_else():
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
 
-    assert body.overallStatus == "Ready"
+    assert body.status == "Ready"
     assert body.replicas == 2
     # summed over the user containers, ignoring the queue-proxy sidecar
     assert (body.usage.cpu, body.usage.memory) == ("120m", "180Mi")
@@ -582,7 +584,7 @@ async def test_stats_survives_a_site_that_is_entirely_down():
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
 
-    assert body.overallStatus == "Degraded"
+    assert body.status == "Failed"
     by_site = {s.site: s for s in body.sites}
     assert by_site["site-a"].usage.cpu == "60m"  # the healthy site still reports
     assert by_site["site-b"].status == "Failed"
@@ -637,7 +639,7 @@ async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(FUNCTION, "fn", user, "team")
 
-    assert body.overallStatus == "Building"  # not Degraded, and not Deploying
+    assert body.status == "Building"  # not Failed, and not Deploying
     assert body.sites[0].status == "Building"  # and the row agrees with the header
 
 
@@ -791,7 +793,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
 
     The container variant is covered several times over; this drives the branch
     that only a function reaches - the build-input annotations projected through
-    WorkloadSpec, and the kpack build status folded into overallStatus.
+    WorkloadSpec, and the kpack build status folded into status.
     """
     from cloudlet_apis.auth import Principal
 
@@ -848,13 +850,13 @@ async def test_get_function_returns_build_inputs_and_build_state():
     # the version the caller pinned, round-tripped through the annotation
     assert body.version == "3.13"
     assert body.build.state == "Ready"
-    assert body.overallStatus == "Ready"
+    assert body.status == "Ready"
     # the built image stays internal - a function's client deals in source
     assert not hasattr(body, "image")
 
 
 async def test_get_function_building_image_reports_building():
-    """A function whose image is still building is Building, not Degraded."""
+    """A function whose image is still building is Building, not Failed."""
     from cloudlet_apis.auth import Principal
 
     from api.models.common import Scaling
@@ -906,11 +908,11 @@ async def test_get_function_building_image_reports_building():
     body = await engine.get(FUNCTION, "fn", user, "team")
 
     assert body.build.state == "Building"
-    assert body.overallStatus == "Building"
+    assert body.status == "Building"
     # The per-site row agrees with the headline instead of contradicting it: the
     # KSVC's pull failure IS the running build, not a second, independent one.
     assert body.sites[0].status == "Building"
-    assert body.sites[0].error is None
+    assert body.sites[0].message is None
     assert body.path is None  # no sub-directory -> built from the repository root
     assert body.version is None  # took the platform default; /info says what that is
 
@@ -935,16 +937,16 @@ async def test_get_overall_status_reflects_rollout_state():
     user = Principal(subject="u", username="alice", groups=["team"])
 
     async def _overall():
-        return (await engine.get(CONTAINER, "app", user, "team")).overallStatus
+        return (await engine.get(CONTAINER, "app", user, "team")).status
 
-    # no Ready condition yet -> Deploying (regression: this used to be Degraded)
+    # no Ready condition yet -> Deploying (regression: this used to be Failed)
     assert await _overall() == "Deploying"
     # Ready=True -> Ready
     ksvc["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
     assert await _overall() == "Ready"
-    # Ready=False -> terminal failure surfaces as Degraded
+    # Ready=False -> terminal failure surfaces as Failed
     ksvc["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
-    assert await _overall() == "Degraded"
+    assert await _overall() == "Failed"
 
 
 async def test_get_failed_site_surfaces_ready_condition_message():
@@ -981,12 +983,12 @@ async def test_get_failed_site_surfaces_ready_condition_message():
 
     site = body.sites[0]
     assert site.status == "Failed"
-    assert site.error == 'Revision "app-team-00001" failed: image pull backoff'
+    assert site.message == 'Revision "app-team-00001" failed: image pull backoff'
 
     # Falls back to the reason code when the condition carries no message.
     ksvc["status"]["conditions"][0].pop("message")
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.sites[0].error == "RevisionFailed"
+    assert body.sites[0].message == "RevisionFailed"
 
 
 async def test_get_failed_site_prefers_revision_specific_reason():
@@ -1043,7 +1045,7 @@ async def test_get_failed_site_prefers_revision_specific_reason():
 
     site = body.sites[0]
     assert site.status == "Failed"
-    assert site.error == 'Unable to fetch image "reg/app:1": not found'
+    assert site.message == 'Unable to fetch image "reg/app:1": not found'
     assert site.replicas == 0  # same Revision read still feeds the replica count
 
 
@@ -1068,7 +1070,7 @@ async def test_get_ready_site_has_no_error():
     engine = _workload_service({"site-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.sites[0].status == "Ready" and body.sites[0].error is None
+    assert body.sites[0].status == "Ready" and body.sites[0].message is None
 
 
 async def test_list_overall_status_per_workload():
@@ -1082,16 +1084,16 @@ async def test_list_overall_status_per_workload():
         {"site-a": _ListCluster("site-a", [deploying, failed])}, local_site="site-a"
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    summaries = {s.name: s.overallStatus for s in await engine.list(CONTAINER, user, "team")}
+    summaries = {s.name: s.status for s in await engine.list(CONTAINER, user, "team")}
 
-    assert summaries["app"] == "Deploying"  # not a false Degraded
-    assert summaries["bad"] == "Degraded"
+    assert summaries["app"] == "Deploying"  # not a false Failed
+    assert summaries["bad"] == "Failed"
 
 
 async def test_list_folds_the_build_state_in_like_get_does():
-    """A listing is build-first too: a first build reads Building, not Degraded.
+    """A listing is build-first too: a first build reads Building, not Failed.
 
-    Regression: the console's function cards showed a red `Degraded` for the whole
+    Regression: the console's function cards showed a red `Failed` for the whole
     of a normal first build, because the list read only the KSVC - which cannot
     pull an image kpack has not pushed yet. The single GET already folded the
     build in; the list did not, so the two disagreed about the same function.
@@ -1124,11 +1126,11 @@ async def test_list_folds_the_build_state_in_like_get_does():
         local_site="site-a",
     )
     user = Principal(subject="u", username="alice", groups=["team"])
-    summaries = {s.name: s.overallStatus for s in await engine.list(FUNCTION, user, "team")}
+    summaries = {s.name: s.status for s in await engine.list(FUNCTION, user, "team")}
 
     assert summaries["fn"] == "Building"
-    # a failed build is the honest cause of the same symptom -> still Degraded
-    assert summaries["bad"] == "Degraded"
+    # a failed build is the honest cause of the same symptom -> still Failed
+    assert summaries["bad"] == "Failed"
     # no build in flight -> the KSVC has the last word, as after a switchover
     assert summaries["old"] == "Ready"
     assert reads == [("site-a", "team")]  # local site only, once
@@ -1668,7 +1670,7 @@ async def test_update_container_username_change_without_token_rejected():
         user,
         BackgroundTasks(),
     )
-    assert resp.overallStatus == "Pending"
+    assert resp.status == "Pending"
 
 
 async def test_container_update_both_creds_null_removes_pull_secret():
@@ -1821,12 +1823,12 @@ async def test_list_fans_out_and_merges_sites():
     assert orders.sites == ["site-a", "site-b"]  # merged across both sites
     assert orders.size == "medium"
     assert orders.hostname == "orders-team.ex.com"
-    assert orders.overallStatus == "Ready"
+    assert orders.status == "Ready"
 
     web = next(w for w in out if w.name == "web")
     # single-site workload: only the site that has it, status over just that site
     assert web.sites == ["site-a"]
-    assert web.overallStatus == "Ready"  # not a false Degraded for the absent site
+    assert web.status == "Ready"  # not a false Failed for the absent site
 
 
 async def test_list_skips_unreachable_site_best_effort():
@@ -2325,7 +2327,7 @@ def _ready_ksvc(name="app-team"):
 
 async def test_get_omits_404_site_and_stays_healthy():
     # A site that returns a clean 404 (workload not deployed there) is omitted from
-    # the per-site report and does NOT drag the rollup to Degraded.
+    # the per-site report and does NOT drag the rollup to Failed.
     from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
@@ -2336,7 +2338,7 @@ async def test_get_omits_404_site_and_stays_healthy():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.overallStatus == "Ready"
+    assert body.status == "Ready"
     assert [s.site for s in body.sites] == ["site-a"]  # site-b omitted, not Failed
 
 
@@ -2352,7 +2354,7 @@ async def test_get_down_site_still_degrades():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.overallStatus == "Degraded"
+    assert body.status == "Failed"
     assert {s.site for s in body.sites} == {"site-a", "site-b"}
 
 
@@ -2654,7 +2656,7 @@ async def test_get_reports_terminating_during_delete():
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.overallStatus == "Terminating"
+    assert body.status == "Terminating"
     assert body.sites[0].status == "Terminating"
 
 
@@ -2664,7 +2666,7 @@ def test_overall_status_terminating_precedence():
     assert overall_status(["Terminating", "Ready"]) == "Terminating"
     assert overall_status(["Terminating", "Deploying"]) == "Terminating"
     # A real failure still outranks a termination in progress.
-    assert overall_status(["Failed", "Terminating"]) == "Degraded"
+    assert overall_status(["Failed", "Terminating"]) == "Failed"
 
 
 def test_creation_time_is_israel_local_time_with_dst():
@@ -2802,7 +2804,7 @@ async def test_function_accept_allows_known_runtime():
     )
 
     resp = await fsvc.accept("team", spec, user, BackgroundTasks())
-    assert resp.overallStatus == "Pending" and resp.runtime == "go"
+    assert resp.status == "Pending" and resp.runtime == "go"
 
 
 async def test_function_update_rejects_unknown_runtime():

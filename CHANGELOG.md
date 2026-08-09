@@ -7,6 +7,31 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: the status contract now follows Kubernetes' shape.** Three
+  renames and one structural rule:
+  - `overallStatus` is now `status`, on every response (full GET, list items,
+    `/stats`, and the `stats` stream events).
+  - The rollup value `Degraded` is now `Failed` - the same word the failing
+    site row already used, so a client learns one vocabulary instead of two.
+    The 207 multi-status mapping is unchanged, just keyed on the new value.
+  - The per-site `error` is now `message` - Kubernetes' reason/message pair,
+    one level up.
+  - `status` is a **closed phase set** (`Pending`/`Building`/`Deploying`/
+    `Ready`/`Failed`/`Terminating`; terminal: `Ready`, `Failed`): causes are
+    never promoted into it. Every failure names its cause on the
+    machine-readable `reason` - on the workload and on each failing site row,
+    in the full GET and `/stats` alike (the `stats` stream inherits it, since
+    its events are the `/stats` body). `/info`'s `statuses.reasons` publishes
+    the values: `BuildFailed` (authoritative, read off the kpack Image - the
+    image will not arrive until a build input changes), then `ImagePullFailed`,
+    `CrashLooping`, `ConfigError` and `ProgressDeadlineExceeded`, derived
+    best-effort from the failing Kubernetes/Knative conditions - null when the
+    cause was not recognized, with the raw text on the site's `message`. A new
+    interesting cause is an additive reason string, never a breaking change to
+    the status vocabulary.
+
 ### Added
 
 - **Live observability is now Server-Sent Events, and logs are per pod.** Three

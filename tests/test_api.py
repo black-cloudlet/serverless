@@ -25,7 +25,7 @@ def _model(kind, **fields):
 def _stats(overall="Ready"):
     """A live stats view: two replicas at one site."""
     return WorkloadStatsResponse(
-        overallStatus=overall,
+        status=overall,
         replicas=2,
         usage=ResourceUsage(cpu="300m", memory="384Mi"),
         sites=[
@@ -46,7 +46,7 @@ def _accepted(kind, name, group, **extra):
         group=group,
         type=kind,
         hostname=f"{name}.serverless.example.com",
-        overallStatus="Pending",
+        status="Pending",
         sites=[],
         statusUrl=f"/api/v1/groups/{group}/{kind}s/{name}",
         **extra,
@@ -60,7 +60,7 @@ def _ready(kind, name, group="team", **extra):
         group=group,
         type=kind,
         hostname="x.serverless.example.com",
-        overallStatus="Ready",
+        status="Ready",
         sites=[SiteStatus(site="site-a", status="Ready")],
         **extra,
     )
@@ -93,7 +93,7 @@ class FakeFunctions:
                 group="team",
                 type="function",
                 hostname="fn-a.example.com",
-                overallStatus="Ready",
+                status="Ready",
                 size="small",
                 sites=["central"],
             )
@@ -128,7 +128,7 @@ class FakeContainers:
                 group="team",
                 type="container",
                 hostname="ctr-a.example.com",
-                overallStatus="Ready",
+                status="Ready",
                 size="medium",
                 sites=["central", "south"],
             )
@@ -247,7 +247,7 @@ def test_create_container_accepted(client):
     assert r.status_code == 202
     body = r.json()
     assert body["type"] == "container"
-    assert body["overallStatus"] == "Pending"
+    assert body["status"] == "Pending"
     assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
 
 
@@ -257,7 +257,7 @@ def test_build_function_accepted_without_a_body(client):
 
     assert r.status_code == 202
     body = r.json()
-    assert body["overallStatus"] == "Pending"
+    assert body["status"] == "Pending"
     # the same poll target as create/update, so a client needs no second flow
     assert body["statusUrl"] == "/api/v1/groups/team/functions/orders"
     # the build inputs it will use, echoed back from what is stored
@@ -279,7 +279,7 @@ def test_pull_container_accepted_without_a_body(client):
 
     assert r.status_code == 202
     body = r.json()
-    assert body["overallStatus"] == "Pending"
+    assert body["status"] == "Pending"
     assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
 
 
@@ -413,24 +413,25 @@ def test_get_container_stats_is_live_state_only(client):
     r = client.get("/api/v1/groups/team/containers/foo/stats")
     assert r.status_code == 200
     body = r.json()
-    assert body["overallStatus"] == "Ready"
+    assert body["status"] == "Ready"
     assert body["replicas"] == 2
     assert body["usage"] == {"cpu": "300m", "memory": "384Mi"}
     site = body["sites"][0]
     assert site == {
         "site": "site-a",
         "status": "Ready",
+        "reason": None,
         "replicas": 2,
         "usage": {"cpu": "300m", "memory": "384Mi"},
     }
     # nothing else: no desired-state config, and no identity echo of the path
-    assert set(body) == {"overallStatus", "replicas", "usage", "sites"}
+    assert set(body) == {"status", "reason", "replicas", "usage", "sites"}
 
 
 def test_get_function_stats_reports_a_running_build(client):
     # Building comes from the build read, which stays even though it is not a field
     body = client.get("/api/v1/groups/team/functions/foo/stats").json()
-    assert body["overallStatus"] == "Building"
+    assert body["status"] == "Building"
     assert body["sites"][0]["status"] == "Building"
 
 
@@ -526,7 +527,7 @@ def test_update_container_accepted(client):
     )
     assert r.status_code == 202
     assert r.json()["image"] == "registry.internal/team/orders:2"
-    assert r.json()["overallStatus"] == "Pending"
+    assert r.json()["status"] == "Pending"
 
 
 def test_update_function_accepted(client):

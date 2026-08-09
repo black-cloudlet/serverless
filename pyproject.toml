@@ -10,7 +10,10 @@ requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
-    "cloudlet-apis>=0.2,<1",
+    # >=0.3: the auth robustness fixes (a non-ASCII bearer token is a 401, not a
+    # 500; a down IdP no longer serializes every request through the discovery
+    # lock) and the platform name limits this API's own checks sit under.
+    "cloudlet-apis>=0.3,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "kubernetes>=36.0.3",
@@ -22,7 +25,7 @@ dependencies = [
 # the shared web wiring come from cloudlet-apis' extras, which is where
 # pyjwt[crypto] now enters - the controller image still never sees it.
 api = [
-    "cloudlet-apis[web,auth]>=0.2,<1",
+    "cloudlet-apis[web,auth]>=0.3,<1",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.0",
     "httpx>=0.28.1",
@@ -67,10 +70,6 @@ convention = "google"
 
 [tool.setuptools.packages.find]
 include = ["api*", "common*", "controller*"]
-
-[tool.setuptools.package-data]
-# Vendored Swagger UI / ReDoc assets served offline (airgapped docs).
-common = ["static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

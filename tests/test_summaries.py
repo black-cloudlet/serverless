@@ -37,25 +37,25 @@ def test_one_workload_across_two_sites_is_merged_into_one_row():
     assert len(out) == 1
     assert out[0].name == "app"  # the -{group} suffix is the object name, not the display one
     assert out[0].sites == ["central", "south"]
-    assert out[0].overallStatus == "Ready"
+    assert out[0].status == "Ready"
 
 
 def test_a_workload_on_one_site_of_two_is_ready_not_degraded():
     """Its rollup covers the sites that returned it, not the sites that exist."""
     out = _merge([("central", [_ksvc("app-team")]), ("south", [])])
     assert out[0].sites == ["central"]
-    assert out[0].overallStatus == "Ready"
+    assert out[0].status == "Ready"
 
 
 def test_a_site_that_did_not_answer_is_skipped_entirely():
     out = _merge([("central", [_ksvc("app-team")]), ("south", None)])
     assert out[0].sites == ["central"]
-    assert out[0].overallStatus == "Ready"
+    assert out[0].status == "Ready"
 
 
 def test_a_failing_site_degrades_the_rollup():
     out = _merge([("central", [_ksvc("app-team")]), ("south", [_ksvc("app-team", ready=False)])])
-    assert out[0].overallStatus == "Degraded"
+    assert out[0].status == "Failed"
 
 
 def test_a_running_build_wins_over_the_ksvc_status():
@@ -65,7 +65,7 @@ def test_a_running_build_wins_over_the_ksvc_status():
         offering="function",
         builds={"central": {"fn-team": BuildStatusView(state="Building")}},
     )
-    assert out[0].overallStatus == "Building"
+    assert out[0].status == "Building"
 
 
 def test_a_build_failing_in_one_site_is_what_the_listing_reports():
@@ -78,7 +78,7 @@ def test_a_build_failing_in_one_site_is_what_the_listing_reports():
             "south": {"fn-team": BuildStatusView(state="Failed", message="detect failed")},
         },
     )
-    assert out[0].overallStatus == "Degraded"
+    assert out[0].status == "Failed"
 
 
 def test_a_build_state_is_not_attributed_across_sites():
@@ -88,7 +88,7 @@ def test_a_build_state_is_not_attributed_across_sites():
         offering="function",
         builds={"central": {"fn-team": BuildStatusView(state="Building")}, "south": {}},
     )
-    assert out[0].overallStatus == "Building"
+    assert out[0].status == "Building"
 
 
 def test_the_host_falls_back_to_the_default_when_unannotated():

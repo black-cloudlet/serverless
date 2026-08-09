@@ -30,6 +30,38 @@ Start with **[docs/](docs/README.md)**, which indexes the set:
 The code is the source of truth; where a document disagrees with it, the document is
 the bug.
 
+## Status at a glance
+
+The status model is Kubernetes' reason/message split, one level up. `status`
+is a closed phase set - `Pending`, `Building`, `Deploying`, `Ready`, `Failed`,
+`Terminating`, with `Ready` and `Failed` terminal for a poller - and causes
+never get promoted into it: a failure names its cause on the machine-readable
+`reason` (`BuildFailed`, `ImagePullFailed`, `CrashLooping`, `ConfigError`,
+`ProgressDeadlineExceeded`; null when unrecognized) with the human detail on
+the full GET's per-site `message`. All of it is published on
+`GET /api/v1/{type}/info` (`statuses`) so no client hardcodes a vocabulary.
+The lightweight poll target, `GET .../{name}/stats` (also pushed as SSE on
+`/stats/stream`), reads:
+
+```json
+{
+  "status": "Failed",
+  "reason": "ImagePullFailed",
+  "replicas": 2,
+  "usage": null,
+  "sites": [
+    { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
+      "usage": { "cpu": "120m", "memory": "180Mi" } },
+    { "site": "south", "status": "Failed", "reason": "ImagePullFailed",
+      "replicas": 0, "usage": null }
+  ]
+}
+```
+
+The full GET adds the desired-state config, each site's `revision`, and the raw
+failure text on the site's `message` (docs/FUNCTIONS.md - Function Status
+Resolution; docs/ARCHITECTURE.md - REST API Specification).
+
 ## Layout
 
 ```

@@ -12,6 +12,7 @@ stream drops. No leader election (docs/BUILDING.md - Digest propagation).
 from __future__ import annotations
 
 from cloudlet_apis.logging import get_logger
+from kubernetes.client.exceptions import ApiException
 
 from common import kpack
 from common.cluster import Cluster, ResourceKind, clusters_for, select_local
@@ -79,13 +80,21 @@ class Reconciler:
             timeout_seconds: How long to hold the watch open.
         """
         version = self.resync()
-        for _event, image in self._local.watch(
-            ResourceKind.KPACK_IMAGE,
-            resource_version=version,
-            label_selector=IMAGE_SELECTOR,
-            timeout_seconds=timeout_seconds,
-        ):
-            self.reconcile(image)
+        try:
+            for _event, image in self._local.watch(
+                ResourceKind.KPACK_IMAGE,
+                resource_version=version,
+                label_selector=IMAGE_SELECTOR,
+                timeout_seconds=timeout_seconds,
+            ):
+                self.reconcile(image)
+        except ApiException as exc:
+            # 410 Gone is the server compacting history out from under the
+            # watch - routine, and the next pass's relist is the cure. Anything
+            # else is a real failure and takes the loop's error backoff.
+            if exc.status != 410:
+                raise
+            logger.info("watch expired (resourceVersion too old); resyncing")
 
     def reconcile(self, image: dict) -> bool:
         """Roll one Image's last successful digest onto its function here.

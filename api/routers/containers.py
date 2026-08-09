@@ -124,7 +124,7 @@ async def list_containers(
 async def get_container(
     group: Group, name: Name, user: CurrentUser, svc: ContainerDep
 ) -> ContainerResponse:
-    """Get one container, including overallStatus and per-site status.
+    """Get one container, including the status rollup and per-site status.
 
     This is the poll target advertised as ``statusUrl`` on the 202 accept
     response.
@@ -147,7 +147,7 @@ async def get_container_stats(
 ) -> WorkloadStatsResponse:
     """Get the container's live state: status, replicas and usage, per site.
 
-    The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
+    The lightweight endpoint to poll - the same ``status`` rollup as the full GET
     and the live numbers behind it, and none of the desired-state config.
 
     Args:

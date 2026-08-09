@@ -194,7 +194,7 @@ def validate_branch(branch: str) -> str:
     Raises:
         ValueError: If it isn't a usable git ref.
     """
-    if not branch or branch.strip() != branch or not branch.strip():
+    if not branch or branch.strip() != branch:
         raise ValueError("branch must not be empty or padded with whitespace")
     if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in branch):
         raise ValueError("branch must not contain whitespace or control characters")
@@ -358,7 +358,7 @@ def object_name(name: str, group: str) -> str:
     return f"{name}-{group}"
 
 
-def validate_object_name(name: str, group: str) -> str:
+def validate_object_name(name: str, group: str, limit: int = MAX_OBJECT_NAME) -> str:
     """Check that ``{name}-{group}`` still fits where it has to be written.
 
     Each half is a legal DNS-1123 label, but the primary key is their concatenation,
@@ -369,20 +369,23 @@ def validate_object_name(name: str, group: str) -> str:
     Args:
         name: The workload name.
         group: The owning group.
+        limit: The cap on the pair; an offering that prefixes the pair somewhere
+            a label value has to fit (a function's build objects) passes a
+            tighter one.
 
     Returns:
         The derived object name.
 
     Raises:
-        ValueError: If the pair exceeds 63 characters together.
+        ValueError: If the pair exceeds ``limit`` characters together.
     """
     oname = object_name(name, group)
-    if len(oname) > MAX_OBJECT_NAME:
+    if len(oname) > limit:
         raise ValueError(
             f"name and group are too long together: '{name}' + '{group}' is "
-            f"{len(oname)} characters and the limit is {MAX_OBJECT_NAME} "
+            f"{len(oname)} characters and the limit is {limit} "
             f"(the name is used as a DNS label); shorten the name by "
-            f"{len(oname) - MAX_OBJECT_NAME}"
+            f"{len(oname) - limit}"
         )
     return oname
 

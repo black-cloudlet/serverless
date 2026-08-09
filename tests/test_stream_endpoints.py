@@ -20,7 +20,7 @@ from api.models.common import (
 )
 from api.services.streams.sse import StreamEvent
 
-KEY = "endpoint-test-signing-key"  # noqa: S105 - a fixture, not a credential
+KEY = "endpoint-test-signing-key-0123456"  # noqa: S105 - a fixture, not a credential
 PODS = "/api/v1/groups/team/functions/foo/pods"
 LOGS = "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
 STATS = "/api/v1/groups/team/functions/foo/stats/stream"
@@ -131,7 +131,7 @@ def frames(text):
 
 
 def test_a_stream_is_served_as_an_unbuffered_event_stream():
-    svc = FakeStreams(events=[StreamEvent("stats", WorkloadStatsResponse(overallStatus="Ready"))])
+    svc = FakeStreams(events=[StreamEvent("stats", WorkloadStatsResponse(status="Ready"))])
     response = build(svc).get(STATS)
 
     assert response.status_code == 200
@@ -150,14 +150,14 @@ def test_the_body_opens_with_a_retry_so_a_scheduled_close_is_not_a_reconnect_sto
 def test_events_reach_the_client_named_and_in_order():
     svc = FakeStreams(
         events=[
-            StreamEvent("stats", WorkloadStatsResponse(overallStatus="Deploying", replicas=0)),
-            StreamEvent("stats", WorkloadStatsResponse(overallStatus="Ready", replicas=2)),
+            StreamEvent("stats", WorkloadStatsResponse(status="Deploying", replicas=0)),
+            StreamEvent("stats", WorkloadStatsResponse(status="Ready", replicas=2)),
         ]
     )
     got = frames(build(svc).get(STATS).text)
 
     assert [name for name, _ in got] == ["stats", "stats"]
-    assert '"overallStatus":"Ready"' in got[1][1]
+    assert '"status":"Ready"' in got[1][1]
     assert '"replicas":2' in got[1][1]
 
 
@@ -165,7 +165,7 @@ def test_a_failure_after_the_first_byte_becomes_an_error_event_not_a_status():
     """The status line is long gone; an event is the only way left to say so."""
 
     async def blows_up():
-        yield StreamEvent("stats", WorkloadStatsResponse(overallStatus="Ready"))
+        yield StreamEvent("stats", WorkloadStatsResponse(status="Ready"))
         raise NotFoundError("function 'foo' not found")
 
     svc = FakeStreams()
@@ -179,7 +179,7 @@ def test_a_failure_after_the_first_byte_becomes_an_error_event_not_a_status():
 
 def test_an_unexpected_mid_stream_failure_does_not_leak_its_text():
     async def blows_up():
-        yield StreamEvent("stats", WorkloadStatsResponse(overallStatus="Ready"))
+        yield StreamEvent("stats", WorkloadStatsResponse(status="Ready"))
         raise RuntimeError("db://user:hunter2@internal")
 
     svc = FakeStreams()
@@ -324,7 +324,7 @@ def test_a_ticket_for_another_stream_is_refused():
 
 
 def test_a_forged_ticket_is_refused():
-    ticket = StreamTickets("not-the-real-key").mint(CALLER, LOGS).value
+    ticket = StreamTickets("not-the-real-key-abcdefghijklmnopqrs").mint(CALLER, LOGS).value
     response = build(FakeStreams(events=[]), authenticated=False).get(f"{LOGS}?ticket={ticket}")
     assert response.status_code == 401
 

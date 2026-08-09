@@ -25,13 +25,23 @@ IMAGE_LABEL = "image.kpack.io/image"
 BUILD_NUMBER_LABEL = "image.kpack.io/buildNumber"
 
 
+# kpack stamps the Image *name* onto every Build as the `image.kpack.io/image`
+# label value - the exact label this platform selects builds by - and a label
+# value caps at 63 characters. The prefix therefore narrows how long a
+# function's `{name}-{group}` may be, on top of the DNS limit the shared check
+# enforces; a pair that only fits without the prefix would be accepted and then
+# silently never build.
+BUILD_NAME_PREFIX = "fn-"
+MAX_BUILD_WORKLOAD_NAME = 63 - len(BUILD_NAME_PREFIX)
+
+
 def build_object_name(workload: str) -> str:
     """Name shared by a function's Image and build ServiceAccount: ``fn-{workload}``.
 
     Prefixed so it cannot collide with the KSVC or any other object the workload
     owns in the same namespace.
     """
-    return f"fn-{workload}"
+    return f"{BUILD_NAME_PREFIX}{workload}"
 
 
 def build_service_account(

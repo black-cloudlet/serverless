@@ -52,9 +52,12 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md).
 
     The build is checked FIRST: a function whose image does not exist yet is not
-    broken, but its KSVC is failing to pull one, which would read as ``Degraded`` for
+    broken, but its KSVC is failing to pull one, which would read as ``Failed`` for
     a whole normal first build. A failed build is the honest cause of that same
-    symptom, so it does report ``Degraded``, with the reason on ``build.message``.
+    symptom, so the rollup still reads ``Failed`` - the phase set stays closed,
+    Kubernetes-style - and the caller names the cause on ``reason``
+    ("BuildFailed", authoritative from the kpack Image) with the build's own
+    text on ``message``.
 
     Args:
         overall: The rollup of the per-site KSVC statuses.
@@ -68,7 +71,7 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     if build.state == "Building":
         return "Building"
     if build.state == "Failed":
-        return "Degraded"
+        return "Failed"
     return overall
 
 
@@ -111,9 +114,12 @@ def sites_with_build_status(
 
     So while a site's build is in flight, that site reports ``Building`` and
     drops the pull error: it is a symptom of the build running there, not an
-    independent failure. Only ``Building`` masks anything - a ``Failed`` build
-    leaves the row untouched, because then the image genuinely will not arrive
-    and the site is telling the truth.
+    independent failure. A ``Failed`` build keeps the row ``Failed`` but names
+    the cause - ``reason: "BuildFailed"``, with the build's own text as the
+    message - because the image genuinely will not arrive, and the pull error
+    alone points at the registry when the cause is the build. A row that is not
+    failing is left alone either way: a site still serving its previous
+    revision is telling the truth.
 
     Each row is folded against **its own** site's build. A build running in one
     site says nothing about whether another site's image exists, so a shared
@@ -130,10 +136,79 @@ def sites_with_build_status(
     for site in sites:
         build = builds.get(site.site)
         if site.status == "Failed" and build is not None and build.state == "Building":
-            out.append(site.model_copy(update={"status": "Building", "error": None}))
+            out.append(site.model_copy(update={"status": "Building", "message": None}))
+        elif site.status == "Failed" and build is not None and build.state == "Failed":
+            out.append(
+                site.model_copy(
+                    update={"reason": "BuildFailed", "message": build.message or site.message}
+                )
+            )
         else:
             out.append(site)
     return out
+
+
+# What each STATUS_REASONS value looks like in a failing condition's
+# reason/message, matched case-insensitively. Kubernetes reason codes
+# (ImagePullBackOff, CreateContainerConfigError) are stable; the free-text
+# needles cover what Knative folds them into. Ordered specific-first:
+# ProgressDeadlineExceeded is the aggregate verdict Knative reaches *because*
+# of one of the others, so it only wins when nothing more specific matched.
+_REASON_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "ImagePullFailed",
+        (
+            "imagepullbackoff",
+            "errimagepull",
+            "unable to fetch image",
+            "failed to resolve image",
+            "resolutionfailed",
+            "pull access denied",
+            "manifest unknown",
+        ),
+    ),
+    (
+        "ConfigError",
+        ("createcontainerconfigerror", "couldn't find key", "mountvolume.setup failed"),
+    ),
+    (
+        "CrashLooping",
+        ("crashloopbackoff", "container failed", "back-off restarting", "exit code", "exitcode"),
+    ),
+    ("ProgressDeadlineExceeded", ("progressdeadlineexceeded", "did not become ready")),
+)
+
+
+def failure_cause(rev: dict | None, ksvc: dict | None = None) -> str | None:
+    """Map failing conditions to a machine-readable cause (``STATUS_REASONS``).
+
+    Best-effort by design: the reasons and messages this reads are stable-ish
+    Kubernetes and Knative codes, not a contract, so an unrecognized failure
+    returns None and the caller reports only the raw ``message`` text. The
+    Revision is scanned before the KSVC for the same reason
+    :func:`revision_failure_message` prefers it - its sub-conditions name the
+    real cause where the KSVC's aggregate repeats the verdict.
+
+    Args:
+        rev: The failing Revision, when one was read.
+        ksvc: The KSVC, as a fallback source of conditions.
+
+    Returns:
+        One of ``api.models.common.STATUS_REASONS``, or None.
+    """
+    texts: list[str] = []
+    for obj in (rev, ksvc):
+        if not obj:
+            continue
+        for cond in dig(obj, "status", "conditions", default=[]) or []:
+            if cond.get("status") == "False":
+                texts.append(str(cond.get("reason") or ""))
+                texts.append(str(cond.get("message") or ""))
+    blob = " ".join(texts).lower()
+    for cause, needles in _REASON_RULES:
+        if any(needle in blob for needle in needles):
+            return cause
+    return None
 
 
 def extract_image(obj: dict) -> str | None:

@@ -21,7 +21,7 @@ from cloudlet_apis.errors import APIError
 from cloudlet_apis.logging import get_logger
 
 from api.core.config import StreamConfig
-from api.models.common import StreamError, WorkloadStatsResponse
+from api.models.common import StreamEnd, StreamError, WorkloadStatsResponse
 from api.services.streams.sse import StreamEvent, heartbeat
 
 logger = get_logger(__name__)
@@ -69,7 +69,12 @@ async def follow(
             if loop.time() < due:
                 yield heartbeat()
         if loop.time() >= deadline:
-            return  # the client reconnects; SSE does that on its own
+            # Said out loud, exactly as the log stream does: without an `end` a
+            # client cannot tell the scheduled rollover from a dropped connection.
+            yield StreamEvent(
+                "end", StreamEnd(reason="the stream reached its time limit; reconnect")
+            )
+            return
 
         try:
             reading = await read()

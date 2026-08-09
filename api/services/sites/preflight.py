@@ -184,7 +184,7 @@ def assert_all_sites_checked(statuses: list[SiteStatus], action: str) -> None:
     Raises:
         ServiceUnavailableError: If any site reported an error.
     """
-    unreachable = [s.site for s in statuses if s.error is not None]
+    unreachable = [s.site for s in statuses if s.message is not None]
     if unreachable:
         raise ServiceUnavailableError(
             f"cannot {action}: site(s) unreachable: {', '.join(sorted(unreachable))}"

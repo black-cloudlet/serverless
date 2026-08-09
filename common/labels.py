@@ -68,6 +68,12 @@ def workload_labels(
 
 
 def _sanitize(value: str) -> str:
-    """Make an arbitrary identifier safe for a label value (<=63 chars)."""
-    safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in value)
+    """Make an arbitrary identifier safe for a label value (<=63 chars).
+
+    ASCII alphanumerics only: ``isalnum()`` alone is Unicode-aware, and a label
+    value is restricted to ASCII ``[A-Za-z0-9._-]`` - an SSO username with one
+    accented character would otherwise fail every apply with a 422 long after
+    the request was accepted.
+    """
+    safe = "".join(c if (c.isascii() and c.isalnum()) or c in "-_." else "-" for c in value)
     return safe[:63].strip("-_.") or "unknown"

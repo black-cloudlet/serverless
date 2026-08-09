@@ -75,8 +75,8 @@ def stream(events: AsyncIterator[sse.StreamEvent]) -> StreamingResponse:
     """
 
     async def body() -> AsyncIterator[str]:
-        yield sse.preamble()
         try:
+            yield sse.preamble()
             async for event in events:
                 yield sse.render(event)
         except APIError as exc:
@@ -92,5 +92,13 @@ def stream(events: AsyncIterator[sse.StreamEvent]) -> StreamingResponse:
                     "error", StreamError(code=APIError.code, message="Internal server error.")
                 )
             )
+        finally:
+            # Deterministic teardown. A client disconnect cancels the response
+            # task and lands here as GeneratorExit; without the explicit aclose
+            # the stream's own teardown - the admission slot, the follower
+            # thread, the open log socket - would wait on the GC.
+            aclose = getattr(events, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     return StreamingResponse(body(), media_type=sse.MEDIA_TYPE, headers=dict(sse.HEADERS))

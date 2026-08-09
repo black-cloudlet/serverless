@@ -21,8 +21,8 @@ that is the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
-import sys
-from collections.abc import AsyncIterator, Mapping, Sequence
+import weakref
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -69,7 +69,7 @@ from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revis
 from api.services.streams import logs as logs_stream
 from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
-from api.services.streams.capacity import StreamCapacity
+from api.services.streams.capacity import StreamCapacity, StreamSlot
 from api.services.streams.sse import StreamEvent
 from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
@@ -82,6 +82,52 @@ from common.errors import (
 from common.names import object_name
 
 logger = get_logger(__name__)
+
+
+class _SlotGuardedStream:
+    """``inner``'s events, with ``slot`` released however the stream ends.
+
+    The slot is held for the life of this object, not of the call that admitted
+    it - which is why it cannot simply be a ``with``. An object rather than a
+    wrapping generator, deliberately: closing a *never-started* generator skips
+    its body, so a ``finally`` in one cannot cover the stream that is handed to
+    the response layer and then never iterated (a client that disconnects
+    before the body begins) - exactly the stream whose slot would otherwise be
+    gone until a restart. Here ``aclose`` always runs, exhaustion and failure
+    release directly, and the ``weakref.finalize`` backstop covers an object
+    the response layer dropped without closing. Release is idempotent, so the
+    several owners cannot double-free.
+    """
+
+    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent, None]):
+        self._slot = slot
+        self._inner = inner
+        # Bound to the slot only - a reference to `self` here would keep this
+        # object alive forever and the finalizer from ever firing.
+        weakref.finalize(self, slot.release)
+
+    def __aiter__(self) -> _SlotGuardedStream:
+        return self
+
+    async def __anext__(self) -> StreamEvent:
+        try:
+            return await self._inner.__anext__()
+        except BaseException:
+            # StopAsyncIteration included: however the stream ends, the slot
+            # goes back now, not when the caller remembers to aclose.
+            self._slot.release()
+            raise
+
+    async def aclose(self) -> None:
+        try:
+            await self._inner.aclose()
+        finally:
+            self._slot.release()
+
+
+def _slot_guarded(slot: StreamSlot, inner: AsyncGenerator[StreamEvent, None]) -> _SlotGuardedStream:
+    """Wrap ``inner`` so ``slot`` is released however the stream ends."""
+    return _SlotGuardedStream(slot, inner)
 
 
 def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
@@ -228,7 +274,18 @@ class WorkloadService:
         self.settings = settings
         self.deployer = deployer
         self.builder = builder
-        self.capacity = capacity or StreamCapacity(settings.stream)
+        self._capacity = capacity
+
+    @property
+    def capacity(self) -> StreamCapacity:
+        """The stream pool; the fallback is built on first streaming use.
+
+        Lazy so an engine constructed without one (tests, scripts) does not
+        conjure a thread pool nothing will ever shut down just by existing.
+        """
+        if self._capacity is None:
+            self._capacity = StreamCapacity(self.settings.stream)
+        return self._capacity
 
     def assert_group(self, user: Principal, group: str) -> None:
         """Reject the request unless the caller may act for ``group``.
@@ -310,14 +367,14 @@ class WorkloadService:
             **extra: Offering-specific fields echoed back (secrets redacted).
 
         Returns:
-            A response with ``overallStatus="Pending"`` and a ``statusUrl``.
+            A response with ``status="Pending"`` and a ``statusUrl``.
         """
         return offering.response_model(
             name=name,
             group=group,
             type=offering.name,
             hostname=host,
-            overallStatus="Pending",
+            status="Pending",
             sites=[],
             statusUrl=f"/api/v1/groups/{group}/{offering.name}s/{name}",
             **extra,
@@ -335,7 +392,11 @@ class WorkloadService:
         try:
             await fn(*args)
         except Exception:  # noqa: BLE001 - background work; surfaced via status polling
-            logger.exception("background deploy failed for %s", args)
+            # The plain-string args only (group, name) - never the whole tuple:
+            # the spec in there carries the caller's git/registry tokens and
+            # secret values, and this is the one log line that would print them.
+            ident = "/".join(a for a in args if isinstance(a, str)) or "?"
+            logger.exception("background %s failed for %s", getattr(fn, "__name__", fn), ident)
 
     async def accept_create(
         self, *, offering: Offering, group: str, spec, user: Principal, background, work, **extra
@@ -537,7 +598,7 @@ class WorkloadService:
             group=req.group,
             type=offering.name,
             hostname=host,
-            overallStatus=overall,
+            status=overall,
             size=req.size,
             sites=statuses,
             scaling=req.scaling,
@@ -758,6 +819,13 @@ class WorkloadService:
             # Read the backing Secrets from the local site when it has the workload,
             # else any site that does - they're uniform, so prefer the cheapest hop.
             present = {s.site for s in statuses if s.status == "Present"}
+            if not present:
+                # `obj` was found but no site reported Present: a fan-out that
+                # timed out can leave a zombie thread's late write in `found`
+                # with its status recorded as an error. Fail like the
+                # unreachable-site case below rather than crash on an empty set.
+                preflight.assert_all_sites_checked(statuses, f"load workload '{name}'")
+                raise NotFoundError(f"{offering.name} workload '{name}' not found")
             by_site = {c.site: c for c in targets}
             local = self.deployer.local_site()
             cluster = by_site[local if local in present else next(iter(present))]
@@ -806,7 +874,7 @@ class WorkloadService:
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
             # A 404 means not deployed here, so omit the site rather than fail it.
-            # Anything else propagates, keeping a down site visible as Degraded.
+            # Anything else propagates, keeping a down site visible as Failed.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
@@ -827,14 +895,17 @@ class WorkloadService:
             replicas = ksvc_state.revision_replicas(rev)
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
-            error = None
+            message = None
+            reason = None
             if status == "Failed":
-                error = revision_failure_message(rev) or ksvc_failure_message(obj)
+                message = revision_failure_message(rev) or ksvc_failure_message(obj)
+                reason = ksvc_state.failure_cause(rev, obj)
             return SiteStatus(
                 site=cluster.site,
                 status=status,
                 revision=revision,
-                error=error,
+                reason=reason,
+                message=message,
                 replicas=replicas,
             )
 
@@ -855,16 +926,28 @@ class WorkloadService:
             raise _hidden_404("get", kind, name, user, obj)
 
         host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
-        # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
+        # A down site counts as Failed; otherwise the per-site KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
         # Build-first, per site and then rolled up: while a site is building, its
         # KSVC cannot pull an image that does not exist there yet, so the row
         # would contradict the headline it sits under (docs/FUNCTIONS.md -
         # Function Status Resolution).
-        build = ksvc_state.roll_up_builds(builds.values())
+        # Snapshot first: a fan-out that timed a site out leaves a zombie thread
+        # that may still insert into `builds` while these iterate. dict/list
+        # copies are atomic under the GIL; iterating the live view is not.
+        builds = dict(builds)
+        build = ksvc_state.roll_up_builds(list(builds.values()))
         statuses = ksvc_state.sites_with_build_status(statuses, builds)
         overall = ksvc_state.with_build_status(overall, build)
+        # The headline reason, Kubernetes-style: the build verdict is
+        # authoritative (a failed build IS the cause, wherever the rows stand -
+        # sites still serving their previous revision stay Ready), else the
+        # first recognized per-site cause.
+        if build is not None and build.state == "Failed":
+            status_reason = "BuildFailed"
+        else:
+            status_reason = next((s.reason for s in statuses if s.reason), None)
         spec = await asyncio.to_thread(site_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
         # (guarded above) and every entry holds an object, and describe_spec
@@ -875,7 +958,8 @@ class WorkloadService:
             group=group,
             type=kind,
             hostname=host,
-            overallStatus=overall,
+            status=overall,
+            reason=status_reason,
             size=meta_holder.get("size"),
             createdAt=ksvc_state.creation_time(obj),
             sites=statuses,
@@ -903,7 +987,7 @@ class WorkloadService:
         when it changes it.
 
         The build is still read for a function, though it is not reported here:
-        it is what makes a running build ``Building`` instead of the ``Degraded``
+        it is what makes a running build ``Building`` instead of the ``Failed``
         its unpullable image would otherwise produce (docs/FUNCTIONS.md -
         Function Status Resolution).
 
@@ -949,7 +1033,8 @@ class WorkloadService:
                 site=cluster.site,
                 status=status,
                 replicas=ksvc_state.revision_replicas(rev),
-                error=revision_failure_message(rev) if status == "Failed" else None,
+                message=revision_failure_message(rev) if status == "Failed" else None,
+                reason=ksvc_state.failure_cause(rev, obj) if status == "Failed" else None,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -967,11 +1052,14 @@ class WorkloadService:
 
         overall = overall_status_for_sites(statuses)
         # Not reported here, but it is what makes a running build read as
-        # `Building` instead of the `Degraded` its unpullable image would
+        # `Building` instead of the `Failed` its unpullable image would
         # otherwise produce (docs/FUNCTIONS.md - Function Status Resolution).
         # Read per site inside `fetch`, so it rides the same fan-out - and so a
         # stats *stream* pays for it on its own pool, like every other read here.
-        overall = ksvc_state.with_build_status(overall, ksvc_state.roll_up_builds(builds.values()))
+        # Snapshot first - same zombie-thread hazard as get()'s rollup above.
+        builds = dict(builds)
+        rolled = ksvc_state.roll_up_builds(list(builds.values()))
+        overall = ksvc_state.with_build_status(overall, rolled)
         statuses = ksvc_state.sites_with_build_status(statuses, builds)
 
         # Both totals are null rather than partial when a site could not answer:
@@ -984,14 +1072,23 @@ class WorkloadService:
         if all(s.replicas is not None for s in statuses):
             replicas = sum(s.replicas for s in statuses)
 
+        # As on the full GET: the build verdict is authoritative, else the
+        # first recognized per-site cause.
+        if rolled is not None and rolled.state == "Failed":
+            reason = "BuildFailed"
+        else:
+            reason = next((s.reason for s in statuses if s.reason), None)
+
         return WorkloadStatsResponse(
-            overallStatus=overall,  # type: ignore[arg-type]
+            status=overall,  # type: ignore[arg-type]
+            reason=reason,
             replicas=replicas,
             usage=usage.quantities() if usage else None,
             sites=[
                 SiteStats(
                     site=s.site,
                     status=s.status,
+                    reason=s.reason,
                     replicas=s.replicas,
                     usage=u.total.quantities() if u and u.total else None,
                 )
@@ -1123,15 +1220,11 @@ class WorkloadService:
                 raise _hidden_404("stream pods of", kind, name, user, obj)
             return pods_stream.read_roster(cluster, oname)
 
-        # Held for the life of the generator below, not of this call - which is
-        # why the context manager is entered by hand: `with` here would give the
-        # slot back before a single event had been sent.
-        slot = self.capacity.slot()
-        slot.__enter__()
+        slot = self.capacity.admit()
         try:
             roster = await self.capacity.run(read)
         except BaseException:
-            slot.__exit__(*sys.exc_info())
+            slot.release()
             raise
 
         first = PodRoster(
@@ -1142,21 +1235,17 @@ class WorkloadService:
             pods=roster,
         )
 
-        async def stream() -> AsyncIterator[StreamEvent]:
-            try:
-                async for event in pods_stream.follow(
-                    cluster=cluster,
-                    capacity=self.capacity,
-                    config=self.capacity.config,
-                    first=first,
-                    oname=oname,
-                    interval=self.capacity.interval(interval),
-                ):
-                    yield event
-            finally:
-                slot.__exit__(None, None, None)
-
-        return stream()
+        return _slot_guarded(
+            slot,
+            pods_stream.follow(
+                cluster=cluster,
+                capacity=self.capacity,
+                config=self.capacity.config,
+                first=first,
+                oname=oname,
+                interval=self.capacity.interval(interval),
+            ),
+        )
 
     def _pod_authorizer(
         self, cluster: Cluster, oname: str, pod: str, kind: str, name: str, user: Principal
@@ -1364,12 +1453,11 @@ class WorkloadService:
         cluster = self.deployer.local_cluster()
         authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
 
-        slot = self.capacity.slot()
-        slot.__enter__()
+        slot = self.capacity.admit()
         try:
             revision = await self.capacity.run(authorize)
         except BaseException:
-            slot.__exit__(*sys.exc_info())
+            slot.release()
             raise
 
         opening = PodLogStreamOpen(
@@ -1382,20 +1470,16 @@ class WorkloadService:
             revision=revision,
         )
 
-        async def stream() -> AsyncIterator[StreamEvent]:
-            try:
-                async for event in logs_stream.follow(
-                    cluster=cluster,
-                    capacity=self.capacity,
-                    config=self.capacity.config,
-                    opening=opening,
-                    since_seconds=since_seconds,
-                ):
-                    yield event
-            finally:
-                slot.__exit__(None, None, None)
-
-        return stream()
+        return _slot_guarded(
+            slot,
+            logs_stream.follow(
+                cluster=cluster,
+                capacity=self.capacity,
+                config=self.capacity.config,
+                opening=opening,
+                since_seconds=since_seconds,
+            ),
+        )
 
     async def stream_stats(
         self,
@@ -1436,27 +1520,22 @@ class WorkloadService:
         async def read() -> WorkloadStatsResponse:
             return await self.stats(offering, name, user, group, executor=self.capacity.executor)
 
-        slot = self.capacity.slot()
-        slot.__enter__()
+        slot = self.capacity.admit()
         try:
             first = await read()
         except BaseException:
-            slot.__exit__(*sys.exc_info())
+            slot.release()
             raise
 
-        async def stream() -> AsyncIterator[StreamEvent]:
-            try:
-                async for event in stats_stream.follow(
-                    config=config,
-                    first=first,
-                    read=read,
-                    interval=self.capacity.interval(interval),
-                ):
-                    yield event
-            finally:
-                slot.__exit__(None, None, None)
-
-        return stream()
+        return _slot_guarded(
+            slot,
+            stats_stream.follow(
+                config=config,
+                first=first,
+                read=read,
+                interval=self.capacity.interval(interval),
+            ),
+        )
 
     async def list(
         self, offering: Offering, user: Principal, group: str, sort: str = "name"
@@ -1465,13 +1544,13 @@ class WorkloadService:
 
         Fans out to all sites and merges best-effort: a workload's ``sites`` lists only
         those that returned it, and its rollup covers just those, so a single-site
-        workload reads ``Ready``, not ``Degraded``. An unreachable site is skipped; only
+        workload reads ``Ready``, not ``Failed``. An unreachable site is skipped; only
         an all-down fan-out fails the call.
 
         Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
         Resolution): a function whose first build is still running has a KSVC that
         cannot pull its image yet, so a listing that read the KSVC alone showed
-        every new function as ``Degraded`` for the whole of that build. The build
+        every new function as ``Failed`` for the whole of that build. The build
         states come from one label-selected read of the local site, so the fold
         costs a single round trip for the entire listing - overlapped with the
         fan-out, not chained onto it.

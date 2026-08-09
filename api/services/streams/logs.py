@@ -32,7 +32,7 @@ from cloudlet_apis.logging import get_logger
 from api.core.config import StreamConfig
 from api.models.common import LogLine, PodLogStreamOpen, StreamEnd, StreamWarning
 from api.services.state.ksvc_state import ISRAEL_TZ
-from api.services.streams.capacity import StreamCapacity
+from api.services.streams.capacity import StreamCapacity, start_on
 from api.services.streams.sse import StreamEvent, heartbeat
 from common.cluster import Cluster
 
@@ -130,6 +130,11 @@ class _Buffer:
             self._ready.clear()
         return items
 
+    def empty(self) -> bool:
+        """Whether nothing is buffered (without consuming anything)."""
+        with self._lock:
+            return not self._items
+
     def take_dropped(self) -> int:
         """Take the drop count accumulated since the last call, and reset it."""
         with self._lock:
@@ -140,7 +145,7 @@ class _Buffer:
         """Wait until something is buffered, or ``timeout`` elapses."""
         try:
             await asyncio.wait_for(self._ready.wait(), timeout)
-        except TimeoutError, asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 
@@ -264,15 +269,19 @@ async def follow(
     # piped into `head` - closes the generator at its very first suspension
     # point, and a teardown that only guarded the main loop would never run for
     # it. Those are exactly the streams that leak threads.
-    tail.future = loop.run_in_executor(
-        capacity.executor, _read, cluster, tail, opening, since_seconds, buf
-    )
+    # `start_on`, not a bare run_in_executor: the follower is the longest-lived
+    # worker in the system, and its log lines need the request's correlation id.
+    tail.future = start_on(capacity.executor, _read, cluster, tail, opening, since_seconds, buf)
     try:
         yield StreamEvent("open", opening)
 
         while True:
             now = loop.time()
             if now >= deadline:
+                # Deliver what is already buffered before ending: the rollover
+                # must not cost the client lines that had in fact arrived.
+                for event in buf.drain():
+                    yield event
                 # Not an error: the client reconnects, which SSE does unprompted.
                 yield StreamEvent(
                     "end", StreamEnd(reason="the stream reached its time limit; reconnect")
@@ -300,8 +309,10 @@ async def follow(
                 )
 
             # Checked after draining, so the last lines a dying pod wrote are
-            # delivered before the stream is closed on its behalf.
-            if tail.ended.is_set() and not buf.drain():
+            # delivered before the stream is closed on its behalf. `empty`, not
+            # `drain`: draining here would consume - and discard - lines that
+            # arrived since the drain above, exactly the ones this exists to save.
+            if tail.ended.is_set() and buf.empty():
                 yield StreamEvent(
                     "end",
                     StreamEnd(

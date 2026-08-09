@@ -100,7 +100,10 @@ WorkloadSize = Literal["small", "medium", "large"]
 
 # The rollup a client polls on. A Literal, not a comment, so it is enforced on
 # every response and /info can advertise it instead of a portal hardcoding it.
-WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded", "Terminating"]
+# A closed set, like a Kubernetes phase: causes never get promoted into it -
+# they go on `reason` - so a new interesting failure is an additive reason
+# string, not a breaking change to every client's switch.
+WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Failed", "Terminating"]
 # Per-site values that reach a response. SiteStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
@@ -109,6 +112,19 @@ WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Degraded"
 # image that does not exist yet, and reporting that as "Failed" describes the
 # symptom instead of the cause (docs/FUNCTIONS.md - Function Status Resolution).
 SITE_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
+# Machine-readable causes behind a Failed site or rollup, published on /info so
+# a UI can switch on them - the Kubernetes reason/message pair, one level up.
+# BuildFailed is authoritative (read off the kpack Image); the rest are derived
+# from the failing conditions' reason/message - stable-ish Kubernetes and
+# Knative codes, but not a contract - so anything unrecognized carries no
+# reason and only the raw `message` text.
+STATUS_REASONS = (
+    "BuildFailed",
+    "ImagePullFailed",
+    "CrashLooping",
+    "ConfigError",
+    "ProgressDeadlineExceeded",
+)
 
 _DURATION = re.compile(r"^(\d+)(s|m|h)$")
 _DURATION_SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -360,14 +376,19 @@ class SiteStatus(BaseModel):
         site: The site name.
         status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
         revision: The Knative revision the site is serving, if known.
-        error: The failure message when the site errored, else None.
+        reason: Machine-readable cause behind a Failed status, one of
+            ``STATUS_REASONS``; None when the cause was not recognized.
+        message: The human-readable failure detail when the site failed, else
+            None. Kubernetes' reason/message pair: ``reason`` is the word a
+            client switches on, this is the text it shows.
         replicas: Running pods at this site (None if unknown).
     """
 
     site: str
     status: str
     revision: str | None = None
-    error: str | None = None
+    reason: str | None = None
+    message: str | None = None
     replicas: int | None = None
 
 
@@ -388,6 +409,8 @@ class SiteStats(BaseModel):
     Attributes:
         site: The site name.
         status: Per-site status (Ready/Building/Deploying/Failed/...).
+        reason: Machine-readable cause behind a Failed status, one of
+            ``STATUS_REASONS``; None when the cause was not recognized.
         replicas: Running pods at this site, or None if unknown.
         usage: Live cpu/memory over those pods; None when scaled to zero or the
             metrics API could not be read.
@@ -395,6 +418,7 @@ class SiteStats(BaseModel):
 
     site: str
     status: str
+    reason: str | None = None
     replicas: int | None = None
     usage: ResourceUsage | None = None
 
@@ -406,7 +430,7 @@ class WorkloadBase(BaseModel):
     group: str  # the owning SSO group
     type: Literal["function", "container"]
     hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
-    overallStatus: WorkloadStatus
+    status: WorkloadStatus
     size: str | None = None  # resource t-shirt size (uniform across sites)
     # workload creation time (metadata.creationTimestamp), in Israel local time
     createdAt: datetime | None = None
@@ -471,16 +495,18 @@ class WorkloadStatsResponse(BaseModel):
     workload's backing Secret on every tick.
 
     Attributes:
-        overallStatus: The rollup, identical to the full GET's - ``Building``
+        status: The rollup, identical to the full GET's - ``Building``
             included, since the build is still read even though it is not
             reported here.
+        reason: The first recognized per-site ``reason``, as on the full GET.
         replicas: Running pods across every site. None if any site's is unknown.
         usage: Cpu/memory across every site. None if any site could not be
             measured, rather than a total quietly missing one.
         sites: One entry per site that has the workload.
     """
 
-    overallStatus: WorkloadStatus
+    status: WorkloadStatus
+    reason: str | None = None
     replicas: int | None = None
     usage: ResourceUsage | None = None
     sites: list[SiteStats] = []
@@ -496,6 +522,10 @@ class WorkloadResponse(WorkloadBase):
 
     sites: list[SiteStatus] = []
     statusUrl: str | None = None
+    # The first recognized per-site `reason`, so a client that only reads the
+    # headline still learns *why* a Failed rollup failed. None when no site's
+    # cause was recognized (or nothing failed).
+    reason: str | None = None
     # desired-state config common to both offerings (secret values redacted)
     scaling: Scaling | None = None
     env: list[EnvVarView] = []

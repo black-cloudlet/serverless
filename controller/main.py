@@ -19,22 +19,36 @@ def _terminate(signum: int, _frame) -> None:
     raise SystemExit(0)
 
 
+# The least a clean pass may take before the next one starts. Every pass opens
+# with a full relist, so a watch that ends *immediately* without raising - an
+# LB idle-closing streams, a proxy stripping the timeout param - must not
+# degenerate into back-to-back LISTs of every Image at full speed.
+_MIN_PASS_SECONDS = 1.0
+
+
 def loop(reconciler: Reconciler, settings: ControllerSettings) -> None:
     """Resync and follow, forever.
 
     A watch ending is routine and leads straight into the next resync; a pass
-    that *raises* backs off, so an unreachable cluster does not spin.
+    that *raises* backs off, so an unreachable cluster does not spin. A pass
+    that ends suspiciously fast is paced to :data:`_MIN_PASS_SECONDS`, so a
+    stream that keeps being closed at the door cannot spin either.
 
     Args:
         reconciler: The loop's work.
         settings: Pacing (resync interval, error backoff).
     """
     while True:
+        started = time.monotonic()
         try:
             reconciler.follow(settings.resync_seconds)
         except Exception:  # noqa: BLE001 - the loop outlives any one pass
             logger.exception("reconcile pass failed, retrying")
             time.sleep(settings.error_backoff_seconds)
+        else:
+            elapsed = time.monotonic() - started
+            if elapsed < _MIN_PASS_SECONDS:
+                time.sleep(_MIN_PASS_SECONDS - elapsed)
 
 
 def run() -> None:

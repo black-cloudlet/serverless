@@ -1,15 +1,13 @@
 """Multi-site fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Site).
 
 Every deploy is applied to all target sites concurrently; results are aggregated
-into a single response. Partial failure -> Degraded (HTTP 207); total failure ->
+into a single response. Partial failure -> Failed (HTTP 207); total failure ->
 HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextvars
-import functools
 from concurrent.futures import Executor
 from typing import Callable
 
@@ -17,6 +15,7 @@ from cloudlet_apis.logging import get_logger
 
 from api.core.config import Settings
 from api.models.common import SiteStatus
+from api.services.streams.capacity import run_on
 from common.cluster import Cluster, clusters_for, select_local
 from common.errors import SiteTotalFailure, ValidationError
 
@@ -24,32 +23,6 @@ logger = get_logger(__name__)
 
 # fn(cluster) -> SiteStatus  (may run blocking I/O; executed in a thread)
 SiteFn = Callable[[Cluster], SiteStatus]
-
-
-async def run_on(executor: Executor | None, fn, *args):
-    """Run blocking ``fn`` in a thread, on ``executor`` or the default pool.
-
-    ``asyncio.to_thread`` is exactly this against the default executor, and that
-    default is what a stream must not use: a held-open connection would take
-    threads from the pool every ordinary request shares. Passing an executor is
-    how the streaming paths keep to their own (see
-    :class:`~api.services.streams.capacity.StreamCapacity`).
-
-    The context copy is the part that is easy to lose by reaching for
-    ``run_in_executor`` directly - without it the request id the log filter reads
-    is absent from every line the worker writes.
-
-    Args:
-        executor: The pool to run on, or None for the default.
-        fn: The blocking callable.
-        *args: Positional arguments for ``fn``.
-
-    Returns:
-        Whatever ``fn`` returns.
-    """
-    loop = asyncio.get_running_loop()
-    ctx = contextvars.copy_context()
-    return await loop.run_in_executor(executor, functools.partial(ctx.run, fn, *args))
 
 
 class Deployer:
@@ -121,7 +94,7 @@ class Deployer:
         """Run ``fn`` on every target concurrently, collecting per-site results.
 
         Each call runs in a thread with a timeout; a site that times out or raises
-        yields a ``SiteStatus`` with ``error`` set rather than aborting the others.
+        yields a ``SiteStatus`` with ``message`` set rather than aborting the others.
 
         Args:
             targets: The clusters to run on.
@@ -146,11 +119,11 @@ class Deployer:
                 return SiteStatus(
                     site=cluster.site,
                     status="Timeout",
-                    error=f"site unreachable (timed out after {self._op_timeout}s)",
+                    message=f"site unreachable (timed out after {self._op_timeout}s)",
                 )
             except Exception as exc:  # noqa: BLE001 - surfaced as per-site error
                 logger.exception("site %s operation failed", cluster.site)
-                return SiteStatus(site=cluster.site, status="Failed", error=str(exc))
+                return SiteStatus(site=cluster.site, status="Failed", message=str(exc))
 
         return await asyncio.gather(*(run(c) for c in targets))
 
@@ -195,15 +168,15 @@ def aggregate(statuses: list[SiteStatus]) -> str:
         statuses: The per-site results of the apply fan-out.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded).
+        The overall status (Ready/Deploying/Failed).
 
     Raises:
         SiteTotalFailure: If every site failed.
     """
-    if all(s.error is not None for s in statuses):
+    if all(s.message is not None for s in statuses):
         raise SiteTotalFailure(
             "Deployment failed in all sites.",
-            details=[{"site": s.site, "message": s.error} for s in statuses],
+            details=[{"site": s.site, "message": s.message} for s in statuses],
         )
     return overall_status_for_sites(statuses)
 
@@ -218,29 +191,30 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
         statuses: The per-site statuses.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded).
+        The overall status (Ready/Deploying/Failed).
     """
-    return overall_status([s.status if s.error is None else "Failed" for s in statuses])
+    return overall_status([s.status if s.message is None else "Failed" for s in statuses])
 
 
 def overall_status(statuses: list[str]) -> str:
     """Collapse per-site KSVC statuses into one overall status (GET / list).
 
-    A ``Failed`` site makes the deployment ``Degraded``; a ``Terminating`` one makes
+    A ``Failed`` site makes the whole deployment ``Failed`` - one vocabulary for
+    the site rows and the rollup; a ``Terminating`` one makes
     it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
     ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
-    site ahead, NOT a failure. That is what stops a false ``Degraded`` while coming up.
+    site ahead, NOT a failure. That is what stops a false ``Failed`` while coming up.
 
     Args:
         statuses: The per-site status strings.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded/Terminating).
+        The overall status (Ready/Deploying/Failed/Terminating).
     """
     if not statuses:
-        return "Degraded"
+        return "Failed"
     if any(s == "Failed" for s in statuses):
-        return "Degraded"
+        return "Failed"
     if any(s == "Terminating" for s in statuses):
         return "Terminating"
     if all(s == "Ready" for s in statuses):
@@ -252,13 +226,13 @@ def status_code_for(overall: str, created: bool) -> int:
     """Map an overall status to an HTTP status code.
 
     Args:
-        overall: The rolled-up status (Ready/Deploying/Degraded).
+        overall: The rolled-up status (Ready/Deploying/Failed).
         created: Whether the call created a new workload (vs updated one).
 
     Returns:
-        207 for Degraded, 202 for Deploying/Building, 201 for a create, else 200.
+        207 for Failed, 202 for Deploying/Building, 201 for a create, else 200.
     """
-    if overall == "Degraded":
+    if overall == "Failed":
         return 207
     if overall in ("Deploying", "Building"):
         return 202  # accepted, still in flight - a non-terminal poll state

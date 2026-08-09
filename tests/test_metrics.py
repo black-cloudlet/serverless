@@ -72,7 +72,7 @@ def test_an_unparseable_quantity_never_escapes_the_usage_read():
 
     ``site_usage`` promises never to raise, and the promise is load-bearing: it
     runs inside the ``/stats`` fan-out, so an escaping ValueError becomes a
-    ``Failed`` site and a ``Degraded`` rollup for a workload that is serving.
+    ``Failed`` site and a ``Failed`` rollup for a workload that is serving.
     Kubernetes may render a quantity in a form the parser does not know (e.g.
     decimal-exponent notation), which is exactly when this matters.
     """

@@ -13,7 +13,7 @@ docs/BUILDING.md - Buildpack Topology), and one spelling cannot mean both.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic.dataclasses import dataclass as validated_dataclass
@@ -66,7 +66,9 @@ class BuildRequest:
     group: Group
     git_url: GitUrl
     branch: Branch
-    git_token: str
+    # repr=False: a credential must not ride along into log lines, tracebacks
+    # or validation errors that print the request.
+    git_token: str = field(repr=False)
     runtime: str
     version: str | None = None
     path: SourcePath = ""

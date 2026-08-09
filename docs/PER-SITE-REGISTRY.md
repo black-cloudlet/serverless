@@ -760,7 +760,7 @@ Worth stating plainly, because it is the bulk of the win:
   minutes before the other, so a source change lands staggered. The DNS record
   points at one site at a time, so the user-visible effect is bounded, but a
   build that succeeds in one site and fails in the other is now possible and
-  reads as `Degraded` with one site `Building`.
+  reads as `Failed` with one site `Building`.
 - **Build load and registry storage double** (multiply by the number of sites).
   Build pods are already the heaviest thing in the workloads namespace
   (docs/BUILDING.md - Build pod resources), so the namespace quota has to be

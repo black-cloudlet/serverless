@@ -210,7 +210,7 @@ def site_usage(cluster: Cluster, oname: str) -> SiteUsage:
     reason the read is - a quantity in a form :mod:`api.services.state.metrics`
     does not recognise (Kubernetes may render one in decimal-exponent notation)
     would otherwise escape into the fan-out, where it becomes a ``Failed`` site
-    and a ``Degraded`` rollup for a workload that is serving perfectly well.
+    and a ``Failed`` rollup for a workload that is serving perfectly well.
 
     Returns:
         The site's usage, with ``measured=False`` if the read or the parse failed.

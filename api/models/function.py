@@ -36,7 +36,9 @@ class FunctionCreate(BaseModel):
     gitRepo: GitUrl
     branch: Branch = "main"
     path: SourcePath = ""
-    gitToken: str
+    # repr=False: a credential must not ride along into log lines, tracebacks
+    # or validation errors that print the spec.
+    gitToken: str = Field(repr=False)
     runtime: str
     # One of the runtime's advertised `versions` (GET /api/v1/functions/info).
     # Omitted means the platform default for that runtime - never the
@@ -68,7 +70,8 @@ class FunctionUpdate(BaseModel):
     gitRepo: GitUrl
     branch: Branch = "main"
     path: SourcePath = ""
-    gitToken: str | None = None  # keep-on-omit: reuses the stored token
+    # keep-on-omit: reuses the stored token. repr=False as on create.
+    gitToken: str | None = Field(default=None, repr=False)
     runtime: str
     # Replaced like every other non-secret field, NOT keep-on-omit: omitting it
     # returns the function to the platform default for its runtime, and rebuilds.

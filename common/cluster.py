@@ -8,6 +8,7 @@ the platform operates on.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from enum import Enum
 
@@ -98,6 +99,13 @@ class Cluster:
 
         self._api_client_obj: client.ApiClient | None = None
         self._dynamic_client_obj: DynamicClient | None = None
+        # Guards the lazy builds and close(): a Cluster is shared, and its first
+        # use routinely happens on several fan-out threads at once. Unguarded,
+        # two threads each build an ApiClient and the loser's connection pool is
+        # never closed - a socket leak per race, and a discovery-cache race for
+        # the dynamic client.
+        self._client_lock = threading.Lock()
+        self._connect_timeout: float = settings.cluster_connect_timeout
         self._opts: dict = {
             "_request_timeout": (
                 settings.cluster_connect_timeout,
@@ -108,16 +116,25 @@ class Cluster:
     @property
     def _api_client(self) -> client.ApiClient:
         """The lazily-built Kubernetes API client for this site."""
-        if self._api_client_obj is None:
-            self._api_client_obj = client.ApiClient(self._configuration)
-        return self._api_client_obj
+        built = self._api_client_obj  # fast path: already built, no lock needed
+        if built is not None:
+            return built
+        with self._client_lock:
+            if self._api_client_obj is None:
+                self._api_client_obj = client.ApiClient(self._configuration)
+            return self._api_client_obj
 
     @property
     def _dynamic_client(self) -> DynamicClient:
         """The lazily-built dynamic client (does API discovery on first use)."""
-        if self._dynamic_client_obj is None:
-            self._dynamic_client_obj = DynamicClient(self._api_client)
-        return self._dynamic_client_obj
+        built = self._dynamic_client_obj
+        if built is not None:
+            return built
+        api_client = self._api_client
+        with self._client_lock:
+            if self._dynamic_client_obj is None:
+                self._dynamic_client_obj = DynamicClient(api_client)
+            return self._dynamic_client_obj
 
     def _dynamic_api(self, kind: ResourceKind):
         """Resolve the dynamic resource API for a ResourceKind (apiVersion + kind)."""
@@ -385,6 +402,10 @@ class Cluster:
                 since_seconds=since_seconds,
                 follow=True,
                 _preload_content=False,
+                # Connect timeout only: without it a black-holed API server
+                # wedges the follower thread (and its admission slot) for the
+                # OS TCP timeout. The read side stays unbounded, as documented.
+                _request_timeout=(self._connect_timeout, None),
             )
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
@@ -398,10 +419,11 @@ class Cluster:
         Idempotent and safe to call at shutdown; the lazy clients are rebuilt on
         next use if the Cluster is reused afterwards.
         """
-        if self._api_client_obj is not None:
-            self._api_client_obj.close()
-            self._api_client_obj = None
-        self._dynamic_client_obj = None
+        with self._client_lock:
+            api_client, self._api_client_obj = self._api_client_obj, None
+            self._dynamic_client_obj = None
+        if api_client is not None:
+            api_client.close()
 
 
 class LogFollow:
@@ -437,7 +459,10 @@ class LogFollow:
             not swallowed.
         """
         buffer = ""
-        for chunk in self._response.stream(amt=None, decode_content=True):
+        # A bounded amt: with amt=None urllib3 only yields per-chunk on a
+        # chunked-transfer response; anything that de-chunks (a proxy, HTTP/2)
+        # would degrade it to read-to-EOF - which for a follow never comes.
+        for chunk in self._response.stream(amt=2**16, decode_content=True):
             if self._closed:
                 break
             buffer += chunk.decode("utf-8", errors="replace")
@@ -482,8 +507,11 @@ def select_local(clusters: dict[str, Cluster], local_site: str | None) -> Cluste
     """The cluster this process sits in, from :func:`clusters_for`'s mapping.
 
     Matched on the site name first, then the cluster name, so either spelling in
-    the chart resolves; falls back to the first site. Shared, because the API
-    and the controller mean the same thing by "local".
+    the chart resolves. A configured name that matches nothing is an error, not
+    a fallback: silently adopting the first site would have this process build,
+    reconcile and serve as a site it is not. Only an *unset* name falls back,
+    for the single-site install that never says which one it is. Shared, because
+    the API and the controller mean the same thing by "local".
 
     Args:
         clusters: The per-site clients.
@@ -493,7 +521,8 @@ def select_local(clusters: dict[str, Cluster], local_site: str | None) -> Cluste
         The local cluster.
 
     Raises:
-        ValidationError: If no sites are configured.
+        ValidationError: If no sites are configured, or ``local_site`` names one
+            that is not.
     """
     if not clusters:
         raise ValidationError("no sites are configured")
@@ -504,4 +533,7 @@ def select_local(clusters: dict[str, Cluster], local_site: str | None) -> Cluste
         for cluster in clusters.values():
             if cluster.name == local_site:  # match the cluster name too
                 return cluster
+        raise ValidationError(
+            f"local site '{local_site}' matches none of the configured sites: {sorted(clusters)}"
+        )
     return next(iter(clusters.values()))

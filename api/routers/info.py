@@ -14,6 +14,7 @@ from api.models.common import (
     PORT_MAX,
     PORT_MIN,
     SITE_STATUSES,
+    STATUS_REASONS,
     Scaling,
     WorkloadStatus,
 )
@@ -35,7 +36,9 @@ router = APIRouter(prefix="/api/v1", tags=["info"])
 
 # A poll ends here; every other workload status is still in flight. Derived from
 # the same Literal, so a new status cannot be added without landing on one side.
-TERMINAL_STATUSES = ("Ready", "Degraded")
+# Two values and done, Kubernetes-style: a poller stops on Failed whatever the
+# cause - the cause (reason) is for the UI, not the loop.
+TERMINAL_STATUSES = ("Ready", "Failed")
 
 
 def _port_rules() -> PortCapability:
@@ -60,6 +63,7 @@ def _base(settings: Settings) -> dict:
             workload=list(get_args(WorkloadStatus)),
             site=list(SITE_STATUSES),
             terminal=list(TERMINAL_STATUSES),
+            reasons=list(STATUS_REASONS),
         ),
         errorCodes=[ErrorCode(code=c, status=s) for c, s in error_catalog()],
         naming=NamingRule(template=object_name("{name}", "{group}"), maxLength=MAX_OBJECT_NAME),

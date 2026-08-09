@@ -33,7 +33,9 @@ class ContainerCreate(BaseModel):
     # Registry credentials are optional: omit both for a public image. When
     # supplied, both are required together (a username alone can't authenticate).
     registryUsername: str | None = None
-    registryToken: str | None = None
+    # repr=False: a credential must not ride along into log lines, tracebacks
+    # or validation errors that print the spec.
+    registryToken: str | None = Field(default=None, repr=False)
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
@@ -70,7 +72,8 @@ class ContainerUpdate(BaseModel):
     # Registry creds: username+token rotates, username-only keeps, neither removes
     # (public); a token needs a username. See docs/ARCHITECTURE.md - Secrets for the full semantics.
     registryUsername: str | None = None
-    registryToken: str | None = None
+    # repr=False as on create: a credential must not print with the spec.
+    registryToken: str | None = Field(default=None, repr=False)
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
