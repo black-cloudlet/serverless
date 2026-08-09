@@ -38,7 +38,7 @@ router = APIRouter(prefix="/api/v1", tags=["info"])
 # the same Literal, so a new status cannot be added without landing on one side.
 # BuildFailed is terminal: the image will not arrive until the caller changes a
 # build input (or rebuilds), so polling past it only repeats the answer.
-TERMINAL_STATUSES = ("Ready", "Degraded", "BuildFailed")
+TERMINAL_STATUSES = ("Ready", "Failed", "BuildFailed")
 
 
 def _port_rules() -> PortCapability:

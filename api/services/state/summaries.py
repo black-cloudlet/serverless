@@ -7,7 +7,7 @@ a workload deployed to one site of two reads as are testable with plain dicts.
 
 The merge is deliberately partial-tolerant. A site that did not answer is simply
 absent from the input, and a workload's rollup covers only the sites that did
-return it, so a single-site workload reads ``Ready`` rather than ``Degraded``.
+return it, so a single-site workload reads ``Ready`` rather than ``Failed``.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def merge(
             group=group,
             type=offering,
             hostname=entry["host"] or route_svc.host_for(name, group, route_domain),
-            overallStatus=ksvc_state.with_build_status(
+            status=ksvc_state.with_build_status(
                 overall_status(entry["statuses"]), ksvc_state.roll_up_builds(entry["builds"])
             ),
             size=entry["size"],

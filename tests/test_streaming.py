@@ -655,7 +655,7 @@ async def test_an_unexpected_roster_failure_does_not_leak_its_text(capacity):
 
 
 def _stats(replicas):
-    return WorkloadStatsResponse(overallStatus="Ready", replicas=replicas, sites=[])
+    return WorkloadStatsResponse(status="Ready", replicas=replicas, sites=[])
 
 
 async def test_the_first_reading_is_sent_immediately():

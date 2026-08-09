@@ -52,11 +52,11 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md).
 
     The build is checked FIRST: a function whose image does not exist yet is not
-    broken, but its KSVC is failing to pull one, which would read as ``Degraded`` for
+    broken, but its KSVC is failing to pull one, which would read as ``Failed`` for
     a whole normal first build. A failed build is the honest cause of that same
     symptom, so it reports as its own status - ``BuildFailed``, terminal, with
     the reason on ``build.message`` - rather than hiding inside the generic
-    ``Degraded`` a client cannot tell from an infrastructure failure.
+    ``Failed`` a client cannot tell from an infrastructure failure.
 
     Args:
         overall: The rollup of the per-site KSVC statuses.

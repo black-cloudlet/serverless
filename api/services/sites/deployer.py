@@ -1,7 +1,7 @@
 """Multi-site fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Site).
 
 Every deploy is applied to all target sites concurrently; results are aggregated
-into a single response. Partial failure -> Degraded (HTTP 207); total failure ->
+into a single response. Partial failure -> Failed (HTTP 207); total failure ->
 HTTP 502. The Kubernetes client is synchronous, so per-site work runs in threads.
 """
 
@@ -168,7 +168,7 @@ def aggregate(statuses: list[SiteStatus]) -> str:
         statuses: The per-site results of the apply fan-out.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded).
+        The overall status (Ready/Deploying/Failed).
 
     Raises:
         SiteTotalFailure: If every site failed.
@@ -191,7 +191,7 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
         statuses: The per-site statuses.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded).
+        The overall status (Ready/Deploying/Failed).
     """
     return overall_status([s.status if s.error is None else "Failed" for s in statuses])
 
@@ -199,21 +199,22 @@ def overall_status_for_sites(statuses: list[SiteStatus]) -> str:
 def overall_status(statuses: list[str]) -> str:
     """Collapse per-site KSVC statuses into one overall status (GET / list).
 
-    A ``Failed`` site makes the deployment ``Degraded``; a ``Terminating`` one makes
+    A ``Failed`` site makes the whole deployment ``Failed`` - one vocabulary for
+    the site rows and the rollup; a ``Terminating`` one makes
     it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
     ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
-    site ahead, NOT a failure. That is what stops a false ``Degraded`` while coming up.
+    site ahead, NOT a failure. That is what stops a false ``Failed`` while coming up.
 
     Args:
         statuses: The per-site status strings.
 
     Returns:
-        The overall status (Ready/Deploying/Degraded/Terminating).
+        The overall status (Ready/Deploying/Failed/Terminating).
     """
     if not statuses:
-        return "Degraded"
+        return "Failed"
     if any(s == "Failed" for s in statuses):
-        return "Degraded"
+        return "Failed"
     if any(s == "Terminating" for s in statuses):
         return "Terminating"
     if all(s == "Ready" for s in statuses):
@@ -225,13 +226,13 @@ def status_code_for(overall: str, created: bool) -> int:
     """Map an overall status to an HTTP status code.
 
     Args:
-        overall: The rolled-up status (Ready/Deploying/Degraded).
+        overall: The rolled-up status (Ready/Deploying/Failed).
         created: Whether the call created a new workload (vs updated one).
 
     Returns:
-        207 for Degraded, 202 for Deploying/Building, 201 for a create, else 200.
+        207 for Failed, 202 for Deploying/Building, 201 for a create, else 200.
     """
-    if overall == "Degraded":
+    if overall == "Failed":
         return 207
     if overall in ("Deploying", "Building"):
         return 202  # accepted, still in flight - a non-terminal poll state

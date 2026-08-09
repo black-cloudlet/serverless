@@ -367,14 +367,14 @@ class WorkloadService:
             **extra: Offering-specific fields echoed back (secrets redacted).
 
         Returns:
-            A response with ``overallStatus="Pending"`` and a ``statusUrl``.
+            A response with ``status="Pending"`` and a ``statusUrl``.
         """
         return offering.response_model(
             name=name,
             group=group,
             type=offering.name,
             hostname=host,
-            overallStatus="Pending",
+            status="Pending",
             sites=[],
             statusUrl=f"/api/v1/groups/{group}/{offering.name}s/{name}",
             **extra,
@@ -598,7 +598,7 @@ class WorkloadService:
             group=req.group,
             type=offering.name,
             hostname=host,
-            overallStatus=overall,
+            status=overall,
             size=req.size,
             sites=statuses,
             scaling=req.scaling,
@@ -874,7 +874,7 @@ class WorkloadService:
 
         def fetch(cluster: Cluster) -> SiteStatus | None:
             # A 404 means not deployed here, so omit the site rather than fail it.
-            # Anything else propagates, keeping a down site visible as Degraded.
+            # Anything else propagates, keeping a down site visible as Failed.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
@@ -926,7 +926,7 @@ class WorkloadService:
             raise _hidden_404("get", kind, name, user, obj)
 
         host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
-        # A down site counts as Failed (-> Degraded); otherwise the per-site KSVC
+        # A down site counts as Failed; otherwise the per-site KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
         overall = overall_status_for_sites(statuses)
         # Build-first, per site and then rolled up: while a site is building, its
@@ -955,8 +955,8 @@ class WorkloadService:
             group=group,
             type=kind,
             hostname=host,
-            overallStatus=overall,
-            statusReason=status_reason,
+            status=overall,
+            reason=status_reason,
             size=meta_holder.get("size"),
             createdAt=ksvc_state.creation_time(obj),
             sites=statuses,
@@ -984,7 +984,7 @@ class WorkloadService:
         when it changes it.
 
         The build is still read for a function, though it is not reported here:
-        it is what makes a running build ``Building`` instead of the ``Degraded``
+        it is what makes a running build ``Building`` instead of the ``Failed``
         its unpullable image would otherwise produce (docs/FUNCTIONS.md -
         Function Status Resolution).
 
@@ -1031,6 +1031,7 @@ class WorkloadService:
                 status=status,
                 replicas=ksvc_state.revision_replicas(rev),
                 error=revision_failure_message(rev) if status == "Failed" else None,
+                reason=ksvc_state.failure_cause(rev, obj) if status == "Failed" else None,
             )
 
         targets = self.deployer.resolve_targets(None)
@@ -1048,7 +1049,7 @@ class WorkloadService:
 
         overall = overall_status_for_sites(statuses)
         # Not reported here, but it is what makes a running build read as
-        # `Building` instead of the `Degraded` its unpullable image would
+        # `Building` instead of the `Failed` its unpullable image would
         # otherwise produce (docs/FUNCTIONS.md - Function Status Resolution).
         # Read per site inside `fetch`, so it rides the same fan-out - and so a
         # stats *stream* pays for it on its own pool, like every other read here.
@@ -1068,14 +1069,22 @@ class WorkloadService:
         if all(s.replicas is not None for s in statuses):
             replicas = sum(s.replicas for s in statuses)
 
+        # As on the full GET: the first recognized per-site cause is the headline
+        # reason; a BuildFailed rollup already names its cause, so it carries none.
+        reason = None
+        if overall != "BuildFailed":
+            reason = next((s.reason for s in statuses if s.reason), None)
+
         return WorkloadStatsResponse(
-            overallStatus=overall,  # type: ignore[arg-type]
+            status=overall,  # type: ignore[arg-type]
+            reason=reason,
             replicas=replicas,
             usage=usage.quantities() if usage else None,
             sites=[
                 SiteStats(
                     site=s.site,
                     status=s.status,
+                    reason=s.reason,
                     replicas=s.replicas,
                     usage=u.total.quantities() if u and u.total else None,
                 )
@@ -1531,13 +1540,13 @@ class WorkloadService:
 
         Fans out to all sites and merges best-effort: a workload's ``sites`` lists only
         those that returned it, and its rollup covers just those, so a single-site
-        workload reads ``Ready``, not ``Degraded``. An unreachable site is skipped; only
+        workload reads ``Ready``, not ``Failed``. An unreachable site is skipped; only
         an all-down fan-out fails the call.
 
         Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
         Resolution): a function whose first build is still running has a KSVC that
         cannot pull its image yet, so a listing that read the KSVC alone showed
-        every new function as ``Degraded`` for the whole of that build. The build
+        every new function as ``Failed`` for the whole of that build. The build
         states come from one label-selected read of the local site, so the fold
         costs a single round trip for the entire listing - overlapped with the
         fan-out, not chained onto it.

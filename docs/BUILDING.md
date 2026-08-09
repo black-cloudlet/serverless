@@ -817,7 +817,7 @@ twice means.
   source instead. This is the one irreversible property of the design, and it is what buys
   every site its independence.
 - **A rollout is not atomic across sites.** One site can finish building minutes before the
-  other, and a build can succeed in one and fail in the other - which reads as `Degraded`
+  other, and a build can succeed in one and fail in the other - which reads as `BuildFailed`
   with one site `Building`, and was impossible when a single build fed both.
 - **Build load and registry storage multiply by the number of sites.** A build pod is the
   heaviest thing in the workloads namespace (BUILDING.md: Build pod resources), so the

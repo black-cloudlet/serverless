@@ -7,6 +7,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: the status contract is renamed and one vocabulary now covers the
+  rollup and the site rows.** `overallStatus` is now `status` on every response
+  (full GET, list items, `/stats`, and the `stats` stream events), and the
+  rollup value `Degraded` is now `Failed` - the same word the failing site row
+  already used, so a client learns one vocabulary instead of two. The 207
+  multi-status mapping is unchanged, just keyed on the new value.
+
+- **A failed build is now `BuildFailed`, not a generic failure.** Terminal
+  (published in `/info`'s `statuses.terminal`), on the rollup and on the failing
+  site's own row, whose `error` becomes the build's message rather than the
+  image-pull symptom. Every other failure keeps the coarse statuses and carries
+  a machine-readable cause instead: `reason` on the workload (GET and `/stats`)
+  and on each failing site row - one of `/info`'s `statuses.reasons`
+  (`ImagePullFailed`, `CrashLooping`, `ConfigError`,
+  `ProgressDeadlineExceeded`), or null when the cause was not recognized. The
+  `stats` stream inherits all of it, since its events are the `/stats` body.
+
 ### Added
 
 - **Live observability is now Server-Sent Events, and logs are per pod.** Three

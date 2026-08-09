@@ -125,7 +125,7 @@ async def list_functions(
 async def get_function(
     group: Group, name: Name, user: CurrentUser, svc: FunctionDep
 ) -> FunctionResponse:
-    """Get one function, including overallStatus and per-site status.
+    """Get one function, including the status rollup and per-site status.
 
     This is the poll target advertised as ``statusUrl`` on the 202 accept
     response.
@@ -148,7 +148,7 @@ async def get_function_stats(
 ) -> WorkloadStatsResponse:
     """Get the function's live state: status, replicas and usage, per site.
 
-    The lightweight endpoint to poll - the same ``overallStatus`` as the full GET
+    The lightweight endpoint to poll - the same ``status`` rollup as the full GET
     and the live numbers behind it, and none of the desired-state config.
 
     Args:

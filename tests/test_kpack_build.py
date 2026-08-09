@@ -406,7 +406,7 @@ def test_the_built_image_never_reaches_a_function_response():
         group="payments",
         type="function",
         hostname="hello-payments.ex.com",
-        overallStatus="Building",
+        status="Building",
         build=BuildStatusView(state="Building"),
     ).model_dump()
     assert "image" not in body
@@ -417,16 +417,16 @@ def test_the_built_image_never_reaches_a_function_response():
     ("overall", "state", "expected"),
     [
         # a first build: the KSVC cannot pull an image kpack has not pushed yet,
-        # which must read as Building rather than Degraded
-        ("Degraded", "Building", "Building"),
+        # which must read as Building rather than Failed
+        ("Failed", "Building", "Building"),
         ("Deploying", "Building", "Building"),
         # a failed build is the honest cause of the same symptom, named as
-        # itself rather than hidden inside the generic Degraded
-        ("Degraded", "Failed", "BuildFailed"),
+        # itself rather than hidden inside the generic Failed
+        ("Failed", "Failed", "BuildFailed"),
         ("Ready", "Failed", "BuildFailed"),
         # a finished build hands the verdict back to the KSVC rollup
         ("Ready", "Ready", "Ready"),
-        ("Degraded", "Ready", "Degraded"),
+        ("Failed", "Ready", "Failed"),
     ],
 )
 def test_build_state_folds_into_the_overall_status(overall, state, expected):
@@ -440,7 +440,7 @@ def test_no_build_leaves_the_ksvc_rollup_untouched():
     from api.services.state.ksvc_state import with_build_status
 
     assert with_build_status("Ready", None) == "Ready"
-    assert with_build_status("Degraded", None) == "Degraded"
+    assert with_build_status("Failed", None) == "Failed"
 
 
 def test_a_running_build_folds_into_the_per_site_rows_too():
@@ -1742,7 +1742,7 @@ async def test_build_is_accepted_as_pending_with_a_status_url():
 
     body = await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
 
-    assert body.overallStatus == "Pending"
+    assert body.status == "Pending"
     assert body.statusUrl == "/api/v1/groups/payments/functions/hello"
     # the inputs it will build, echoed back - the request sent none of its own
     assert (body.runtime, body.branch, body.path, body.version) == (
@@ -2120,7 +2120,7 @@ async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202(
 
     background = BackgroundTasks()
     body = await svc.accept_build("payments", "hello", _principal(), background)
-    assert body.overallStatus == "Pending"
+    assert body.status == "Pending"
     await background()  # must not raise
 
 

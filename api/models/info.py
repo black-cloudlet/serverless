@@ -58,11 +58,11 @@ class StatusVocabulary(BaseModel):
     """The status strings a client can receive, so none has to be hardcoded.
 
     Attributes:
-        workload: Values of ``overallStatus`` - what a poller switches on.
+        workload: Values of the workload ``status`` - what a poller switches on.
         site: Values of a per-site ``status`` inside ``sites[]``.
         terminal: The subset of ``workload`` that a poller should stop on;
             anything else is still in flight.
-        reasons: Values of ``statusReason`` / a site's ``reason`` - the
+        reasons: Values of the workload and per-site ``reason`` fields - the
             machine-readable causes behind a failure. Best-effort: a failure
             whose cause was not recognized carries no reason, only ``error``.
     """
