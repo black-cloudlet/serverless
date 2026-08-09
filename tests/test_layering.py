@@ -84,7 +84,7 @@ def test_the_cluster_layer_pulls_in_no_web_framework(module):
 
 
 @pytest.mark.parametrize(
-    "module", ["controller.main", "controller.reconciler", "controller.digest"]
+    "module", ["controller.main", "controller.reconciler", "controller.digest", "controller.gc"]
 )
 def test_the_build_controller_serves_no_http_and_carries_no_web_framework(module):
     loaded = _imported_by(module)
@@ -111,7 +111,12 @@ def test_the_build_controller_carries_no_auth_stack():
     pulled ``cloudlet_apis.auth`` in would make the controller's image fail to
     start - it does not install that extra - and nothing else here would say why.
     """
-    for module in ("controller.main", "controller.reconciler", "controller.digest"):
+    for module in (
+        "controller.main",
+        "controller.reconciler",
+        "controller.digest",
+        "controller.gc",
+    ):
         leaked = _imported_by(module) & AUTH_DEPS
         assert not leaked, f"{module} reaches {sorted(leaked)}"
 

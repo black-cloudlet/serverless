@@ -149,6 +149,7 @@ def _reconciler(clusters, local="central"):
     """
     reconciler = object.__new__(Reconciler)
     reconciler._local = clusters[local]
+    reconciler._gc = None
     return reconciler
 
 

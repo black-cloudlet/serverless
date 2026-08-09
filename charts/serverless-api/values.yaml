@@ -94,6 +94,21 @@ buildController:
   # How long each watch is held open, and so also the full-relist interval.
   resyncSeconds: 300
 
+  # Prune the unique b{n}.{date}.{time} tag kpack pushes per build, in this
+  # site's registry only - they accumulate for the life of the function and
+  # count against quota (docs/BUILDING.md - Registry tag GC). Needs
+  # registry.apiTokens; without a token the controller logs the GC off and
+  # does nothing. Kept per function: the current branch tag, every tag on the
+  # digest still serving, and the `keepBuilds` newest build tags.
+  gc:
+    enabled: true
+    # Hours-scale: garbage accrues one tag per build, and every sweep
+    # re-derives everything, so nothing is lost by waiting.
+    intervalSeconds: 21600
+    # Newest per-build tags kept beyond the protected ones; matches
+    # build.history.success's default, so images track the Build history.
+    keepBuilds: 3
+
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
   api: serverless-api

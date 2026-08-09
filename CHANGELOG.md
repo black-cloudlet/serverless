@@ -42,6 +42,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **The build controller now garbage-collects old registry tags.** kpack
+  pushes a unique `b{n}.{date}.{time}` tag per build; they accumulated for the
+  life of the function, counting against registry quota, and were only
+  reclaimed when the function was deleted. Each site's controller now prunes
+  its own registry on an hours-scale sweep riding the resync, keeping per
+  function: the current branch tag, every tag on the digest still serving, and
+  the `buildController.gc.keepBuilds` newest build tags (default 3, mirroring
+  `build.history.success`); stale branch tags left by a branch change go too.
+  The cache repository is never touched. Needs the same `registry.apiTokens`
+  Secret the API uses - the controller now mounts it and resolves only its own
+  site's token; without one the GC logs itself off and does nothing. The logs
+  are deliberate UI: startup says on/off and why, every deleted tag is named,
+  and each sweep ends in a one-line summary
+  (docs/BUILDING.md - Registry tag GC).
+
 - **Live observability is now Server-Sent Events, and logs are per pod.** Three
   endpoints: `GET .../{name}/pods` (the workload's pods on the current site),
   `GET .../{name}/logs/pods/{pod}` (follow one pod's log), and
