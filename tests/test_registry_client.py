@@ -108,6 +108,26 @@ def test_the_listing_follows_pagination_to_the_end(monkeypatch):
     assert [t.name for t in tags] == ["b2.20260102.100000", "b1.20260101.100000"]
 
 
+def test_paging_that_never_terminates_is_cut_off_and_returns_nothing(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+
+    def always_more(request: httpx.Request) -> httpx.Response:
+        # a proxy dropping the `page` param serves page one, with more, forever
+        body = {"tags": [{"name": "main", "manifest_digest": "sha256:aa"}], "has_additional": True}
+        return httpx.Response(200, content=json.dumps(body))
+
+    quay = _Quay()
+    quay.handler = always_more
+    with _client(monkeypatch, quay) as client:
+        tags = client.list_tags("payments/hello")
+
+    # a partial listing is NOT returned: "newest N" judged on a partial set
+    # could prune a tag that is genuinely among the newest
+    assert tags == []
+    records = [r for r in caplog.records if r.name == _LOGGER]
+    assert any("did not terminate" in r.getMessage() for r in records)
+
+
 def test_a_missing_repository_lists_as_empty(monkeypatch):
     quay = _Quay(status=404)
     with _client(monkeypatch, quay) as client:

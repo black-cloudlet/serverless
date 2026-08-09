@@ -29,6 +29,11 @@ logger = get_logger(__name__)
 
 # Quay's maximum page size for the tag listing; fewer round-trips per repository.
 _TAG_PAGE_LIMIT = 100
+# A listing that outlives this many pages (10,000 tags) is not a big repository,
+# it is paging that does not terminate - a proxy dropping the `page` param
+# serves page one with `has_additional` forever, and this loop runs on the
+# reconcile loop's only thread.
+_TAG_MAX_PAGES = 100
 
 
 def repository_path(registry: RegistryConfig, image: str) -> str | None:
@@ -116,30 +121,11 @@ class RegistryClient:
     def delete_repository(self, repo: str) -> None:
         """Delete one repository outright, with everything in it.
 
-        The outcomes are read off httpx rather than compared against literals:
-        ``is_success`` is the whole 2xx class, which is what "deleted" means
-        here. Quay answers a repository delete with 204, but listing the codes
-        we happen to have seen would quietly log a successful 200 as a failure.
-
         Args:
             repo: The ``{namespace}/{repository}`` path the Quay route expects.
         """
         resp = self._http.delete(f"/api/v1/repository/{repo}")
-        if resp.is_success:
-            logger.info("deleted registry repository '%s'", repo)
-        elif resp.status_code == httpx.codes.NOT_FOUND:
-            pass  # never pushed, or already gone
-        elif resp.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
-            # The token acts as the user who authorized it: that user needs admin
-            # on this namespace, and with no `registry.organization` every group is one.
-            logger.warning(
-                "not authorized to delete registry repository '%s' (%s); "
-                "the API token needs admin on that namespace",
-                repo,
-                resp.status_code,
-            )
-        else:
-            logger.warning("could not delete registry repository '%s': %s", repo, resp.status_code)
+        self._deleted(resp, f"repository '{repo}'")
 
     def list_tags(self, repo: str) -> list[TagInfo]:
         """Every active tag in a repository, across however many pages Quay serves.
@@ -156,8 +142,7 @@ class RegistryClient:
             The active tags, with the digest each points at.
         """
         tags: list[TagInfo] = []
-        page = 1
-        while True:
+        for page in range(1, _TAG_MAX_PAGES + 1):
             resp = self._http.get(
                 f"/api/v1/repository/{repo}/tag/",
                 params={"onlyActiveTags": "true", "limit": _TAG_PAGE_LIMIT, "page": page},
@@ -179,7 +164,15 @@ class RegistryClient:
             )
             if not body.get("has_additional"):
                 return tags
-            page += 1
+        # Paging that never terminates, not a big repository. A partial listing
+        # is not returned: "newest N" judged on a partial set could prune a tag
+        # that is genuinely among the newest.
+        logger.warning(
+            "tag listing of '%s' did not terminate after %d pages; treating as unlistable",
+            repo,
+            _TAG_MAX_PAGES,
+        )
+        return []
 
     def delete_tag(self, repo: str, tag: str) -> bool:
         """Delete one tag, leaving the repository and its other tags in place.
@@ -196,19 +189,42 @@ class RegistryClient:
             True if the registry confirmed the delete.
         """
         resp = self._http.delete(f"/api/v1/repository/{repo}/tag/{tag}")
+        return self._deleted(resp, f"tag '{repo}:{tag}'")
+
+    @staticmethod
+    def _deleted(resp: httpx.Response, subject: str) -> bool:
+        """Judge one delete's outcome, identically for a repository and a tag.
+
+        One ladder, because the registry answers both routes the same way and a
+        status Quay starts returning tomorrow (a 429, a quota 402) must get the
+        same diagnosis whichever kind of delete surfaces it first.
+
+        The outcomes are read off httpx rather than compared against literals:
+        ``is_success`` is the whole 2xx class, which is what "deleted" means
+        here. Quay answers a delete with 204, but listing the codes we happen
+        to have seen would quietly log a successful 200 as a failure.
+
+        Args:
+            resp: The registry's answer.
+            subject: What was addressed, e.g. ``repository 'ns/repo'``.
+
+        Returns:
+            True if the registry confirmed the delete.
+        """
         if resp.is_success:
-            logger.info("deleted registry tag '%s:%s'", repo, tag)
+            logger.info("deleted registry %s", subject)
             return True
         if resp.status_code == httpx.codes.NOT_FOUND:
-            return False  # already gone - the outcome, arrived at by someone else
+            return False  # never pushed, or already gone - not worth a line
         if resp.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
+            # The token acts as the user who authorized it: that user needs admin
+            # on this namespace, and with no `registry.organization` every group is one.
             logger.warning(
-                "not authorized to delete registry tag '%s:%s' (%s); "
+                "not authorized to delete registry %s (%s); "
                 "the API token needs admin on that namespace",
-                repo,
-                tag,
+                subject,
                 resp.status_code,
             )
             return False
-        logger.warning("could not delete registry tag '%s:%s': %s", repo, tag, resp.status_code)
+        logger.warning("could not delete registry %s: %s", subject, resp.status_code)
         return False

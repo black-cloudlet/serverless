@@ -420,13 +420,20 @@ build. Guarded only when a site actually overrides its registry - without one
 everything resolves to the default anyway, so an unmatched `global.site` changes
 nothing.
 
-> **A second check was designed and dropped.** Two sites resolving to the *same*
-> registry was going to be a render failure, overridable with
-> `build.allowSharedRegistry`. It should not be: each site's KSVC runs the digest
-> its own controller pinned, not the tag, so a shared registry still *works* - it
-> flaps one tag and thrashes one `_cache:latest`. That is degraded, not broken,
-> and it is the configuration every existing install upgrades from. A check that
-> has to default to permissive to avoid breaking them earns nothing.
+> **A second check was designed, dropped, and has since been reinstated.** Two
+> sites resolving to the *same* registry was going to be a render failure,
+> overridable with `build.allowSharedRegistry`. It was dropped because a shared
+> registry still *worked* - each site's KSVC runs the digest its own controller
+> pinned, not the tag, so sharing merely flapped one tag and thrashed one
+> `_cache:latest` - and it was the configuration every existing install
+> upgraded from. **The tag GC changed the calculus** (docs/BUILDING.md -
+> Registry tag GC): a controller pruning a shared repository protects only its
+> *own* site's serving digest and deletes the tags the peer site still serves -
+> broken, not degraded. So the chart now requires `registry.url` on **every**
+> site and refuses two sites on one registry, with no override; the controller
+> independently refuses to sweep when it detects sharing, as the backstop for a
+> hand-rolled config. An upgrading single-registry install must give each site
+> its own registry before this chart renders.
 
 ### The values file, in full
 

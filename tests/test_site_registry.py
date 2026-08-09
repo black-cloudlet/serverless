@@ -106,6 +106,24 @@ def test_a_site_the_token_map_omits_falls_back_to_the_platform_token():
     assert settings.registry_for("south").can_delete
 
 
+def test_the_token_fallback_compares_canonical_hosts_not_spellings():
+    # The same registry written with and without a pasted scheme is one
+    # registry; read as two, the fallback token would be dropped and cleanup
+    # (and the tag GC) would silently stop for that site.
+    settings = _settings(
+        registry={"url": "https://registry.internal/", "api_token": "tok-platform"},
+        sites=[
+            SiteConfig(name="central", cluster="central-0"),
+            SiteConfig(
+                name="south",
+                cluster="south-0",
+                registry=SiteRegistry(url="registry.internal"),
+            ),
+        ],
+    )
+    assert settings.registry_for("south").api_token == "tok-platform"
+
+
 def test_settings_carry_the_other_registry_fields_through():
     settings = _settings(
         registry={"url": "registry.internal", "delete_on_function_delete": False, "timeout": 3.0},

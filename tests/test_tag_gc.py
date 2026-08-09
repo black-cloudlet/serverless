@@ -15,11 +15,12 @@ import logging
 import httpx
 import pytest
 
-from common.config import SiteConfig
+from common.config import SiteConfig, SiteRegistry
 from common.errors import NotFoundError
+from common.names import digest_of, tag_of
 from common.registry import TagInfo
 from controller.config import ControllerSettings
-from controller.gc import TagGC, digest_of, garbage, tag_of
+from controller.gc import TagGC, garbage
 from controller.reconciler import Reconciler
 
 _LOGGER = "controller.gc"
@@ -136,9 +137,9 @@ def _garbage(tags=None, protected_tags={"main"}, protected_digests={_D[6]}, keep
 
 
 def test_the_expected_tags_and_only_those_are_garbage():
-    # newest 3 builds (b6, b5, b4) survive; the branch tag by name; the rest go
+    # 'main' survives by name, b6 by the serving digest, and the keep window is
+    # spent on the newest DELETABLE builds (b5, b4, b3); the rest go
     assert [t.name for t in _garbage()] == [
-        "b3.20260803.120000",
         "dev",
         "b2.20260802.120000",
         "b1.20260801.120000",
@@ -159,12 +160,14 @@ def test_every_tag_on_the_serving_digest_survives():
     assert [t.name for t in doomed] == ["b3.20260803.120000", "b1.20260801.120000"]
 
 
-def test_protected_names_do_not_consume_keep_slots():
-    # 'main' is always the newest tag - counted into keep, every sweep would
-    # silently protect one build fewer than configured
-    doomed = _garbage(keep=1)
-    assert "b6.20260806.120000" not in {t.name for t in doomed}
-    assert "b5.20260805.120000" in {t.name for t in doomed}
+def test_protected_tags_and_digests_do_not_consume_keep_slots():
+    # 'main' is always the newest tag and the newest build tag always carries
+    # the serving digest - counted into keep, every sweep would silently retain
+    # one or two builds fewer than the knob promises
+    doomed = {t.name for t in _garbage(keep=1)}
+    assert "b6.20260806.120000" not in doomed  # protected by digest, not a slot
+    assert "b5.20260805.120000" not in doomed  # the one kept build
+    assert "b4.20260804.120000" in doomed
 
 
 def test_a_tag_without_a_digest_is_never_deleted():
@@ -225,11 +228,11 @@ def test_a_sweep_prunes_old_build_tags_and_stale_branch_tags(monkeypatch):
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image()])
+    gc.wait()
 
     assert sorted(quay.deleted) == [
         f"{REPO}:b1.20260801.120000",
         f"{REPO}:b2.20260802.120000",
-        f"{REPO}:b3.20260803.120000",
         f"{REPO}:dev",
     ]
 
@@ -239,6 +242,7 @@ def test_only_the_image_repository_is_addressed_never_the_cache(monkeypatch):
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image()])
+    gc.wait()
 
     # the cache reuses one 'latest' tag and does not accumulate; the GC derives
     # its target from spec.tag and must never widen to the cache beside it
@@ -251,8 +255,10 @@ def test_a_sweep_is_paced_to_the_interval(monkeypatch):
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image()])
+    gc.wait()
     first = quay.requests
     gc.maybe_sweep([_image()])
+    gc.wait()
 
     # the second resync is minutes later; the GC works on the hours scale
     assert quay.requests == first
@@ -296,8 +302,9 @@ def test_a_foreign_host_tag_is_skipped_with_a_warning(monkeypatch, caplog):
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image(tag=f"elsewhere.internal/{REPO}:main")])
+    gc.wait()
 
-    assert quay.requests == 0
+    assert quay.deleted == []
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("is not on registry.internal" in r.getMessage() for r in warnings)
 
@@ -307,6 +314,7 @@ def test_a_function_deleted_mid_sweep_is_skipped(monkeypatch):
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image()])
+    gc.wait()
 
     assert quay.deleted == []
 
@@ -322,8 +330,41 @@ def test_an_unreachable_registry_never_raises_into_the_loop(monkeypatch, caplog)
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image()])  # must not raise
+    gc.wait()
 
-    assert any("sweep failed" in r.getMessage() for r in caplog.records)
+    messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
+    assert any("sweeping 'hello-payments' failed" in m for m in messages)
+    # and the pass still closes with its summary, counting the failure
+    assert any("1 failed" in m for m in messages)
+
+
+def test_one_failing_function_does_not_abort_the_rest(monkeypatch, caplog):
+    """The listing order is stable, so an aborting error would starve the tail forever."""
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    other_repo = "payments/world"
+    quay = _Quay(tags_by_repo={other_repo: list(_HISTORY)})
+    inner = quay.handler
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        if REPO in request.url.path:
+            raise httpx.ReadTimeout("listing hangs")
+        return inner(request)
+
+    quay.handler = flaky
+    gc = _gc(monkeypatch, quay)
+
+    gc.maybe_sweep(
+        [
+            _image(),  # sweeping this one times out, every sweep
+            _image(tag=f"registry.internal/{other_repo}:main", workload="world-payments"),
+        ]
+    )
+    gc.wait()
+
+    # the failing function is named, the next one is still pruned
+    assert f"{other_repo}:dev" in quay.deleted
+    messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
+    assert any("sweeping 'hello-payments' failed" in m for m in messages)
 
 
 def test_an_image_naming_no_tag_is_skipped(monkeypatch):
@@ -331,8 +372,24 @@ def test_an_image_naming_no_tag_is_skipped(monkeypatch):
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([{"metadata": {"name": "fn-x"}, "spec": {}, "status": {}}])
+    gc.wait()
 
-    assert quay.requests == 0
+    assert quay.deleted == []
+
+
+def test_an_image_with_no_successful_build_is_skipped(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    quay = _Quay()
+    gc = _gc(monkeypatch, quay)
+
+    gc.maybe_sweep([_image(latest=None)])
+    gc.wait()
+
+    # the repository may still hold a previous incarnation's tags - including
+    # the one still serving; with nothing digest-protected, pruning is a guess
+    assert quay.deleted == []
+    messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
+    assert any("no successful build" in m for m in messages)
 
 
 def test_the_sweep_logs_a_per_function_verdict_and_a_summary(monkeypatch, caplog):
@@ -342,12 +399,16 @@ def test_the_sweep_logs_a_per_function_verdict_and_a_summary(monkeypatch, caplog
     gc = _gc(monkeypatch, _Quay())
 
     gc.maybe_sweep([_image()])
+    gc.wait()
 
     messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
     # the per-function verdict: what happened, to whom, and what was spared
-    assert any("'hello-payments': pruned 4 of 8 tag(s) in 'payments/hello'" in m for m in messages)
+    assert any("'hello-payments': pruned 3 of 8 tag(s) in 'payments/hello'" in m for m in messages)
     # the sweep summary: the one line that says the pass ran and what it did
-    assert any("swept 1 function repositories in 'central', pruned 4 tag(s)" in m for m in messages)
+    assert any(
+        "swept 1 function repositories in 'central', pruned 3 tag(s), 0 failed" in m
+        for m in messages
+    )
     # and each individual tag is named by the client, so a delete is traceable
     client_messages = [r.getMessage() for r in caplog.records if r.name == _CLIENT_LOGGER]
     assert any("deleted registry tag 'payments/hello:dev'" in m for m in client_messages)
@@ -359,12 +420,78 @@ def test_a_sweep_with_nothing_to_prune_stays_quiet_per_function(monkeypatch, cap
     gc = _gc(monkeypatch, quay)
 
     gc.maybe_sweep([_image()])
+    gc.wait()
 
     messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
     assert quay.deleted == []
     assert not any("pruned" in m and "of" in m for m in messages if "'hello-payments'" in m)
     # the summary still reports the pass, so "quiet" is never "did not run"
     assert any("swept 1 function repositories" in m for m in messages)
+
+
+# --------------------------------------------------------------------------- #
+# refusing to run, loudly                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_shared_registry_refuses_to_sweep_and_names_the_sites(monkeypatch, caplog):
+    """Two controllers pruning one repository each protect only their own digest."""
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    quay = _Quay()
+    settings = _settings(
+        sites=[
+            SiteConfig(name="central", cluster="central-0"),
+            SiteConfig(name="south", cluster="south-0"),  # both default to registry.internal
+        ]
+    )
+    gc = _gc(monkeypatch, quay, settings)
+
+    gc.maybe_sweep([_image()])
+    gc.wait()
+
+    assert quay.requests == 0
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("shares registry registry.internal with south" in m for m in warnings)
+
+
+def test_sites_on_their_own_registries_do_sweep(monkeypatch):
+    quay = _Quay()
+    settings = _settings(
+        sites=[
+            SiteConfig(name="central", cluster="central-0"),
+            SiteConfig(
+                name="south",
+                cluster="south-0",
+                registry=SiteRegistry(url="registry.south.internal"),
+            ),
+        ]
+    )
+    gc = _gc(monkeypatch, quay, settings)
+
+    gc.maybe_sweep([_image()])
+    gc.wait()
+
+    assert quay.deleted != []
+
+
+def test_the_platform_delete_switch_also_stops_the_gc(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    quay = _Quay()
+    settings = _settings(
+        registry=dict(
+            url="registry.internal", api_token="oauth-token", delete_on_function_delete=False
+        )
+    )
+    gc = _gc(monkeypatch, quay, settings)
+
+    gc.maybe_sweep([_image()])
+    gc.wait()
+
+    # registry.deleteOnFunctionDelete is the operator's ONE switch for "may the
+    # platform delete registry content"; the GC must not be a way around it
+    assert quay.requests == 0
+    messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
+    assert any("registry deletion is switched off" in m for m in messages)
 
 
 # --------------------------------------------------------------------------- #

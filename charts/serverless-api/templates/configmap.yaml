@@ -9,18 +9,31 @@ metadata:
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
+  # Every site must name ITS OWN registry, and no two sites may share one.
+  # "Build where you run" makes each site's build controller prune the
+  # registry its site filled (docs/BUILDING.md - Registry tag GC); two sites
+  # on one registry would each protect only their own serving digest and
+  # delete the other's tags. Refused at render, where the mistake is cheap.
+  {{- $hosts := dict }}
+  {{- range .Values.sites }}
+  {{- if not (and .registry .registry.url) }}
+  {{- fail (printf "serverless-api: site %q must set `registry.url` - every site builds into its own registry, and sharing one would let a site's tag GC delete images a peer still serves (docs/PER-SITE-REGISTRY.md)" .name) }}
+  {{- end }}
+  {{- $host := regexReplaceAll "^https?://" (trimSuffix "/" .registry.url) "" }}
+  {{- if hasKey $hosts $host }}
+  {{- fail (printf "serverless-api: sites %q and %q share the registry %q - every site must have its own" (get $hosts $host) .name $host) }}
+  {{- end }}
+  {{- $_ := set $hosts $host .name }}
+  {{- end }}
   # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
-  # A site's `registry` rides along so an instance can compose the peer's
-  # manifests; omitted when unset, which is how that site inherits the default.
+  # A site's `registry` rides along so an instance can compose the peer's manifests.
   {{- $sites := list }}
   {{- range .Values.sites }}
   {{- $site := dict "name" .name "cluster" .cluster }}
-  {{- with .registry }}
-  {{- $reg := dict "url" (required (printf "serverless-api: site %q sets `registry` but no `registry.url`" $site.name) .url) }}
-  {{- if not (kindIs "invalid" .organization) }}{{- $_ := set $reg "organization" .organization }}{{- end }}
-  {{- if not (kindIs "invalid" .repository) }}{{- $_ := set $reg "repository" .repository }}{{- end }}
+  {{- $reg := dict "url" .registry.url }}
+  {{- if not (kindIs "invalid" .registry.organization) }}{{- $_ := set $reg "organization" .registry.organization }}{{- end }}
+  {{- if not (kindIs "invalid" .registry.repository) }}{{- $_ := set $reg "repository" .registry.repository }}{{- end }}
   {{- $_ := set $site "registry" $reg }}
-  {{- end }}
   {{- $sites = append $sites $site }}
   {{- end }}
   SERVERLESS_SITES: {{ toJson $sites | quote }}
