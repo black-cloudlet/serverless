@@ -220,6 +220,7 @@ async def stream_container_pod_logs(
     container: str = "user-container",
     sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
     limitBytes: Annotated[int | None, Query(gt=0)] = None,
+    tailLines: Annotated[int | None, Query(gt=0)] = None,
 ) -> Response:
     """Follow one of the container's pods' logs, or read what it holds right now.
 
@@ -252,6 +253,9 @@ async def stream_container_pod_logs(
         sinceSeconds: Start the log this many seconds back.
         limitBytes: Cap the bytes read; ``follow=false`` only, clamped to the
             deployment's snapshot ceiling.
+        tailLines: Start at the newest this-many lines instead, however old
+            they are - the right opening for a pod that has been quiet longer
+            than any time window. Clamped to the deployment's snapshot bound.
 
     Returns:
         The event stream, or the snapshot.
@@ -265,10 +269,17 @@ async def stream_container_pod_logs(
             container=container,
             since_seconds=sinceSeconds,
             limit_bytes=limitBytes,
+            tail_lines=tailLines,
         )
     return sse.stream(
         await svc.stream_pod_logs(
-            name, group, user, pod=pod, container=container, since_seconds=sinceSeconds
+            name,
+            group,
+            user,
+            pod=pod,
+            container=container,
+            since_seconds=sinceSeconds,
+            tail_lines=tailLines,
         )
     )
 

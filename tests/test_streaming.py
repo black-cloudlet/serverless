@@ -183,6 +183,18 @@ def test_a_trailing_line_without_a_newline_is_not_swallowed():
     assert list(follow.lines()) == ["finished writing"]
 
 
+def test_a_neverending_line_is_emitted_rather_than_held():
+    """A container spewing bytes with no newline must cost delivery in pieces,
+    not the process's memory - the reassembly buffer is the API's, and growing
+    it until the pod is OOM-killed is a crash wearing a log line's clothes."""
+    follow = LogFollow(_Chunks([b"x" * 10, b"y" * 10, b"z\ntail\n"]))
+    follow.MAX_LINE_BYTES = 8
+    pieces = list(follow.lines())
+    assert pieces[-1] == "tail"
+    assert "".join(pieces[:-1]) == "x" * 10 + "y" * 10 + "z"
+    assert all(len(p) <= 16 for p in pieces)  # one chunk can at most double it
+
+
 def test_only_newline_splits_lines():
     r"""A workload logging \v or \f logs one line, not three."""
     follow = LogFollow(_Chunks([b"a\x0bb\x0cc\n"]))
@@ -331,6 +343,7 @@ class FakeCluster:
         self._chunks = chunks or {}
         self._live = live
         self.followed: list[str] = []
+        self.follow_bounds: list[tuple] = []
         self.follows: list[_Chunks] = []
         self.list_calls = 0
         self._lock = threading.Lock()
@@ -381,8 +394,9 @@ class FakeCluster:
         with self._lock:
             return [self._pod_obj(pod, rev) for pod, rev in self._pods.items()]
 
-    def follow_pod_logs(self, pod, *, container, since_seconds=None):
+    def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
         self.followed.append(pod)
+        self.follow_bounds.append((since_seconds, tail_lines))
         block = threading.Event() if self._live else None
         response = _Chunks(self._chunks.get(pod, []), block=block)
         self.follows.append(response)
@@ -463,7 +477,7 @@ async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
 
 async def test_a_pod_that_cannot_be_read_warns_and_ends_rather_than_hanging(capacity):
     class Refusing(FakeCluster):
-        def follow_pod_logs(self, pod, *, container, since_seconds=None):
+        def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
             raise RuntimeError("forbidden")
 
     events = [e async for e in _follow(Refusing({"p1": "r1"}), capacity)]
@@ -875,6 +889,31 @@ async def test_stream_pod_logs_opens_on_the_named_pod(capacity):
     assert events[0].data.pod == "p1"
     # The revision is read off the pod, not guessed from the workload.
     assert events[0].data.revision == "rev-7"
+
+
+async def test_the_follow_opens_at_the_requested_tail_clamped_to_the_bound(capacity):
+    """tailLines is what shows an *existing* pod's recent history - a pod quiet
+    longer than any since-window would otherwise show nothing until it next
+    writes - but a request for a million lines is still bounded server-side."""
+    cluster = OwnedCluster({"p1": "rev-7"}, {"p1": [b"hi\n"]})
+    engine = _engine(cluster, capacity)
+
+    stream = await engine.stream_pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
+        tail_lines=FAST.snapshot_tail_lines * 10,
+    )
+    try:
+        await collect(stream, 2)
+    finally:
+        await stream.aclose()
+
+    assert cluster.follow_bounds == [(None, FAST.snapshot_tail_lines)]
 
 
 async def test_a_pod_of_another_workload_is_a_404(capacity):

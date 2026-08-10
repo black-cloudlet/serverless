@@ -7,7 +7,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- **`tailLines` on `GET .../logs/pods/{pod}`, for the follow and the snapshot
+  alike.** A follow opened with `sinceSeconds` alone shows nothing for a pod
+  that has been quiet longer than the window - the very pod a user opens the
+  Logs tab on. `tailLines` starts at the newest this-many lines *however old
+  they are*, then keeps following; it is clamped to `stream.snapshotTailLines`
+  either way. The console now opens follows with it.
+
 ### Fixed
+
+- **A container writing without newlines can no longer grow the API's memory.**
+  The line-reassembly buffer behind a followed log held a partial line until
+  its newline arrived - which for binary spew or a runaway single-line dump is
+  never. Past 1 MiB the partial line is delivered in pieces instead of held.
 
 - **The log snapshot (`?follow=false`) is bounded by the API, and no longer
   blocks the event loop.** The node can hold tens of megabytes for one

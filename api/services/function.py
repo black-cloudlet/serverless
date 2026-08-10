@@ -573,6 +573,7 @@ class FunctionService:
         container: str,
         since_seconds: int | None,
         limit_bytes: int | None,
+        tail_lines: int | None = None,
     ) -> PodLogSnapshot:
         """One of the function's pods' logs as it stands, read once.
 
@@ -584,6 +585,7 @@ class FunctionService:
             container: The pod container to read.
             since_seconds: Only lines newer than this, if set.
             limit_bytes: Cap on the bytes read, if set.
+            tail_lines: Newest lines wanted, if set; clamped to the snapshot bound.
 
         Returns:
             The snapshot.
@@ -597,6 +599,7 @@ class FunctionService:
             container=container,
             since_seconds=since_seconds,
             limit_bytes=limit_bytes,
+            tail_lines=tail_lines,
         )
 
     async def stream_pods(
@@ -624,6 +627,7 @@ class FunctionService:
         pod: str,
         container: str,
         since_seconds: int | None,
+        tail_lines: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Follow one of the function's pods' logs, on the current site.
 
@@ -634,6 +638,7 @@ class FunctionService:
             pod: The pod to follow.
             container: The pod container to read.
             since_seconds: How far back the log starts, if set.
+            tail_lines: Start at the newest this-many lines instead, if set.
 
         Returns:
             The event stream.
@@ -646,6 +651,7 @@ class FunctionService:
             pod=pod,
             container=container,
             since_seconds=since_seconds,
+            tail_lines=tail_lines,
         )
 
     async def stream_stats(

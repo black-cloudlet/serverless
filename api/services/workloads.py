@@ -1339,6 +1339,7 @@ class WorkloadService:
         container: str,
         since_seconds: int | None,
         limit_bytes: int | None,
+        tail_lines: int | None = None,
     ) -> PodLogSnapshot:
         """One pod's log as it stands, read once (``follow=false``).
 
@@ -1365,6 +1366,8 @@ class WorkloadService:
             since_seconds: Only lines newer than this, if set.
             limit_bytes: Cap on the bytes read, if set; clamped to the
                 configured ceiling either way.
+            tail_lines: Newest lines wanted, if set; clamped to the configured
+                snapshot bound either way.
 
         Returns:
             The snapshot.
@@ -1384,6 +1387,7 @@ class WorkloadService:
         # start of what was picked. Applied together, the tail does the real
         # bounding and the byte ceiling backstops pathological line lengths.
         capped_bytes = min(limit_bytes or config.snapshot_max_bytes, config.snapshot_max_bytes)
+        capped_tail = min(tail_lines or config.snapshot_tail_lines, config.snapshot_tail_lines)
 
         def read() -> tuple[str | None, list[LogLine]]:
             revision = authorize()
@@ -1392,7 +1396,7 @@ class WorkloadService:
                 container=container,
                 since_seconds=since_seconds,
                 limit_bytes=capped_bytes,
-                tail_lines=config.snapshot_tail_lines,
+                tail_lines=capped_tail,
             )
             # Split exactly as the stream splits, so a client renders one shape
             # whichever way it read the log. On this thread, not the event
@@ -1432,6 +1436,7 @@ class WorkloadService:
         pod: str,
         container: str,
         since_seconds: int | None,
+        tail_lines: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Follow one of the workload's pods' logs, on the local site.
 
@@ -1454,6 +1459,11 @@ class WorkloadService:
             container: The pod container to read.
             since_seconds: How far back the log starts, so a client sees recent
                 context rather than only what arrives after it connected.
+            tail_lines: Start at the newest this-many lines instead, however old
+                they are - what a viewer opening an *existing* pod wants, since
+                a pod quiet for longer than any time window would otherwise
+                show nothing until it next writes. Clamped to the snapshot
+                bound: it is the same "history a client gets at once".
 
         Returns:
             The event stream, beginning with an ``open`` event.
@@ -1486,14 +1496,18 @@ class WorkloadService:
             revision=revision,
         )
 
+        config = self.capacity.config
         return _slot_guarded(
             slot,
             logs_stream.follow(
                 cluster=cluster,
                 capacity=self.capacity,
-                config=self.capacity.config,
+                config=config,
                 opening=opening,
                 since_seconds=since_seconds,
+                tail_lines=(
+                    min(tail_lines, config.snapshot_tail_lines) if tail_lines is not None else None
+                ),
             ),
         )
 

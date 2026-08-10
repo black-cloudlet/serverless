@@ -367,6 +367,7 @@ class Cluster:
         *,
         container: str,
         since_seconds: int | None = None,
+        tail_lines: int | None = None,
     ) -> "LogFollow":
         """Open a held-open stream of one pod container's log.
 
@@ -390,6 +391,10 @@ class Cluster:
             container: The container to read.
             since_seconds: Start this many seconds back, so a client sees recent
                 context rather than only what arrives after it connected.
+            tail_lines: Start at the newest this-many lines instead, however old
+                they are - what a viewer opening an *existing* pod wants, since a
+                pod quiet for longer than any time window would otherwise show
+                nothing until it next writes.
 
         Returns:
             The open stream.
@@ -405,6 +410,7 @@ class Cluster:
                 container=container,
                 timestamps=True,
                 since_seconds=since_seconds,
+                tail_lines=tail_lines,
                 follow=True,
                 _preload_content=False,
                 # Connect timeout only: without it a black-holed API server
@@ -451,6 +457,13 @@ class LogFollow:
         self._response = response
         self._closed = False
 
+    # A line still waiting for its newline is held in memory; past this it is
+    # emitted as if the newline had arrived. A container that writes megabytes
+    # with no newline at all - binary spew, a runaway single-line JSON dump -
+    # would otherwise grow the buffer without bound, and the buffer lives in
+    # the API's process: that is an OOM kill wearing a log line's clothes.
+    MAX_LINE_BYTES = 1024 * 1024
+
     def lines(self) -> Iterator[str]:
         """Yield complete log lines as the container writes them (blocking).
 
@@ -461,7 +474,8 @@ class LogFollow:
         Yields:
             One log line at a time, newline stripped. A trailing partial line is
             emitted when the stream ends, so a final write with no newline is
-            not swallowed.
+            not swallowed; a line longer than :attr:`MAX_LINE_BYTES` is emitted
+            in pieces rather than held.
         """
         buffer = ""
         # A bounded amt: with amt=None urllib3 only yields per-chunk on a
@@ -476,6 +490,9 @@ class LogFollow:
             *complete, buffer = buffer.split("\n")
             for line in complete:
                 yield line.rstrip("\r")
+            if len(buffer) > self.MAX_LINE_BYTES:
+                yield buffer
+                buffer = ""
         if buffer and not self._closed:
             yield buffer.rstrip("\r")
 
