@@ -67,6 +67,10 @@ spec:
               value: {{ .Values.stream.maxSeconds | quote }}
             - name: SERVERLESS_STREAM__TICKET_TTL_SECONDS
               value: {{ .Values.stream.ticketTtlSeconds | quote }}
+            - name: SERVERLESS_STREAM__SNAPSHOT_TAIL_LINES
+              value: {{ .Values.stream.snapshotTailLines | quote }}
+            - name: SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES
+              value: {{ .Values.stream.snapshotMaxBytes | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_REGISTRY__DELETE_ON_FUNCTION_DELETE
@@ -154,14 +158,27 @@ spec:
             - name: runtimes
               mountPath: {{ .Values.runtimesMountPath }}
               readOnly: true
+          # Explicit timings, because the probe endpoints share one event loop
+          # with the SSE streams: under streaming load a response can take
+          # longer than the kubelet's 1s default timeout, and with the default
+          # thresholds that flapped the pod unready and then restarted it.
+          # Constant-response endpoints answering slowly means "busy", which
+          # readiness should reflect eventually (three misses, not one) and
+          # liveness should tolerate far longer before killing open streams.
           readinessProbe:
             httpGet:
               path: /readyz
               port: {{ .Values.api.service.targetPort }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /healthz
               port: {{ .Values.api.service.targetPort }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
       volumes:

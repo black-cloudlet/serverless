@@ -165,6 +165,15 @@ stream:
   # Lifetime of a stream ticket. It is spent opening one connection, so this is
   # a window, not a session.
   ticketTtlSeconds: 60
+  # Bounds on the one-shot log snapshot (`?follow=false`). The node may hold
+  # tens of megabytes for one container, and an unbounded snapshot is parsed
+  # into a single response - large enough, that is the API's memory and the
+  # event loop's time, which is exactly what fails the health probes when a
+  # client polls it. A snapshot returns the newest `snapshotTailLines` lines,
+  # and never reads more than `snapshotMaxBytes` (a caller's `limitBytes` is
+  # clamped to it) - a backstop for pathological line lengths.
+  snapshotTailLines: 2000
+  snapshotMaxBytes: 2097152
 
 sso:
   # Templated, so it can be derived rather than repeated per environment.

@@ -7,6 +7,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The log snapshot (`?follow=false`) is bounded by the API, and no longer
+  blocks the event loop.** The node can hold tens of megabytes for one
+  container, and the snapshot read, parsed and serialized all of it into a
+  single response on the event loop - a client polling it (the console's
+  fallback when a stream cannot be opened does, every 5s) starved the health
+  probes until the pod went unready and was restarted, which killed every open
+  stream and pushed more clients onto the same fallback. A snapshot now
+  returns the newest `stream.snapshotTailLines` (2000) lines within
+  `stream.snapshotMaxBytes` (2 MiB; a caller's `limitBytes` is clamped to it),
+  and the per-line parsing runs on a worker thread.
+- **The health probes get explicit timings.** The probe endpoints share one
+  event loop with the SSE streams, and the kubelet's 1s default timeout with
+  3 failures flapped the pod unready - and then restarted it - under exactly
+  the load streaming produces. Both probes now allow 5s per response, and
+  liveness tolerates a minute of misses before killing the pod's open streams.
+
 ### Changed
 
 - **BREAKING: the status contract now follows Kubernetes' shape.** Three

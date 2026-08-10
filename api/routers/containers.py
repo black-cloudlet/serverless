@@ -226,10 +226,11 @@ async def stream_container_pod_logs(
     Current site only, either way: Kubernetes keeps no log buffer beyond the node
     that wrote it. Get ``pod`` from ``GET .../{name}/pods``.
 
-    Following is the default. ``follow=false`` returns a single JSON snapshot of
-    whatever the node still holds - bounded by its log rotation, so it is the
-    recent past and never the whole history - for a caller that cannot hold a
-    connection open. ``limitBytes`` applies only to that form.
+    Following is the default. ``follow=false`` returns a single JSON snapshot -
+    the newest lines the node still holds, within the deployment's snapshot
+    bounds (``stream.snapshotTailLines`` / ``snapshotMaxBytes``) - for a caller
+    that cannot hold a connection open. ``limitBytes`` applies only to that
+    form, and is clamped to the deployment's ceiling.
 
     A followed stream ends with an ``end`` event when the pod's log does - a
     scale-down or a new revision, which on Knative is routine and is not reported
@@ -249,7 +250,8 @@ async def stream_container_pod_logs(
         follow: Stream the log (default), or return what the node holds now.
         container: The pod container to read (default the user-container).
         sinceSeconds: Start the log this many seconds back.
-        limitBytes: Cap the bytes read; ``follow=false`` only.
+        limitBytes: Cap the bytes read; ``follow=false`` only, clamped to the
+            deployment's snapshot ceiling.
 
     Returns:
         The event stream, or the snapshot.

@@ -1345,7 +1345,12 @@ class WorkloadService:
         The non-streaming half of :meth:`stream_pod_logs`, through the same
         authorization, so the pod-ownership rule cannot differ between them. What
         it returns is bounded by what the node still holds - there is no history
-        behind that, whichever way it is read.
+        behind that, whichever way it is read - and further by the configured
+        snapshot bounds: the newest ``snapshot_tail_lines`` lines, within
+        ``snapshot_max_bytes``. Bounded *here*, not left to the caller, because
+        the node can hold tens of megabytes and this read shares a process with
+        the health probes: an unbounded snapshot parsed into one response is
+        how a polling client makes the API unready.
 
         No stream slot: the read ends, so it is not a stream and must not be
         rationed as one.
@@ -1358,7 +1363,8 @@ class WorkloadService:
             pod: The pod to read.
             container: The pod container to read.
             since_seconds: Only lines newer than this, if set.
-            limit_bytes: Cap on the bytes read, if set.
+            limit_bytes: Cap on the bytes read, if set; clamped to the
+                configured ceiling either way.
 
         Returns:
             The snapshot.
@@ -1373,28 +1379,38 @@ class WorkloadService:
         cluster = self.deployer.local_cluster()
         authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
 
-        def read() -> tuple[str | None, str]:
+        config = self.capacity.config
+        # tail_lines picks the *newest* lines; limit_bytes truncates from the
+        # start of what was picked. Applied together, the tail does the real
+        # bounding and the byte ceiling backstops pathological line lengths.
+        capped_bytes = min(limit_bytes or config.snapshot_max_bytes, config.snapshot_max_bytes)
+
+        def read() -> tuple[str | None, list[LogLine]]:
             revision = authorize()
-            return revision, cluster.pod_logs(
+            text = cluster.pod_logs(
                 pod,
                 container=container,
                 since_seconds=since_seconds,
-                limit_bytes=limit_bytes,
+                limit_bytes=capped_bytes,
+                tail_lines=config.snapshot_tail_lines,
             )
+            # Split exactly as the stream splits, so a client renders one shape
+            # whichever way it read the log. On this thread, not the event
+            # loop: even bounded, it is regex-and-model work per line.
+            return revision, [
+                LogLine(
+                    pod=pod,
+                    container=container,
+                    revision=revision,
+                    time=stamp,
+                    message=message,
+                )
+                for stamp, message in (
+                    logs_stream.split_timestamp(line) for line in text.splitlines()
+                )
+            ]
 
-        revision, text = await asyncio.to_thread(read)
-        # Split exactly as the stream splits, so a client renders one shape
-        # whichever way it read the log.
-        lines = [
-            LogLine(
-                pod=pod,
-                container=container,
-                revision=revision,
-                time=stamp,
-                message=message,
-            )
-            for stamp, message in (logs_stream.split_timestamp(line) for line in text.splitlines())
-        ]
+        revision, lines = await asyncio.to_thread(read)
         return PodLogSnapshot(
             name=name,
             group=group,

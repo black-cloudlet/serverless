@@ -1045,8 +1045,8 @@ class SnapshotCluster(OwnedCluster):
         self.text = text
         self.reads: list[tuple] = []
 
-    def pod_logs(self, pod, *, container, since_seconds=None, limit_bytes=None):
-        self.reads.append((pod, container, since_seconds, limit_bytes))
+    def pod_logs(self, pod, *, container, since_seconds=None, limit_bytes=None, tail_lines=None):
+        self.reads.append((pod, container, since_seconds, limit_bytes, tail_lines))
         return self.text
 
 
@@ -1090,7 +1090,45 @@ async def test_the_snapshot_passes_its_bounds_to_the_cluster(capacity):
         since_seconds=30,
         limit_bytes=4096,
     )
-    assert cluster.reads == [("p1", "queue-proxy", 30, 4096)]
+    assert cluster.reads == [("p1", "queue-proxy", 30, 4096, FAST.snapshot_tail_lines)]
+
+
+async def test_the_snapshot_is_bounded_even_when_the_caller_asks_for_nothing(capacity):
+    """No caller bound is not an unbounded read: the node may hold tens of MB,
+    and parsing it all is the event loop's time and the process's memory."""
+    cluster = SnapshotCluster({"p1": "r1"}, text="x\n")
+    engine = _engine(cluster, capacity)
+
+    await engine.pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
+        limit_bytes=None,
+    )
+    assert cluster.reads == [
+        ("p1", "user-container", None, FAST.snapshot_max_bytes, FAST.snapshot_tail_lines)
+    ]
+
+
+async def test_a_callers_limit_bytes_is_clamped_to_the_ceiling(capacity):
+    cluster = SnapshotCluster({"p1": "r1"}, text="x\n")
+    engine = _engine(cluster, capacity)
+
+    await engine.pod_logs(
+        _offering(),
+        "foo",
+        _caller(),
+        "team",
+        pod="p1",
+        container="user-container",
+        since_seconds=None,
+        limit_bytes=FAST.snapshot_max_bytes * 10,
+    )
+    assert cluster.reads[0][3] == FAST.snapshot_max_bytes
 
 
 async def test_an_empty_log_is_no_lines_rather_than_one_empty_one(capacity):

@@ -320,6 +320,7 @@ class Cluster:
         container: str,
         since_seconds: int | None = None,
         limit_bytes: int | None = None,
+        tail_lines: int | None = None,
     ) -> str:
         """Read a snapshot of one pod container's current log.
 
@@ -332,7 +333,10 @@ class Cluster:
             pod: The pod name.
             container: The container to read (e.g. the Knative user-container).
             since_seconds: Only return logs newer than this many seconds, if set.
-            limit_bytes: Cap the number of bytes returned, if set.
+            limit_bytes: Cap the number of bytes returned, if set. Kubernetes
+                truncates from the *start* of the selected window, so combine
+                with ``tail_lines`` when the newest lines are the ones wanted.
+            tail_lines: Only return the newest this-many lines, if set.
 
         Returns:
             The log text.
@@ -349,6 +353,7 @@ class Cluster:
                 timestamps=True,
                 since_seconds=since_seconds,
                 limit_bytes=limit_bytes,
+                tail_lines=tail_lines,
                 **self._opts,
             )
         except Exception as exc:
