@@ -50,7 +50,14 @@ spec:
             - name: SERVERLESS_WORKLOADS_NAMESPACE
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
-              value: {{ toJson .Values.corsAllowOrigins | quote }}
+              {{- /* Each entry is templated, then JSON-encoded - tpl on the
+                     encoded list instead would put rendered text inside JSON
+                     without escaping it. */}}
+              {{- $origins := list }}
+              {{- range .Values.corsAllowOrigins }}
+              {{- $origins = append $origins (tpl . $) }}
+              {{- end }}
+              value: {{ toJson $origins | quote }}
             - name: SERVERLESS_STREAM__MAX_CONCURRENT
               value: {{ .Values.stream.maxConcurrent | quote }}
             - name: SERVERLESS_STREAM__INTERVAL_SECONDS

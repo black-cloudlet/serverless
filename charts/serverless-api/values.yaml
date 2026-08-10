@@ -132,7 +132,12 @@ namespaces:
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
+# Each entry is rendered with tpl, so an origin can be derived from other
+# values instead of repeated per environment. Origins must be the exact form
+# the browser sends: scheme + host (+ port), no trailing slash - the API
+# matches them verbatim.
 corsAllowOrigins: []
+#  - https://portal.{{ .Values.global.baseDomain }}
 #  - https://acme.service-now.com
 
 # Bounds on the Server-Sent Events endpoints (/pods, /logs/pods/{pod}, /stats/stream).

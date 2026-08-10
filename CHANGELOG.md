@@ -16,6 +16,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   they are*, then keeps following; it is clamped to `stream.snapshotTailLines`
   either way. The console now opens follows with it.
 
+### Changed
+
+- **`corsAllowOrigins` entries are rendered with `tpl`**, so an origin can be
+  derived (e.g. `https://portal.{{ .Values.global.baseDomain }}`) instead of
+  repeated per environment. Each entry is templated before being JSON-encoded,
+  so rendered text cannot break the encoding.
+
 ### Fixed
 
 - **Shutdown is bounded (10s) instead of waiting on streams that never end.**
