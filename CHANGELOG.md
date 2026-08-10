@@ -25,6 +25,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **A building function no longer reports `ImagePullFailed` next to
+  `Building`.** The build-first fold rewrote a failing site row to `Building`
+  and cleared its message, but left the derived `reason` on the row - and the
+  headline promotes the first per-site reason, so every surface read
+  `Building` + `ImagePullFailed` during a perfectly normal first build. The
+  reason is cleared with the message: both describe the pull failure the
+  running build explains.
 - **Shutdown is bounded (10s) instead of waiting on streams that never end.**
   Uvicorn's graceful shutdown waits for in-flight requests, and an SSE stream
   is an in-flight request that finishes by design only when its client leaves -

@@ -113,13 +113,15 @@ def sites_with_build_status(
     first build.
 
     So while a site's build is in flight, that site reports ``Building`` and
-    drops the pull error: it is a symptom of the build running there, not an
-    independent failure. A ``Failed`` build keeps the row ``Failed`` but names
-    the cause - ``reason: "BuildFailed"``, with the build's own text as the
-    message - because the image genuinely will not arrive, and the pull error
-    alone points at the registry when the cause is the build. A row that is not
-    failing is left alone either way: a site still serving its previous
-    revision is telling the truth.
+    drops the pull error - reason and message both: they are symptoms of the
+    build running there, not an independent failure, and a ``reason`` left on
+    the row is what the headline promotes, which read as ``Building`` +
+    ``ImagePullFailed`` on every surface. A ``Failed`` build keeps the row
+    ``Failed`` but names the cause - ``reason: "BuildFailed"``, with the
+    build's own text as the message - because the image genuinely will not
+    arrive, and the pull error alone points at the registry when the cause is
+    the build. A row that is not failing is left alone either way: a site
+    still serving its previous revision is telling the truth.
 
     Each row is folded against **its own** site's build. A build running in one
     site says nothing about whether another site's image exists, so a shared
@@ -136,7 +138,9 @@ def sites_with_build_status(
     for site in sites:
         build = builds.get(site.site)
         if site.status == "Failed" and build is not None and build.state == "Building":
-            out.append(site.model_copy(update={"status": "Building", "message": None}))
+            out.append(
+                site.model_copy(update={"status": "Building", "reason": None, "message": None})
+            )
         elif site.status == "Failed" and build is not None and build.state == "Failed":
             out.append(
                 site.model_copy(

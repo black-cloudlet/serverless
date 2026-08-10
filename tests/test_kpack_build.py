@@ -457,6 +457,7 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
             site="a",
             status="Failed",
             revision="fn-team-00001",
+            reason="ImagePullFailed",
             message='Unable to fetch image "reg/team/fn:main": not found',
         ),
         SiteStatus(site="b", status="Ready", revision="fn-team-00001"),
@@ -466,6 +467,10 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
     )
 
     assert folded[0].status == "Building"
+    # reason goes with the message: both describe the pull failure the running
+    # build explains, and a reason left here is what the headline promotes -
+    # which read as `Building` + `ImagePullFailed` on every surface.
+    assert folded[0].reason is None
     assert folded[0].message is None
     assert folded[0].revision == "fn-team-00001"  # everything else is untouched
     assert folded[1].status == "Ready"  # a site that isn't failing is left alone
