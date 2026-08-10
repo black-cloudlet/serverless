@@ -18,6 +18,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **Shutdown is bounded (10s) instead of waiting on streams that never end.**
+  Uvicorn's graceful shutdown waits for in-flight requests, and an SSE stream
+  is an in-flight request that finishes by design only when its client leaves -
+  so every restart (probe kill, deploy, node drain) hung for the pod's whole
+  termination grace period and ended in SIGKILL (exit 137) with the streams
+  cut mid-event anyway. Now ordinary requests get ten seconds to drain, then
+  the streams are closed deliberately; their clients reconnect on their own.
 - **A container writing without newlines can no longer grow the API's memory.**
   The line-reassembly buffer behind a followed log held a partial line until
   its newline arrived - which for binary spew or a runaway single-line dump is

@@ -125,4 +125,15 @@ if __name__ == "__main__":
 
     settings = get_settings()
 
-    uvicorn.run("api.main:app", host="0.0.0.0", port=settings.port)  # noqa: S104
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",  # noqa: S104
+        port=settings.port,
+        # Bounded, because graceful shutdown waits for in-flight requests and
+        # ours include SSE streams that never finish by design: unbounded, every
+        # restart hangs for the pod's whole termination grace period and ends in
+        # SIGKILL (exit 137) with the streams cut mid-event anyway. Ten seconds
+        # lets ordinary requests drain, then closes the streams deliberately -
+        # their clients reconnect, which SSE does unprompted.
+        timeout_graceful_shutdown=10,
+    )
