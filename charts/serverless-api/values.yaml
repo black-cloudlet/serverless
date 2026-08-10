@@ -113,7 +113,7 @@ buildController:
     intervalSeconds: 21600
     # Newest per-build tags kept beyond the protected ones; matches
     # build.history.success's default, so images track the Build history.
-    keepBuilds: 3
+    keepBuilds: 0
 
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
@@ -371,8 +371,8 @@ build:
   # keeping a couple of: their pods hold the per-phase logs.
   # docs/BUILDING.md - Build history.
   history:
-    success: 3
-    failed: 3
+    success: 0
+    failed: 1
 
   # Build pod requests/limits. A build is far heavier than the function it
   # produces; without these it is BestEffort and evicted first under pressure.
