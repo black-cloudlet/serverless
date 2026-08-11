@@ -316,7 +316,7 @@ def test_a_ticket_opens_a_stream_a_browser_could_not_otherwise_open():
 
     assert response.status_code == 200
     assert svc.seen["user"].username == "alice"
-    assert svc.seen["user"].groups == {"team": "team"}
+    assert svc.seen["user"].group_names == ("team",)
 
 
 def test_a_ticket_for_another_stream_is_refused():
