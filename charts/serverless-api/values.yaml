@@ -533,6 +533,20 @@ externalSecrets:
         - secretKey: SERVERLESS_STREAM_TICKET_KEY
           key: cloudlet/platforms/serverless
           property: stream-ticket-key
+        # Secret of the Keycloak client Swagger UI's "Authorize" logs in with.
+        # Set it and the API proxies the token exchange server-side, so the
+        # client can be registered CONFIDENTIAL - which is what an SSO policy
+        # that forbids public clients requires. The browser still runs the
+        # authorization leg with PKCE; only the token leg carries this, and it
+        # never leaves the pod.
+        # For a PUBLIC client (PKCE, no secret) DELETE these three lines rather
+        # than leaving the Vault property empty: ESO fails the whole
+        # ExternalSecret when a property is missing, which would take the admin
+        # key and the ticket key down with it. Removed, the login still works -
+        # this entry is only needed where a public client is refused.
+        - secretKey: SERVERLESS_SWAGGER_CLIENT_SECRET
+          key: cloudlet/platforms/serverless
+          property: swagger-client-secret
 
 # Default-deny NetworkPolicies for workload pods. Verify the namespace names and
 # CIDRs match your cluster.

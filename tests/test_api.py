@@ -621,6 +621,40 @@ def test_swagger_sso_login_wired_in_openapi():
     assert "clientSecret" not in init  # public client - no secret
 
 
+def test_a_swagger_client_secret_moves_the_token_exchange_server_side(monkeypatch):
+    """Where the SSO realm forbids PUBLIC clients (docs/ARCHITECTURE.md).
+
+    Set the secret and the token leg is proxied through this API, so the
+    Keycloak client can be registered confidential. The browser still authorizes
+    against SSO with PKCE, and the secret must not reach it.
+    """
+    from api.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("SERVERLESS_SWAGGER_CLIENT_SECRET", "from-vault")
+    try:
+        app = create_app()
+        flow = app.openapi()["components"]["securitySchemes"]["SSO"]["flows"]["authorizationCode"]
+
+        assert flow["tokenUrl"] == "/auth/token"  # ...this API, not Keycloak
+        assert flow["authorizationUrl"].endswith("/protocol/openid-connect/auth")
+        # The secret stays in the pod: not in the served schema, not in the
+        # Swagger bootstrap, and PKCE still on.
+        assert "from-vault" not in str(app.openapi())
+        assert "from-vault" not in str(app.swagger_ui_init_oauth)
+        assert app.swagger_ui_init_oauth["usePkceWithAuthorizationCodeGrant"] is True
+        # Mounted, and hidden from the published schema.
+        assert "/auth/token" not in app.openapi().get("paths", {})
+        assert (
+            TestClient(app)
+            .post("/auth/token", data={"grant_type": "client_credentials"})
+            .status_code
+            == 400  # only an interactive login is ever completed
+        )
+    finally:
+        get_settings.cache_clear()
+
+
 def test_swagger_docs_html_delivers_oauth_init():
     """The vendored /docs HTML must call initOAuth with the client id + PKCE.
 

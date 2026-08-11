@@ -37,8 +37,10 @@ class SSOSettings(SSOConfig):
     """
 
     issuer: str = "https://sso.internal/realms/serverless"
-    # Public Keycloak client Swagger UI uses for its "Authorize" login
-    # (Authorization Code + PKCE; no secret). From Helm values, not a secret.
+    # Keycloak client Swagger UI uses for its "Authorize" login (Authorization
+    # Code + PKCE). An id is not a secret either way, so it comes from Helm
+    # values; whether the client is public or confidential is decided by
+    # `Settings.swagger_client_secret` below.
     swagger_client_id: str = "serverless-api-swagger"
 
 
@@ -144,6 +146,18 @@ class Settings(CommonSettings):
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth
     # rather than shipping a usable default credential.
     admin_api_key: str = ""
+    # Secret of the Keycloak client Swagger UI's "Authorize" logs in with, from
+    # Vault via ESO. Set, the token exchange is proxied through this API so the
+    # client can be registered CONFIDENTIAL - which is what an SSO policy that
+    # forbids public clients requires. Empty (the default) leaves the browser
+    # talking to Keycloak directly with PKCE and no secret, the public-client
+    # flow, which is what local development wants.
+    #
+    # Beside `admin_api_key` rather than inside `sso`: SSOConfig is the shared
+    # model every API on the platform embeds, and a secret belongs to the
+    # service that holds it (cloudlet-apis docs/DESIGN.md - Configuration stays
+    # in the consuming service).
+    swagger_client_secret: str = ""
 
     # What the SSE streams are allowed to consume. env: SERVERLESS_STREAM__*.
     stream: StreamConfig = Field(default_factory=StreamConfig)

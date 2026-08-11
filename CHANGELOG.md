@@ -21,6 +21,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **`SERVERLESS_SWAGGER_CLIENT_SECRET`, for an SSO realm that forbids public
+  clients.** Swagger UI's "Authorize" logs in with Auth Code + PKCE, which
+  needs no secret - which is exactly what makes its Keycloak client a *public*
+  one, and what a policy against public clients blocks. The API itself is a
+  resource server and registers no client at all, so only the docs login is
+  affected. Set this (Vault property `swagger-client-secret`, via ESO) and the
+  API proxies the token exchange at `POST /auth/token`, adding the secret
+  server-side so the client can be registered **confidential**; the browser
+  still runs the authorization leg with PKCE and never sees it. Unset, the
+  public-client flow is unchanged, which is what local development wants. See
+  docs/ARCHITECTURE.md - The Swagger "Authorize" client.
+
 - **`tailLines` on `GET .../logs/pods/{pod}`, for the follow and the snapshot
   alike.** A follow opened with `sinceSeconds` alone shows nothing for a pod
   that has been quiet longer than the window - the very pod a user opens the
