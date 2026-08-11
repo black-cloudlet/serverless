@@ -868,8 +868,14 @@ twice means.
 
 Every `Image` carries an explicit `spec.successBuildHistoryLimit` /
 `spec.failedBuildHistoryLimit`, from `build.history.success` / `build.history.failed`
-(default **3** and **3**). kpack garbage-collects older `Build` objects, and a `Build` owns
-its pod, so collecting one takes its completed pod with it.
+(the chart ships **1** and **1**; the field's own default is 3). kpack garbage-collects
+older `Build` objects, and a `Build` owns its pod, so collecting one takes its completed
+pod with it.
+
+**Neither may be 0.** A rebuild works by annotating the newest retained `Build`, so
+pruning to zero leaves nothing to annotate and turns every rebuild into a silent no-op.
+The API refuses it (`ge=1`) rather than accept a chart that would do that, which means a
+values file setting 0 crash-loops the pod instead of quietly breaking rebuilds.
 
 They are set rather than left out, because "left out" is not "unbounded" - it is kpack's
 own default of **10 and 10**, so **20 `Build`s and 20 completed pods per function**. That is

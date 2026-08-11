@@ -38,7 +38,7 @@ spec:
             - containerPort: {{ .Values.api.service.targetPort }}
           env:
             - name: SERVERLESS_PORT
-              value: {{ .Values.api.service.targetPort | quote }}
+              value: {{ .Values.api.service.targetPort | int64 | quote }}
             - name: SERVERLESS_AUTH_ENABLED
               value: "true"
             - name: SERVERLESS_BASE_DOMAIN
@@ -59,7 +59,7 @@ spec:
               {{- end }}
               value: {{ toJson $origins | quote }}
             - name: SERVERLESS_STREAM__MAX_CONCURRENT
-              value: {{ .Values.stream.maxConcurrent | quote }}
+              value: {{ .Values.stream.maxConcurrent | int64 | quote }}
             - name: SERVERLESS_STREAM__INTERVAL_SECONDS
               value: {{ .Values.stream.intervalSeconds | quote }}
             - name: SERVERLESS_STREAM__MIN_INTERVAL_SECONDS
@@ -69,17 +69,17 @@ spec:
             - name: SERVERLESS_STREAM__HEARTBEAT_SECONDS
               value: {{ .Values.stream.heartbeatSeconds | quote }}
             - name: SERVERLESS_STREAM__QUEUE_SIZE
-              value: {{ .Values.stream.queueSize | quote }}
+              value: {{ .Values.stream.queueSize | int64 | quote }}
             - name: SERVERLESS_STREAM__QUEUE_MAX_BYTES
-              value: {{ .Values.stream.queueMaxBytes | quote }}
+              value: {{ .Values.stream.queueMaxBytes | int64 | quote }}
             - name: SERVERLESS_STREAM__MAX_SECONDS
-              value: {{ .Values.stream.maxSeconds | quote }}
+              value: {{ .Values.stream.maxSeconds | int64 | quote }}
             - name: SERVERLESS_STREAM__TICKET_TTL_SECONDS
-              value: {{ .Values.stream.ticketTtlSeconds | quote }}
+              value: {{ .Values.stream.ticketTtlSeconds | int64 | quote }}
             - name: SERVERLESS_STREAM__SNAPSHOT_TAIL_LINES
-              value: {{ .Values.stream.snapshotTailLines | quote }}
+              value: {{ .Values.stream.snapshotTailLines | int64 | quote }}
             - name: SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES
-              value: {{ .Values.stream.snapshotMaxBytes | quote }}
+              value: {{ .Values.stream.snapshotMaxBytes | int64 | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_REGISTRY__DELETE_ON_FUNCTION_DELETE
@@ -128,9 +128,9 @@ spec:
             - name: SERVERLESS_BUILD__CACHE
               value: {{ .Values.build.cache | quote }}
             - name: SERVERLESS_BUILD__SUCCESS_HISTORY_LIMIT
-              value: {{ .Values.build.history.success | quote }}
+              value: {{ .Values.build.history.success | int64 | quote }}
             - name: SERVERLESS_BUILD__FAILED_HISTORY_LIMIT
-              value: {{ .Values.build.history.failed | quote }}
+              value: {{ .Values.build.history.failed | int64 | quote }}
             {{- end }}
             - name: SSL_CERT_FILE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}

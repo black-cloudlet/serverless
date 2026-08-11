@@ -73,6 +73,26 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **The API crash-looped on `stream.snapshotMaxBytes`.** Helm parses values.yaml
+  through JSON, so every number reaches a template as a float64 - and Go prints
+  a float64 of 1e6 or more in scientific notation. `2097152` therefore arrived
+  as `SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES="2.097152e+06"`, which `int` refuses,
+  so the pod died at import with a pydantic `int_parsing` error. Every
+  integer-typed value the two Deployments render now goes through `| int64`.
+  The four float-typed stream bounds deliberately do **not** - `int64` would
+  truncate a fractional `heartbeatSeconds` to 0.
+
+- **`build.history.success: 0` could not be loaded.** The values file has
+  shipped 0 since the SSE-streaming change, but the field it fills has a
+  deliberate floor of 1: a rebuild annotates the newest retained `Build`, so
+  pruning to zero makes every rebuild a silent no-op. The chart was the side
+  that was wrong; it now ships `success: 1`. `gc.keepBuilds: 0` is unaffected -
+  that prunes registry tags, not `Build`s.
+
+  `tests/test_chart_values.py` is new and covers the seam both bugs came
+  through: it reads the templates, renders each value the way Helm does
+  (float64 formatting included), and loads the result through `Settings`.
+
 - **A log stream's buffer is bounded by bytes as well as lines**
   (`stream.queueMaxBytes`, default 2MiB). The line bound alone was no bound for
   a pod writing without newlines: each "line" then arrives as a ~1MB piece, and
