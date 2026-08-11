@@ -10,10 +10,10 @@ requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
-    # >=0.3: the auth robustness fixes (a non-ASCII bearer token is a 401, not a
-    # 500; a down IdP no longer serializes every request through the discovery
-    # lock) and the platform name limits this API's own checks sit under.
-    "cloudlet-apis>=0.3,<1",
+    # >=0.4: SSOConfig defaults every field (so `sso` needs no subclass here),
+    # carries `swagger_client_secret`, and renamed the auth group object to
+    # SSOGroup. 0.3 has none of those, and this API does not start against it.
+    "cloudlet-apis>=0.4,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "kubernetes>=36.0.3",
@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 api = [
-    "cloudlet-apis[web,auth]>=0.3,<1",
+    "cloudlet-apis[web,auth]>=0.4,<1",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.1",
     "pyyaml>=6.0.3",

@@ -19,6 +19,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   overrides and values keys (including `global.site` -> `global.region`) at
   rollout.
 
+### Changed (dependencies)
+
+- **cloudlet-apis floor raised to `>=0.4`.** The API embeds `SSOConfig`
+  directly now (every field defaults, so there is no `SSOSettings` subclass),
+  reads the Swagger client secret off it, and uses the renamed `SSOGroup`.
+  None of that exists in 0.3, and the API does not start against it.
+
 ### Added
 
 - **`SERVERLESS_SSO__SWAGGER_CLIENT_SECRET`, for an SSO realm that forbids public
