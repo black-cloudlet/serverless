@@ -183,7 +183,11 @@ sso:
   # Templated, so it can be derived rather than repeated per environment.
   issuer: https://sso.internal/realms/serverless
   audience: ""
-  swaggerClientId: serverless-api
+  # The Keycloak client Swagger UI's "Authorize" logs in with - NOT this release
+  # name, which is what it read before and which is not a registered client.
+  # Must match the client id in the realm, or the docs login fails at the
+  # authorize step with an error only Keycloak's log explains.
+  swaggerClientId: serverless-api-swagger
   groupsClaim: groups
   adminGroups:
     - platform-admins

@@ -57,6 +57,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **The chart sent the wrong Swagger client id.** `sso.swaggerClientId`
+  defaulted to `serverless-api` - the release name, not a registered Keycloak
+  client. Everywhere else (the API's own default, `.env.example`, the tests)
+  says `serverless-api-swagger`, but the chart sets the env var explicitly, so
+  a chart install won: "Authorize" on `/docs` went to Keycloak with an unknown
+  client id and failed at the authorize step. The default is now
+  `serverless-api-swagger`. **Check it against your realm** - if your client is
+  registered under another name, this value is the one to override.
+
 - **The chart's default image references match what CI actually publishes.**
   `api.repository` and `buildController.repository` defaulted to
   `serverless/serverless-api` and `serverless/serverless-build-controller` -
