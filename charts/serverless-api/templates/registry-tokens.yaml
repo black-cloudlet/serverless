@@ -1,9 +1,9 @@
 {{- with .Values.registry.apiTokens }}
 {{- if .create }}
-# The Quay OAuth token for EVERY site's registry, in one variable.
+# The Quay OAuth token for EVERY region's registry, in one variable.
 #
 # Its own template rather than an entry in `externalSecrets.secrets`: that list is
-# a fixed name -> Vault property projection, and this is keyed by `sites`, needs a
+# a fixed name -> Vault property projection, and this is keyed by `regions`, needs a
 # `target.template` to assemble one value out of many, and fails in a way none of
 # the others can (below). docs/BUILDING.md - Registry cleanup on delete.
 apiVersion: external-secrets.io/v1beta1
@@ -20,17 +20,17 @@ spec:
     kind: ClusterSecretStore
   target:
     name: {{ .secretName }}
-    # A delete reclaims repositories in ALL sites from whichever instance took the
-    # request, so every pod needs every site's token. `index` because a site name
+    # A delete reclaims repositories in ALL regions from whichever instance took the
+    # request, so every pod needs every region's token. `index` because a region name
     # may contain '-', which is not a legal Go template field reference.
     template:
       data:
-        SERVERLESS_SITE_REGISTRY_TOKENS: {{ include "serverless-api.siteTokensTemplate" $ | quote }}
+        SERVERLESS_REGION_REGISTRY_TOKENS: {{ include "serverless-api.regionTokensTemplate" $ | quote }}
   data:
-    {{- range $.Values.sites }}
+    {{- range $.Values.regions }}
     - secretKey: {{ .name }}
       remoteRef:
-        key: {{ tpl (replace "{site}" .name $.Values.registry.apiTokens.key) $ }}
+        key: {{ tpl (replace "{region}" .name $.Values.registry.apiTokens.key) $ }}
         property: {{ $.Values.registry.apiTokens.property }}
     {{- end }}
 {{- end }}

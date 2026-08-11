@@ -82,11 +82,11 @@ class BuildRequest:
 
 
 @dataclass
-class SiteBuild:
-    """One site's half of a build plan.
+class RegionBuild:
+    """One region's half of a build plan.
 
     Attributes:
-        tag: The image reference this site's build pushes to, in its own
+        tag: The image reference this region's build pushes to, in its own
             registry.
         manifests: Its ``Image`` and build ServiceAccount, in dependency order.
     """
@@ -100,51 +100,51 @@ class BuildPlan:
     """What declaring a build produces, split by how far each piece travels.
 
     Attributes:
-        replicated: Manifests every site needs. The git credential lives here:
-            a site must be able to rebuild from a token it already holds, which
+        replicated: Manifests every region needs. The git credential lives here:
+            a region must be able to rebuild from a token it already holds, which
             is the switchover story (docs/BUILDING.md - Active/Active).
-        per_site: The build objects each site applies, keyed by site name. Per
-            site because each pushes to its own registry, so the tag differs;
+        per_region: The build objects each region applies, keyed by region name. Per
+            region because each pushes to its own registry, so the tag differs;
             one shared tag would have two clusters racing to push it
             (docs/BUILDING.md - Registry layout).
     """
 
     replicated: list[dict]
-    per_site: dict[str, SiteBuild]
+    per_region: dict[str, RegionBuild]
 
-    def tag_for(self, site: str) -> str | None:
-        """The image reference ``site`` builds to, or None if it does not build.
+    def tag_for(self, region: str) -> str | None:
+        """The image reference ``region`` builds to, or None if it does not build.
 
         Args:
-            site: The site name.
+            region: The region name.
 
         Returns:
-            The tag, or None when the plan does not cover that site.
+            The tag, or None when the plan does not cover that region.
         """
-        build = self.per_site.get(site)
+        build = self.per_region.get(region)
         return build.tag if build else None
 
-    def manifests_for(self, site: str) -> list[dict]:
-        """The build manifests ``site`` applies, empty if it does not build.
+    def manifests_for(self, region: str) -> list[dict]:
+        """The build manifests ``region`` applies, empty if it does not build.
 
         Args:
-            site: The site name.
+            region: The region name.
 
         Returns:
             The manifests, in dependency order.
         """
-        build = self.per_site.get(site)
+        build = self.per_region.get(region)
         return build.manifests if build else []
 
     @property
     def tags(self) -> dict[str, str]:
-        """The image reference each site builds to, keyed by site name."""
-        return {site: build.tag for site, build in self.per_site.items()}
+        """The image reference each region builds to, keyed by region name."""
+        return {region: build.tag for region, build in self.per_region.items()}
 
     @property
-    def manifests_by_site(self) -> dict[str, list[dict]]:
-        """Each site's build manifests, keyed by site name."""
-        return {site: build.manifests for site, build in self.per_site.items()}
+    def manifests_by_region(self) -> dict[str, list[dict]]:
+        """Each region's build manifests, keyed by region name."""
+        return {region: build.manifests for region, build in self.per_region.items()}
 
 
 @dataclass
@@ -192,9 +192,9 @@ class BuildBackend(Protocol):
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
-            registries: The registry each building site pushes to, keyed by
-                site name. Its keys are the sites that build - the workload's
-                targets, since a site builds what it runs.
+            registries: The registry each building region pushes to, keyed by
+                region name. Its keys are the regions that build - the workload's
+                targets, since a region builds what it runs.
 
         Returns:
             The build plan.
@@ -212,11 +212,11 @@ class BuildBackend(Protocol):
         so it cannot be expressed as one without putting a nonce in the spec and
         rebuilding forever.
 
-        Call it *after* applying the plan, so a site that has no build objects
+        Call it *after* applying the plan, so a region that has no build objects
         gets them (and builds) rather than being triggered into nothing.
 
         Args:
-            cluster: The cluster holding the build (always the local site).
+            cluster: The cluster holding the build (always the local region).
             name: The workload name.
             group: The owning group.
 
@@ -240,7 +240,7 @@ class BuildBackend(Protocol):
         where the loop would be a round trip per workload on every poll.
 
         Args:
-            cluster: The cluster to read (normally the local site).
+            cluster: The cluster to read (normally the local region).
             group: The owning group.
 
         Returns:

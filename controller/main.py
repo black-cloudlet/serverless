@@ -59,8 +59,8 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _terminate)
     signal.signal(signal.SIGINT, _terminate)
 
-    reconciler = Reconciler(settings, gc_factory=lambda site: TagGC(settings, site))
-    logger.info("build controller watching kpack Images in %s", reconciler.local.site)
+    reconciler = Reconciler(settings, gc_factory=lambda region: TagGC(settings, region))
+    logger.info("build controller watching kpack Images in %s", reconciler.local.region)
     try:
         loop(reconciler, settings)
     finally:

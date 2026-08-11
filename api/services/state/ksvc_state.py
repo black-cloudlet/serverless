@@ -2,7 +2,7 @@
 
 Pure: every function here takes a Kubernetes object as a plain dict and returns
 a value. Nothing reaches a cluster, which is what separates this module from
-:mod:`api.services.sites.site_read` - that one fetches, this one interprets what was
+:mod:`api.services.regions.region_read` - that one fetches, this one interprets what was
 fetched. It is also why these are the cheapest rules in the service to test:
 hand them a dict, assert on the answer.
 
@@ -17,7 +17,7 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from api.models.common import BuildStatusView, SiteStatus
+from api.models.common import BuildStatusView, RegionStatus
 
 # Israel local time, DST applied from the IANA database. `tzdata` is a
 # dependency so this resolves in slim containers with no system zoneinfo.
@@ -60,8 +60,8 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
     text on ``message``.
 
     Args:
-        overall: The rollup of the per-site KSVC statuses.
-        build: The local site's build status, or None if it has no build.
+        overall: The rollup of the per-region KSVC statuses.
+        build: The local region's build status, or None if it has no build.
 
     Returns:
         The status to report.
@@ -76,19 +76,19 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
 
 
 def roll_up_builds(builds: Iterable[BuildStatusView | None]) -> BuildStatusView | None:
-    """Collapse the per-site build states into the one the workload reports.
+    """Collapse the per-region build states into the one the workload reports.
 
-    Every site builds its own copy (docs/BUILDING.md - Active/Active Behaviour), so "the
+    Every region builds its own copy (docs/BUILDING.md - Active/Active Behaviour), so "the
     function's build" is no longer a single thing. A failure anywhere wins, and
     carries its own message: it is the actionable state, and reporting ``Ready``
-    because the other site managed it would hide the site that did not. Failing
+    because the other region managed it would hide the region that did not. Failing
     that, a build still running anywhere means the rollout is not finished.
 
     Args:
-        builds: Each site's build status; None where a site has no build.
+        builds: Each region's build status; None where a region has no build.
 
     Returns:
-        The status to report, or None when no site has a build at all.
+        The status to report, or None when no region has a build at all.
     """
     seen = [b for b in builds if b is not None]
     if not seen:
@@ -100,19 +100,19 @@ def roll_up_builds(builds: Iterable[BuildStatusView | None]) -> BuildStatusView 
     )
 
 
-def sites_with_build_status(
-    sites: list[SiteStatus], builds: Mapping[str, BuildStatusView | None]
-) -> list[SiteStatus]:
-    """Apply the build-first rule to the per-site rows, not just the rollup.
+def regions_with_build_status(
+    regions: list[RegionStatus], builds: Mapping[str, BuildStatusView | None]
+) -> list[RegionStatus]:
+    """Apply the build-first rule to the per-region rows, not just the rollup.
 
-    :func:`with_build_status` fixes the headline while a build runs, but each site
+    :func:`with_build_status` fixes the headline while a build runs, but each region
     row is read straight off its KSVC - and that KSVC is failing to pull an image
     kpack has not pushed yet. Left alone the detail view says ``Building`` at the
-    top and ``Failed`` - ``Unable to fetch image ...`` in the sites table
+    top and ``Failed`` - ``Unable to fetch image ...`` in the regions table
     immediately below it, which reads as a broken deploy during what is a normal
     first build.
 
-    So while a site's build is in flight, that site reports ``Building`` and
+    So while a region's build is in flight, that region reports ``Building`` and
     drops the pull error - reason and message both: they are symptoms of the
     build running there, not an independent failure, and a ``reason`` left on
     the row is what the headline promotes, which read as ``Building`` +
@@ -120,35 +120,35 @@ def sites_with_build_status(
     ``Failed`` but names the cause - ``reason: "BuildFailed"``, with the
     build's own text as the message - because the image genuinely will not
     arrive, and the pull error alone points at the registry when the cause is
-    the build. A row that is not failing is left alone either way: a site
+    the build. A row that is not failing is left alone either way: a region
     still serving its previous revision is telling the truth.
 
-    Each row is folded against **its own** site's build. A build running in one
-    site says nothing about whether another site's image exists, so a shared
+    Each row is folded against **its own** region's build. A build running in one
+    region says nothing about whether another region's image exists, so a shared
     verdict would mask a real failure next to a healthy neighbour.
 
     Args:
-        sites: The per-site statuses read from the KSVCs.
-        builds: Each site's build status, keyed by site name.
+        regions: The per-region statuses read from the KSVCs.
+        builds: Each region's build status, keyed by region name.
 
     Returns:
-        The per-site statuses to report.
+        The per-region statuses to report.
     """
     out = []
-    for site in sites:
-        build = builds.get(site.site)
-        if site.status == "Failed" and build is not None and build.state == "Building":
+    for region in regions:
+        build = builds.get(region.region)
+        if region.status == "Failed" and build is not None and build.state == "Building":
             out.append(
-                site.model_copy(update={"status": "Building", "reason": None, "message": None})
+                region.model_copy(update={"status": "Building", "reason": None, "message": None})
             )
-        elif site.status == "Failed" and build is not None and build.state == "Failed":
+        elif region.status == "Failed" and build is not None and build.state == "Failed":
             out.append(
-                site.model_copy(
-                    update={"reason": "BuildFailed", "message": build.message or site.message}
+                region.model_copy(
+                    update={"reason": "BuildFailed", "message": build.message or region.message}
                 )
             )
         else:
-            out.append(site)
+            out.append(region)
     return out
 
 
@@ -265,7 +265,7 @@ def ksvc_failure_message(obj: dict) -> str | None:
     Returns the human-readable ``message`` (falling back to the ``reason`` code)
     of a KSVC's ``Ready`` condition when its status is ``False`` - the rollout
     failure detail (RevisionFailed, image-pull error, ...) to surface as the
-    per-site ``error``. None when Ready isn't False or carries no detail.
+    per-region ``error``. None when Ready isn't False or carries no detail.
     """
     conditions = dig(obj, "status", "conditions", default=[]) or []
     ready = next((c for c in conditions if c.get("type") == "Ready"), None)

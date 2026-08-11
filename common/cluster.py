@@ -1,4 +1,4 @@
-"""Per-site Kubernetes/OpenShift cluster client (server-side apply, get, watch, delete).
+"""Per-region Kubernetes/OpenShift cluster client (server-side apply, get, watch, delete).
 
 Shared infrastructure: the API and the build controller both reach a cluster the
 same way (client-cert mTLS, lazy connect), configured from the shared
@@ -15,7 +15,7 @@ from enum import Enum
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
-from common.config import CommonSettings, RegistryConfig, SiteConfig
+from common.config import CommonSettings, RegionConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
 
 
@@ -63,31 +63,31 @@ class ResourceKind(Enum):
 
 
 class Cluster:
-    """A single site's cluster connection and resource operations.
+    """A single region's cluster connection and resource operations.
 
     The Kubernetes client is synchronous and the connection is established lazily
-    (on first use) so one unreachable site can't fail or block startup.
+    (on first use) so one unreachable region can't fail or block startup.
 
-    It is also the handle callers pass around to mean "this site", which is why
-    :attr:`registry` hangs off it: the registry a site pushes to and pulls from
-    is part of what that site *is*, and a caller holding the cluster should not
+    It is also the handle callers pass around to mean "this region", which is why
+    :attr:`registry` hangs off it: the registry a region pushes to and pulls from
+    is part of what that region *is*, and a caller holding the cluster should not
     have to look it up by name.
     """
 
-    def __init__(self, site_config: SiteConfig, settings: CommonSettings):
-        """Configure the client for one site (the connection stays lazy).
+    def __init__(self, region_config: RegionConfig, settings: CommonSettings):
+        """Configure the client for one region (the connection stays lazy).
 
         Args:
-            site_config: The site's name and cluster identifiers.
+            region_config: The region's name and cluster identifiers.
             settings: Shared connection settings (namespace, TLS material, base
                 domain, timeouts, registry).
         """
-        self.site: str = site_config.name
-        self.name: str = site_config.cluster
-        # Resolved here so anything holding a cluster has that site's registry
-        # rather than reaching for the platform default, which on a per-site
+        self.region: str = region_config.name
+        self.name: str = region_config.cluster
+        # Resolved here so anything holding a cluster has that region's registry
+        # rather than reaching for the platform default, which on a per-region
         # path is silently the wrong one.
-        self.registry: RegistryConfig = settings.registry_for(site_config.name)
+        self.registry: RegistryConfig = settings.registry_for(region_config.name)
         self._namespace: str = settings.workloads_namespace
 
         self._configuration = client.Configuration()
@@ -115,7 +115,7 @@ class Cluster:
 
     @property
     def _api_client(self) -> client.ApiClient:
-        """The lazily-built Kubernetes API client for this site."""
+        """The lazily-built Kubernetes API client for this region."""
         built = self._api_client_obj  # fast path: already built, no lock needed
         if built is not None:
             return built
@@ -425,7 +425,7 @@ class Cluster:
         return LogFollow(response)
 
     def close(self) -> None:
-        """Release the underlying HTTP client (connection pool) for this site.
+        """Release the underlying HTTP client (connection pool) for this region.
 
         Idempotent and safe to call at shutdown; the lazy clients are rebuilt on
         next use if the Cluster is reused afterwards.
@@ -514,48 +514,49 @@ class LogFollow:
 
 
 def clusters_for(settings: CommonSettings) -> dict[str, Cluster]:
-    """One client per configured site, keyed by site name (connections stay lazy).
+    """One client per configured region, keyed by region name (connections stay lazy).
 
     Args:
-        settings: Shared settings carrying the site list.
+        settings: Shared settings carrying the region list.
 
     Returns:
-        ``{site_name: Cluster}``, empty when no sites are configured.
+        ``{region_name: Cluster}``, empty when no regions are configured.
     """
-    return {site.name: Cluster(site, settings) for site in settings.sites}
+    return {region.name: Cluster(region, settings) for region in settings.regions}
 
 
-def select_local(clusters: dict[str, Cluster], local_site: str | None) -> Cluster:
+def select_local(clusters: dict[str, Cluster], local_region: str | None) -> Cluster:
     """The cluster this process sits in, from :func:`clusters_for`'s mapping.
 
-    Matched on the site name first, then the cluster name, so either spelling in
+    Matched on the region name first, then the cluster name, so either spelling in
     the chart resolves. A configured name that matches nothing is an error, not
-    a fallback: silently adopting the first site would have this process build,
-    reconcile and serve as a site it is not. Only an *unset* name falls back,
-    for the single-site install that never says which one it is. Shared, because
+    a fallback: silently adopting the first region would have this process build,
+    reconcile and serve as a region it is not. Only an *unset* name falls back,
+    for the single-region install that never says which one it is. Shared, because
     the API and the controller mean the same thing by "local".
 
     Args:
-        clusters: The per-site clients.
-        local_site: The configured local site (or cluster) name.
+        clusters: The per-region clients.
+        local_region: The configured local region (or cluster) name.
 
     Returns:
         The local cluster.
 
     Raises:
-        ValidationError: If no sites are configured, or ``local_site`` names one
+        ValidationError: If no regions are configured, or ``local_region`` names one
             that is not.
     """
     if not clusters:
-        raise ValidationError("no sites are configured")
-    if local_site:
-        by_site = clusters.get(local_site)
-        if by_site:
-            return by_site
+        raise ValidationError("no regions are configured")
+    if local_region:
+        by_region = clusters.get(local_region)
+        if by_region:
+            return by_region
         for cluster in clusters.values():
-            if cluster.name == local_site:  # match the cluster name too
+            if cluster.name == local_region:  # match the cluster name too
                 return cluster
         raise ValidationError(
-            f"local site '{local_site}' matches none of the configured sites: {sorted(clusters)}"
+            f"local region '{local_region}' matches none of the configured regions: "
+            f"{sorted(clusters)}"
         )
     return next(iter(clusters.values()))

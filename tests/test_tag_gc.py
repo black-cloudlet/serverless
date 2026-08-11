@@ -15,7 +15,7 @@ import logging
 import httpx
 import pytest
 
-from common.config import SiteConfig, SiteRegistry
+from common.config import RegionConfig, RegionRegistry
 from common.errors import NotFoundError
 from common.names import digest_of, tag_of
 from common.registry import TagInfo
@@ -54,8 +54,8 @@ def _tags(entries=_HISTORY):
 
 def _settings(**overrides):
     values = dict(
-        sites=[SiteConfig(name="central", cluster="central-0")],
-        local_site="central",
+        regions=[RegionConfig(name="central", cluster="central-0")],
+        local_region="central",
         registry=dict(url="registry.internal", api_token="oauth-token"),
     )
     values.update(overrides)
@@ -110,7 +110,7 @@ class _Quay:
         return httpx.Response(405)
 
 
-def _gc(monkeypatch, quay: _Quay, settings=None, site="central") -> TagGC:
+def _gc(monkeypatch, quay: _Quay, settings=None, region="central") -> TagGC:
     transport = httpx.MockTransport(quay.handler)
     real = httpx.Client
 
@@ -119,7 +119,7 @@ def _gc(monkeypatch, quay: _Quay, settings=None, site="central") -> TagGC:
         return real(**kwargs)
 
     monkeypatch.setattr(httpx, "Client", client)
-    return TagGC(settings or _settings(), site)
+    return TagGC(settings or _settings(), region)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +149,7 @@ def test_the_expected_tags_and_only_those_are_garbage():
 def test_the_branch_tag_survives_regardless_of_age():
     tags = [TagInfo("main", _D[1], 10), TagInfo("b9.20260809.120000", _D[2], 90)]
     # even pointing at an ancient digest, the name alone protects it: a create
-    # deploys at the branch tag, and a switchover site rebuilds into it
+    # deploys at the branch tag, and a switchover region rebuilds into it
     assert _garbage(tags, protected_digests=set(), keep=1) == []
 
 
@@ -434,14 +434,14 @@ def test_a_sweep_with_nothing_to_prune_stays_quiet_per_function(monkeypatch, cap
 # --------------------------------------------------------------------------- #
 
 
-def test_a_shared_registry_refuses_to_sweep_and_names_the_sites(monkeypatch, caplog):
+def test_a_shared_registry_refuses_to_sweep_and_names_the_regions(monkeypatch, caplog):
     """Two controllers pruning one repository each protect only their own digest."""
     caplog.set_level(logging.INFO, logger=_LOGGER)
     quay = _Quay()
     settings = _settings(
-        sites=[
-            SiteConfig(name="central", cluster="central-0"),
-            SiteConfig(name="south", cluster="south-0"),  # both default to registry.internal
+        regions=[
+            RegionConfig(name="central", cluster="central-0"),
+            RegionConfig(name="south", cluster="south-0"),  # both default to registry.internal
         ]
     )
     gc = _gc(monkeypatch, quay, settings)
@@ -454,15 +454,15 @@ def test_a_shared_registry_refuses_to_sweep_and_names_the_sites(monkeypatch, cap
     assert any("shares registry registry.internal with south" in m for m in warnings)
 
 
-def test_sites_on_their_own_registries_do_sweep(monkeypatch):
+def test_regions_on_their_own_registries_do_sweep(monkeypatch):
     quay = _Quay()
     settings = _settings(
-        sites=[
-            SiteConfig(name="central", cluster="central-0"),
-            SiteConfig(
+        regions=[
+            RegionConfig(name="central", cluster="central-0"),
+            RegionConfig(
                 name="south",
                 cluster="south-0",
-                registry=SiteRegistry(url="registry.south.internal"),
+                registry=RegionRegistry(url="registry.south.internal"),
             ),
         ]
     )
@@ -501,7 +501,7 @@ def test_the_platform_delete_switch_also_stops_the_gc(monkeypatch, caplog):
 
 def test_resync_hands_its_listing_to_the_gc():
     class _Cluster:
-        site = "central"
+        region = "central"
 
         def list_resources(self, kind, *, label_selector=None):
             return [_image()], "7"
@@ -526,11 +526,11 @@ def test_resync_hands_its_listing_to_the_gc():
     assert [i["metadata"]["name"] for i in reconciler._gc.calls[0]] == ["fn-hello-payments"]
 
 
-def test_the_gc_factory_receives_the_resolved_site_name():
+def test_the_gc_factory_receives_the_resolved_region_name():
     seen = []
-    # the chart may spell local_site as the CLUSTER name; the GC must still
-    # resolve the site whose registry it prunes
-    reconciler = Reconciler(_settings(local_site="central-0"), gc_factory=seen.append)
+    # the chart may spell local_region as the CLUSTER name; the GC must still
+    # resolve the region whose registry it prunes
+    reconciler = Reconciler(_settings(local_region="central-0"), gc_factory=seen.append)
     try:
         assert seen == ["central"]
     finally:

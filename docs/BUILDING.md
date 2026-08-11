@@ -32,7 +32,7 @@ the build flow, and what the API owns versus the build controller.
 | Cluster singletons | Stack and store are cluster-wide, so the engine release owns them; the serverless-api chart references them by name |
 | Languages | `go`, `python`, `node` |
 | Stack | **One shared** jammy base stack for all languages |
-| Build locality | **Build where you run** - every site the function is deployed to builds its own copy, into its own registry (BUILDING.md: Active/Active Behaviour) |
+| Build locality | **Build where you run** - every region the function is deployed to builds its own copy, into its own registry (BUILDING.md: Active/Active Behaviour) |
 | Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
 | Image CR writer | The **API** (POST / PUT / `POST .../build`; a git webhook is planned, not implemented) |
 | Digest propagation | The **build controller**, its own Deployment, watches `status.latestImage` in its own cluster and applies the ksvc with the new digest **there only** (BUILDING.md: Digest propagation) |
@@ -40,11 +40,11 @@ the build flow, and what the API owns versus the build controller.
 | Rebuild trigger | An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition. *Planned:* a webhook setting `spec.source.git.revision` to the pushed commit SHA (idempotent by data) |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
 | Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
-| Registry credential | **One** ESO-managed secret per site - kpack **push** + function **pull** - under one name everywhere and different contents; plus a pull-only secret for the kpack registry (BUILDING.md: Registry & Git Credentials) |
+| Registry credential | **One** ESO-managed secret per region - kpack **push** + function **pull** - under one name everywhere and different contents; plus a pull-only secret for the kpack registry (BUILDING.md: Registry & Git Credentials) |
 | Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
-| Registry cleanup | Function delete **deletes both repositories in every site's registry** through Quay's management API, with a per-site OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
-| Registry tag GC | The **build controller** prunes kpack's per-build tags, **its own site's registry only**, on an hours-scale sweep off the loop thread. Kept per function: the branch tag, every tag on the serving digest, the newest N builds beyond those. Requires **one site per registry** - enforced at render and re-checked by the controller (BUILDING.md: Registry tag GC) |
-| Registry layout | Each site's own `registry.url` (from `sites[].registry`) + optional `registry.organization` + `build.builderRepository`. **One** root for the Builders this platform composes and the functions it builds; the mirrored kpack and Paketo content sits on a separate, shared registry nothing writes to (BUILDING.md: Registry layout) |
+| Registry cleanup | Function delete **deletes both repositories in every region's registry** through Quay's management API, with a per-region OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
+| Registry tag GC | The **build controller** prunes kpack's per-build tags, **its own region's registry only**, on an hours-scale sweep off the loop thread. Kept per function: the branch tag, every tag on the serving digest, the newest N builds beyond those. Requires **one region per registry** - enforced at render and re-checked by the controller (BUILDING.md: Registry tag GC) |
+| Registry layout | Each region's own `registry.url` (from `regions[].registry`) + optional `registry.organization` + `build.builderRepository`. **One** root for the Builders this platform composes and the functions it builds; the mirrored kpack and Paketo content sits on a separate, shared registry nothing writes to (BUILDING.md: Registry layout) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
 ---
@@ -198,18 +198,18 @@ Whenever a `clusterBuild.stores[].sources[].tag` is bumped, re-check that every 
 
 ### Registry layout
 
-**There is a registry per site, and one shared registry beside them.** The split is
+**There is a registry per region, and one shared registry beside them.** The split is
 decided by *who writes*:
 
 | Content | Registry | Written by |
 |---|---|---|
 | kpack's own images; the Paketo stack and buildpackages | **the kpack registry**, shared | the mirror scripts, once |
-| Composed `Builder` images | **the site's own** | that site's kpack |
-| Function images, and their build caches | **the site's own** | that site's kpack |
+| Composed `Builder` images | **the region's own** | that region's kpack |
+| Function images, and their build caches | **the region's own** | that region's kpack |
 
 Everything read-only is shared, so the airgap mirror inventory stays a single copy
 (BUILDING.md: Airgapped Mirror Inventory). Everything written is local, so two clusters
-can never race to push one tag - which is what lets every site build the function it runs
+can never race to push one tag - which is what lets every region build the function it runs
 (BUILDING.md: Active/Active Behaviour). The composed `Builder` sits on the local side even
 though it is *made* of mirrored content: composing it is a push.
 
@@ -219,16 +219,16 @@ the repository. `registry.organization` supplies it, `build.builderRepository` a
 one everything the platform builds sits under, and the rest derives from those three:
 
 ```
-{site registry url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
+{region registry url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
 
   base/{name}                                       Builder tags
   base/{group}/{name}:{branch}                      function images (the API)
   base/{group}/{name}_cache:latest                  build layer cache (BUILDING.md: Build cache)
 ```
 
-Only the **host** varies per site. The path segments are how repositories are *named*,
-and naming them differently per site would buy nothing while giving `RegistryConfig.path`
-two answers - so `sites[].registry` normally sets `url` alone.
+Only the **host** varies per region. The path segments are how repositories are *named*,
+and naming them differently per region would buy nothing while giving `RegistryConfig.path`
+two answers - so `regions[].registry` normally sets `url` alone.
 
 One value covers the Builders and the functions deliberately: they are pushed by the same
 credential, mirrored together, and cleaned up against the same root, so a second value
@@ -241,36 +241,36 @@ the image reference hangs off it and the repository *delete* addresses Quay by t
 string with the host removed, so the repository that is deleted is the one that was
 pushed to.
 
-**`CommonSettings.registry_for(site)` is the single resolution**, merging a site's
+**`CommonSettings.registry_for(region)` is the single resolution**, merging a region's
 override over the platform default, and every cluster client carries the answer as
-`Cluster.registry`. Nothing on a per-site path reads the platform default directly: it is
-the one value that would silently be the wrong registry there. A site that names no
+`Cluster.registry`. Nothing on a per-region path reads the platform default directly: it is
+the one value that would silently be the wrong registry there. A region that names no
 registry of its own inherits the default, which is exactly the single-registry install.
 
-### Why per-site resolution sits where it does
+### Why per-region resolution sits where it does
 
-Two placement decisions carry the per-site design, and both are about which process
+Two placement decisions carry the per-region design, and both are about which process
 composes what:
 
-**The KSVC image is resolved per site, inside the per-cluster fan-out.** A function's
-image is `{site registry base}/{group}/{name}:{branch}` - a different string per site -
+**The KSVC image is resolved per region, inside the per-cluster fan-out.** A function's
+image is `{region registry base}/{group}/{name}:{branch}` - a different string per region -
 so the apply composes the KSVC inside the per-cluster closure rather than once outside
-it. That is only the create path: afterwards the field belongs to each site's build
+it. That is only the create path: afterwards the field belongs to each region's build
 controller (BUILDING.md: Who writes the ksvc image), which pins a digest from its own
-registry - per-site divergence is carried by the mechanism that already owned the field.
+registry - per-region divergence is carried by the mechanism that already owned the field.
 A container is unaffected: its image is the caller's, one value everywhere.
 
-**A site's registry lives in the shared `sites[]` list, never in per-release values.**
-The API instance handling a write composes manifests for *every* site, so it must know
-every site's registry - not just its own. `sites[]` is the same ConfigMap in every
+**A region's registry lives in the shared `regions[]` list, never in per-release values.**
+The API instance handling a write composes manifests for *every* region, so it must know
+every region's registry - not just its own. `regions[]` is the same ConfigMap in every
 cluster, which is also what keeps the convergence rules (BUILDING.md: Convergence rules)
-intact: two instances in two clusters compose the same `Image` for site X because they
-read site X's registry from the same list. Secrets stay out of it - the list is
-ConfigMap data, so a site override carries `url`/`organization`/`repository` only.
+intact: two instances in two clusters compose the same `Image` for region X because they
+read region X's registry from the same list. Secrets stay out of it - the list is
+ConfigMap data, so a region override carries `url`/`organization`/`repository` only.
 
 **No NetworkPolicy follows from any of this.** A registry is never a Service or a
 Route - always off-cluster - so the `allow-egress-external` rule (off-cluster allowed,
-only the in-cluster CIDRs carved out) covers each site's registry and the shared kpack
+only the in-cluster CIDRs carved out) covers each region's registry and the shared kpack
 registry with nothing added.
 
 ### Moving a function's repository
@@ -292,7 +292,7 @@ object by hand.
 
 The API therefore **deletes the `Image` and lets the apply recreate it** whenever the
 computed tag differs from the deployed one (`WorkloadService.retag_build`, one GET on the
-build site per write). Three things follow:
+build region per write). Three things follow:
 
 - **A new `Image` has no prior `Build`, so it builds immediately.** Nothing has to ask for
   one; changing the layout and sending any `PUT` is the whole migration.
@@ -439,17 +439,17 @@ covers the run image, so the running function trusts internal TLS too.
 
 ### Two registries, three credentials
 
-A build reads two registries: it pushes to the site's own, and pulls the stack, the store
+A build reads two registries: it pushes to the region's own, and pulls the stack, the store
 and (at `export`) the run image from the shared kpack registry. Docker auth is keyed by
 **host**, so that is two dockerconfigjson secrets - plus the function's git token.
 
-| Secret | Content | Same in every site? |
+| Secret | Content | Same in every region? |
 |---|---|---|
-| `serverless-registry-creds` | **this site's** registry: push + pull | Name yes, contents no |
+| `serverless-registry-creds` | **this region's** registry: push + pull | Name yes, contents no |
 | `kpack-registry-creds` | the shared kpack registry, pull only | Yes, both |
-| `{workload}-git` | that function's token | Per function, on every site it runs in |
+| `{workload}-git` | that function's token | Per function, on every region it runs in |
 
-The site credential serves both ends of the image's life:
+The region credential serves both ends of the image's life:
 
 ```
 ExternalSecret ──► Secret (dockerconfigjson)
@@ -457,15 +457,15 @@ ExternalSecret ──► Secret (dockerconfigjson)
                      └──► ksvc imagePullSecrets      → Knative PULLS it to run
 ```
 
-The image is pushed to and pulled from the same registry - this site's - so splitting that
+The image is pushed to and pulled from the same registry - this region's - so splitting that
 one would mean maintaining two secrets with identical contents.
 
-**The name must stay identical in every site.** It is written into every site's KSVC
+**The name must stay identical in every region.** It is written into every region's KSVC
 `imagePullSecrets` and onto every per-function build ServiceAccount, and the API emits
-those for all sites from one place. Only the *contents* differ, so only the Vault path is
-per site (`.../serverless/{{ .Values.global.site }}`).
+those for all regions from one place. Only the *contents* differ, so only the Vault path is
+per region (`.../serverless/{{ .Values.global.region }}`).
 
-`build.kpackRegistry.url` empty means the kpack registry **is** the site registry - the
+`build.kpackRegistry.url` empty means the kpack registry **is** the region registry - the
 single-registry install - and then no second Secret is created and nothing is added to the
 build accounts.
 
@@ -503,7 +503,7 @@ metadata:
   name: fn-hello-payments
   namespace: serverless-workloads       # with the Image and the KSVC (DEPLOYING.md: Chart Topology)
 secrets:
-  - name: serverless-registry-creds     # this site's, from the chart
+  - name: serverless-registry-creds     # this region's, from the chart
   - name: kpack-registry-creds          # the run image `export` pulls
   - name: hello-payments-git            # this function's token, from the API
 imagePullSecrets:
@@ -524,7 +524,7 @@ workloads namespace, which is what makes one git Secret enough.
 > `kpack.io/git: <scheme>://<host>`. kpack clones with it - it reads no other shape - and
 > the API reads the password back so a later edit rebuilds without the client re-sending
 > the token. One shape and one decode path: `FunctionOffering.read_extra_state` pulls the
-> `password` key through `site_read.secret_text`, the same call that reads a workload's
+> `password` key through `region_read.secret_text`, the same call that reads a workload's
 > env values.
 
 ---
@@ -594,7 +594,7 @@ Two components, split by execution model:
 | Component | Path | Responsibility |
 |-----------|------|----------------|
 | **API** | request/response | On POST / PUT / `POST .../build`: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
-| **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** sites (BUILDING.md: Digest propagation). |
+| **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** regions (BUILDING.md: Digest propagation). |
 
 The watch loop does not fit a request/response API, and the shared library already
 anticipates this split (`common/cluster.py`: *"the API and a future builder service both
@@ -604,7 +604,7 @@ on its build resources"*).
 **The contract is declarative.** `BuildBackend.plan` does not return a finished image and
 does not touch a cluster. It returns the manifests recording desired state (git Secret ->
 build ServiceAccount -> `Image`, in dependency order) plus the deterministic `tag` each
-site's build will push to; the caller applies them alongside the KSVC's other derived resources,
+region's build will push to; the caller applies them alongside the KSVC's other derived resources,
 the ksvc is applied against that tag immediately, and `GET` reports `Building` until kpack
 finishes (FUNCTIONS.md: Function Status Resolution). "Created" no longer implies "serving".
 
@@ -617,22 +617,22 @@ nothing to clean up.
 
 | | Scope | Why |
 |---|---|---|
-| git `Secret` | **shared by every target site** | One token for the function, wherever it builds. Nothing can recover a token whose only copy was on the site that went away (BUILDING.md: Active/Active Behaviour). |
-| `Image` + build `ServiceAccount` | **per target site**, one set each | Every site builds what it runs, so each needs its own - identical but for the `tag` and cache reference, which name that site's registry. |
+| git `Secret` | **shared by every target region** | One token for the function, wherever it builds. Nothing can recover a token whose only copy was on the region that went away (BUILDING.md: Active/Active Behaviour). |
+| `Image` + build `ServiceAccount` | **per target region**, one set each | Every region builds what it runs, so each needs its own - identical but for the `tag` and cache reference, which name that region's registry. |
 
-**A site builds what it runs.** The build objects go to the workload's target sites, and
-nowhere else: a site that runs no copy has nothing to build, and one that does has a KSVC
+**A region builds what it runs.** The build objects go to the workload's target regions, and
+nowhere else: a region that runs no copy has nothing to build, and one that does has a KSVC
 beside every build object to own it. There is no unowned case, so nothing has to be
-reclaimed by name and no site is written to that the request did not ask for.
+reclaimed by name and no region is written to that the request did not ask for.
 
-`plan` therefore takes the registries the build pushes to - `{site: RegistryConfig}`,
-whose keys *are* the building sites - rather than resolving them itself. The caller holds
+`plan` therefore takes the registries the build pushes to - `{region: RegistryConfig}`,
+whose keys *are* the building regions - rather than resolving them itself. The caller holds
 the clusters and each carries its own registry, so there is one resolution path rather
 than a second snapshot of it.
 
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
-`Image` on a site that has never had one - which is what makes a PUT after a switchover
+`Image` on a region that has never had one - which is what makes a PUT after a switchover
 self-healing (BUILDING.md: Active/Active Behaviour).
 
 ### Who writes the ksvc image
@@ -641,8 +641,8 @@ Exactly one writer per phase, with no overlap:
 
 | Path | ksvc image |
 |------|-----------|
-| POST | **written once, per site**: `{that site's registry}/{organization}/{builderRepository}/{group}/{name}:{branch}` |
-| PUT | **kept, per site** - whatever each site is running, read back off its own KSVC. One value fanned out would point a peer at this site's registry |
+| POST | **written once, per region**: `{that region's registry}/{organization}/{builderRepository}/{group}/{name}:{branch}` |
+| PUT | **kept, per region** - whatever each region is running, read back off its own KSVC. One value fanned out would point a peer at this region's registry |
 | `POST .../build` | **not written** - no ksvc is applied at all |
 | build controller | **the only writer after the create**, and only ever the digest |
 
@@ -711,7 +711,7 @@ expired `resourceVersion` costs one extra relist, not a function stuck on an old
 the relist interval - one knob, because they are the same number.
 
 **Both ends are local, for the same reason.** The `Image` is in this cluster because this
-site built it, and the digest it produced names this site's registry - a peer cannot pull
+region built it, and the digest it produced names this region's registry - a peer cannot pull
 it, so publishing there would be worse than doing nothing. Nothing in this loop reads or
 writes a peer cluster, and the controller holds one client.
 
@@ -734,39 +734,39 @@ refusing a moved one would strand the workload on a repository nothing pushes to
 
 ### No leader election
 
-Two replicas - or two sites' controllers reaching the same conclusion - apply the same
+Two replicas - or two regions' controllers reaching the same conclusion - apply the same
 desired state, and a server-side apply of identical content is a no-op that produces no
 Knative revision. Same convergence rules as every other writer (BUILDING.md: Convergence
 rules); `buildController.replicaCount` above 1 is safe, just redundant.
 
-Two controllers never see the same input at all: each follows its own site's `Image`s and
-writes its own site's KSVCs, so there is nothing to contend over between sites. The
-redundancy that matters is within a site, and identical applies converge there.
+Two controllers never see the same input at all: each follows its own region's `Image`s and
+writes its own region's KSVCs, so there is nothing to contend over between regions. The
+redundancy that matters is within a region, and identical applies converge there.
 
 > **The prune is gone.** A switchover used to strand `Image` objects in the previously
-> active site; they kept firing `STACK`/`BUILDPACK` rebuilds and publishing digests that
-> fought the new site's, so each resync compared the two sites and deleted the ones it had
-> superseded. A peer's `Image` is no longer stranded - it is that site's own build, for the
-> workload that site runs - so the comparison, its clock-skew tie-breaking, its
-> "a site that cannot be listed stops the pass" guard and `buildController.pruneOrphans`
-> are all deleted. So is the assumption underneath them, that writes land at one site at a
+> active region; they kept firing `STACK`/`BUILDPACK` rebuilds and publishing digests that
+> fought the new region's, so each resync compared the two regions and deleted the ones it had
+> superseded. A peer's `Image` is no longer stranded - it is that region's own build, for the
+> workload that region runs - so the comparison, its clock-skew tie-breaking, its
+> "a region that cannot be listed stops the pass" guard and `buildController.pruneOrphans`
+> are all deleted. So is the assumption underneath them, that writes land at one region at a
 > time.
 
 ---
 
 ## Active/Active Behaviour
 
-### A site builds what it runs
+### A region builds what it runs
 
-Each site builds in its **own** cluster, into its **own** registry, so the full build stack
+Each region builds in its **own** cluster, into its **own** registry, so the full build stack
 (kpack, Stack, Store, Builders) is installed in every cluster and a function deployed to
-two sites has an `Image` in both. Nothing crosses a site boundary at runtime: the image a
-site serves was built there, from a registry it owns, and published by its own controller.
+two regions has an `Image` in both. Nothing crosses a region boundary at runtime: the image a
+region serves was built there, from a registry it owns, and published by its own controller.
 
-That is what makes a site self-sufficient, and it is the whole switchover story - there is
-nothing to reconstruct, because the surviving site was already building and running its own
+That is what makes a region self-sufficient, and it is the whole switchover story - there is
+nothing to reconstruct, because the surviving region was already building and running its own
 copy. It is also what removes the three mechanisms the shared registry forced: the
-cross-site digest write, the prune, and the unowned build objects.
+cross-region digest write, the prune, and the unowned build objects.
 
 ### Every write path is a full server-side apply
 
@@ -777,16 +777,16 @@ create-or-update by construction**. Every path therefore composes the *complete*
 | Path | Behaviour |
 |------|-----------|
 | POST | compose -> apply -> creates |
-| PUT | compose -> apply -> **creates if missing**, else updates. Keeps each site's own ksvc image (BUILDING.md: Who writes the ksvc image) |
+| PUT | compose -> apply -> **creates if missing**, else updates. Keeps each region's own ksvc image (BUILDING.md: Who writes the ksvc image) |
 | build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
 | webhook *(planned)* | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
 
 The build applies *before* it triggers, and that ordering is what makes it self-healing
-rather than merely idempotent: on a site that has never built the function the apply
+rather than merely idempotent: on a region that has never built the function the apply
 creates the `Image`, which builds on its own, and there is no `Build` to annotate - so the
 trigger finds nothing and says so instead of failing. It is also the one write path that
 leaves the `KSVC` alone: the function's desired state does not change, so nothing is
-composed for it. It reaches every site the function runs in, and skips the ones it does
+composed for it. It reaches every region the function runs in, and skips the ones it does
 not - an absent `KSVC` there means there is no build to re-declare.
 
 > **Never use a targeted patch** (e.g. patching only `spec.source.git.revision`). It
@@ -795,7 +795,7 @@ not - an absent `KSVC` there means there is no build to re-declare.
 
 ### Reconstruction after a gap
 
-A site that never built a function - one added to `sites` later, or one whose `Image` was
+A region that never built a function - one added to `regions` later, or one whose `Image` was
 deleted - can still compose it, because the inputs are on the workload itself:
 
 | Input | Source |
@@ -838,18 +838,18 @@ twice means.
 
 ### Accepted consequences
 
-- **The sites run different bytes.** Builds are not bit-reproducible, so the same commit
-  produces a different digest in each site. Both run *that commit*; what is not guaranteed
-  is that they run the same layers. Anything comparing images across sites has to compare
+- **The regions run different bytes.** Builds are not bit-reproducible, so the same commit
+  produces a different digest in each region. Both run *that commit*; what is not guaranteed
+  is that they run the same layers. Anything comparing images across regions has to compare
   source instead. This is the one irreversible property of the design, and it is what buys
-  every site its independence.
-- **A rollout is not atomic across sites.** One site can finish building minutes before the
+  every region its independence.
+- **A rollout is not atomic across regions.** One region can finish building minutes before the
   other, and a build can succeed in one and fail in the other - which reads as `Failed` with `reason: "BuildFailed"`
-  with one site `Building`, and was impossible when a single build fed both.
-- **Build load and registry storage multiply by the number of sites.** A build pod is the
+  with one region `Building`, and was impossible when a single build fed both.
+- **Build load and registry storage multiply by the number of regions.** A build pod is the
   heaviest thing in the workloads namespace (BUILDING.md: Build pod resources), so the
-  quota has to be sized for concurrent builds in every site, not one.
-- **Builds depend on the kpack registry.** If it is down no site can build; every site can
+  quota has to be sized for concurrent builds in every region, not one.
+- **Builds depend on the kpack registry.** If it is down no region can build; every region can
   still run and serve. A strictly smaller blast radius than a single registry, which was
   also the runtime pull path.
 
@@ -859,10 +859,10 @@ twice means.
 
 | Event | Action |
 |-------|--------|
-| Function delete | Nothing to do *in any cluster*: each site's `Image` and build `ServiceAccount` are owned by its KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
-| Function delete (registry) | Nothing in a cluster owns registry content, so the API deletes both repositories in **every** site's registry, by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
-| Old build tags | Each site's **build controller** prunes them from its own registry on an hours-scale sweep, keeping what is still addressable or recent (BUILDING.md: Registry tag GC). |
-| Switchover | Nothing to clean up. Each site already held its own build objects for the workloads it runs. |
+| Function delete | Nothing to do *in any cluster*: each region's `Image` and build `ServiceAccount` are owned by its KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
+| Function delete (registry) | Nothing in a cluster owns registry content, so the API deletes both repositories in **every** region's registry, by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
+| Old build tags | Each region's **build controller** prunes them from its own registry on an hours-scale sweep, keeping what is still addressable or recent (BUILDING.md: Registry tag GC). |
+| Switchover | Nothing to clean up. Each region already held its own build objects for the workloads it runs. |
 
 ### Build history
 
@@ -890,7 +890,7 @@ untouched function keeps its existing history until something rebuilds it.
 ### Registry cleanup on delete
 
 Deleting a function deletes its image repository and its cache repository outright, **in
-every site's registry** - each built its own copy, and nothing else would ever address the
+every region's registry** - each built its own copy, and nothing else would ever address the
 peer's:
 
 ```
@@ -924,11 +924,11 @@ Two consequences of how Quay scopes that token, both worth checking before enabl
 
 **Each registry has its own token, and every pod holds all of them.** A delete lands on
 whichever instance the DNS record points at, and that instance is responsible for every
-site - so the chart reads one Vault entry per site and an ESO template assembles them into
-`SERVERLESS_SITE_REGISTRY_TOKENS`, a site-keyed JSON object. (One underscore: it is not
-`SERVERLESS_REGISTRY__API_TOKEN`, which stays as the fallback for a site the map does not
+region - so the chart reads one Vault entry per region and an ESO template assembles them into
+`SERVERLESS_REGION_REGISTRY_TOKENS`, a region-keyed JSON object. (One underscore: it is not
+`SERVERLESS_REGISTRY__API_TOKEN`, which stays as the fallback for a region the map does not
 name, and is what a single-registry install keeps using.) A JSON object rather than one
-variable per site, because a site name may contain `-`.
+variable per region, because a region name may contain `-`.
 
 **Wiring that secret is what enables cleanup** - without it the step is skipped, so an
 install that never adds it is unaffected by the upgrade.
@@ -936,8 +936,8 @@ install that never adds it is unaffected by the upgrade.
 and it is the platform-wide switch: the build controller's tag GC (BUILDING.md: Registry tag GC)
 honors the same flag, so false stops **every** registry delete the platform makes.
 
-This is the **one** thing left that crosses a site boundary, and it is control-plane only:
-the data path never does. It is also why the API pod holds every site's token rather than
+This is the **one** thing left that crosses a region boundary, and it is control-plane only:
+the data path never does. It is also why the API pod holds every region's token rather than
 its own - strictly less power than the client certificate it already carries, which can
 write Knative Services in every cluster.
 
@@ -959,7 +959,7 @@ services cannot drift in how they address it.
 
 #### Accepted consequences
 
-- **A crash leaks a repository.** Cleanup is best-effort and fired once, after every site
+- **A crash leaks a repository.** Cleanup is best-effort and fired once, after every region
   confirms the delete; it is not reconciled. If the pod dies between the two, the
   repository survives and nothing will notice. Deliberate: the alternative is a
   reconcile pass that derives "unowned" from a cluster read, which deletes everything the
@@ -967,9 +967,9 @@ services cannot drift in how they address it.
 - **A container pinned to a function's image breaks.** `image` on the container offering is
   grammar-validated only, not scoped to the caller's group, so a container may reference a
   function's image. Deleting the function removes it regardless.
-- **An unreachable peer registry leaks.** The delete is issued per site from one instance,
+- **An unreachable peer registry leaks.** The delete is issued per region from one instance,
   so a registry that cannot be reached leaves its repositories behind and nothing notices.
-  Doing it from each site's own controller instead was rejected for the reason above: it
+  Doing it from each region's own controller instead was rejected for the reason above: it
   would have to derive "unowned" from a cluster read.
 - **Reclamation is not immediate.** Deleting the repository removes it from the listing at
   once, but the underlying blobs come back when Quay garbage-collects, after its
@@ -990,9 +990,9 @@ the old branch's projected tag stays behind permanently.
 The **build controller** prunes them (`controller/gc.py`), because the problem is shaped
 like the controller:
 
-- **Per-site, local only.** A site builds what it runs into its own registry, so each
-  site's controller prunes exactly the registry its site filled, with its own token. The
-  one cross-site call stays the API's delete cleanup; the GC adds none.
+- **Per-region, local only.** A region builds what it runs into its own registry, so each
+  region's controller prunes exactly the registry its region filled, with its own token. The
+  one cross-region call stays the API's delete cleanup; the GC adds none.
 - **It already holds the ground truth.** The sweep rides the resync's Image listing - no
   second LIST - and judges tags against `spec.tag` and `status.latestImage` as just
   fetched.
@@ -1002,16 +1002,16 @@ like the controller:
   of the sweep - the listing order is stable, so an aborting error would starve every
   function after it, deterministically, on every sweep.
 
-**One site per registry is the safety premise, and it is enforced twice.** A controller
-pruning a repository protects only its *own* site's serving digest; two sites on one
+**One region per registry is the safety premise, and it is enforced twice.** A controller
+pruning a repository protects only its *own* region's serving digest; two regions on one
 registry would each delete tags the other still serves. So the chart requires
-`sites[].registry.url` on every site and refuses to render two sites on one registry
+`regions[].registry.url` on every region and refuses to render two regions on one registry
 (BUILDING.md: Registry layout), and the controller independently refuses to sweep - loudly,
-naming the sites and the shared host - when its resolved registry matches another
-site's, as the backstop for a hand-rolled config.
+naming the regions and the shared host - when its resolved registry matches another
+region's, as the backstop for a hand-rolled config.
 
 Per function repository, a sweep **keeps**: the current **branch tag** (a create deploys
-at it; a switchover site rebuilds into it); every tag on the **digest of
+at it; a switchover region rebuilds into it); every tag on the **digest of
 `status.latestImage`** (deleting the last tag on a manifest lets Quay collect it, and the
 digest-pinned KSVC could no longer pull on a node change); the newest
 **`buildController.gc.keepBuilds`** build tags **beyond all of those** (default **3**,
@@ -1024,8 +1024,8 @@ digest-protected, pruning would be a guess. Everything else - older build tags, 
 branch tags - is deleted. The cache repository is never addressed: it reuses one
 `latest` tag and does not accumulate (BUILDING.md: Open Questions).
 
-**Wiring.** The controller mounts the same per-site tokens Secret the API holds
-(`registry.apiTokens`, optional for the same ESO reason) and resolves only its own site's
+**Wiring.** The controller mounts the same per-region tokens Secret the API holds
+(`registry.apiTokens`, optional for the same ESO reason) and resolves only its own region's
 token; `buildController.gc.{enabled,intervalSeconds,keepBuilds}` are the knobs, and
 `registry.deleteOnFunctionDelete: false` - the platform-wide "may we delete registry
 content" switch - stops the GC exactly as it stops cleanup on delete. The sweep fires on
@@ -1102,7 +1102,7 @@ spec:
     # NOTE: never set creationTime here - see BUILDING.md: Active/Active Behaviour
 ```
 
-### Builder (serverless-api chart, per site)
+### Builder (serverless-api chart, per region)
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -1156,7 +1156,7 @@ one release.
 
 The account the **Builders** run as. No git credential: a Builder composes and pushes a
 builder image, it never clones source - but it does read two registries, pulling the stack
-and store from the kpack registry and pushing the composed builder to this site's. The
+and store from the kpack registry and pushing the composed builder to this region's. The
 per-function build account is in BUILDING.md: Registry & Git Credentials.
 
 ```yaml
@@ -1165,7 +1165,7 @@ kind: ServiceAccount
 metadata:
   name: kpack-builder
   namespace: serverless-workloads
-secrets:                       # push to this site's registry, pull stack/store
+secrets:                       # push to this region's registry, pull stack/store
   - name: serverless-registry-creds
   - name: kpack-registry-creds
 imagePullSecrets:              # build pod pulling the composed builder image
@@ -1299,14 +1299,14 @@ Pulled by the platform chart. Registry `ghcr.io`, repository prefix
 | `paketobuildpacks/nodejs` | `ClusterStore` |
 | `paketobuildpacks/python` | `ClusterStore` |
 
-These are pulled from the **kpack registry**, which is shared by every site and written by
-nobody - so the inventory is mirrored once, not once per site.
+These are pulled from the **kpack registry**, which is shared by every region and written by
+nobody - so the inventory is mirrored once, not once per region.
 
 The **composed builder images** this platform *produces* are the exception: they are pushed
-to `{site registry base}/<lang>` by that site's `Builder` objects (the base already carries
-`build.builderRepository`), so that repository must exist and be writable in **each** site's
+to `{region registry base}/<lang>` by that region's `Builder` objects (the base already carries
+`build.builderRepository`), so that repository must exist and be writable in **each** region's
 registry. Composing is a push, and two clusters pushing one builder tag is the race
-per-site registries exist to remove.
+per-region registries exist to remove.
 
 ### Runtime distributions - **not images**
 
@@ -1439,24 +1439,24 @@ Either form is attached per build through `spec.build.services`, alongside the C
 4. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
    cache repository does not accumulate tags; superseded blobs are the registry's to
    reclaim. Whether the registry's own GC settles this depends on the registry - and it
-   is now per site, so each one settles its own.
+   is now per region, so each one settles its own.
 5. **Git webhook** - not implemented. `BuildRequest.revision` carries the field and the
    convergence rule it must follow is recorded above (rule 4); what is undecided is the
    endpoint's auth model (per-function shared secret vs. provider signature) and how a
    push maps to a function when several functions build from one monorepo.
 6. **Peer-registry reachability** - a function delete reclaims repositories in *every*
-   site's registry from whichever API instance took the request (BUILDING.md: Registry
-   cleanup on delete), so the internal network must route each site's registry host
-   from every cluster. If it does not, deletes leak repositories in the peer site and a
+   region's registry from whichever API instance took the request (BUILDING.md: Registry
+   cleanup on delete), so the internal network must route each region's registry host
+   from every cluster. If it does not, deletes leak repositories in the peer region and a
    different reclamation story is needed.
 
 ### Resolved
 
-- **One registry, one builder site** - reversed. Every site now builds what it runs, into
+- **One registry, one builder region** - reversed. Every region now builds what it runs, into
   its own registry, and publishes only to itself (BUILDING.md: Active/Active Behaviour;
   the split and its rationale are under BUILDING.md: Registry layout). The migration is
-  complete, and its record retired with it. The cost is that two sites run different
-  bytes for the same commit; what it buys is that no site depends on another to build,
+  complete, and its record retired with it. The cost is that two regions run different
+  bytes for the same commit; what it buys is that no region depends on another to build,
   serve, or recover.
 
 - **`javascript` -> `node` rename** - done. The runtimes list is `python`, `go`, `node`

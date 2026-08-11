@@ -1,39 +1,39 @@
-# OpenShift sites data only (per-site API endpoint, name, namespace). Non-secret,
-# so it lives in a ConfigMap and is loaded into the API as the SERVERLESS_SITES
-# env var. Editing the sites list does not require changing the Deployment.
+# OpenShift regions data only (per-region API endpoint, name, namespace). Non-secret,
+# so it lives in a ConfigMap and is loaded into the API as the SERVERLESS_REGIONS
+# env var. Editing the regions list does not require changing the Deployment.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: "{{ .Values.name }}-sites"
+  name: "{{ .Values.name }}-regions"
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
-  # Every site must name ITS OWN registry, and no two sites may share one.
-  # "Build where you run" makes each site's build controller prune the
-  # registry its site filled (docs/BUILDING.md - Registry tag GC); two sites
+  # Every region must name ITS OWN registry, and no two regions may share one.
+  # "Build where you run" makes each region's build controller prune the
+  # registry its region filled (docs/BUILDING.md - Registry tag GC); two regions
   # on one registry would each protect only their own serving digest and
   # delete the other's tags. Refused at render, where the mistake is cheap.
   {{- $hosts := dict }}
-  {{- range .Values.sites }}
+  {{- range .Values.regions }}
   {{- if not (and .registry .registry.url) }}
-  {{- fail (printf "serverless-api: site %q must set `registry.url` - every site builds into its own registry, and sharing one would let a site's tag GC delete images a peer still serves (docs/BUILDING.md - Registry tag GC)" .name) }}
+  {{- fail (printf "serverless-api: region %q must set `registry.url` - every region builds into its own registry, and sharing one would let a region's tag GC delete images a peer still serves (docs/BUILDING.md - Registry tag GC)" .name) }}
   {{- end }}
   {{- $host := regexReplaceAll "^https?://" (trimSuffix "/" .registry.url) "" }}
   {{- if hasKey $hosts $host }}
-  {{- fail (printf "serverless-api: sites %q and %q share the registry %q - every site must have its own" (get $hosts $host) .name $host) }}
+  {{- fail (printf "serverless-api: regions %q and %q share the registry %q - every region must have its own" (get $hosts $host) .name $host) }}
   {{- end }}
   {{- $_ := set $hosts $host .name }}
   {{- end }}
   # Remap to the app's snake_case keys, then let Helm serialize (handles escaping).
-  # A site's `registry` rides along so an instance can compose the peer's manifests.
-  {{- $sites := list }}
-  {{- range .Values.sites }}
-  {{- $site := dict "name" .name "cluster" .cluster }}
+  # A region's `registry` rides along so an instance can compose the peer's manifests.
+  {{- $regions := list }}
+  {{- range .Values.regions }}
+  {{- $region := dict "name" .name "cluster" .cluster }}
   {{- $reg := dict "url" .registry.url }}
   {{- if not (kindIs "invalid" .registry.organization) }}{{- $_ := set $reg "organization" .registry.organization }}{{- end }}
   {{- if not (kindIs "invalid" .registry.repository) }}{{- $_ := set $reg "repository" .registry.repository }}{{- end }}
-  {{- $_ := set $site "registry" $reg }}
-  {{- $sites = append $sites $site }}
+  {{- $_ := set $region "registry" $reg }}
+  {{- $regions = append $regions $region }}
   {{- end }}
-  SERVERLESS_SITES: {{ toJson $sites | quote }}
+  SERVERLESS_REGIONS: {{ toJson $regions | quote }}

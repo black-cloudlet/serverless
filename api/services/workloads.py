@@ -1,20 +1,20 @@
-"""Shared workload engine: build manifests once, fan out to all sites.
+"""Shared workload engine: build manifests once, fan out to all regions.
 
 Offering-agnostic. FunctionService and ContainerService compose this engine and
 add only the offering-specific prep (build-from-Git vs image + pull secret);
 apply, host/absence checks, access control and get/delete all live here.
 
-What lives here is the *orchestration* - which sites to visit, in what order,
+What lives here is the *orchestration* - which regions to visit, in what order,
 and what a partial answer means. Everything it orchestrates was pulled out to be
 readable and testable on its own:
 
 * :mod:`api.services.manifests` - build what gets applied (pure)
-* :mod:`api.services.sites`     - fan out, and write/read one site
+* :mod:`api.services.regions`     - fan out, and write/read one region
 * :mod:`api.services.state`     - interpret what came back (pure)
 * :mod:`api.services.builder`   - the function image build
 
 The ``assert_*``/``host_for``/``validate_spec`` methods below are thin
-delegations to :mod:`api.services.sites.preflight`, kept on the engine because
+delegations to :mod:`api.services.regions.preflight`, kept on the engine because
 that is the object the offering services and the routers hold.
 """
 
@@ -42,8 +42,8 @@ from api.models.common import (
     PodLogSnapshot,
     PodLogStreamOpen,
     PodRoster,
-    SiteStats,
-    SiteStatus,
+    RegionStats,
+    RegionStatus,
     WorkloadResponse,
     WorkloadStatsResponse,
     WorkloadSummary,
@@ -54,11 +54,11 @@ from api.services.manifests import route as route_svc
 from api.services.manifests.env import env_secret_name, resolve_env
 from api.services.manifests.files import files_name, resolve_files
 from api.services.offering import DeleteContext, Offering
-from api.services.sites import preflight, site_apply, site_read
-from api.services.sites.deployer import (
+from api.services.regions import preflight, region_apply, region_read
+from api.services.regions.deployer import (
     Deployer,
     aggregate,
-    overall_status_for_sites,
+    overall_status_for_regions,
     status_code_for,
 )
 from api.services.state import describe as describe_svc
@@ -77,7 +77,7 @@ from common.config import RegistryConfig
 from common.errors import (
     ForbiddenError,
     NotFoundError,
-    SiteTotalFailure,
+    RegionTotalFailure,
 )
 from common.names import object_name
 
@@ -165,15 +165,15 @@ class ApplyRequest:
         name: Workload name.
         group: Owning group.
         user: The authenticated caller.
-        image: The image to deploy when every site runs the same one (a
-            container's). Empty for an offering built per site; ``images``
+        image: The image to deploy when every region runs the same one (a
+            container's). Empty for an offering built per region; ``images``
             carries it then.
         env: Env vars to resolve onto the workload.
         files: File mounts to resolve onto the workload.
         scaling: Autoscaling settings.
         size: Resource t-shirt size.
         hostname: Optional custom host; None takes the default.
-        sites: Target site names, or None for all.
+        regions: Target region names, or None for all.
         port: The container port to stamp. Always set - both offerings default
             it to 8080 rather than leaving it implicit.
         created: True for a create - enables the absence check and the
@@ -188,15 +188,15 @@ class ApplyRequest:
             without a value keeps its stored value (update only).
         kept_files: Decoded existing files-Secret values, so a secret file sent
             without content keeps its stored content (update only).
-        images: The image to run, per site name; takes precedence over
-            ``image``. A function builds in each site's own registry, so its
-            sites do not run one reference.
-        extra_secrets: Owned Secrets applied to every target site (the
+        images: The image to run, per region name; takes precedence over
+            ``image``. A function builds in each region's own registry, so its
+            regions do not run one reference.
+        extra_secrets: Owned Secrets applied to every target region (the
             function's git token), so any of them can rebuild after a
             switchover. Not in the managed prune set, so omitting one keeps the
             stored copy.
-        site_resources: Owned manifests applied to one site only, keyed by site
-            name (a function's ``Image`` and build ServiceAccount). A site
+        region_resources: Owned manifests applied to one region only, keyed by region
+            name (a function's ``Image`` and build ServiceAccount). A region
             builds what it runs, so these go to the targets, and each is owned
             by the KSVC beside it.
         runtime: Function runtime, stamped as an annotation.
@@ -218,7 +218,7 @@ class ApplyRequest:
     scaling: object
     size: str
     hostname: str | None
-    sites: list[str] | None
+    regions: list[str] | None
     port: int
     created: bool
     pull_secret_name: str | None = None
@@ -228,7 +228,7 @@ class ApplyRequest:
     kept_files: dict[str, bytes] | None = None
     images: Mapping[str, str] = field(default_factory=dict)
     extra_secrets: Sequence[dict] = field(default_factory=tuple)
-    site_resources: Mapping[str, Sequence[dict]] = field(default_factory=dict)
+    region_resources: Mapping[str, Sequence[dict]] = field(default_factory=dict)
     # Build metadata, stamped as KSVC annotations so a read can report the source
     # a function was built from. All None for an offering that has no build.
     runtime: str | None = None
@@ -238,16 +238,16 @@ class ApplyRequest:
     path: str | None = None
     pull_stamp: str | None = None
 
-    def image_for(self, site: str) -> str:
-        """The image ``site`` should run.
+    def image_for(self, region: str) -> str:
+        """The image ``region`` should run.
 
         Args:
-            site: The site name.
+            region: The region name.
 
         Returns:
-            That site's own image, falling back to the uniform ``image``.
+            That region's own image, falling back to the uniform ``image``.
         """
-        return self.images.get(site) or self.image
+        return self.images.get(region) or self.image
 
 
 class WorkloadService:
@@ -264,7 +264,7 @@ class WorkloadService:
 
         Args:
             settings: Global settings.
-            deployer: The multi-site fan-out helper.
+            deployer: The multi-region fan-out helper.
             builder: The function image build backend.
             capacity: The stream pool and admission gate. Defaulted from
                 ``settings`` rather than required, so the non-streaming paths -
@@ -307,7 +307,7 @@ class WorkloadService:
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host, validating any custom one.
 
-        See :func:`api.services.sites.preflight.resolve_host`.
+        See :func:`api.services.regions.preflight.resolve_host`.
         """
         return preflight.resolve_host(name, hostname, group, self.settings.route_domain)
 
@@ -323,7 +323,7 @@ class WorkloadService:
     ) -> None:
         """Validate a spec synchronously, before the request is accepted.
 
-        See :func:`api.services.sites.preflight.validate_spec`.
+        See :func:`api.services.regions.preflight.validate_spec`.
         """
         preflight.validate_spec(name, group, owner, env, files, kept_env, kept_files)
 
@@ -338,7 +338,7 @@ class WorkloadService:
     ) -> None:
         """Assert a workload can be deployed: host free, and optionally name unused.
 
-        See :func:`api.services.sites.preflight.assert_deployable`.
+        See :func:`api.services.regions.preflight.assert_deployable`.
         """
         await preflight.assert_deployable(
             self.deployer, name, group, targets, host=host, require_absent=require_absent
@@ -375,7 +375,7 @@ class WorkloadService:
             type=offering.name,
             hostname=host,
             status="Pending",
-            sites=[],
+            regions=[],
             statusUrl=f"/api/v1/groups/{group}/{offering.name}s/{name}",
             **extra,
         )
@@ -410,7 +410,7 @@ class WorkloadService:
         Args:
             offering: The offering being created.
             group: The owning group (from the request path).
-            spec: The create request (carries name/sites/hostname/env/files).
+            spec: The create request (carries name/regions/hostname/env/files).
             user: The authenticated caller.
             background: FastAPI background tasks to schedule the deploy on.
             work: The offering's background create coroutine, run as
@@ -421,7 +421,7 @@ class WorkloadService:
             A Pending response with a ``statusUrl`` to poll.
         """
         self.assert_group(user, group)
-        targets = self.deployer.resolve_targets(spec.sites)
+        targets = self.deployer.resolve_targets(spec.regions)
         host = self.host_for(spec.name, spec.hostname, group)
         # Validate synchronously (400) before the 202, so bad input never reaches the
         # background deploy.
@@ -493,10 +493,10 @@ class WorkloadService:
     async def apply_workload(
         self, req: ApplyRequest, offering: Offering
     ) -> tuple[WorkloadResponse, int]:
-        """Build the manifests once and apply the workload to every target site.
+        """Build the manifests once and apply the workload to every target region.
 
         Applies the KSVC, its derived resources (owned via ownerReferences), and
-        the DomainMapping to each site, pruning backing objects the new spec no
+        the DomainMapping to each region, pruning backing objects the new spec no
         longer references. Offering-agnostic: what differs between a function and
         a container is asked of ``offering``, never branched on here.
 
@@ -509,7 +509,7 @@ class WorkloadService:
         """
         self.assert_group(req.user, req.group)
         oname = object_name(req.name, req.group)
-        targets = self.deployer.resolve_targets(req.sites)
+        targets = self.deployer.resolve_targets(req.regions)
         host = self.host_for(req.name, req.hostname, req.group)
         owner = req.user.username
 
@@ -527,13 +527,13 @@ class WorkloadService:
         resolved_env = resolve_env(oname, req.group, owner, req.env, req.kept_env)
         backing = resolved.backing + resolved_env.backing + list(req.extra_secrets)
 
-        def ksvc_for(site: str) -> dict:
-            """Compose the KSVC for one site. Only the image varies."""
+        def ksvc_for(region: str) -> dict:
+            """Compose the KSVC for one region. Only the image varies."""
             return ksvc_svc.build_ksvc(
                 name=oname,
                 group=req.group,
                 owner=owner,
-                image=req.image_for(site),
+                image=req.image_for(region),
                 offering=offering.name,
                 host=host,
                 env=resolved_env.env,
@@ -574,16 +574,16 @@ class WorkloadService:
         to_prune = () if req.created else managed_derived - applied_derived
 
         # Before any apply: a moved tag cannot be applied over, only replaced.
-        await self.retag_build(targets, req.site_resources)
+        await self.retag_build(targets, req.region_resources)
 
-        def apply(cluster: Cluster) -> SiteStatus:
-            # A site builds what it runs, so its build objects ride along with
+        def apply(cluster: Cluster) -> RegionStatus:
+            # A region builds what it runs, so its build objects ride along with
             # its KSVC and are owned by it - there is no unowned case left.
-            return site_apply.apply_to_site(
+            return region_apply.apply_to_region(
                 cluster,
                 oname=oname,
-                ksvc=ksvc_for(cluster.site),
-                backing=backing + list(req.site_resources.get(cluster.site, ())),
+                ksvc=ksvc_for(cluster.region),
+                backing=backing + list(req.region_resources.get(cluster.region, ())),
                 pull_secret_manifest=req.pull_secret_manifest,
                 mapping=mapping,
                 to_prune=to_prune,
@@ -600,7 +600,7 @@ class WorkloadService:
             hostname=host,
             status=overall,
             size=req.size,
-            sites=statuses,
+            regions=statuses,
             scaling=req.scaling,
             env=describe_svc.redact_env(req.env),
             files=describe_svc.redact_files(req.files),
@@ -609,29 +609,29 @@ class WorkloadService:
         return offering.applied_response(common, req), status_code_for(overall, created=req.created)
 
     def target_registries(self, requested: list[str] | None) -> dict[str, RegistryConfig]:
-        """The registry each targeted site builds into, keyed by site name.
+        """The registry each targeted region builds into, keyed by region name.
 
         What a build plan needs, taken off the clusters rather than re-resolved
-        from settings, so there is one answer per site and not two snapshots
+        from settings, so there is one answer per region and not two snapshots
         of it.
 
         Args:
-            requested: Explicit site names, or None for all configured sites.
+            requested: Explicit region names, or None for all configured regions.
 
         Returns:
-            ``{site: registry}`` for the targets.
+            ``{region: registry}`` for the targets.
         """
-        return {c.site: c.registry for c in self.deployer.resolve_targets(requested)}
+        return {c.region: c.registry for c in self.deployer.resolve_targets(requested)}
 
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
-        """Re-declare a workload's build in every site that runs it, then ask for one.
+        """Re-declare a workload's build in every region that runs it, then ask for one.
 
         The rebuild path, and the one write in the engine that leaves the KSVC
         alone: nothing about the workload's desired state changes, so there is
         no spec to fan out - only the build objects and the trigger.
 
         Applying before triggering is what makes this self-healing rather than
-        merely idempotent: a site that has never built the function gets the
+        merely idempotent: a region that has never built the function gets the
         Image created here and builds from that, and
         :meth:`~common.build.BuildBackend.trigger` finds nothing to annotate and
         says so.
@@ -639,31 +639,33 @@ class WorkloadService:
         Args:
             name: The workload name.
             group: The owning group.
-            plan: The build plan to apply (its git Secret included, so the site
+            plan: The build plan to apply (its git Secret included, so the region
                 that builds can always clone).
 
         Returns:
-            True if an existing build was triggered in any site; False if
+            True if an existing build was triggered in any region; False if
             applying the plan is itself what starts them.
         """
         oname = object_name(name, group)
         targets = self.deployer.resolve_targets(None)
-        await self.retag_build(targets, plan.manifests_by_site)
+        await self.retag_build(targets, plan.manifests_by_region)
 
-        def work(cluster: Cluster) -> SiteStatus:
-            manifests = list(plan.replicated) + plan.manifests_for(cluster.site)
-            # Skips a site the workload does not run in, which is also every
-            # site the plan does not cover.
-            if not site_apply.apply_build_objects(cluster, manifests, oname=oname):
-                return SiteStatus(site=cluster.site, status="Absent")
+        def work(cluster: Cluster) -> RegionStatus:
+            manifests = list(plan.replicated) + plan.manifests_for(cluster.region)
+            # Skips a region the workload does not run in, which is also every
+            # region the plan does not cover.
+            if not region_apply.apply_build_objects(cluster, manifests, oname=oname):
+                return RegionStatus(region=cluster.region, status="Absent")
             triggered = self.builder.trigger(cluster, name, group)
-            return SiteStatus(site=cluster.site, status="Building" if triggered else "Pending")
+            return RegionStatus(
+                region=cluster.region, status="Building" if triggered else "Pending"
+            )
 
         statuses = await self.deployer.fanout(targets, work)
         return any(s.status == "Building" for s in statuses)
 
     async def retag_build(
-        self, targets: list[Cluster], site_resources: Mapping[str, Sequence[dict]]
+        self, targets: list[Cluster], region_resources: Mapping[str, Sequence[dict]]
     ) -> None:
         """Make way for an Image whose tag has moved, and reclaim what it left.
 
@@ -673,29 +675,29 @@ class WorkloadService:
         the apply that follows recreates it; a new Image with no prior Build
         builds on its own, so nothing else has to ask for one.
 
-        Per site, because each site's tag moves independently - which is what
-        makes moving an install onto per-site registries a re-apply rather than
+        Per region, because each region's tag moves independently - which is what
+        makes moving an install onto per-region registries a re-apply rather than
         a migration (docs/BUILDING.md - Moving a function's repository).
 
         A no-op in the normal case, which is what the tag comparison buys - the
-        cost is one GET per site per write.
+        cost is one GET per region per write.
 
         Args:
             targets: The clusters being written to.
-            site_resources: Each site's build manifests; its Image is picked out.
+            region_resources: Each region's build manifests; its Image is picked out.
         """
-        if not site_resources:
+        if not region_resources:
             return
         await asyncio.gather(
-            *(self._retag_site(c, site_resources.get(c.site, ())) for c in targets)
+            *(self._retag_region(c, region_resources.get(c.region, ())) for c in targets)
         )
 
-    async def _retag_site(self, cluster: Cluster, manifests: Sequence[dict]) -> None:
-        """Re-tag one site's Image, reclaiming the repository it leaves behind.
+    async def _retag_region(self, cluster: Cluster, manifests: Sequence[dict]) -> None:
+        """Re-tag one region's Image, reclaiming the repository it leaves behind.
 
         Args:
-            cluster: The site to re-tag in.
-            manifests: That site's build manifests.
+            cluster: The region to re-tag in.
+            manifests: That region's build manifests.
         """
         desired = next((m for m in manifests if m.get("kind") == "Image"), None)
         if desired is None:
@@ -713,24 +715,24 @@ class WorkloadService:
                 return None
             cluster.delete(ResourceKind.KPACK_IMAGE, name)
             logger.info(
-                "Image '%s' re-tagged from '%s' to '%s' in %s", name, had, want, cluster.site
+                "Image '%s' re-tagged from '%s' to '%s' in %s", name, had, want, cluster.region
             )
             return had
 
         try:
             previous = await asyncio.to_thread(retag)
         except Exception:  # noqa: BLE001 - the apply below reports the real failure
-            logger.exception("could not re-tag Image '%s' in %s", name, cluster.site)
+            logger.exception("could not re-tag Image '%s' in %s", name, cluster.region)
             return
         if previous:
-            # This site's registry: a reference on another host is somebody
+            # This region's registry: a reference on another host is somebody
             # else's repository, and reclaim already refuses to touch it.
             await asyncio.to_thread(
                 registry_svc.reclaim_moved_repositories, cluster.registry, previous
             )
 
-    async def stamp_pull(self, name: str, group: str, stamp: str) -> list[SiteStatus]:
-        """Stamp a new pull marker on the workload in every site.
+    async def stamp_pull(self, name: str, group: str, stamp: str) -> list[RegionStatus]:
+        """Stamp a new pull marker on the workload in every region.
 
         Changing a ``spec.template`` annotation is what makes Knative cut a
         revision and resolve the tag again. A merge patch rather than the usual
@@ -740,11 +742,11 @@ class WorkloadService:
         Args:
             name: The workload name.
             group: The owning group.
-            stamp: The value to write, the same in every site so they cannot
+            stamp: The value to write, the same in every region so they cannot
                 drift onto different revisions.
 
         Returns:
-            One status per site; ``Absent`` where the workload does not run.
+            One status per region; ``Absent`` where the workload does not run.
         """
         oname = object_name(name, group)
         patch = {
@@ -752,21 +754,21 @@ class WorkloadService:
             "spec": {"template": {"metadata": {"annotations": {ANNOTATION_PULL_STAMP: stamp}}}},
         }
 
-        def stamp_site(cluster: Cluster) -> SiteStatus:
+        def stamp_region(cluster: Cluster) -> RegionStatus:
             try:
                 cluster.patch(ResourceKind.KNATIVE_SERVICE, oname, patch)
             except NotFoundError:
-                return SiteStatus(site=cluster.site, status="Absent")
-            return SiteStatus(site=cluster.site, status="Deploying")
+                return RegionStatus(region=cluster.region, status="Absent")
+            return RegionStatus(region=cluster.region, status="Deploying")
 
-        return await self.deployer.fanout(self.deployer.resolve_targets(None), stamp_site)
+        return await self.deployer.fanout(self.deployer.resolve_targets(None), stamp_region)
 
     async def load_existing(
         self, name: str, offering: Offering, user: Principal, group: str
     ) -> dict:
         """Fetch an existing workload's carried-forward state (offering-scoped).
 
-        Reads from whichever site has the workload; a down site is never reported
+        Reads from whichever region has the workload; a down region is never reported
         as a missing workload.
 
         Args:
@@ -777,13 +779,13 @@ class WorkloadService:
             group: The owning group.
 
         Returns:
-            A dict with the image, the image per site, and carried-forward
+            A dict with the image, the image per region, and carried-forward
             build/pull metadata.
 
         Raises:
             NotFoundError: If it doesn't exist or isn't this offering/group.
             ServiceUnavailableError: If it couldn't be confirmed absent because a
-                site was unreachable.
+                region was unreachable.
         """
         self.assert_group(user, group)
         oname = object_name(name, group)
@@ -791,22 +793,22 @@ class WorkloadService:
         found: dict = {}
         images: dict[str, str] = {}
 
-        def fetch(cluster: Cluster) -> SiteStatus:
-            # Only a real 404 means absent; anything else must propagate so a down site
+        def fetch(cluster: Cluster) -> RegionStatus:
+            # Only a real 404 means absent; anything else must propagate so a down region
             # is recorded as an error, not mistaken for absence.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
-                return SiteStatus(site=cluster.site, status="Absent")
-            # The spec is uniform across sites, so any responder's copy will do;
+                return RegionStatus(region=cluster.region, status="Absent")
+            # The spec is uniform across regions, so any responder's copy will do;
             # setdefault is atomic under the concurrent fan-out. The image is the
-            # exception - each site runs what its own build pushed - so it is
-            # kept per site, and an update carries each one forward untouched.
+            # exception - each region runs what its own build pushed - so it is
+            # kept per region, and an update carries each one forward untouched.
             found.setdefault("obj", obj)
             deployed = ksvc_state.extract_image(obj)
             if deployed:
-                images[cluster.site] = deployed
-            return SiteStatus(site=cluster.site, status="Present")
+                images[cluster.region] = deployed
+            return RegionStatus(region=cluster.region, status="Present")
 
         statuses = await self.deployer.fanout(targets, fetch)
 
@@ -816,36 +818,38 @@ class WorkloadService:
             # the other offering; both mean "not this workload" -> hide as 404.
             if not ownership.owned_by(obj, user, offering.name):
                 raise NotFoundError(f"{offering.name} workload '{name}' not found")
-            # Read the backing Secrets from the local site when it has the workload,
-            # else any site that does - they're uniform, so prefer the cheapest hop.
-            present = {s.site for s in statuses if s.status == "Present"}
+            # Read the backing Secrets from the local region when it has the workload,
+            # else any region that does - they're uniform, so prefer the cheapest hop.
+            present = {s.region for s in statuses if s.status == "Present"}
             if not present:
-                # `obj` was found but no site reported Present: a fan-out that
+                # `obj` was found but no region reported Present: a fan-out that
                 # timed out can leave a zombie thread's late write in `found`
                 # with its status recorded as an error. Fail like the
-                # unreachable-site case below rather than crash on an empty set.
-                preflight.assert_all_sites_checked(statuses, f"load workload '{name}'")
+                # unreachable-region case below rather than crash on an empty set.
+                preflight.assert_all_regions_checked(statuses, f"load workload '{name}'")
                 raise NotFoundError(f"{offering.name} workload '{name}' not found")
-            by_site = {c.site: c for c in targets}
-            local = self.deployer.local_site()
-            cluster = by_site[local if local in present else next(iter(present))]
+            by_region = {c.region: c for c in targets}
+            local = self.deployer.local_region()
+            cluster = by_region[local if local in present else next(iter(present))]
             # Reading the backing Secrets is blocking cluster I/O; run it in a thread
             # so it doesn't stall the event loop (as get()/describe_spec do).
-            state = await asyncio.to_thread(site_read.existing_state, obj, cluster, offering, oname)
+            state = await asyncio.to_thread(
+                region_read.existing_state, obj, cluster, offering, oname
+            )
             return {**state, "images": images}
 
-        # Absent on every site we could reach. If one was unreachable we can't be
+        # Absent on every region we could reach. If one was unreachable we can't be
         # sure it's truly gone -> fail closed (503), not a misleading 404.
-        preflight.assert_all_sites_checked(statuses, f"load workload '{name}'")
+        preflight.assert_all_regions_checked(statuses, f"load workload '{name}'")
         raise NotFoundError(f"{offering.name} workload '{name}' not found")
 
     async def get(
         self, offering: Offering, name: str, user: Principal, group: str
     ) -> WorkloadResponse:
-        """Read one workload with live per-site status and its redacted spec.
+        """Read one workload with live per-region status and its redacted spec.
 
-        Fans out to all sites; a site that returns a clean 404 is omitted, while
-        an unreachable site stays visible and degrades the rollup.
+        Fans out to all regions; a region that returns a clean 404 is omitted, while
+        an unreachable region stays visible and degrades the rollup.
 
         Args:
             offering: The offering being read.
@@ -857,24 +861,24 @@ class WorkloadService:
             The full single-workload response.
 
         Raises:
-            NotFoundError: If the workload exists on no reachable site.
+            NotFoundError: If the workload exists on no reachable region.
             ServiceUnavailableError: If it can't be confirmed absent because a
-                site was unreachable.
+                region was unreachable.
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         meta_holder: dict[str, str] = {}
-        # The spec is uniform across sites, so read it back once from one
-        # representative site (local if it has the workload) after the fan-out.
+        # The spec is uniform across regions, so read it back once from one
+        # representative region (local if it has the workload) after the fan-out.
         reps: dict[str, tuple] = {}
-        # The build is NOT uniform: each site builds its own copy, so its state
-        # is read in the same per-site thread as that site's KSVC.
+        # The build is NOT uniform: each region builds its own copy, so its state
+        # is read in the same per-region thread as that region's KSVC.
         builds: dict[str, BuildStatusView | None] = {}
 
-        def fetch(cluster: Cluster) -> SiteStatus | None:
-            # A 404 means not deployed here, so omit the site rather than fail it.
-            # Anything else propagates, keeping a down site visible as Failed.
+        def fetch(cluster: Cluster) -> RegionStatus | None:
+            # A 404 means not deployed here, so omit the region rather than fail it.
+            # Anything else propagates, keeping a down region visible as Failed.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
@@ -883,15 +887,15 @@ class WorkloadService:
             for key, ann in (("host", ANNOTATION_HOST), ("size", ANNOTATION_SIZE)):
                 if ann in annotations and key not in meta_holder:
                     meta_holder[key] = annotations[ann]
-            reps[cluster.site] = (obj, cluster)
+            reps[cluster.region] = (obj, cluster)
             if offering.has_build:
-                builds[cluster.site] = offering.build_status(self.builder, cluster, name, group)
+                builds[cluster.region] = offering.build_status(self.builder, cluster, name, group)
             status, revision = ksvc_state.ksvc_status(obj)
             # One read, and it earns its place twice over: the Revision carries the
             # live scale and the specific rollout-failure condition. The usage read
             # that used to sit beside it is gone from this path - it is a cluster
             # call for something only a poller wants, and pollers have /status.
-            rev = site_read.revision(cluster, revision)
+            rev = region_read.revision(cluster, revision)
             replicas = ksvc_state.revision_replicas(rev)
             # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
             # a GET explains why it failed instead of a bare status=Failed.
@@ -900,8 +904,8 @@ class WorkloadService:
             if status == "Failed":
                 message = revision_failure_message(rev) or ksvc_failure_message(obj)
                 reason = ksvc_state.failure_cause(rev, obj)
-            return SiteStatus(
-                site=cluster.site,
+            return RegionStatus(
+                region=cluster.region,
                 status=status,
                 revision=revision,
                 reason=reason,
@@ -911,44 +915,44 @@ class WorkloadService:
 
         targets = self.deployer.resolve_targets(None)
         results = await self.deployer.fanout(targets, fetch)
-        statuses = [s for s in results if s is not None]  # drop sites without it
+        statuses = [s for s in results if s is not None]  # drop regions without it
 
         if not reps:
-            # Present on no reachable site. If a site was unreachable we can't be
+            # Present on no reachable region. If a region was unreachable we can't be
             # sure it's absent -> 503; otherwise it's genuinely gone -> 404.
-            preflight.assert_all_sites_checked(statuses, f"get workload '{name}'")
+            preflight.assert_all_regions_checked(statuses, f"get workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        # The spec is uniform across sites: read it (and authorize) from the local
-        # site if it has the workload, else any site that does.
-        obj, cluster = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
+        # The spec is uniform across regions: read it (and authorize) from the local
+        # region if it has the workload, else any region that does.
+        obj, cluster = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
         if not ownership.owned_by(obj, user, kind):
             raise _hidden_404("get", kind, name, user, obj)
 
         host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
-        # A down site counts as Failed; otherwise the per-site KSVC
+        # A down region counts as Failed; otherwise the per-region KSVC
         # status drives the rollup, so a workload still coming up reads as Deploying.
-        overall = overall_status_for_sites(statuses)
-        # Build-first, per site and then rolled up: while a site is building, its
+        overall = overall_status_for_regions(statuses)
+        # Build-first, per region and then rolled up: while a region is building, its
         # KSVC cannot pull an image that does not exist there yet, so the row
         # would contradict the headline it sits under (docs/FUNCTIONS.md -
         # Function Status Resolution).
-        # Snapshot first: a fan-out that timed a site out leaves a zombie thread
+        # Snapshot first: a fan-out that timed a region out leaves a zombie thread
         # that may still insert into `builds` while these iterate. dict/list
         # copies are atomic under the GIL; iterating the live view is not.
         builds = dict(builds)
         build = ksvc_state.roll_up_builds(list(builds.values()))
-        statuses = ksvc_state.sites_with_build_status(statuses, builds)
+        statuses = ksvc_state.regions_with_build_status(statuses, builds)
         overall = ksvc_state.with_build_status(overall, build)
         # The headline reason, Kubernetes-style: the build verdict is
         # authoritative (a failed build IS the cause, wherever the rows stand -
-        # sites still serving their previous revision stay Ready), else the
-        # first recognized per-site cause.
+        # regions still serving their previous revision stay Ready), else the
+        # first recognized per-region cause.
         if build is not None and build.state == "Failed":
             status_reason = "BuildFailed"
         else:
             status_reason = next((s.reason for s in statuses if s.reason), None)
-        spec = await asyncio.to_thread(site_read.describe_spec, cluster, obj)
+        spec = await asyncio.to_thread(region_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
         # (guarded above) and every entry holds an object, and describe_spec
         # always returns a WorkloadSpec. Guarding them would advertise a nullable
@@ -962,7 +966,7 @@ class WorkloadService:
             reason=status_reason,
             size=meta_holder.get("size"),
             createdAt=ksvc_state.creation_time(obj),
-            sites=statuses,
+            regions=statuses,
             scaling=spec.scaling,
             env=spec.env,
             files=spec.files,
@@ -978,7 +982,7 @@ class WorkloadService:
         *,
         executor: Executor | None = None,
     ) -> WorkloadStatsResponse:
-        """Read a workload's live state: rollup, and per-site replicas and usage.
+        """Read a workload's live state: rollup, and per-region replicas and usage.
 
         The poll counterpart to :meth:`get`. Same fan-out, authorization and
         rollup, but none of the desired-state reads - no file ConfigMaps and no
@@ -996,7 +1000,7 @@ class WorkloadService:
             name: Workload name.
             user: The authenticated caller.
             group: Owning group.
-            executor: Pool the per-site reads run on; None takes the default.
+            executor: Pool the per-region reads run on; None takes the default.
                 The stats stream passes its own, because a reading it repeats for
                 as long as a client is connected must not compete for the threads
                 every ordinary request needs.
@@ -1005,9 +1009,9 @@ class WorkloadService:
             The live stats view.
 
         Raises:
-            NotFoundError: If the workload exists on no reachable site.
+            NotFoundError: If the workload exists on no reachable region.
             ServiceUnavailableError: If it can't be confirmed absent because a
-                site was unreachable.
+                region was unreachable.
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
@@ -1015,22 +1019,22 @@ class WorkloadService:
         reps: dict[str, dict] = {}
         # Raw, because the workload total is summed from these rather than from
         # the rounded figures the response carries.
-        usage_by_site: dict[str, site_read.SiteUsage] = {}
+        usage_by_region: dict[str, region_read.RegionUsage] = {}
         builds: dict[str, BuildStatusView | None] = {}
 
-        def fetch(cluster: Cluster) -> SiteStatus | None:
+        def fetch(cluster: Cluster) -> RegionStatus | None:
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
-                return None  # not deployed here; omit the site rather than fail it
-            reps[cluster.site] = obj
+                return None  # not deployed here; omit the region rather than fail it
+            reps[cluster.region] = obj
             if offering.has_build:
-                builds[cluster.site] = offering.build_status(self.builder, cluster, name, group)
+                builds[cluster.region] = offering.build_status(self.builder, cluster, name, group)
             status, revision = ksvc_state.ksvc_status(obj)
-            usage_by_site[cluster.site] = site_read.site_usage(cluster, oname)
-            rev = site_read.revision(cluster, revision)
-            return SiteStatus(
-                site=cluster.site,
+            usage_by_region[cluster.region] = region_read.region_usage(cluster, oname)
+            rev = region_read.revision(cluster, revision)
+            return RegionStatus(
+                region=cluster.region,
                 status=status,
                 replicas=ksvc_state.revision_replicas(rev),
                 message=revision_failure_message(rev) if status == "Failed" else None,
@@ -1039,32 +1043,32 @@ class WorkloadService:
 
         targets = self.deployer.resolve_targets(None)
         results = await self.deployer.fanout(targets, fetch, executor=executor)
-        statuses = [s for s in results if s is not None]  # drop sites without it
+        statuses = [s for s in results if s is not None]  # drop regions without it
 
         if not reps:
-            # If a site was unreachable we can't be sure it's absent -> 503.
-            preflight.assert_all_sites_checked(statuses, f"get stats of workload '{name}'")
+            # If a region was unreachable we can't be sure it's absent -> 503.
+            preflight.assert_all_regions_checked(statuses, f"get stats of workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        obj = reps.get(self.deployer.local_site()) or next(iter(reps.values()))
+        obj = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
         if not ownership.owned_by(obj, user, kind):
             raise _hidden_404("stats of", kind, name, user, obj)
 
-        overall = overall_status_for_sites(statuses)
+        overall = overall_status_for_regions(statuses)
         # Not reported here, but it is what makes a running build read as
         # `Building` instead of the `Failed` its unpullable image would
         # otherwise produce (docs/FUNCTIONS.md - Function Status Resolution).
-        # Read per site inside `fetch`, so it rides the same fan-out - and so a
+        # Read per region inside `fetch`, so it rides the same fan-out - and so a
         # stats *stream* pays for it on its own pool, like every other read here.
         # Snapshot first - same zombie-thread hazard as get()'s rollup above.
         builds = dict(builds)
         rolled = ksvc_state.roll_up_builds(list(builds.values()))
         overall = ksvc_state.with_build_status(overall, rolled)
-        statuses = ksvc_state.sites_with_build_status(statuses, builds)
+        statuses = ksvc_state.regions_with_build_status(statuses, builds)
 
-        # Both totals are null rather than partial when a site could not answer:
-        # a single number quietly missing a whole site still reads as authoritative.
-        reads = [usage_by_site.get(s.site) for s in statuses]
+        # Both totals are null rather than partial when a region could not answer:
+        # a single number quietly missing a whole region still reads as authoritative.
+        reads = [usage_by_region.get(s.region) for s in statuses]
         usage = None
         if all(r is not None and r.measured for r in reads):
             usage = metrics_svc.total(r.total for r in reads if r.total)
@@ -1073,7 +1077,7 @@ class WorkloadService:
             replicas = sum(s.replicas for s in statuses)
 
         # As on the full GET: the build verdict is authoritative, else the
-        # first recognized per-site cause.
+        # first recognized per-region cause.
         if rolled is not None and rolled.state == "Failed":
             reason = "BuildFailed"
         else:
@@ -1084,9 +1088,9 @@ class WorkloadService:
             reason=reason,
             replicas=replicas,
             usage=usage.quantities() if usage else None,
-            sites=[
-                SiteStats(
-                    site=s.site,
+            regions=[
+                RegionStats(
+                    region=s.region,
                     status=s.status,
                     reason=s.reason,
                     replicas=s.replicas,
@@ -1097,7 +1101,7 @@ class WorkloadService:
         )
 
     async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
-        """Delete a workload from every site; GC cascades its derived resources.
+        """Delete a workload from every region; GC cascades its derived resources.
 
         Args:
             offering: The offering being deleted.
@@ -1106,9 +1110,9 @@ class WorkloadService:
             group: Owning group.
 
         Raises:
-            NotFoundError: If the workload exists on no site, or the caller may
+            NotFoundError: If the workload exists on no region, or the caller may
                 not access it (hidden as 404, matching GET).
-            ServiceUnavailableError: If any site could not be reached, so the
+            ServiceUnavailableError: If any region could not be reached, so the
                 delete cannot be confirmed.
         """
         self.assert_group(user, group)
@@ -1116,34 +1120,34 @@ class WorkloadService:
         oname = object_name(name, group)
         denied: list[str] = []
 
-        def remove(cluster: Cluster) -> SiteStatus:
+        def remove(cluster: Cluster) -> RegionStatus:
             # A clean 404 means "not deployed here", which is not a failure and must
-            # not read as one - only a site that cannot answer at all is an error.
+            # not read as one - only a region that cannot answer at all is an error.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
-                return SiteStatus(site=cluster.site, status="Absent")
+                return RegionStatus(region=cluster.region, status="Absent")
             # Recorded, not raised: raising here would be caught by the fan-out and
-            # become indistinguishable from an unreachable site.
+            # become indistinguishable from an unreachable region.
             if not ownership.owned_by(obj, user, kind):
-                denied.append(cluster.site)
-                return SiteStatus(site=cluster.site, status="Denied")
+                denied.append(cluster.region)
+                return RegionStatus(region=cluster.region, status="Denied")
             # Cascades to every owned resource: the config Secrets/ConfigMap, the
             # pull secret, the DomainMapping, the build objects.
             try:
                 cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
-                return SiteStatus(site=cluster.site, status="Absent")  # raced a peer
-            return SiteStatus(site=cluster.site, status="Deleted")
+                return RegionStatus(region=cluster.region, status="Absent")  # raced a peer
+            return RegionStatus(region=cluster.region, status="Deleted")
 
         targets = self.deployer.resolve_targets(None)
         statuses = await self.deployer.fanout(targets, remove)
 
-        # An unreachable site cannot confirm the workload is gone. Fail closed (503)
+        # An unreachable region cannot confirm the workload is gone. Fail closed (503)
         # so the caller retries, rather than reporting a 404 that reads as "already
         # deleted" while the workload is still serving somewhere (delete is
-        # idempotent, so a retry over the sites that did succeed is a no-op).
-        preflight.assert_all_sites_checked(statuses, f"delete {kind} '{name}'")
+        # idempotent, so a retry over the regions that did succeed is a no-op).
+        preflight.assert_all_regions_checked(statuses, f"delete {kind} '{name}'")
         if denied:
             logger.debug(
                 "delete %s '%s' denied for user %s at %s; hidden as 404",
@@ -1154,12 +1158,12 @@ class WorkloadService:
             )
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        # Every site answered and none refused, so the workload is gone platform-wide
+        # Every region answered and none refused, so the workload is gone platform-wide
         # and whatever the ownerReferences did not cascade to can go too. Reached
         # even when nothing was deleted: that is the case where an earlier partial
         # delete orphaned them, and a leftover Image would keep rebuilding a
         # function nothing runs.
-        # Per site, because what is left behind is per site: each built its own
+        # Per region, because what is left behind is per region: each built its own
         # image, into its own registry, from its own build objects.
         await asyncio.gather(
             *(
@@ -1182,12 +1186,12 @@ class WorkloadService:
         *,
         interval: float | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream which pods the workload has on the local site.
+        """Stream which pods the workload has on the local region.
 
         The endpoint that makes per-pod log streaming usable: a pod name is what
         ``stream_pod_logs`` takes, and nothing else in the API returns one.
 
-        Local site only, matching the log streams it feeds - a pod name is only
+        Local region only, matching the log streams it feeds - a pod name is only
         useful where its log can be read.
 
         The first roster is read here rather than in the stream, because it is
@@ -1205,7 +1209,7 @@ class WorkloadService:
             The event stream, beginning with a ``pods`` event.
 
         Raises:
-            NotFoundError: If the workload isn't on the local site or the caller
+            NotFoundError: If the workload isn't on the local region or the caller
                 can't access it (hidden as 404, matching GET).
             ServiceUnavailableError: If no stream slot is free.
         """
@@ -1231,7 +1235,7 @@ class WorkloadService:
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
-            site=self.deployer.local_site(),
+            region=self.deployer.local_region(),
             pods=roster,
         )
 
@@ -1258,7 +1262,7 @@ class WorkloadService:
         rule is one copy that gets fixed.
 
         Args:
-            cluster: The local site.
+            cluster: The local region.
             oname: The object name (``{name}-{group}``).
             pod: The pod the caller named.
             kind: The offering label ("function"/"container").
@@ -1285,7 +1289,7 @@ class WorkloadService:
         return authorize
 
     async def pods(self, offering: Offering, name: str, user: Principal, group: str) -> PodRoster:
-        """The workload's pods on the local site, read once (``follow=false``).
+        """The workload's pods on the local region, read once (``follow=false``).
 
         The non-streaming half of :meth:`stream_pods`, and the same reads. It
         exists for the caller that cannot hold a connection - without it, a
@@ -1306,7 +1310,7 @@ class WorkloadService:
             The roster.
 
         Raises:
-            NotFoundError: If the workload isn't on the local site or the caller
+            NotFoundError: If the workload isn't on the local region or the caller
                 can't access it (hidden as 404, matching GET).
         """
         self.assert_group(user, group)
@@ -1324,7 +1328,7 @@ class WorkloadService:
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
-            site=self.deployer.local_site(),
+            region=self.deployer.local_region(),
             pods=await asyncio.to_thread(read),
         )
 
@@ -1419,7 +1423,7 @@ class WorkloadService:
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
-            site=self.deployer.local_site(),
+            region=self.deployer.local_region(),
             pod=pod,
             container=container,
             revision=revision,
@@ -1438,9 +1442,9 @@ class WorkloadService:
         since_seconds: int | None,
         tail_lines: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Follow one of the workload's pods' logs, on the local site.
+        """Follow one of the workload's pods' logs, on the local region.
 
-        Local site only: Kubernetes keeps no log buffer beyond the node that
+        Local region only: Kubernetes keeps no log buffer beyond the node that
         wrote it, so there is nowhere else to read from.
 
         The pod is authorized twice over, and the second check is the one that
@@ -1490,7 +1494,7 @@ class WorkloadService:
             name=name,
             group=group,
             type=kind,  # type: ignore[arg-type]
-            site=self.deployer.local_site(),
+            region=self.deployer.local_region(),
             pod=pod,
             container=container,
             revision=revision,
@@ -1523,7 +1527,7 @@ class WorkloadService:
         """Push the workload's live state on an interval, as a stream of events.
 
         The streaming counterpart to :meth:`stats`, and identical in what it
-        reports - the same rollup, the same per-site replicas and usage, a
+        reports - the same rollup, the same per-region replicas and usage, a
         function's build read for the same reason. Only the transport differs.
 
         The first reading is taken here rather than in the stream: it is what
@@ -1541,9 +1545,9 @@ class WorkloadService:
             The event stream, beginning with a ``stats`` event.
 
         Raises:
-            NotFoundError: If the workload exists on no reachable site.
+            NotFoundError: If the workload exists on no reachable region.
             ServiceUnavailableError: If no stream slot is free, or the workload
-                can't be confirmed absent because a site was unreachable.
+                can't be confirmed absent because a region was unreachable.
         """
         config = self.capacity.config
 
@@ -1572,16 +1576,16 @@ class WorkloadService:
     ) -> list[WorkloadSummary]:
         """Summarize every workload of this offering owned by ``group``.
 
-        Fans out to all sites and merges best-effort: a workload's ``sites`` lists only
-        those that returned it, and its rollup covers just those, so a single-site
-        workload reads ``Ready``, not ``Failed``. An unreachable site is skipped; only
+        Fans out to all regions and merges best-effort: a workload's ``regions`` lists only
+        those that returned it, and its rollup covers just those, so a single-region
+        workload reads ``Ready``, not ``Failed``. An unreachable region is skipped; only
         an all-down fan-out fails the call.
 
         Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
         Resolution): a function whose first build is still running has a KSVC that
         cannot pull its image yet, so a listing that read the KSVC alone showed
         every new function as ``Failed`` for the whole of that build. The build
-        states come from one label-selected read of the local site, so the fold
+        states come from one label-selected read of the local region, so the fold
         costs a single round trip for the entire listing - overlapped with the
         fan-out, not chained onto it.
 
@@ -1595,16 +1599,16 @@ class WorkloadService:
             The per-workload summaries.
 
         Raises:
-            SiteTotalFailure: If every site is unreachable.
+            RegionTotalFailure: If every region is unreachable.
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={kind}"
 
         def fetch(cluster: Cluster) -> tuple[list[dict], dict]:
-            # Both reads in one per-site thread: the build states belong to this
-            # site now, so pairing them costs no extra round trip and cannot
-            # attribute one site's builds to another. Branching on the declared
+            # Both reads in one per-region thread: the build states belong to this
+            # region now, so pairing them costs no extra round trip and cannot
+            # attribute one region's builds to another. Branching on the declared
             # capability, not on which offering this is - an offering with no
             # build must not pay for a read that returns {}.
             ksvcs = cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
@@ -1614,18 +1618,18 @@ class WorkloadService:
 
         results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
         if all(read is None for _, read in results):
-            # Same {site, message} shape as aggregate's total-failure; gather_each
-            # keeps no per-site error, so message is None.
-            raise SiteTotalFailure(
-                "Listing failed in all sites.",
-                details=[{"site": site, "message": None} for site, _ in results],
+            # Same {region, message} shape as aggregate's total-failure; gather_each
+            # keeps no per-region error, so message is None.
+            raise RegionTotalFailure(
+                "Listing failed in all regions.",
+                details=[{"region": region, "message": None} for region, _ in results],
             )
 
         return summaries_svc.merge(
-            [(site, read[0] if read else None) for site, read in results],
+            [(region, read[0] if read else None) for region, read in results],
             group=group,
             offering=kind,
-            builds={site: read[1] for site, read in results if read},
+            builds={region: read[1] for region, read in results if read},
             route_domain=self.settings.route_domain,
             sort=sort,
         )

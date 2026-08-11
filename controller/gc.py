@@ -8,12 +8,12 @@ any user action, so they grow even for functions nobody touches. Nothing else
 reclaims them short of deleting the function
 (docs/BUILDING.md - Registry tag GC).
 
-Local by design, like the reconciler this rides in: a site builds what it runs
+Local by design, like the reconciler this rides in: a region builds what it runs
 and pushes to its own registry, so each controller prunes exactly the registry
-its site filled, and no cross-site call exists. That premise is load-bearing,
-so it is *checked*: every site must build into its own registry (the chart
-refuses to render otherwise), and a controller that finds another site on its
-registry host refuses to sweep - two sites pruning one repository would each
+its region filled, and no cross-region call exists. That premise is load-bearing,
+so it is *checked*: every region must build into its own registry (the chart
+refuses to render otherwise), and a controller that finds another region on its
+registry host refuses to sweep - two regions pruning one repository would each
 protect only their own serving digest and delete the other's
 (docs/BUILDING.md - Registry tag GC). And *reconciled*, unlike the API's fire-once
 cleanup on delete: garbage is re-derived from live state every sweep, so a
@@ -23,7 +23,7 @@ collects it.
 What survives a sweep (:func:`garbage`), and why deleting the rest is safe:
 
 - the function's **current branch tag** (the tag half of ``Image.spec.tag``) -
-  a create deploys at it, and a switchover site rebuilds into it;
+  a create deploys at it, and a switchover region rebuilds into it;
 - every tag still pointing at the **digest of** ``status.latestImage`` -
   deleting the last tag on a manifest lets the registry collect the manifest,
   and the KSVC pinned to that digest could no longer pull on a node change;
@@ -94,12 +94,12 @@ def garbage(
 class TagGC:
     """The periodic sweep: every function's repository, against live state.
 
-    Constructed with the *resolved* site name - which cluster this controller
-    actually watches - so the registry it prunes is the one that site's builds
+    Constructed with the *resolved* region name - which cluster this controller
+    actually watches - so the registry it prunes is the one that region's builds
     fill. It runs only when configuration allows deletion (``gc_enabled`` AND
     ``registry.deleteOnFunctionDelete`` - the operator's one switch for "may
     the platform delete registry content"), the registry has an API token, and
-    no other site shares this registry's host. Whichever way that lands, it is
+    no other region shares this registry's host. Whichever way that lands, it is
     said at startup - and, for a reason that could change under a running pod
     (a token that syncs late needs a pod restart to be seen), repeated once
     per interval - so an operator reads the state off the log instead of
@@ -110,21 +110,21 @@ class TagGC:
     where every minute spent is a minute no digest rolls out.
     """
 
-    def __init__(self, settings: ControllerSettings, site: str):
-        """Resolve the site's registry and decide, audibly, whether to run.
+    def __init__(self, settings: ControllerSettings, region: str):
+        """Resolve the region's registry and decide, audibly, whether to run.
 
         Args:
-            settings: Controller settings (registry, sites, pacing, GC knobs).
-            site: The resolved local site name.
+            settings: Controller settings (registry, regions, pacing, GC knobs).
+            region: The resolved local region name.
         """
-        self._site = site
-        self._registry = settings.registry_for(site)
+        self._region = region
+        self._registry = settings.registry_for(region)
         self._keep = settings.gc_keep_builds
         self._interval = settings.gc_interval_seconds
         # Silent off: the operator asked for no GC, once at startup is enough.
         self._configured_off = not settings.gc_enabled
         # Loud off: a state the operator likely wants fixed, re-said per interval.
-        self._off_reason = self._blocked(settings, site)
+        self._off_reason = self._blocked(settings, region)
         # Monotonic deadline; zero means the first resync sweeps immediately,
         # so a restarted controller shows its GC working within one pass.
         self._next_sweep = 0.0
@@ -142,31 +142,31 @@ class TagGC:
                 self._keep,
             )
 
-    def _blocked(self, settings: ControllerSettings, site: str) -> str | None:
+    def _blocked(self, settings: ControllerSettings, region: str) -> str | None:
         """Why the GC must not delete anything here, or None to run.
 
         Args:
-            settings: Controller settings, for the other sites' registries.
-            site: The resolved local site name.
+            settings: Controller settings, for the other regions' registries.
+            region: The resolved local region name.
 
         Returns:
             An operator-readable reason, or None.
         """
-        # One site per registry is the safety premise: two controllers pruning
+        # One region per registry is the safety premise: two controllers pruning
         # one repository each protect only their own serving digest and delete
         # the other's. The chart enforces it at render; this is the backstop
         # for a hand-rolled config.
         sharing = [
             other
-            for other in settings.site_names
-            if other != site and settings.registry_for(other).host == self._registry.host
+            for other in settings.region_names
+            if other != region and settings.registry_for(other).host == self._registry.host
         ]
         if sharing:
             return (
-                f"site '{site}' shares registry {self._registry.host} with "
-                f"{', '.join(sorted(sharing))}; every site must build into its own "
+                f"region '{region}' shares registry {self._registry.host} with "
+                f"{', '.join(sorted(sharing))}; every region must build into its own "
                 "registry (docs/BUILDING.md - Registry layout), and pruning a shared one "
-                "would delete tags a peer site still serves"
+                "would delete tags a peer region still serves"
             )
         if not self._registry.delete_on_function_delete:
             return (
@@ -175,7 +175,7 @@ class TagGC:
             )
         if not self._registry.api_token:
             return (
-                f"no registry API token for site '{site}' ({self._registry.host}); "
+                f"no registry API token for region '{region}' ({self._registry.host}); "
                 "old build tags will accumulate until their functions are deleted. "
                 "A token that appeared after startup needs a pod restart to be seen"
             )
@@ -207,7 +207,7 @@ class TagGC:
             # line; starting a second would race the first over the same tags.
             logger.warning(
                 "tag GC: previous sweep in '%s' still running after %ds; not starting another",
-                self._site,
+                self._region,
                 self._interval,
             )
             return
@@ -235,7 +235,7 @@ class TagGC:
             self.sweep(images)
         except Exception:  # noqa: BLE001 - a failed sweep is logged, not the loop's end
             logger.exception(
-                "tag GC: sweep failed in '%s'; retrying in ~%ds", self._site, self._interval
+                "tag GC: sweep failed in '%s'; retrying in ~%ds", self._region, self._interval
             )
 
     def sweep(self, images: Iterable[dict]) -> None:
@@ -269,7 +269,7 @@ class TagGC:
         logger.info(
             "tag GC: swept %d function repositories in '%s', pruned %d tag(s), %d failed, in %.1fs",
             swept,
-            self._site,
+            self._region,
             pruned,
             failed,
             time.monotonic() - started,

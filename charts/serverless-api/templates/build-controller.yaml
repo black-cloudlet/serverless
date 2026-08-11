@@ -3,7 +3,7 @@
 {{- fail "serverless-api: buildController.enabled needs build.enabled - without it the chart grants no read on images.kpack.io and the controller has nothing to watch." }}
 {{- end }}
 # Watches kpack Images here and applies each finished digest to the function's
-# Knative Service in every site (docs/BUILDING.md - Digest propagation). No
+# Knative Service in every region (docs/BUILDING.md - Digest propagation). No
 # Service and no Route: it serves no HTTP. Runs as the API's client-cert user,
 # whose Role already covers it (docs/DEPLOYING.md - RBAC).
 apiVersion: apps/v1
@@ -44,16 +44,16 @@ spec:
           env:
             - name: SERVERLESS_BASE_DOMAIN
               value: {{ .Values.global.baseDomain | quote }}
-            # The site whose Images it watches; writes go to every site.
-            - name: SERVERLESS_LOCAL_SITE
-              value: {{ .Values.global.site | quote }}
+            # The region whose Images it watches; writes go to every region.
+            - name: SERVERLESS_LOCAL_REGION
+              value: {{ .Values.global.region | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
               value: {{ .Values.buildController.resyncSeconds | quote }}
-            # Tag GC: prune kpack's per-build tags in THIS site's registry
-            # (docs/BUILDING.md - Registry tag GC). This site's registry comes
-            # from the sites ConfigMap below and its token from the tokens
+            # Tag GC: prune kpack's per-build tags in THIS region's registry
+            # (docs/BUILDING.md - Registry tag GC). This region's registry comes
+            # from the regions ConfigMap below and its token from the tokens
             # Secret; only what the GC reads is passed - the URL (the default
             # the token fallback compares against) and the platform-wide
             # deletion switch, which governs the GC exactly as it governs
@@ -81,14 +81,14 @@ spec:
             - name: REQUESTS_CA_BUNDLE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
-            # The same sites list the API reads.
+            # The same regions list the API reads.
             - configMapRef:
-                name: "{{ .Values.name }}-sites"
+                name: "{{ .Values.name }}-regions"
             {{- with .Values.registry.apiTokens }}
             {{- if .create }}
-            # The same per-site Quay OAuth tokens the API holds; the GC resolves
-            # only its own site's out of the map. `optional` for the same reason
-            # as on the API: ESO fails the whole Secret if one site's Vault path
+            # The same per-region Quay OAuth tokens the API holds; the GC resolves
+            # only its own region's out of the map. `optional` for the same reason
+            # as on the API: ESO fails the whole Secret if one region's Vault path
             # is missing, and an untokenised controller just skips the GC.
             - secretRef:
                 name: {{ .secretName }}

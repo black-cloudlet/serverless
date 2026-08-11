@@ -79,7 +79,7 @@ async def follow(
         try:
             reading = await read()
         except APIError as exc:
-            # The workload was deleted, or every site stopped answering. The
+            # The workload was deleted, or every region stopped answering. The
             # response has long since started, so the status code is spent and
             # this is the only way left to say so.
             yield StreamEvent("error", StreamError(code=exc.code, message=exc.message))

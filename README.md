@@ -19,7 +19,7 @@ exposed through a **Python / FastAPI** REST API.
 
 Start with **[docs/](docs/README.md)**, which indexes the set:
 
-- **[Architecture & Design](docs/ARCHITECTURE.md)** - the platform as a whole: multi-site
+- **[Architecture & Design](docs/ARCHITECTURE.md)** - the platform as a whole: multi-region
   active/active, networking, auth, secrets, airgap, and the REST conventions both
   offerings share.
 - **[Functions](docs/FUNCTIONS.md)** / **[Containers](docs/CONTAINERS.md)** - the two offerings.
@@ -38,7 +38,7 @@ is a closed phase set - `Pending`, `Building`, `Deploying`, `Ready`, `Failed`,
 never get promoted into it: a failure names its cause on the machine-readable
 `reason` (`BuildFailed`, `ImagePullFailed`, `CrashLooping`, `ConfigError`,
 `ProgressDeadlineExceeded`; null when unrecognized) with the human detail on
-the full GET's per-site `message`. All of it is published on
+the full GET's per-region `message`. All of it is published on
 `GET /api/v1/{type}/info` (`statuses`) so no client hardcodes a vocabulary.
 The lightweight poll target, `GET .../{name}/stats` (also pushed as SSE on
 `/stats/stream`), reads:
@@ -49,17 +49,17 @@ The lightweight poll target, `GET .../{name}/stats` (also pushed as SSE on
   "reason": "ImagePullFailed",
   "replicas": 2,
   "usage": null,
-  "sites": [
-    { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
+  "regions": [
+    { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
       "usage": { "cpu": "120m", "memory": "180Mi" } },
-    { "site": "south", "status": "Failed", "reason": "ImagePullFailed",
+    { "region": "south", "status": "Failed", "reason": "ImagePullFailed",
       "replicas": 0, "usage": null }
   ]
 }
 ```
 
-The full GET adds the desired-state config, each site's `revision`, and the raw
-failure text on the site's `message` (docs/FUNCTIONS.md - Function Status
+The full GET adds the desired-state config, each region's `revision`, and the raw
+failure text on the region's `message` (docs/FUNCTIONS.md - Function Status
 Resolution; docs/ARCHITECTURE.md - REST API Specification).
 
 ## Layout
@@ -69,15 +69,15 @@ api/        the control-plane API service (python -m api.main)
   auth/     which of this service's settings the shared SSO component is built from
   models/   Pydantic request/response schemas
   services/ workload engine + offerings, split by responsibility:
-            manifests/ (build what gets applied), sites/ (fan-out + per-site
+            manifests/ (build what gets applied), regions/ (fan-out + per-region
             read/write), state/ (interpret what came back), builder/ (image build)
   routers/  functions / containers / info (public) endpoints
 controller/ the build controller (python -m controller.main): watches kpack
             Images and rolls each finished build's digest onto the function's
-            Knative Service in every site. Serves no HTTP; its own image, built
+            Knative Service in every region. Serves no HTTP; its own image, built
             from Dockerfile.controller with no web stack installed.
 common/     shared by api + controller: build domain, cluster client (mTLS),
-            settings, labels, the platform's own naming rules, SiteTotalFailure
+            settings, labels, the platform's own naming rules, RegionTotalFailure
 charts/     Helm chart (2 Deployments, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
 tests/      unit + API tests
 dev/        sample runtimes file, for running the API locally
@@ -94,7 +94,7 @@ two images already had: the API installs `cloudlet-apis[web,auth]`, the controll
 it bare and so still ships no web stack.
 
 The ArgoCD `ApplicationSet` is **not** in this repo - it lives in the central GitOps repo
-and renders `charts/serverless-api` once per site (docs/DEPLOYING.md - Deployment & GitOps).
+and renders `charts/serverless-api` once per region (docs/DEPLOYING.md - Deployment & GitOps).
 
 ## Develop
 
@@ -113,7 +113,7 @@ SERVERLESS_AUTH_ENABLED=false uvicorn api.main:app --reload
 
 `.env.example` points `SERVERLESS_RUNTIMES_FILE` at `dev/runtimes.yaml`. That file is not
 optional: the runtimes list has no built-in fallback, so the app refuses to start without
-it (docs/BUILDING.md - Runtime Versions & Dependencies). The configured sites are not
+it (docs/BUILDING.md - Runtime Versions & Dependencies). The configured regions are not
 reachable locally either; that is expected - the startup warmup logs a warning and the
 API serves, since cluster connections are lazy.
 
@@ -121,7 +121,7 @@ Configuration is environment-driven (`SERVERLESS_*`); see `.env.example`. In pro
 values are projected from Vault via the External Secrets Operator
 (docs/ARCHITECTURE.md - Secrets Management).
 
-> **Status:** Implemented end to end - endpoints, auth, multi-site deployer, manifest
+> **Status:** Implemented end to end - endpoints, auth, multi-region deployer, manifest
 > builders, kpack builds and the build controller that rolls each finished digest out -
 > with unit/API tests. Not yet implemented: the per-function **git webhook** that would pin
 > a pushed commit SHA to a build (`BuildRequest.revision` already carries the field); until

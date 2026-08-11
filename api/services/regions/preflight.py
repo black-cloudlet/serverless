@@ -3,8 +3,8 @@
 Everything here answers "may this deploy proceed?" and nothing here mutates.
 They are grouped because they share one rule that is easy to lose when it is
 spread across an orchestrator: **a check that could not be run has not passed**.
-An unreachable site cannot prove a host is free, so these fail closed with a 503
-rather than reading silence as consent - see :func:`assert_all_sites_checked`.
+An unreachable region cannot prove a host is free, so these fail closed with a 503
+rather than reading silence as consent - see :func:`assert_all_regions_checked`.
 
 :class:`~api.services.workloads.WorkloadService` exposes these as methods; the
 logic lives here so it can be read (and tested) without the deploy path around it.
@@ -12,11 +12,11 @@ logic lives here so it can be read (and tested) without the deploy path around i
 
 from __future__ import annotations
 
-from api.models.common import LABEL_WORKLOAD, SiteStatus
+from api.models.common import LABEL_WORKLOAD, RegionStatus
 from api.services.manifests import route as route_svc
 from api.services.manifests.env import resolve_env
 from api.services.manifests.files import resolve_files
-from api.services.sites.deployer import Deployer
+from api.services.regions.deployer import Deployer
 from common.cluster import Cluster, ResourceKind
 from common.errors import (
     ConflictError,
@@ -110,12 +110,12 @@ async def assert_deployable(
 ) -> None:
     """Assert a workload can be deployed: host free, and optionally name unused.
 
-    Both questions are answered in ONE visit per site. They used to be two
-    separate fan-outs, which cost two cross-site round trips per deploy and -
-    worse - described two different instants; asking together means a site's
+    Both questions are answered in ONE visit per region. They used to be two
+    separate fan-outs, which cost two cross-region round trips per deploy and -
+    worse - described two different instants; asking together means a region's
     two answers cannot disagree about the moment they were taken.
 
-    Only a real 404 means free/absent. An unreachable site can't prove either,
+    Only a real 404 means free/absent. An unreachable region can't prove either,
     so this fails closed (503) rather than treating silence as consent -
     otherwise a create against a down peer could hijack its DomainMapping or
     overwrite a workload it is still serving.
@@ -127,7 +127,7 @@ async def assert_deployable(
     mutating rather than trusting the accept-time result.
 
     Args:
-        deployer: The multi-site fan-out helper.
+        deployer: The multi-region fan-out helper.
         name: The workload name claiming the host.
         group: The workload's owning group.
         targets: The clusters to check.
@@ -139,11 +139,11 @@ async def assert_deployable(
     Raises:
         ConflictError: If the host belongs to another workload, or the name is
             already taken.
-        ServiceUnavailableError: If any site was unreachable.
+        ServiceUnavailableError: If any region was unreachable.
     """
     oname = object_name(name, group)
 
-    def probe(cluster: Cluster) -> SiteStatus:
+    def probe(cluster: Cluster) -> RegionStatus:
         if host is not None:
             try:
                 existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
@@ -153,14 +153,14 @@ async def assert_deployable(
                 labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
                 # The workload's own mapping counts as available (update path).
                 if labels.get(LABEL_WORKLOAD) != oname:
-                    return SiteStatus(site=cluster.site, status="Taken")
+                    return RegionStatus(region=cluster.region, status="Taken")
         if require_absent:
             try:
                 cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-                return SiteStatus(site=cluster.site, status="Exists")
+                return RegionStatus(region=cluster.region, status="Exists")
             except NotFoundError:
                 pass
-        return SiteStatus(site=cluster.site, status="Available")
+        return RegionStatus(region=cluster.region, status="Available")
 
     statuses = await deployer.fanout(targets, probe)
     # The host conflict is reported first: it is the one an idempotent apply
@@ -169,23 +169,23 @@ async def assert_deployable(
         raise ConflictError(f"hostname '{host}' is already assigned")
     if any(s.status == "Exists" for s in statuses):
         raise ConflictError(f"workload '{name}' already exists")
-    assert_all_sites_checked(statuses, f"verify workload '{name}' can be deployed")
+    assert_all_regions_checked(statuses, f"verify workload '{name}' can be deployed")
 
 
-def assert_all_sites_checked(statuses: list[SiteStatus], action: str) -> None:
-    """Fail closed if any site could not be reached during a conflict check.
+def assert_all_regions_checked(statuses: list[RegionStatus], action: str) -> None:
+    """Fail closed if any region could not be reached during a conflict check.
 
     A missing answer is not evidence of "no conflict".
 
     Args:
-        statuses: The per-site results of the conflict check.
+        statuses: The per-region results of the conflict check.
         action: Human phrase describing the check, for the error message.
 
     Raises:
-        ServiceUnavailableError: If any site reported an error.
+        ServiceUnavailableError: If any region reported an error.
     """
-    unreachable = [s.site for s in statuses if s.message is not None]
+    unreachable = [s.region for s in statuses if s.message is not None]
     if unreachable:
         raise ServiceUnavailableError(
-            f"cannot {action}: site(s) unreachable: {', '.join(sorted(unreachable))}"
+            f"cannot {action}: region(s) unreachable: {', '.join(sorted(unreachable))}"
         )

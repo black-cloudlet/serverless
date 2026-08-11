@@ -1,4 +1,4 @@
-"""Streaming which pods a workload currently has, on the local site.
+"""Streaming which pods a workload currently has, on the local region.
 
 This is the endpoint that makes per-pod log streaming usable: a pod name is the
 path segment ``/logs/pods/{pod}`` takes, and until this existed the only way to
@@ -9,7 +9,7 @@ a workload's pods on every revision and removes them all on scale-to-zero, so a
 roster fetched once is a roster that quietly stops being true - a client would
 have to poll it at exactly the cadence this pushes at anyway.
 
-Local site only, matching the log streams it feeds: a pod name is only useful
+Local region only, matching the log streams it feeds: a pod name is only useful
 where its log can be read.
 
 Two reads per tick, and they are different kinds of thing. The Pod list is
@@ -107,10 +107,10 @@ def _usage_by_pod(items: list[dict]) -> dict[str, metrics_svc.Usage]:
 
 
 def read_roster(cluster: Cluster, oname: str) -> list[PodInfo]:
-    """The workload's pods on this site, with usage joined on (blocking).
+    """The workload's pods on this region, with usage joined on (blocking).
 
     Args:
-        cluster: The local site.
+        cluster: The local region.
         oname: The object name (``{name}-{group}``).
 
     Returns:
@@ -158,7 +158,7 @@ async def follow(
     """Push the pod roster on an interval until the client leaves or time is up.
 
     Args:
-        cluster: The local site.
+        cluster: The local region.
         capacity: The stream pool the listings run on.
         config: The stream bounds.
         first: The roster the caller already read to authorize the request,
@@ -199,7 +199,7 @@ async def follow(
         try:
             pods = await capacity.run(read_roster, cluster, oname)
         except APIError as exc:
-            # The workload was deleted, or the site stopped answering. The
+            # The workload was deleted, or the region stopped answering. The
             # response has long since started, so the status code is spent.
             yield StreamEvent("error", StreamError(code=exc.code, message=exc.message))
             return

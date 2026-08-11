@@ -6,7 +6,7 @@ document is a bug.
 
 | Document | Subject |
 |----------|---------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | The platform as a whole: goals, multi-site active/active, networking, auth, secrets, airgap, and the REST conventions both offerings share. |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | The platform as a whole: goals, multi-region active/active, networking, auth, secrets, airgap, and the REST conventions both offerings share. |
 | [CONTAINERS.md](./CONTAINERS.md) | The container offering (CaaS): running an image the caller already has. |
 | [FUNCTIONS.md](./FUNCTIONS.md) | The function offering (FaaS): running code built from source, and how build state folds into a function's status. |
 | [BUILDING.md](./BUILDING.md) | How source becomes an image: kpack, buildpacks, runtime versions, credentials, and the build flow. |

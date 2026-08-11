@@ -21,7 +21,7 @@ from common.labels import (  # noqa: F401
 )
 
 # In `common` because they bound what can be written to a cluster, and the
-# builder applies them off the HTTP path. Re-exported for one import site.
+# builder applies them off the HTTP path. Re-exported for one import region.
 from common.names import (  # noqa: F401
     DNS1123,
     HOSTNAME,
@@ -104,15 +104,15 @@ WorkloadSize = Literal["small", "medium", "large"]
 # they go on `reason` - so a new interesting failure is an additive reason
 # string, not a breaking change to every client's switch.
 WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Failed", "Terminating"]
-# Per-site values that reach a response. SiteStatus is also the return type of the
+# Per-region values that reach a response. RegionStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
 # "Building" appears here for the same reason it appears in WorkloadStatus: while a
-# function's image is still being built, every site's KSVC is failing to pull an
+# function's image is still being built, every region's KSVC is failing to pull an
 # image that does not exist yet, and reporting that as "Failed" describes the
 # symptom instead of the cause (docs/FUNCTIONS.md - Function Status Resolution).
-SITE_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
-# Machine-readable causes behind a Failed site or rollup, published on /info so
+REGION_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
+# Machine-readable causes behind a Failed region or rollup, published on /info so
 # a UI can switch on them - the Kubernetes reason/message pair, one level up.
 # BuildFailed is authoritative (read off the kpack Image); the rest are derived
 # from the failing conditions' reason/message - stable-ish Kubernetes and
@@ -363,28 +363,28 @@ class ScalingCapabilities(BaseModel):
     scaleDownDelay: ScaleDownDelayCapability
 
 
-class SiteStatus(BaseModel):
-    """The deploy/health state of a workload at a single site.
+class RegionStatus(BaseModel):
+    """The deploy/health state of a workload at a single region.
 
     Carries no live usage: measuring it is a cluster call of its own, and this is
     on the full GET, which is not the endpoint to poll. ``replicas`` stays because
-    it is free - it comes off the Revision read that the per-site failure detail
-    needs anyway. Usage lives on :class:`SiteStatusDetail`, which only the status
+    it is free - it comes off the Revision read that the per-region failure detail
+    needs anyway. Usage lives on :class:`RegionStatusDetail`, which only the status
     view returns.
 
     Attributes:
-        site: The site name.
-        status: Per-site status (Ready/Deploying/Failed/Terminating/Timeout/...).
-        revision: The Knative revision the site is serving, if known.
+        region: The region name.
+        status: Per-region status (Ready/Deploying/Failed/Terminating/Timeout/...).
+        revision: The Knative revision the region is serving, if known.
         reason: Machine-readable cause behind a Failed status, one of
             ``STATUS_REASONS``; None when the cause was not recognized.
-        message: The human-readable failure detail when the site failed, else
+        message: The human-readable failure detail when the region failed, else
             None. Kubernetes' reason/message pair: ``reason`` is the word a
             client switches on, this is the text it shows.
-        replicas: Running pods at this site (None if unknown).
+        replicas: Running pods at this region (None if unknown).
     """
 
-    site: str
+    region: str
     status: str
     revision: str | None = None
     reason: str | None = None
@@ -399,24 +399,24 @@ class ResourceUsage(BaseModel):
     memory: str | None = None  # e.g. "180Mi"
 
 
-class SiteStats(BaseModel):
-    """One site's live state, as the stats view reports it.
+class RegionStats(BaseModel):
+    """One region's live state, as the stats view reports it.
 
-    Not a :class:`SiteStatus`: that one is the full GET's row, and carries the
+    Not a :class:`RegionStatus`: that one is the full GET's row, and carries the
     rollout detail (``revision``, ``error``) rather than what a workload is
     consuming right now.
 
     Attributes:
-        site: The site name.
-        status: Per-site status (Ready/Building/Deploying/Failed/...).
+        region: The region name.
+        status: Per-region status (Ready/Building/Deploying/Failed/...).
         reason: Machine-readable cause behind a Failed status, one of
             ``STATUS_REASONS``; None when the cause was not recognized.
-        replicas: Running pods at this site, or None if unknown.
+        replicas: Running pods at this region, or None if unknown.
         usage: Live cpu/memory over those pods; None when scaled to zero or the
             metrics API could not be read.
     """
 
-    site: str
+    region: str
     status: str
     reason: str | None = None
     replicas: int | None = None
@@ -431,18 +431,18 @@ class WorkloadBase(BaseModel):
     type: Literal["function", "container"]
     hostname: str  # external host (no scheme), e.g. {name}-{group}.{route_domain}
     status: WorkloadStatus
-    size: str | None = None  # resource t-shirt size (uniform across sites)
+    size: str | None = None  # resource t-shirt size (uniform across regions)
     # workload creation time (metadata.creationTimestamp), in Israel local time
     createdAt: datetime | None = None
 
 
 class WorkloadSummary(WorkloadBase):
-    """Lightweight list item: general info only, no per-site live usage.
+    """Lightweight list item: general info only, no per-region live usage.
 
     Use the single-workload GET for replicas/usage.
     """
 
-    sites: list[str] = []  # site names where the workload is deployed
+    regions: list[str] = []  # region names where the workload is deployed
 
 
 class EnvVarView(BaseModel):
@@ -471,7 +471,7 @@ class FileView(BaseModel):
 
 
 class BuildStatusView(BaseModel):
-    """A function's image build state, read from the local site's kpack Image.
+    """A function's image build state, read from the local region's kpack Image.
 
     State and reason only. The built image stays internal - a function's client
     deals in source, not images - so it is on :class:`common.build.BuildStatus`,
@@ -498,32 +498,32 @@ class WorkloadStatsResponse(BaseModel):
         status: The rollup, identical to the full GET's - ``Building``
             included, since the build is still read even though it is not
             reported here.
-        reason: The first recognized per-site ``reason``, as on the full GET.
-        replicas: Running pods across every site. None if any site's is unknown.
-        usage: Cpu/memory across every site. None if any site could not be
+        reason: The first recognized per-region ``reason``, as on the full GET.
+        replicas: Running pods across every region. None if any region's is unknown.
+        usage: Cpu/memory across every region. None if any region could not be
             measured, rather than a total quietly missing one.
-        sites: One entry per site that has the workload.
+        regions: One entry per region that has the workload.
     """
 
     status: WorkloadStatus
     reason: str | None = None
     replicas: int | None = None
     usage: ResourceUsage | None = None
-    sites: list[SiteStats] = []
+    regions: list[RegionStats] = []
 
 
 class WorkloadResponse(WorkloadBase):
-    """Full single-workload view: identity, live per-site status, and config.
+    """Full single-workload view: identity, live per-region status, and config.
 
-    Identity, live per-site status, and the desired-state config common to both
+    Identity, live per-region status, and the desired-state config common to both
     offerings (secrets redacted). FunctionResponse and ContainerResponse subclass
     this, so a response mirrors the create body of its offering.
     """
 
-    sites: list[SiteStatus] = []
+    regions: list[RegionStatus] = []
     statusUrl: str | None = None
-    # The first recognized per-site `reason`, so a client that only reads the
-    # headline still learns *why* a Failed rollup failed. None when no site's
+    # The first recognized per-region `reason`, so a client that only reads the
+    # headline still learns *why* a Failed rollup failed. None when no region's
     # cause was recognized (or nothing failed).
     reason: str | None = None
     # desired-state config common to both offerings (secret values redacted)
@@ -533,7 +533,7 @@ class WorkloadResponse(WorkloadBase):
 
 
 class PodInfo(BaseModel):
-    """One of the workload's pods on the local site.
+    """One of the workload's pods on the local region.
 
     Everything a client needs to pick a pod to follow, and to understand why one
     it was following went away. ``usage`` comes from the metrics API and is
@@ -564,9 +564,9 @@ class PodInfo(BaseModel):
 
 
 class PodRoster(BaseModel):
-    """The ``pods`` event: which pods the workload has on this site, right now.
+    """The ``pods`` event: which pods the workload has on this region, right now.
 
-    The local site only, like the log streams it feeds: a pod name is only
+    The local region only, like the log streams it feeds: a pod name is only
     useful where its log can be read. Empty ``pods`` is a normal state, not an
     error - the workload is deployed here and scaled to zero - which is why this
     is a stream rather than a lookup that would have to keep being repeated to
@@ -576,14 +576,14 @@ class PodRoster(BaseModel):
         name: The workload name.
         group: The owning group.
         type: The offering.
-        site: The site these pods are on (always the local one).
+        region: The region these pods are on (always the local one).
         pods: The current roster, ordered by name.
     """
 
     name: str
     group: str
     type: Literal["function", "container"]
-    site: str
+    region: str
     pods: list[PodInfo] = []
 
 
@@ -616,7 +616,7 @@ class PodLogStreamOpen(BaseModel):
         name: The workload name.
         group: The owning group.
         type: The offering.
-        site: The site the pod is on (always the local one).
+        region: The region the pod is on (always the local one).
         pod: The pod being followed.
         container: The container being read.
         revision: The Knative revision the pod belongs to, if labelled.
@@ -625,7 +625,7 @@ class PodLogStreamOpen(BaseModel):
     name: str
     group: str
     type: Literal["function", "container"]
-    site: str
+    region: str
     pod: str
     container: str
     revision: str | None = None
@@ -643,7 +643,7 @@ class PodLogSnapshot(BaseModel):
         name: The workload name.
         group: The owning group.
         type: The offering.
-        site: The site the pod is on (always the local one).
+        region: The region the pod is on (always the local one).
         pod: The pod that was read.
         container: The container it was read from.
         revision: The Knative revision the pod belongs to, if labelled.
@@ -653,7 +653,7 @@ class PodLogSnapshot(BaseModel):
     name: str
     group: str
     type: Literal["function", "container"]
-    site: str
+    region: str
     pod: str
     container: str
     revision: str | None = None
@@ -696,7 +696,7 @@ class StreamError(BaseModel):
     """The ``error`` event: the stream is ending, and why.
 
     Once the response has begun there is no status code left to send, so this is
-    the only way a stream can report that the workload was deleted or a site
+    the only way a stream can report that the workload was deleted or a region
     stopped answering. It carries the same ``code`` vocabulary as the error
     envelope (``/info`` publishes it), so a client switches on one set of values
     whichever way the failure reaches it.

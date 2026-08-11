@@ -1,6 +1,6 @@
 """Settings shared by every service (api, builder, …).
 
-The connection identity - sites, client cert, CA bundle, registry, timeouts - is
+The connection identity - regions, client cert, CA bundle, registry, timeouts - is
 the same for any service that talks to the clusters, so it lives here. Each
 service subclasses it and adds its own fields.
 """
@@ -13,11 +13,11 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class SiteRegistry(BaseModel):
-    """A site's own registry, overriding the platform default for that site.
+class RegionRegistry(BaseModel):
+    """A region's own registry, overriding the platform default for that region.
 
-    Lives in the sites list - identical in every cluster - because an instance
-    composes the manifests for every site, not just its own. It carries no
+    Lives in the regions list - identical in every cluster - because an instance
+    composes the manifests for every region, not just its own. It carries no
     credentials: the list is serialized into a ConfigMap.
 
     Attributes:
@@ -34,25 +34,25 @@ class SiteRegistry(BaseModel):
     repository: str | None = None
 
 
-class SiteConfig(BaseModel):
-    """Connection profile for one site.
+class RegionConfig(BaseModel):
+    """Connection profile for one region.
 
-    A *site* is a region (e.g. ``central``, ``south``); it runs an OpenShift
+    A *region* is a region (e.g. ``central``, ``south``); it runs an OpenShift
     *cluster* (e.g. ``central-0``) whose API server is derived as
     ``https://api.{cluster}.{base_domain}:6443``. The client certificate, CA
     bundle, and workloads namespace are global (the same in every cluster);
     the registry is not.
 
     Attributes:
-        name: The site (region) name.
+        name: The region (region) name.
         cluster: The OpenShift cluster running it.
-        registry: That site's registry, or None to take the platform default -
+        registry: That region's registry, or None to take the platform default -
             which is what a single-registry install leaves it as.
     """
 
     name: str
     cluster: str
-    registry: SiteRegistry | None = None
+    registry: RegionRegistry | None = None
 
 
 class CABundleConfig(BaseModel):
@@ -95,8 +95,8 @@ def registry_host(url: str) -> str:
 class RegistryConfig(BaseModel):
     """One internal (mirrored) container registry.
 
-    Both the platform default and, once merged with a :class:`SiteRegistry` by
-    :meth:`CommonSettings.registry_for`, one site's resolved registry - the same
+    Both the platform default and, once merged with a :class:`RegionRegistry` by
+    :meth:`CommonSettings.registry_for`, one region's resolved registry - the same
     type either way, since callers want a whole registry rather than a base plus
     overrides to re-apply.
     """
@@ -165,7 +165,7 @@ class BuildConfig(BaseModel):
 
     registry_secret: str = "serverless-registry-creds"  # noqa: S105 - a Secret name
     # Pull-only credential for the shared kpack registry (stack, store, and the
-    # run image `export` pulls). Empty when it is the site registry.
+    # run image `export` pulls). Empty when it is the region registry.
     kpack_registry_secret: str = ""  # noqa: S105 - a Secret name
     git_username: str = "x-access-token"  # noqa: S105 - a username, not a secret
     resources: dict = Field(default_factory=dict)
@@ -198,21 +198,21 @@ class CommonSettings(BaseSettings):
 
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
-    # Platform default; anything about one site goes through `registry_for`.
+    # Platform default; anything about one region goes through `registry_for`.
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
-    # Registry API token per site name (SERVERLESS_SITE_REGISTRY_TOKENS, JSON).
-    # Every instance holds every site's: a delete reclaims repositories in all
-    # sites from whichever one took the request. A JSON object rather than a
-    # variable per site, because a site name may contain '-'.
-    site_registry_tokens: dict[str, str] = Field(default_factory=dict)
+    # Registry API token per region name (SERVERLESS_REGION_REGISTRY_TOKENS, JSON).
+    # Every instance holds every region's: a delete reclaims repositories in all
+    # regions from whichever one took the request. A JSON object rather than a
+    # variable per region, because a region name may contain '-'.
+    region_registry_tokens: dict[str, str] = Field(default_factory=dict)
     build: BuildConfig = Field(default_factory=BuildConfig)
 
     cluster_connect_timeout: float = 2.0
     cluster_read_timeout: float = 5.0
-    site_op_timeout: float = 60.0
+    region_op_timeout: float = 60.0
 
-    sites: list[SiteConfig] = Field(default_factory=list)
-    local_site: str | None = None
+    regions: list[RegionConfig] = Field(default_factory=list)
+    local_region: str | None = None
 
     @property
     def client_cert_file(self) -> str:
@@ -224,39 +224,39 @@ class CommonSettings(BaseSettings):
         """Absolute path to the client TLS key (``client_cert_dir/tls.key``)."""
         return f"{self.client_cert_dir.rstrip('/')}/tls.key"
 
-    def site(self, name: str) -> SiteConfig | None:
-        """Return the configured site with ``name``, or None if there isn't one.
+    def region(self, name: str) -> RegionConfig | None:
+        """Return the configured region with ``name``, or None if there isn't one.
 
         Args:
-            name: The site name to look up.
+            name: The region name to look up.
 
         Returns:
-            The matching :class:`SiteConfig`, or None.
+            The matching :class:`RegionConfig`, or None.
         """
-        return next((z for z in self.sites if z.name == name), None)
+        return next((z for z in self.regions if z.name == name), None)
 
-    def registry_for(self, site: str) -> RegistryConfig:
-        """The registry ``site`` builds into, pulls from, and is cleaned up in.
+    def registry_for(self, region: str) -> RegistryConfig:
+        """The registry ``region`` builds into, pulls from, and is cleaned up in.
 
         The single derivation, so what a build pushes to, what its KSVC pulls,
-        and what a delete reclaims cannot disagree. A site with no override -
+        and what a delete reclaims cannot disagree. A region with no override -
         the normal single-registry install - resolves to the platform default.
 
         Args:
-            site: The site name.
+            region: The region name.
 
         Returns:
-            A new registry: the platform default with that site's overrides and
+            A new registry: the platform default with that region's overrides and
             API token applied. Nothing here is mutated.
         """
-        profile = self.site(site)
+        profile = self.region(region)
         override = profile.registry if profile else None
         # Falls back rather than defaulting to "": an empty token disables
-        # cleanup outright, so an unlisted site would silently stop reclaiming.
+        # cleanup outright, so an unlisted region would silently stop reclaiming.
         # But only onto the SAME host - the default token belongs to the default
-        # registry, and sending it to a site's overridden registry would be the
+        # registry, and sending it to a region's overridden registry would be the
         # wrong credential handed to a different service.
-        token = self.site_registry_tokens.get(site) or ""
+        token = self.region_registry_tokens.get(region) or ""
         # Compared as canonical hosts, the same normalization the references
         # and reclaim paths use - the same registry spelled with and without a
         # scheme must not read as two, silently dropping the fallback token.
@@ -268,7 +268,7 @@ class CommonSettings(BaseSettings):
         update: dict[str, object] = {"api_token": token}
         if override is not None:
             update["url"] = override.url
-            # None inherits, "" overrides with nothing - see SiteRegistry.
+            # None inherits, "" overrides with nothing - see RegionRegistry.
             if override.organization is not None:
                 update["organization"] = override.organization
             if override.repository is not None:
@@ -276,6 +276,6 @@ class CommonSettings(BaseSettings):
         return self.registry.model_copy(update=update)
 
     @property
-    def site_names(self) -> list[str]:
-        """The names of all configured sites."""
-        return [z.name for z in self.sites]
+    def region_names(self) -> list[str]:
+        """The names of all configured regions."""
+        return [z.name for z in self.regions]

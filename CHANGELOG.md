@@ -7,6 +7,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (rename)
+
+- **BREAKING: "site" is now "region" on every surface.** The API's JSON
+  contract (`regions`, per-region `region` rows, `/info`'s `regions`), the
+  env vars (`SERVERLESS_REGIONS`, `SERVERLESS_LOCAL_REGION`,
+  `SERVERLESS_REGION_REGISTRY_TOKENS`, `SERVERLESS_REGION_OP_TIMEOUT`), the
+  chart values (`regions[]`, `global.region`, `regionOpTimeout`), the Vault
+  key placeholder (`{region}`), and the code and docs all use "region".
+  Clients must rename the response fields; deployments must rename the env
+  overrides and values keys (including `global.site` -> `global.region`) at
+  rollout.
+
 ### Added
 
 - **`tailLines` on `GET .../logs/pods/{pod}`, for the follow and the snapshot

@@ -1,6 +1,6 @@
 # Architecture & Design
 
-How the platform fits together: goals, the multi-site model, networking,
+How the platform fits together: goals, the multi-region model, networking,
 authentication, secrets, and the REST conventions both offerings share.
 Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 
@@ -9,7 +9,7 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 - [Design Decisions (locked in)](#design-decisions-locked-in)
 - [Overview & Goals](#overview--goals)
 - [High-Level Architecture](#high-level-architecture)
-- [Multi-Site (Active/Active HA) Design](#multi-site-activeactive-ha-design)
+- [Multi-Region (Active/Active HA) Design](#multi-region-activeactive-ha-design)
 - [Networking & Exposure](#networking--exposure)
 - [Authentication & Authorization](#authentication--authorization)
 - [Secrets Management](#secrets-management)
@@ -26,8 +26,8 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 | Deliverable | FastAPI app + Helm chart + CI/CD in this repo (GitOps `ApplicationSet` lives elsewhere) |
 | FaaS build | **kpack** (Kubernetes-native Cloud Native Buildpacks), mirrored stack/store images for airgap - see BUILDING.md: Design Decisions (locked in) |
 | Cluster auth | **cert-manager `Certificate` CR** (shipped in Helm chart) → client TLS cert; **CN is a DNS name** `serverless-api.clients.{base_domain}` (ACME-issued); that name is the Kubernetes user, bound via RBAC |
-| Topology | **Two separate OpenShift clusters** ("sites") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
-| Site selection | **Deploy to both sites on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless site (active/passive at the traffic layer, active/active at the deploy layer). |
+| Topology | **Two separate OpenShift clusters** ("regions") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
+| Region selection | **Deploy to both regions on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless region (active/passive at the traffic layer, active/active at the deploy layer). |
 | Tenancy | **Shared namespace, label-scoped**; SSO group → resource labels enforced by the API |
 | API authn | **SSO (Red Hat Build of Keycloak) OIDC** in front of the API |
 | API authz | Based on **SSO group membership** |
@@ -56,7 +56,7 @@ Both models must run on **Knative Serving** (scale-to-zero, request-driven autos
 **OpenShift**, be reachable from outside the cluster via an **OpenShift Route**, and be
 governed by enterprise SSO. Everything runs in an **airgapped** datacenter across **two
 OpenShift clusters** for high availability. The **API itself also runs active/active on
-those same two clusters** (fronted by a DNS record pointing at the active site), and the
+those same two clusters** (fronted by a DNS record pointing at the active region), and the
 **customer workloads run on the same two clusters** in a **separate namespace** from the API.
 
 ### Goals
@@ -64,15 +64,15 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 - A single FastAPI REST API that abstracts Knative/OpenShift away from the customer.
 - One API call deploys the workload to **both clusters**; the API is itself HA across both.
 - Each workload exposed at a **single, cluster-independent Route host**, with DNS forwarding
-  to the active site.
+  to the active region.
 - Strong authn (SSO OIDC) and group-based authz.
 - No secrets stored by the API; all secrets sourced from Vault via ESO.
 - GitOps-managed (Helm + ArgoCD), reproducible, airgap-compatible.
 
 ### Non-goals (this phase)
 
-- Cross-site traffic steering is handled **outside** the API by a **DNS record that forwards
-  to the active serverless site** (the Route host is identical in both clusters). The API is
+- Cross-region traffic steering is handled **outside** the API by a **DNS record that forwards
+  to the active serverless region** (the Route host is identical in both clusters). The API is
   not a GSLB.
 - Billing/metering, quota enforcement, and a full observability stack (see ARCHITECTURE.md: Open Questions / Future Work).
 
@@ -84,7 +84,7 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 | **KSVC** | A Knative `Service` custom resource (`serving.knative.dev/v1`). The top-level unit we create per workload. |
 | **Revision** | An immutable snapshot of a KSVC; created on each spec change. |
 | **Route (OpenShift)** | OpenShift `route.openshift.io/v1` object that exposes a service externally over HTTP(S). |
-| **Site** | A region the platform deploys to (e.g. `central`, `south`); each runs one OpenShift **cluster** (e.g. `central-0`). |
+| **Region** | A region the platform deploys to (e.g. `central`, `south`); each runs one OpenShift **cluster** (e.g. `central-0`). |
 | **SSO** | Red Hat Build of Keycloak - the OIDC identity provider. |
 | **ESO** | External Secrets Operator - syncs secrets from Vault into Kubernetes Secrets. |
 | **Tenant / group** | An SSO (Keycloak) group; the unit of ownership and isolation. |
@@ -99,14 +99,14 @@ those same two clusters** (fronted by a DNS record pointing at the active site),
 ```mermaid
 flowchart TB
     U["User / CI client"]
-    DNSAPI["DNS: serverless-api.{base_domain}<br/>→ active API site"]
-    DNSAPP["DNS: *.serverless.{base_domain}<br/>→ active workload site"]
+    DNSAPI["DNS: serverless-api.{base_domain}<br/>→ active API region"]
+    DNSAPP["DNS: *.serverless.{base_domain}<br/>→ active workload region"]
     KC["SSO / Keycloak OIDC (internal)"]
     REG[("Internal Container Registry<br/>(mirrored, airgapped)")]
     V[("HashiCorp Vault (existing)")]
     GIT[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
 
-    subgraph ZA["Site central - cluster central-0"]
+    subgraph ZA["Region central - cluster central-0"]
         APIA["FastAPI API (active/active)"]
         BCA["build-controller<br/>Image watch → ksvc digest"]
         KNA["Knative Serving<br/>(workloads namespace)"]
@@ -116,7 +116,7 @@ flowchart TB
         KNA --> RTA
     end
 
-    subgraph ZB["Site south - cluster south-0"]
+    subgraph ZB["Region south - cluster south-0"]
         APIB["FastAPI API (active/active)"]
         BCB["build-controller<br/>Image watch → ksvc digest"]
         KNB["Knative Serving<br/>(workloads namespace)"]
@@ -135,7 +135,7 @@ flowchart TB
     APIA -->|"create KSVC + Route (mTLS client cert)"| KNA
     APIA -->|"create KSVC + Route (mTLS client cert)"| KNB
     APIA -->|"pull/push images"| REG
-    BCA -->|"built digest → ksvc, both sites"| KNA
+    BCA -->|"built digest → ksvc, both regions"| KNA
     BCA --> KNB
     BCB --> KNA
     BCB --> KNB
@@ -165,7 +165,7 @@ flowchart TB
   then **applies the KSVC + Route to both clusters** using each cluster's **client TLS cert**
   (CN `serverless-api.clients.{base_domain}`) for authentication.
 - Each workload gets the **same Route host in both clusters**; the
-  **`*.serverless.{base_domain}`** DNS record forwards end-user traffic to the active site.
+  **`*.serverless.{base_domain}`** DNS record forwards end-user traffic to the active region.
 - Images come from the **internal mirrored registry** (airgap). The API's own secrets come
   from **Vault via an ESO `ExternalSecret`** (using a pre-existing `ClusterSecretStore`); its
   client certs come from **cert-manager (ACME)**; the API is deployed by **Helm**, synced by
@@ -200,21 +200,21 @@ A canonical scaling sub-object in the API:
 
 ---
 
-## Multi-Site (Active/Active HA) Design
+## Multi-Region (Active/Active HA) Design
 
-The platform deploys **every** workload to **both** OpenShift clusters (Site A and Site B)
+The platform deploys **every** workload to **both** OpenShift clusters (Region A and Region B)
 on each create/update, and the **API itself runs active/active on both clusters**. Because
 both clusters **trust the same CA** and the workload **Route host is identical in both**,
-each site is a full, independent replica; a DNS record forwards end-user traffic to the
-active site.
+each region is a full, independent replica; a DNS record forwards end-user traffic to the
+active region.
 
 The **client certificate, CA bundle, and workloads namespace are global** (the same in every
-cluster), so a site profile is just its name and its cluster - the API server URL is
+cluster), so a region profile is just its name and its cluster - the API server URL is
 **derived**, not configured. The `routeDomain`, `workloadsNamespace`, client cert directory,
 and CA bundle are shared config:
 
 ```yaml
-baseDomain: example.com                   # each site's API server derives from this
+baseDomain: example.com                   # each region's API server derives from this
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
 workloadsNamespace: serverless-workloads  # where the API creates workloads (global)
 clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
@@ -222,30 +222,30 @@ caBundle:                                 # OpenShift-injected, global
   configMap: ca-bundle
   key: ca-bundle.crt
   mountPath: /etc/ssl/certs
-sites:
-  - name: central                          # site/region
+regions:
+  - name: central                          # region/region
     cluster: central-0                     # cluster instance
   - name: south
     cluster: south-0
 ```
 
-> **There is no per-site `apiServer`.** Each site's endpoint is composed as
+> **There is no per-region `apiServer`.** Each region's endpoint is composed as
 > `https://api.{cluster}.{baseDomain}:6443` (`common.cluster.Cluster`), so the cluster name
-> is the only thing that varies and a site cannot be pointed at an endpoint that
-> contradicts its name. `local_site` names the site this instance sits in (matched on the
-> site name first, then the cluster name).
+> is the only thing that varies and a region cannot be pointed at an endpoint that
+> contradicts its name. `local_region` names the region this instance sits in (matched on the
+> region name first, then the cluster name).
 
 > The API always authenticates with the **client certificate** (no in-cluster/ServiceAccount
 > path) - uniform whether it's talking to its local cluster or the peer over its external API
-> endpoint. Because `sites` carries no secrets, it can be sourced from a ConfigMap.
+> endpoint. Because `regions` carries no secrets, it can be sourced from a ConfigMap.
 
 ### Fan-out & status aggregation
 
-- The API holds **one Kubernetes client per site** (built from that site's client cert + the
+- The API holds **one Kubernetes client per region** (built from that region's client cert + the
   shared CA).
-- On deploy, it applies the KSVC + Route to both sites **concurrently** (async / thread
-  pool), then **aggregates** per-site results. The workload `hostname` is the **same host**
-  in both sites; only the per-site readiness differs:
+- On deploy, it applies the KSVC + Route to both regions **concurrently** (async / thread
+  pool), then **aggregates** per-region results. The workload `hostname` is the **same host**
+  in both regions; only the per-region readiness differs:
 
 ```json
 {
@@ -253,9 +253,9 @@ sites:
   "group": "team",
   "type": "container",
   "hostname": "orders-api-team.serverless.example.com",
-  "sites": [
-    { "site": "central", "status": "Ready", "revision": "orders-api-00001" },
-    { "site": "south", "status": "Ready", "revision": "orders-api-00001" }
+  "regions": [
+    { "region": "central", "status": "Ready", "revision": "orders-api-00001" },
+    { "region": "south", "status": "Ready", "revision": "orders-api-00001" }
   ],
   "status": "Ready"
 }
@@ -269,33 +269,33 @@ polling `GET {statusUrl}` (or `/stats`), not from the status code of the write.
 
 | Scenario | What the poll reports |
 |----------|-----------------------|
-| Every site succeeds | `status = Ready`. A mixed `Ready` + `Deploying` is a normal rollout with one site ahead, **not** a failure. |
-| One site fails | `status = Failed`; that site's entry in `sites[]` carries the `reason`/`message` pair. The succeeded site is **left running** (HA prefers availability), and DNS keeps serving from the healthy site. |
-| Every site fails | `status = Failed` with an error on every site. The background deploy raises `SITE_TOTAL_FAILURE` internally; it is logged with the request id rather than returned, because the caller already holds a `202`. |
+| Every region succeeds | `status = Ready`. A mixed `Ready` + `Deploying` is a normal rollout with one region ahead, **not** a failure. |
+| One region fails | `status = Failed`; that region's entry in `regions[]` carries the `reason`/`message` pair. The succeeded region is **left running** (HA prefers availability), and DNS keeps serving from the healthy region. |
+| Every region fails | `status = Failed` with an error on every region. The background deploy raises `REGION_TOTAL_FAILURE` internally; it is logged with the request id rather than returned, because the caller already holds a `202`. |
 
 Re-apply is idempotent (server-side apply), so a retry heals any partial state.
 
 The **synchronous** read paths do surface these as status codes: a listing whose every
-site is unreachable is a `502 SITE_TOTAL_FAILURE` with the per-site errors in `details[]`,
-and a single `GET`/`DELETE` that cannot confirm a workload's absence because a site was
+region is unreachable is a `502 REGION_TOTAL_FAILURE` with the per-region errors in `details[]`,
+and a single `GET`/`DELETE` that cannot confirm a workload's absence because a region was
 unreachable is a `503` rather than a misleading `404` (a missing answer is not evidence of
 absence).
 
-- **An unavailable site does not freeze the API.** Per-site work runs concurrently in
-  threads; every cluster call has a **connect/read timeout** and each site has an overall
-  **operation timeout backstop**, so a down/slow site fails fast and is reported as
-  `Timeout`/`Failed` (it doesn't block the healthy site or other requests). Health probes
+- **An unavailable region does not freeze the API.** Per-region work runs concurrently in
+  threads; every cluster call has a **connect/read timeout** and each region has an overall
+  **operation timeout backstop**, so a down/slow region fails fast and is reported as
+  `Timeout`/`Failed` (it doesn't block the healthy region or other requests). Health probes
   never touch clusters. (See `cluster_connect_timeout` / `cluster_read_timeout` /
-  `site_op_timeout`.)
+  `region_op_timeout`.)
 - Operations are **idempotent** (Kubernetes **server-side apply** by object name), so a
   client can safely retry to heal a degraded deployment.
-- **Every site builds what it runs**, into its own registry, and publishes only to itself
-  (see FUNCTIONS.md: FaaS - Function as a Service). The two sites run the same *commit*,
+- **Every region builds what it runs**, into its own registry, and publishes only to itself
+  (see FUNCTIONS.md: FaaS - Function as a Service). The two regions run the same *commit*,
   not the same digest: builds are not bit-reproducible, and the independence is what a
   switchover needs (BUILDING.md: Active/Active Behaviour).
 
-> Cross-site traffic steering is handled by the **`*.serverless.{base_domain}` DNS record
-> forwarding to the active site** - not by the API.
+> Cross-region traffic steering is handled by the **`*.serverless.{base_domain}` DNS record
+> forwarding to the active region** - not by the API.
 
 ---
 
@@ -306,10 +306,10 @@ absence).
   Knative ingress - so the platform requirement "every workload is exposed via an OpenShift
   Route" is satisfied **by the operator**, not by the API hand-creating Routes.
 - A bare KSVC would only get a Route under the **per-cluster** default domain (`apps.<cluster>`),
-  which differs between sites. To get **one stable, cluster-independent host**, the API creates
+  which differs between regions. To get **one stable, cluster-independent host**, the API creates
   a **`DomainMapping`** for `{name}-{group}.serverless.{base_domain}` in **each** cluster; the
   operator then provisions the Route for that host. A **`*.serverless.{base_domain}` DNS
-  record forwards to the active site**.
+  record forwards to the active region**.
 - **TLS:** the custom host is covered by a **wildcard cert for `*.serverless.{base_domain}`**
   (provided to the DomainMapping / ingress); the operator-created Route is `edge`-terminated.
 
@@ -337,13 +337,13 @@ the object name and the host.
 
 **Custom hostname.** A client may override the host with a `hostname` field. Because the
 `DomainMapping` name *is* the host, the API **validates the hostname is not already assigned**
-to another workload before deploying (checked across both sites); a clash returns **409
+to another workload before deploying (checked across both regions); a clash returns **409
 Conflict**. The chosen host is recorded on the KSVC via the `serverless.platform/host`
 annotation so reads can report the URL.
 
 ```mermaid
 flowchart LR
-    Ext["External client"] -->|HTTPS| DNS["DNS: *.serverless.{base_domain}<br/>→ active site"]
+    Ext["External client"] -->|HTTPS| DNS["DNS: *.serverless.{base_domain}<br/>→ active region"]
     DNS --> RT["OpenShift Route (operator-created from DomainMapping)<br/>{name}-{group}.serverless.{base_domain}"]
     RT --> KIN["Knative ingress (Kourier)"]
     KIN --> KSVC["KSVC revision pods"]
@@ -506,18 +506,18 @@ so the value deciding whose signatures we trust is always a deliberate choice he
 
 ### Cluster-side identity (cert-manager client cert + RBAC)
 
-- The Helm chart ships a cert-manager **`Certificate`** per site, issued via **ACME** (an
+- The Helm chart ships a cert-manager **`Certificate`** per region, issued via **ACME** (an
   internal ACME endpoint in airgap). Because ACME requires the identity to be a DNS name, the
   cert's **CN/SAN is `serverless-api.clients.{base_domain}`** - and that DNS name is the
   **Kubernetes user**. OpenShift authenticates the client by that name. Both clusters
   **trust the same CA**, so the same identity is valid in either cluster.
-- Each site has one `Role`/`RoleBinding` (in the **workload namespace**,
+- Each region has one `Role`/`RoleBinding` (in the **workload namespace**,
   `serverless-workloads`) granting least-privilege CRUD on exactly what the API manages:
   Knative `services`/`domainmappings`, `secrets`, `configmaps`, read on `pods`/`events`, and
   read on the **`pods/log`** subresource (for the `/logs` endpoint). The API does **not** need
   `routes` permission - on OpenShift Serverless the operator creates the OpenShift Route
   automatically from the KSVC/DomainMapping.
-- The cert is mounted **once** (global, not per-site) at `SERVERLESS_CLIENT_CERT_DIR`
+- The cert is mounted **once** (global, not per-region) at `SERVERLESS_CLIENT_CERT_DIR`
   (`tls.crt`/`tls.key`); the API uses it to authenticate to **every** cluster via mTLS. There
   is no in-cluster/ServiceAccount fallback - always certificate-based.
 - The CA used to verify the API servers is the **trusted CA bundle** (ARCHITECTURE.md: Airgapped Considerations), pointed at by
@@ -575,7 +575,7 @@ flowchart LR
 
 - `gitToken` (FaaS) and `registryToken` (CaaS) arrive in the request body **over TLS**.
 - Each is stored as a **scoped, labeled Kubernetes Secret** owned by the tenant group, in
-  the workload namespace of both sites, and **garbage-collected with the workload** (via the
+  the workload namespace of both regions, and **garbage-collected with the workload** (via the
   KSVC `ownerReference`):
   - `gitToken` → a `kubernetes.io/basic-auth` **`{workload}-git`** Secret, annotated
     `kpack.io/git` so kpack clones with it, and read back by the API so a later edit can
@@ -644,35 +644,35 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/groups/{group}/functions` | Create a FaaS workload (build from Git). **202 Accepted** - deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/groups/{group}/functions` | List the group's functions - general info per workload (name, hostname, status, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
-| `GET` | `/api/v1/groups/{group}/functions/{name}` | Get one function (spec + per-site status). |
+| `GET` | `/api/v1/groups/{group}/functions` | List the group's functions - general info per workload (name, hostname, status, size, createdAt). Fans out to **all regions** and merges by workload (each item lists the regions it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/v1/groups/{group}/functions/{name}` | Get one function (spec + per-region status). |
 | `PUT` | `/api/v1/groups/{group}/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). Changing `gitRepo`/`branch`/`runtime` **rebuilds from source** reusing the stored `gitToken` (no need to re-send it); sending `gitToken` rotates it (and rebuilds); otherwise config-only and the current image is kept. Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
 | `POST` | `/api/v1/groups/{group}/functions/{name}/build` | Build the function's **current** source again - no request body. The inputs are the stored ones (`gitRepo`/`branch`/`path`/`runtime`/`version` and the saved `gitToken`), so this picks up a base-image or dependency change, retries a failed build, or gets a pushed commit built now instead of when kpack next polls. The workload's spec is untouched and the running revision keeps serving. **202 Accepted** - poll the same `statusUrl`. |
-| `DELETE` | `/api/v1/groups/{group}/functions/{name}` | Delete the function in both sites. |
+| `DELETE` | `/api/v1/groups/{group}/functions/{name}` | Delete the function in both regions. |
 | `POST` | `/api/v1/groups/{group}/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, status, size, createdAt). Fans out to **all sites** and merges by workload (each item lists the sites it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
-| `GET` | `/api/v1/groups/{group}/containers/{name}` | Get one container (spec + per-site status). |
+| `GET` | `/api/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, status, size, createdAt). Fans out to **all regions** and merges by workload (each item lists the regions it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/v1/groups/{group}/containers/{name}` | Get one container (spec + per-region status). |
 | `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; the **stored** `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); a **different** username with no token is a `400`; **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
-| `POST` | `/api/v1/groups/{group}/containers/{name}/pull` | Pull the image **tag** again - no request body. Knative resolves a tag to a digest once, when the revision is created, so an image pushed over the same tag is never picked up; this cuts a new revision in every site, which resolves it again. Nothing else about the workload changes. A digest-pinned container is a `400` (nothing newer to pull). **202 Accepted** - poll the same `statusUrl`. |
-| `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both sites. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/stats` | **The lightweight endpoint to poll.** Live state only: `status` (plus its machine-readable `reason`), workload-wide `replicas` and `usage`, and the same per site. No desired-state config, so a two-second refresh never re-reads the workload's backing Secret. Fans out to all sites; a function's build is still read, so `Building` is reported here as on the GET. Totals are summed before rounding (they need not equal the sum of the printed per-site figures) and are `null` if any site could not be measured. Scaled-to-zero -> `replicas: 0`, `usage: null`. Same `404`/`503` rules as the full GET. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/pods` | The workload's pods on the **current site**: name, revision, phase, ready, restarts, startedAt and per-pod usage. This is where the `{pod}` below comes from - nothing else in the API returns a pod name. **Streams by default** (`text/event-stream`, a `pods` event every `interval` seconds), because the answer expires: Knative replaces pods on every revision and removes them all on scale-to-zero. **`?follow=false`** returns one JSON roster instead, for a caller that cannot hold a connection. Events: `pods`, `error`. An empty roster is normal (scaled to zero), not a `404`. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | One pod's log, from the current site - Kubernetes keeps no buffer beyond the node, so there is nowhere else to read and no history behind what it holds. **Follows by default**; **`?follow=false`** returns a JSON snapshot of what the node holds right now, which is the only form a caller that cannot hold a connection can use. Optional `container` (default `user-container`), `sinceSeconds`, `tailLines` (start at the newest this-many lines, however old - the right opening for a pod quiet longer than any time window; clamped to `stream.snapshotTailLines`), `ticket`, and `limitBytes` (snapshot only, clamped to `stream.snapshotMaxBytes`). The snapshot returns the newest `stream.snapshotTailLines` lines at most, whatever the caller asks. A follow ends with an `end` event when the pod's log does (a scale-down or a new revision - routine, so not an `error`). A pod that is not this workload's is a `404`, and so is one that does not exist. Events: `open`, `log`, `warning`, `end`, `error`. |
+| `POST` | `/api/v1/groups/{group}/containers/{name}/pull` | Pull the image **tag** again - no request body. Knative resolves a tag to a digest once, when the revision is created, so an image pushed over the same tag is never picked up; this cuts a new revision in every region, which resolves it again. Nothing else about the workload changes. A digest-pinned container is a `400` (nothing newer to pull). **202 Accepted** - poll the same `statusUrl`. |
+| `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both regions. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/stats` | **The lightweight endpoint to poll.** Live state only: `status` (plus its machine-readable `reason`), workload-wide `replicas` and `usage`, and the same per region. No desired-state config, so a two-second refresh never re-reads the workload's backing Secret. Fans out to all regions; a function's build is still read, so `Building` is reported here as on the GET. Totals are summed before rounding (they need not equal the sum of the printed per-region figures) and are `null` if any region could not be measured. Scaled-to-zero -> `replicas: 0`, `usage: null`. Same `404`/`503` rules as the full GET. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/pods` | The workload's pods on the **current region**: name, revision, phase, ready, restarts, startedAt and per-pod usage. This is where the `{pod}` below comes from - nothing else in the API returns a pod name. **Streams by default** (`text/event-stream`, a `pods` event every `interval` seconds), because the answer expires: Knative replaces pods on every revision and removes them all on scale-to-zero. **`?follow=false`** returns one JSON roster instead, for a caller that cannot hold a connection. Events: `pods`, `error`. An empty roster is normal (scaled to zero), not a `404`. |
+| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | One pod's log, from the current region - Kubernetes keeps no buffer beyond the node, so there is nowhere else to read and no history behind what it holds. **Follows by default**; **`?follow=false`** returns a JSON snapshot of what the node holds right now, which is the only form a caller that cannot hold a connection can use. Optional `container` (default `user-container`), `sinceSeconds`, `tailLines` (start at the newest this-many lines, however old - the right opening for a pod quiet longer than any time window; clamped to `stream.snapshotTailLines`), `ticket`, and `limitBytes` (snapshot only, clamped to `stream.snapshotMaxBytes`). The snapshot returns the newest `stream.snapshotTailLines` lines at most, whatever the caller asks. A follow ends with an `end` event when the pod's log does (a scale-down or a new revision - routine, so not an `error`). A pod that is not this workload's is a `404`, and so is one that does not exist. Events: `open`, `log`, `warning`, `end`, `error`. |
 | `GET` | `/api/v1/groups/{group}/{type}/{name}/stats/stream` | **Follow** the live state as Server-Sent Events - the same body as `/stats`, pushed every `interval` seconds instead of on request, so one connection replaces a client's poll loop. Events: `stats` (the first sent immediately) and `error`. Optional `interval`, `ticket`. Same `404`/`503` rules as `/stats`, plus `503` when the stream pool is full. |
 | `POST` | `/api/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
-| `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `sites`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
+| `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `regions`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
 | `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
-| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). Constant responses - they never touch a cluster, so a down site cannot fail a probe. |
+| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). Constant responses - they never touch a cluster, so a down region cannot fail a probe. |
 | `GET` | `/docs`, `/redoc`, `/openapi.json` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). |
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
 `status` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
-sent), `statuses.site` the per-site set, `statuses.terminal` the subset a poller stops on - anything
+sent), `statuses.region` the per-region set, `statuses.terminal` the subset a poller stops on - anything
 else is still in flight - and `statuses.reasons` the values of the machine-readable `reason` field
-(on the workload and on each failing site row, in the full GET and `/stats` alike): the cause behind
+(on the workload and on each failing region row, in the full GET and `/stats` alike): the cause behind
 a `Failed` status, Kubernetes' reason/message pair one level up. `BuildFailed` is set
 authoritatively off the kpack Image; the rest are derived best-effort from the failing
-Kubernetes/Knative conditions, so an unrecognized cause is null with the raw text on the site's
+Kubernetes/Knative conditions, so an unrecognized cause is null with the raw text on the region's
 `message`. `errorCodes` is walked off the `APIError` subclasses, so an error added in code
 is published without a second edit. `naming` carries the one rule no per-field schema can
 express: `name` and `group` are each valid at 63 characters, but it is `{name}-{group}` that
@@ -692,7 +692,7 @@ body field. The per-field rules themselves (pattern, maxLength, description, exa
 > workflow patterns (ARCHITECTURE.md: REST API Specification).
 >
 > **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
-> workload named `{name}-{group}` already exists in any site (it is not a silent upsert);
+> workload named `{name}-{group}` already exists in any region (it is not a silent upsert);
 > changes go through the `PUT` endpoints.
 >
 > **`PUT` is a full replace** of the mutable spec and **404s** if the workload doesn't
@@ -740,7 +740,7 @@ body field. The per-field rules themselves (pattern, maxLength, description, exa
     "target": 100
   },
   "size": "small",                      // optional; small | medium | large (default small)
-  "sites": ["central", "south"]         // optional; default = all sites (HA)
+  "regions": ["central", "south"]         // optional; default = all regions (HA)
 }
 ```
 
@@ -769,11 +769,11 @@ Standard envelope for all non-2xx responses:
 {
   "error": {
     "status": 502,
-    "code": "SITE_TOTAL_FAILURE",
-    "message": "Deployment failed in all sites.",
+    "code": "REGION_TOTAL_FAILURE",
+    "message": "Deployment failed in all regions.",
     "details": [
-      { "site": "central", "message": "registry auth failed" },
-      { "site": "south", "message": "registry auth failed" }
+      { "region": "central", "message": "registry auth failed" },
+      { "region": "south", "message": "registry auth failed" }
     ],
     "requestId": "b1c2..."
   }
@@ -781,8 +781,8 @@ Standard envelope for all non-2xx responses:
 ```
 
 A **partial** failure is not an error envelope: `207` returns the normal
-workload body with `status: Failed` and the failing site's message on
-its per-site object (see *Partial-failure semantics* above). A poller therefore
+workload body with `status: Failed` and the failing region's message on
+its per-region object (see *Partial-failure semantics* above). A poller therefore
 parses one shape for `200`/`202`/`207` and only switches to the envelope on a
 genuine non-2xx.
 
@@ -813,8 +813,8 @@ This table is the authoritative prose, but a client should read `errorCodes` off
 | `409` | `CONFLICT` | Name already exists for the group, or the requested `hostname` is already assigned. |
 | `422` | `VALIDATION_ERROR` | Request body/path failed schema validation (FastAPI's own; rendered into the same envelope). |
 | `500` | `INTERNAL` | Unexpected error. The message is a fixed string - an exception's own text routinely carries internal hostnames or secret material - so the detail is in the log, under the same `requestId`. |
-| `502` | `SITE_TOTAL_FAILURE` | Every site failed (a listing whose sites were all unreachable). |
-| `503` | `SERVICE_UNAVAILABLE` | A check could not be *run*, so it has not passed: a site was unreachable during a host/absence pre-flight, a delete could not be confirmed, or a stored secret could not be read back to preserve a "keep". Fail-closed by design - retry. Also: the stream pool is full, or stream tickets are not configured. |
+| `502` | `REGION_TOTAL_FAILURE` | Every region failed (a listing whose regions were all unreachable). |
+| `503` | `SERVICE_UNAVAILABLE` | A check could not be *run*, so it has not passed: a region was unreachable during a host/absence pre-flight, a delete could not be confirmed, or a stored secret could not be read back to preserve a "keep". Fail-closed by design - retry. Also: the stream pool is full, or stream tickets are not configured. |
 
 ---
 
@@ -869,9 +869,9 @@ other request. What it does *not* get to skip is authorization: both forms go th
 `_pod_authorizer`, so `follow=false` is not a way around the check that the named pod is this
 workload's.
 
-Both are **local site only**. A pod name is only useful where its log can be read, and logs live
-on the node that wrote them. (`/stats` remains multi-site: it reports the rollup, which is a
-cross-site question.)
+Both are **local region only**. A pod name is only useful where its log can be read, and logs live
+on the node that wrote them. (`/stats` remains multi-region: it reports the rollup, which is a
+cross-region question.)
 
 ```
 GET .../{name}/pods                      →  event: pods   {"pods":[{"pod":"…-x2wql", …}]}
@@ -923,7 +923,7 @@ render** if it does not exceed `stream.maxSeconds` - the two live in different s
 `values.yaml`, so the relationship is asserted rather than left to whoever edits one. A quiet
 stream also sends a `:` comment every `stream.heartbeatSeconds`, so nothing in the path reaps it
 between events. The timeout applies to the whole Route (OpenShift has no per-path timeout); the
-API bounds its own cluster work with `siteOpTimeout` regardless.
+API bounds its own cluster work with `regionOpTimeout` regardless.
 
 ### Browsers cannot send an `Authorization` header
 
@@ -957,7 +957,7 @@ exactly one kind of caller if it does not. Group authorization is **not** done a
 ticket conveys only who you already are, and the stream re-runs the same check the ordinary GET
 does, so a ticket for a group you are not in opens a stream that `404`s.
 
-`SERVERLESS_STREAM_TICKET_KEY` (Vault → ESO, the same value in every replica and site) enables
+`SERVERLESS_STREAM_TICKET_KEY` (Vault → ESO, the same value in every replica and region) enables
 this. Empty **disables minting**, exactly as an empty admin key disables key auth - the streams
 still accept the `Authorization` header, so a `curl -N` follow needs no configuration at all and
 only the browser path depends on the secret.
@@ -981,7 +981,7 @@ taken, the workload and pod are read and authorized, and the first roster or rea
 missing workload is therefore a `404` **envelope**, not a stream that opens and immediately errors.
 
 Once bytes are flowing the status line is spent, so a later failure - the workload deleted, the
-site gone - arrives as an `error` event carrying the same `code` the envelope would have. `/info`
+region gone - arrives as an `error` event carrying the same `code` the envelope would have. `/info`
 publishes that vocabulary, so a client switches on one set of values however the failure reaches
 it.
 
@@ -1015,19 +1015,19 @@ Serverless/
 │   │   │   ├── route.py             # host + Knative DomainMapping (operator makes the Route)
 │   │   │   ├── env.py / files.py    # env & file resolution (+ their Secret/ConfigMap)
 │   │   │   └── resources.py / secrets.py  # t-shirt sizes + imagePullSecret/git-token builders
-│   │   ├── sites/                   # talking to the clusters
-│   │   │   ├── deployer.py          # multi-site fan-out + status rollup
+│   │   ├── regions/                   # talking to the clusters
+│   │   │   ├── deployer.py          # multi-region fan-out + status rollup
 │   │   │   ├── preflight.py         # guards that run before any write (host/name conflicts)
-│   │   │   ├── site_apply.py        # write one workload into one site (ordering + rollback)
-│   │   │   └── site_read.py         # read one workload's state back out of a site
+│   │   │   ├── region_apply.py        # write one workload into one region (ordering + rollback)
+│   │   │   └── region_read.py         # read one workload's state back out of a region
 │   │   ├── state/                   # interpret what came back (pure, no cluster I/O)
 │   │   │   ├── ksvc_state.py        # interpret a Knative object
 │   │   │   ├── ownership.py         # is this workload the caller's - the one shared rule
-│   │   │   ├── summaries.py         # merge a group's per-site listings into one row each
+│   │   │   ├── summaries.py         # merge a group's per-region listings into one row each
 │   │   │   └── describe.py / metrics.py  # read-back spec (redacted) + pod usage
 │   │   ├── streams/                 # Server-Sent Events (ARCHITECTURE.md - Streaming)
 │   │   │   ├── capacity.py          # the stream thread pool + the admission gate
-│   │   │   ├── pods.py              # push the local site's pod roster on an interval
+│   │   │   ├── pods.py              # push the local region's pod roster on an interval
 │   │   │   ├── logs.py              # follow ONE pod's log: the tail, and the bounded hand-off
 │   │   │   ├── stats.py             # push the live rollup on an interval
 │   │   │   └── sse.py               # the wire format, and the event type the streams yield
@@ -1038,16 +1038,16 @@ Serverless/
 ├── controller/                      # the build controller (python -m controller.main)
 │   ├── main.py                      # entrypoint: signals + the resync/watch loop
 │   ├── config.py                    # ControllerSettings(CommonSettings) + loop pacing
-│   ├── reconciler.py                # watch this site's Images -> apply the digest here
+│   ├── reconciler.py                # watch this region's Images -> apply the digest here
 │   └── digest.py                    # which digests belong on a ksvc, and how to re-apply it
 ├── common/                          # shared by api + controller, in THIS repository
-│   ├── config.py                    # CommonSettings + sites/CA-bundle/registry sub-configs
+│   ├── config.py                    # CommonSettings + regions/CA-bundle/registry sub-configs
 │   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
 │   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build domain
 │   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the controller)
 │   ├── names.py                     # object_name/image+cache repos/OCI tags; re-exports the shared group rules
 │   ├── labels.py                    # ownership label keys + workload_labels
-│   └── errors.py                    # SiteTotalFailure; re-exports the shared error catalog
+│   └── errors.py                    # RegionTotalFailure; re-exports the shared error catalog
 ├── charts/
 │   └── serverless-api/
 │       ├── Chart.yaml
@@ -1055,15 +1055,15 @@ Serverless/
 │       └── templates/
 │           ├── namespaces.yaml      # serverless-api + serverless-workloads (ArgoCD Delete=false,Prune=false)
 │           ├── ca-bundle.yaml       # inject-trusted-cabundle ConfigMap in both namespaces
-│           ├── configmap.yaml       # sites data (SERVERLESS_SITES) -> loaded as an env var
+│           ├── configmap.yaml       # regions data (SERVERLESS_REGIONS) -> loaded as an env var
 │           ├── runtimes-configmap.yaml # available runtimes, mounted as a YAML file
 │           ├── networkpolicy.yaml   # default-deny + allow-* for the workloads namespace
 │           ├── deployment.yaml      # the API
 │           ├── build-controller.yaml # the build controller (no Service, no Route)
 │           ├── service.yaml
 │           ├── route.yaml           # API Route (host/labels/annotations configurable)
-│           ├── rbac.yaml            # Role/RoleBinding for the CN user (per site; incl. pods/log)
-│           ├── certificate.yaml     # cert-manager Certificate (ACME, per site)
+│           ├── rbac.yaml            # Role/RoleBinding for the CN user (per region; incl. pods/log)
+│           ├── certificate.yaml     # cert-manager Certificate (ACME, per region)
 │           ├── externalsecret.yaml  # ESO ExternalSecret (refs pre-existing ClusterSecretStore)
 │           └── kpack/               # Builders, build SA + its ExternalSecret, SCC + RBAC,
 │                                    # Kyverno CA-injection policy (all gated on build.enabled)
@@ -1090,7 +1090,7 @@ Serverless/
 > (`…/serverless/builder`), and deploy from the same chart. The API talks to it
 > through `common.build.BuildBackend` - today via the in-process `KpackBackend`,
 > later via a `RemoteBackend` HTTP client - with no change to the orchestration.
-> The builder subclasses `common.config.CommonSettings` (sites, CA bundle,
+> The builder subclasses `common.config.CommonSettings` (regions, CA bundle,
 > registry, timeouts) and reuses `common.cluster.Cluster`. (Identifier/validation
 > helpers are the next candidate to lift into `common/`.)
 
@@ -1100,10 +1100,10 @@ Serverless/
 
 | Item | Notes |
 |------|-------|
-| **DNS failover automation** | Cross-site steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active site. How the record's active target is flipped on a site outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
-| **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down site fails fast (timeouts) → Failed, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down site a **circuit breaker** (skip a known-down site for a cooldown) would be the next hardening step. |
+| **DNS failover automation** | Cross-region steering is the `*.serverless.{base_domain}` (and `serverless-api.{base_domain}`) DNS record forwarding to the active region. How the record's active target is flipped on a region outage (health checks, automation, TTLs) is owned by the networking team and out of scope here. |
+| **Peer-cluster reachability** | The API talks to its peer cluster over that cluster's external API endpoint. A down region fails fast (timeouts) → Failed, but blocked worker threads still tie up a slot for up to the timeout; under sustained load against a long-down region a **circuit breaker** (skip a known-down region for a cooldown) would be the next hardening step. |
 | **Quotas & rate limiting** | Per-group resource quotas (CPU/mem, max workloads) and API rate limiting are not yet specified. |
-| **Observability** | **Streaming is built** (ARCHITECTURE.md: Streaming): `/pods`, `/logs/pods/{pod}` and `/stats/stream` are SSE, with the bounded executor, the Route timeout and the ticket auth that were the open questions; the first two also answer once under `?follow=false`, for a caller that cannot hold a connection. What remains is **durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-site log backing store (Loki/EFK) - are the only way to get history and a cross-site view. Until then logs are **local site** only and bounded by the node's rotation, whichever way they are read. |
+| **Observability** | **Streaming is built** (ARCHITECTURE.md: Streaming): `/pods`, `/logs/pods/{pod}` and `/stats/stream` are SSE, with the bounded executor, the Route timeout and the ticket auth that were the open questions; the first two also answer once under `?follow=false`, for a caller that cannot hold a connection. What remains is **durability** - `usage` can be no fresher than the metrics-server scrape whatever the transport, and nothing here survives the pod that produced it, so centralized logging, metrics and tracing for tenant workloads - and a cross-region log backing store (Loki/EFK) - are the only way to get history and a cross-region view. Until then logs are **local region** only and bounded by the node's rotation, whichever way they are read. |
 | **Audit logging** | Who deployed/changed/deleted what - likely required for enterprise/compliance. |
 | **Stronger isolation** | Optional move from shared-namespace to **namespace-per-group** for hard multi-tenancy. |
 | **Git webhook** | **Not implemented.** A per-function webhook endpoint would pin the pushed commit SHA to the function's build (`BuildRequest.revision` already carries the field), making a push-triggered rebuild idempotent by data. Until then a build follows the branch head and `POST .../functions/{name}/build` is the on-demand trigger (BUILDING.md: Who writes the ksvc image). |

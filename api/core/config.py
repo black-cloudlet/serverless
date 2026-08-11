@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field, model_validator
 from common.config import (  # noqa: F401
     CABundleConfig,
     CommonSettings,
+    RegionConfig,
     RegistryConfig,
-    SiteConfig,
 )
 
 

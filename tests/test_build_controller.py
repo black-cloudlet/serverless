@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from common.cluster import ResourceKind, clusters_for, select_local
-from common.config import CommonSettings, SiteConfig
+from common.config import CommonSettings, RegionConfig
 from common.errors import NotFoundError, ValidationError
 from common.labels import (
     LABEL_MANAGED_BY,
@@ -92,13 +92,13 @@ def _image(latest=DIGEST, workload=WORKLOAD, ready="True", created="2026-08-05T1
 
 
 class _FakeCluster:
-    """One site: canned KSVCs and Images, recording every apply."""
+    """One region: canned KSVCs and Images, recording every apply."""
 
     def __init__(
-        self, site, ksvcs=None, images=None, version="7", fail_apply=False, fail_list=False
+        self, region, ksvcs=None, images=None, version="7", fail_apply=False, fail_list=False
     ):
-        self.site = site
-        self.name = f"{site}-0"
+        self.region = region
+        self.name = f"{region}-0"
         self._ksvcs = ksvcs if ksvcs is not None else {}
         self._images = images or []
         self._version = version
@@ -142,7 +142,7 @@ class _FakeCluster:
 
 
 def _reconciler(clusters, local="central"):
-    """A Reconciler over fake sites (bypasses the real cluster construction).
+    """A Reconciler over fake regions (bypasses the real cluster construction).
 
     Peers are still passed in even though the loop only wires the local one, so
     a test can assert it never touches them.
@@ -241,12 +241,12 @@ def test_with_image_changes_the_image_and_nothing_else():
 
 
 # --------------------------------------------------------------------------- #
-# reconcile: one Image, its own site                                            #
+# reconcile: one Image, its own region                                            #
 # --------------------------------------------------------------------------- #
 
 
 def test_a_finished_build_is_rolled_out_to_the_local_ksvc_only():
-    """A site builds what it runs, so a peer's digest is not this loop's to write.
+    """A region builds what it runs, so a peer's digest is not this loop's to write.
 
     The peer has its own Image, its own build and its own controller; writing
     to it would push a reference into a registry it does not pull from.
@@ -361,7 +361,7 @@ def test_follow_resumes_the_watch_from_the_resync_and_reconciles_each_event():
     assert deployed_image(central.applied[0]) == NEWER
 
 
-def test_only_the_local_site_is_watched():
+def test_only_the_local_region_is_watched():
     central = _FakeCluster("central", {}, images=[])
     south = _FakeCluster("south", {}, images=[])
 
@@ -377,43 +377,43 @@ def test_close_releases_the_local_client():
     _reconciler({"central": central, "south": south}).close()
 
     assert central.closed
-    assert not south.closed  # never opened - the loop holds one site
+    assert not south.closed  # never opened - the loop holds one region
 
 
 # --------------------------------------------------------------------------- #
-# wiring: site selection, settings, signals                                     #
+# wiring: region selection, settings, signals                                     #
 # --------------------------------------------------------------------------- #
 
 
 def _settings(local):
     return CommonSettings(
-        sites=[
-            SiteConfig(name="central", cluster="central-0"),
-            SiteConfig(name="south", cluster="south-0"),
+        regions=[
+            RegionConfig(name="central", cluster="central-0"),
+            RegionConfig(name="south", cluster="south-0"),
         ],
-        local_site=local,
+        local_region=local,
     )
 
 
 @pytest.mark.parametrize(
     "local, expected", [("south", "south"), ("south-0", "south"), (None, "central")]
 )
-def test_the_local_site_resolves_by_site_name_cluster_name_or_first(local, expected):
+def test_the_local_region_resolves_by_region_name_cluster_name_or_first(local, expected):
     clusters = clusters_for(_settings(local))
 
-    assert select_local(clusters, local).site == expected
+    assert select_local(clusters, local).region == expected
 
 
-def test_a_controller_with_no_sites_refuses_to_start():
+def test_a_controller_with_no_regions_refuses_to_start():
     # It would have nothing to watch and nowhere to write.
     with pytest.raises(ValidationError):
-        Reconciler(CommonSettings(sites=[]))
+        Reconciler(CommonSettings(regions=[]))
 
 
-def test_the_reconciler_watches_the_configured_local_site():
+def test_the_reconciler_watches_the_configured_local_region():
     reconciler = Reconciler(_settings("south"))
     try:
-        assert reconciler.local.site == "south"
+        assert reconciler.local.region == "south"
     finally:
         reconciler.close()
 
@@ -463,7 +463,7 @@ def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch)
     signals, closed = {}, []
 
     class _Reconciler:
-        local = type("Site", (), {"site": "central"})
+        local = type("Region", (), {"region": "central"})
 
         def close(self):
             closed.append(True)

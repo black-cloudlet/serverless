@@ -17,7 +17,7 @@ import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
-# The platform-wide rules, re-exported so this module stays the one import site
+# The platform-wide rules, re-exported so this module stays the one import region
 # for naming in this repository (see the module docstring). DNS1123 is imported
 # rather than redeclared: a second copy of the regex is a second thing to drift.
 from cloudlet_apis.names import (  # noqa: F401
@@ -275,7 +275,7 @@ def validate_env_var_name(name: str) -> str:
     Here for the same reason :func:`validate_image_ref` is: the value is written
     verbatim into the container's ``env`` **and**, for a secret var, used as the
     key of the ``{workload}-env`` Secret. Unchecked, a name the API server
-    refuses is accepted (202) and dies in the background apply as a per-site
+    refuses is accepted (202) and dies in the background apply as a per-region
     error about a field the caller cannot see - the failure mode the validators
     in this module exist to prevent.
 

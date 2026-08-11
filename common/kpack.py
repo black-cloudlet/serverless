@@ -55,7 +55,7 @@ def build_service_account(
     and pull the stack, ``imagePullSecrets`` for the build pod's own images.
 
     There is more than one because a build reads two registries: it pushes to the
-    site's own, and pulls the run image at ``export`` from the shared kpack
+    region's own, and pulls the run image at ``export`` from the shared kpack
     registry (docs/BUILDING.md - Registry & Git Credentials). Docker auth is keyed by host, so both
     are needed whenever those hosts differ.
 

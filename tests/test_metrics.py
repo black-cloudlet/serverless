@@ -54,13 +54,13 @@ def test_nothing_measured_is_none_not_zero():
     assert total([]) is None
 
 
-def test_total_sums_sites_before_rounding():
-    # Two sites of 0.5m each: rounded first they are "0m" + "0m", summed raw the
+def test_total_sums_regions_before_rounding():
+    # Two regions of 0.5m each: rounded first they are "0m" + "0m", summed raw the
     # workload is 1m. Rounding at the edge is what keeps the total honest.
-    site = total_usage([{"containers": [{"usage": {"cpu": "500u", "memory": "1536Ki"}}]}])
-    assert site.quantities().cpu == "0m"
-    assert total([site, site]).quantities().cpu == "1m"
-    assert total([site, site]).quantities().memory == "3Mi"
+    region = total_usage([{"containers": [{"usage": {"cpu": "500u", "memory": "1536Ki"}}]}])
+    assert region.quantities().cpu == "0m"
+    assert total([region, region]).quantities().cpu == "1m"
+    assert total([region, region]).quantities().memory == "3Mi"
 
 
 def test_usage_adds_componentwise():
@@ -68,36 +68,36 @@ def test_usage_adds_componentwise():
 
 
 def test_an_unparseable_quantity_never_escapes_the_usage_read():
-    """A site whose usage cannot be parsed reports unmeasured, not Failed.
+    """A region whose usage cannot be parsed reports unmeasured, not Failed.
 
-    ``site_usage`` promises never to raise, and the promise is load-bearing: it
+    ``region_usage`` promises never to raise, and the promise is load-bearing: it
     runs inside the ``/stats`` fan-out, so an escaping ValueError becomes a
-    ``Failed`` site and a ``Failed`` rollup for a workload that is serving.
+    ``Failed`` region and a ``Failed`` rollup for a workload that is serving.
     Kubernetes may render a quantity in a form the parser does not know (e.g.
     decimal-exponent notation), which is exactly when this matters.
     """
-    from api.services.sites.site_read import site_usage
+    from api.services.regions.region_read import region_usage
 
     class Cluster:
-        site = "central"
+        region = "central"
 
         def get(self, kind, name=None, label_selector=None):
             return [{"containers": [{"usage": {"cpu": "1e3n", "memory": "1e6"}}]}]
 
-    read = site_usage(Cluster(), "orders-api-team")
+    read = region_usage(Cluster(), "orders-api-team")
     assert read.measured is False
     assert read.total is None
 
 
-def test_a_readable_site_still_reports_its_usage():
-    from api.services.sites.site_read import site_usage
+def test_a_readable_region_still_reports_its_usage():
+    from api.services.regions.region_read import region_usage
 
     class Cluster:
-        site = "central"
+        region = "central"
 
         def get(self, kind, name=None, label_selector=None):
             return [{"containers": [{"usage": {"cpu": "120m", "memory": "180Mi"}}]}]
 
-    read = site_usage(Cluster(), "orders-api-team")
+    read = region_usage(Cluster(), "orders-api-team")
     assert read.measured is True
     assert read.total.quantities().cpu == "120m"

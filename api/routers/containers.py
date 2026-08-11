@@ -84,7 +84,7 @@ async def pull_container(
 
     Knative resolves a tag to a digest once, at revision creation, so an image
     pushed over the same tag is never picked up. This cuts a new revision in
-    every site, which resolves the tag again; nothing else changes.
+    every region, which resolves the tag again; nothing else changes.
 
     Args:
         group: The owning group (from the request path).
@@ -106,7 +106,7 @@ async def list_containers(
     svc: ContainerDep,
     sort: Literal["name", "createdAt"] = "name",
 ) -> list[WorkloadSummary]:
-    """List general info for every container the group owns (merged across sites).
+    """List general info for every container the group owns (merged across regions).
 
     Args:
         group: The owning group (from the request path).
@@ -124,7 +124,7 @@ async def list_containers(
 async def get_container(
     group: Group, name: Name, user: CurrentUser, svc: ContainerDep
 ) -> ContainerResponse:
-    """Get one container, including the status rollup and per-site status.
+    """Get one container, including the status rollup and per-region status.
 
     This is the poll target advertised as ``statusUrl`` on the 202 accept
     response.
@@ -145,7 +145,7 @@ async def get_container(
 async def get_container_stats(
     group: Group, name: Name, user: CurrentUser, svc: ContainerDep
 ) -> WorkloadStatsResponse:
-    """Get the container's live state: status, replicas and usage, per site.
+    """Get the container's live state: status, replicas and usage, per region.
 
     The lightweight endpoint to poll - the same ``status`` rollup as the full GET
     and the live numbers behind it, and none of the desired-state config.
@@ -171,14 +171,14 @@ async def stream_container_pods(
     follow: bool = True,
     interval: Annotated[float | None, Query(gt=0)] = None,
 ) -> Response:
-    """The container's pods on the current site - streamed, or read once.
+    """The container's pods on the current region - streamed, or read once.
 
     Streams by default, because the answer expires: Knative replaces a workload's
     pods on every revision and removes them all on scale-to-zero, so a roster
     fetched once quietly stops being true. ``follow=false`` returns a single JSON
     roster instead, for a caller that cannot hold a connection open.
 
-    Local site only, matching the log endpoint it feeds - a pod name is only
+    Local region only, matching the log endpoint it feeds - a pod name is only
     useful where its log can be read. This is where the ``{pod}`` for
     ``/logs/pods/{pod}`` comes from; nothing else in the API returns one.
 
@@ -224,7 +224,7 @@ async def stream_container_pod_logs(
 ) -> Response:
     """Follow one of the container's pods' logs, or read what it holds right now.
 
-    Current site only, either way: Kubernetes keeps no log buffer beyond the node
+    Current region only, either way: Kubernetes keeps no log buffer beyond the node
     that wrote it. Get ``pod`` from ``GET .../{name}/pods``.
 
     Following is the default. ``follow=false`` returns a single JSON snapshot -
@@ -300,7 +300,7 @@ async def stream_container_stats(
     watching.
 
     Events: ``stats`` (a :class:`WorkloadStatsResponse`, the first sent
-    immediately) and ``error`` (the workload is gone, or no site could answer).
+    immediately) and ``error`` (the workload is gone, or no region could answer).
     Lines beginning with ``:`` are heartbeats.
 
     Args:

@@ -479,7 +479,7 @@ def test_binary_secret_file_survives_create_and_keep_on_update():
     assert base64.b64decode(stored) == blob  # byte-exact, not mangled through str
 
     # ... and the keep path: the client sends the file back with no content, and
-    # the stored bytes (as read back by site_read.secret_data) are written out unchanged.
+    # the stored bytes (as read back by region_read.secret_data) are written out unchanged.
     kept = {k: base64.b64decode(v) for k, v in secret["data"].items()}
     keep = FileMount(mountPath="/etc/certs/keystore.p12", secret=True)
     again = resolve_files("app-team", "team", "alice", [keep], kept=kept)

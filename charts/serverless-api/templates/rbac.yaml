@@ -28,7 +28,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # Live per-site resource usage surfaced on GET.
+  # Live per-region resource usage surfaced on GET.
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
