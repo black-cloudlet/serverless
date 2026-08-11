@@ -469,7 +469,7 @@ sites:
 
 buildController:
   enabled: true
-  repository: build-controller
+  repository: serverless/build-controller
   tag: ""
   replicaCount: 1
   labels: {}

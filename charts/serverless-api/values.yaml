@@ -11,12 +11,10 @@ global:
 name: serverless-api
 
 # Shared by both deployments, so a mirrored install overrides the registry and
-# the pull policy once. The registry carries the org prefix too - repositories
-# below hold only the path release.yml publishes under it ({api,build-controller})
-# - so re-homing the images is one override here, not one per deployment.
+# the pull policy once. Repository and per-deployment overrides are in `api` and
+# `buildController` below.
 image:
-  registry: ghcr.io/black-cloudlet/serverless
-  # e.g. a mirror: registry.internal/serverless
+  registry: ghcr.io/black-cloudlet
   # Empty takes the chart's appVersion, so a released chart pins its own images.
   tag: ""
   pullPolicy: IfNotPresent
@@ -24,7 +22,7 @@ image:
 # The REST API (docs/ARCHITECTURE.md). The only deployment clients reach, hence
 # the Service and Route.
 api:
-  repository: api
+  repository: serverless/api
   # Overrides image.tag for this deployment only; normally left empty.
   tag: ""
   replicaCount: 2
@@ -78,7 +76,7 @@ buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
   enabled: true
-  repository: build-controller
+  repository: serverless/build-controller
   tag: ""
   # More is safe but redundant: replicas converge rather than race, which is why
   # there is no leader election (docs/BUILDING.md - Convergence rules).

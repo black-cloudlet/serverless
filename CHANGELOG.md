@@ -29,10 +29,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `api.repository` and `buildController.repository` defaulted to
   `serverless/serverless-api` and `serverless/serverless-build-controller` -
   paths release.yml never pushes to, so a default install pulled images that
-  do not exist. `image.registry` now carries the full publish prefix
-  (`ghcr.io/black-cloudlet/serverless`) and the repositories are just `api`
-  and `build-controller`, so re-homing to a mirror is one registry override
-  rather than one per deployment.
+  do not exist. `image.registry` now carries the org (`ghcr.io/black-cloudlet`)
+  and the repositories are `serverless/api` and `serverless/build-controller`,
+  matching what the release publishes; re-homing to a mirror is one registry
+  override.
 - **A building function no longer reports `ImagePullFailed` next to
   `Building`.** The build-first fold rewrote a failing site row to `Building`
   and cleared its message, but left the derived `reason` on the row - and the
