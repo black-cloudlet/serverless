@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serverless-api"
-version = "0.1.0"
+version = "0.1.0-rc.3"
 description = "FaaS/CaaS REST API wrapping Knative on OpenShift"
 requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
