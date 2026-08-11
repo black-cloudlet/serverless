@@ -418,7 +418,7 @@ traffic. The one client the platform needs is for the interactive docs: Swagger 
 "Authorize" button, which logs in with **Authorization Code + PKCE** and therefore needs no
 secret - which is precisely what makes it a **public** client.
 
-Where the SSO realm forbids public clients, set `SERVERLESS_SWAGGER_CLIENT_SECRET`
+Where the SSO realm forbids public clients, set `SERVERLESS_SSO__SWAGGER_CLIENT_SECRET`
 (Vault -> ESO, `swagger-client-secret`). The browser still runs the authorization leg
 against SSO with PKCE, but posts the code to **`POST /auth/token`** on the API, which adds
 the secret and completes the exchange **server-side** - so the client can be registered

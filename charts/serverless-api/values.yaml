@@ -544,7 +544,7 @@ externalSecrets:
         # ExternalSecret when a property is missing, which would take the admin
         # key and the ticket key down with it. Removed, the login still works -
         # this entry is only needed where a public client is refused.
-        - secretKey: SERVERLESS_SWAGGER_CLIENT_SECRET
+        - secretKey: SERVERLESS_SSO__SWAGGER_CLIENT_SECRET
           key: cloudlet/platforms/serverless
           property: swagger-client-secret
 

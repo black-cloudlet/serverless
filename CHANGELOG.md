@@ -21,7 +21,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
-- **`SERVERLESS_SWAGGER_CLIENT_SECRET`, for an SSO realm that forbids public
+- **`SERVERLESS_SSO__SWAGGER_CLIENT_SECRET`, for an SSO realm that forbids public
   clients.** Swagger UI's "Authorize" logs in with Auth Code + PKCE, which
   needs no secret - which is exactly what makes its Keycloak client a *public*
   one, and what a policy against public clients blocks. The API itself is a

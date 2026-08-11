@@ -93,10 +93,10 @@ def create_app() -> FastAPI:
     )
     mount_offline_docs(app)
     if settings.auth_enabled:
-        # With a client secret set, this also mounts the token proxy and points
-        # the published tokenUrl at it, so the Swagger client can be a
-        # confidential one. Without, it wires today's public-client PKCE login.
-        wire_sso_login(app, settings.sso, client_secret=settings.swagger_client_secret)
+        # With sso.swagger_client_secret set, this also mounts the token proxy
+        # and points the published tokenUrl at it, so the Swagger client can be
+        # a confidential one. Without, it wires the public-client PKCE login.
+        wire_sso_login(app, settings.sso)
 
     if settings.cors_allow_origins:
         app.add_middleware(

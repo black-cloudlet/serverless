@@ -446,7 +446,7 @@ spec:
     # client can be confidential (docs/ARCHITECTURE.md - The Swagger "Authorize"
     # client). Otherwise OMIT the entry entirely - an empty Vault property fails
     # the whole ExternalSecret, taking the other keys in it down too.
-    - secretKey: SERVERLESS_SWAGGER_CLIENT_SECRET
+    - secretKey: SERVERLESS_SSO__SWAGGER_CLIENT_SECRET
       remoteRef:
         key: cloudlet/platforms/serverless-api
         property: swagger-client-secret

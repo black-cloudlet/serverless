@@ -1,6 +1,6 @@
 import pytest
 
-from api.core.config import RegionConfig, Settings, SSOSettings
+from api.core.config import RegionConfig, Settings, SSOConfig
 from api.models.common import RegionStatus
 from api.services.offering import CONTAINER, FUNCTION
 from api.services.regions.deployer import Deployer, aggregate, status_code_for
@@ -20,7 +20,7 @@ def _auth_with_admin_key(monkeypatch, raw_key, admin_groups=("platform-admins",)
     settings = Settings(
         auth_enabled=True,
         admin_api_key=raw_key,
-        sso=SSOSettings(admin_groups=list(admin_groups)),
+        sso=SSOConfig(admin_groups=list(admin_groups)),
     )
     monkeypatch.setattr("api.auth.deps.get_settings", lambda: settings)
     get_auth.cache_clear()

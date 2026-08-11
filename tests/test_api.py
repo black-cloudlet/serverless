@@ -190,7 +190,7 @@ def test_info_is_public_and_static():
 
 async def test_startup_warmup_is_best_effort(monkeypatch):
     """A failing OIDC discovery / cluster connect must not crash startup."""
-    from api.core.config import RegionConfig, Settings, SSOSettings
+    from api.core.config import RegionConfig, Settings, SSOConfig
     from api.main import _warmup
     from api.services.regions.deployer import Deployer
 
@@ -202,7 +202,7 @@ async def test_startup_warmup_is_best_effort(monkeypatch):
 
     settings = Settings(
         auth_enabled=True,
-        sso=SSOSettings(),
+        sso=SSOConfig(),
         regions=[RegionConfig(name="region-a", cluster="region-a-0")],
         cluster_connect_timeout=0.01,
         cluster_read_timeout=0.01,
@@ -631,7 +631,7 @@ def test_a_swagger_client_secret_moves_the_token_exchange_server_side(monkeypatc
     from api.core.config import get_settings
 
     get_settings.cache_clear()
-    monkeypatch.setenv("SERVERLESS_SWAGGER_CLIENT_SECRET", "from-vault")
+    monkeypatch.setenv("SERVERLESS_SSO__SWAGGER_CLIENT_SECRET", "from-vault")
     try:
         app = create_app()
         flow = app.openapi()["components"]["securitySchemes"]["SSO"]["flows"]["authorizationCode"]

@@ -24,26 +24,6 @@ from common.config import (  # noqa: F401
 )
 
 
-class SSOSettings(SSOConfig):
-    """The shared SSO model with this deployment's defaults filled in.
-
-    ``SSOConfig.issuer`` is required - a package shared by every API must not
-    carry one environment's identity provider as a fallback - so ours is
-    re-declared here, where it is ours to be wrong about.
-
-    A subclass rather than a ``default_factory``: pydantic-settings builds the
-    nested model from the env vars it finds, so a factory's defaults are lost the
-    moment any sibling field is set from the environment.
-    """
-
-    issuer: str = "https://sso.internal/realms/serverless"
-    # Keycloak client Swagger UI uses for its "Authorize" login (Authorization
-    # Code + PKCE). An id is not a secret either way, so it comes from Helm
-    # values; whether the client is public or confidential is decided by
-    # `Settings.swagger_client_secret` below.
-    swagger_client_id: str = "serverless-api-swagger"
-
-
 class StreamConfig(BaseModel):
     """Bounds on the SSE streams (``/pods``, ``/logs/pods/{pod}``, ``/stats/stream``).
 
@@ -142,22 +122,16 @@ class Settings(CommonSettings):
     # in local dev/tests -> the loader falls back to built-in defaults.
     runtimes_file: str = "/etc/serverless/runtimes/runtimes.yaml"
 
-    sso: SSOSettings = Field(default_factory=SSOSettings)
+    # env: SERVERLESS_SSO__ISSUER, SERVERLESS_SSO__SWAGGER_CLIENT_SECRET, ...
+    # Every SSOConfig field carries a default, so this needs no subclass just to
+    # declare ours. The chart sets the issuer explicitly and so should any other
+    # deployment: the package's default is the platform's realm, and a service
+    # that leaves it unset trusts that realm rather than failing to start.
+    sso: SSOConfig = Field(default_factory=SSOConfig)
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth
-    # rather than shipping a usable default credential.
+    # rather than shipping a usable default credential. NOT in `sso`: this is the
+    # non-OIDC fallback, for admin automation that cannot do SSO at all.
     admin_api_key: str = ""
-    # Secret of the Keycloak client Swagger UI's "Authorize" logs in with, from
-    # Vault via ESO. Set, the token exchange is proxied through this API so the
-    # client can be registered CONFIDENTIAL - which is what an SSO policy that
-    # forbids public clients requires. Empty (the default) leaves the browser
-    # talking to Keycloak directly with PKCE and no secret, the public-client
-    # flow, which is what local development wants.
-    #
-    # Beside `admin_api_key` rather than inside `sso`: SSOConfig is the shared
-    # model every API on the platform embeds, and a secret belongs to the
-    # service that holds it (cloudlet-apis docs/DESIGN.md - Configuration stays
-    # in the consuming service).
-    swagger_client_secret: str = ""
 
     # What the SSE streams are allowed to consume. env: SERVERLESS_STREAM__*.
     stream: StreamConfig = Field(default_factory=StreamConfig)
