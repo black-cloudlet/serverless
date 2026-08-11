@@ -20,7 +20,7 @@ class ControllerSettings(CommonSettings):
     # Only for a pass that raised; a watch that merely ended resyncs at once.
     error_backoff_seconds: float = Field(default=5.0, ge=0)
 
-    # Tag GC: prune the per-build tags kpack accumulates in this site's
+    # Tag GC: prune the per-build tags kpack accumulates in this region's
     # registry (docs/BUILDING.md - Registry tag GC). Also needs the registry
     # API token; without one the GC announces itself off and does nothing.
     gc_enabled: bool = True

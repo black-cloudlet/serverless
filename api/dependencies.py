@@ -12,7 +12,7 @@ from api.services.builder.kpack_backend import KpackBackend
 from api.services.builder.runtimes import RuntimeRegistry, load_runtimes
 from api.services.container import ContainerService
 from api.services.function import FunctionService
-from api.services.sites.deployer import Deployer
+from api.services.regions.deployer import Deployer
 from api.services.streams.capacity import StreamCapacity
 from api.services.workloads import WorkloadService
 
@@ -30,7 +30,7 @@ def get_runtimes() -> RuntimeRegistry:
 
 @lru_cache
 def get_deployer() -> Deployer:
-    """The cached multi-site Deployer (one set of cluster clients per process)."""
+    """The cached multi-region Deployer (one set of cluster clients per process)."""
     return Deployer(get_settings())
 
 

@@ -3,7 +3,7 @@
 We never create OpenShift Routes by hand - the Serverless Operator creates one
 per Knative ingress. To expose a custom, cluster-independent host we create a
 ``DomainMapping`` (identical in both clusters) and the operator provisions the
-Route. A wildcard DNS record forwards to the active site.
+Route. A wildcard DNS record forwards to the active region.
 """
 
 from __future__ import annotations

@@ -253,7 +253,7 @@ async def follow(
     """Stream one pod's log until it ends, the client leaves, or the cap passes.
 
     Args:
-        cluster: The local site (logs are node-local; there is nowhere else to read).
+        cluster: The local region (logs are node-local; there is nowhere else to read).
         capacity: The stream pool the follower thread runs on.
         config: The stream bounds.
         opening: The ``open`` event, already built by the caller from the pod it

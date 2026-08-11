@@ -16,8 +16,8 @@ from api.models.common import ANNOTATION_PULL_STAMP, LABEL_GROUP, LABEL_OFFERING
 from api.services.container import ContainerService
 from api.services.manifests.ksvc import build_ksvc
 from api.services.offering import CONTAINER
-from api.services.sites.deployer import Deployer
-from api.services.sites.site_read import existing_state
+from api.services.regions.deployer import Deployer
+from api.services.regions.region_read import existing_state
 from api.services.workloads import WorkloadService
 from common.errors import ForbiddenError, NotFoundError, ValidationError
 from common.labels import OFFERING_CONTAINER
@@ -41,10 +41,10 @@ def _ksvc(image="reg/x:1", offering=OFFERING_CONTAINER, stamp=None):
 
 
 class _FakeCluster:
-    """One site: a canned KSVC, recording every patch."""
+    """One region: a canned KSVC, recording every patch."""
 
-    def __init__(self, site, ksvc=None):
-        self.site = self.name = site
+    def __init__(self, region, ksvc=None):
+        self.region = self.name = region
         self._ksvc = ksvc
         self.patches = []
 
@@ -63,7 +63,7 @@ class _FakeCluster:
 class _NullBuilder:
     pull_secret = "reg-creds"
 
-    def image_ref(self, req, site=None):
+    def image_ref(self, req, region=None):
         return "reg/built:1"
 
     def status(self, cluster, name, group):
@@ -75,7 +75,7 @@ class _NullBuilder:
 
 def _service(clusters):
     settings = Settings(
-        sites=[{"name": s, "cluster": f"{s}-0"} for s in clusters], auth_enabled=False
+        regions=[{"name": s, "cluster": f"{s}-0"} for s in clusters], auth_enabled=False
     )
     deployer = Deployer(settings)
     deployer._clusters = clusters
@@ -87,8 +87,8 @@ def _service(clusters):
 # --------------------------------------------------------------------------- #
 
 
-async def test_every_site_is_stamped_with_the_same_value():
-    # A per-site value would leave the sites on different revisions.
+async def test_every_region_is_stamped_with_the_same_value():
+    # A per-region value would leave the regions on different revisions.
     central, south = _FakeCluster("central", _ksvc()), _FakeCluster("south", _ksvc())
     svc = _service({"central": central, "south": south})
 
@@ -117,13 +117,13 @@ async def test_the_patch_touches_nothing_but_the_two_annotations():
     }
 
 
-async def test_a_site_the_container_does_not_run_in_is_absent_not_a_failure():
+async def test_a_region_the_container_does_not_run_in_is_absent_not_a_failure():
     central, south = _FakeCluster("central", _ksvc()), _FakeCluster("south", None)
     svc = _service({"central": central, "south": south})
 
     statuses = await svc._engine.stamp_pull("app", "team", STAMP)
 
-    assert {s.site: s.status for s in statuses} == {"central": "Deploying", "south": "Absent"}
+    assert {s.region: s.status for s in statuses} == {"central": "Deploying", "south": "Absent"}
     assert len(central.patches) == 1
 
 

@@ -40,7 +40,7 @@ class ContainerCreate(BaseModel):
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"  # resource size; see services.ksvc
-    sites: list[str] | None = None
+    regions: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
     # Port the image listens on. Defaults to 8080 - the port Knative injects as

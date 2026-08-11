@@ -34,7 +34,7 @@ class ContainerService:
         """Initialize the service.
 
         Args:
-            engine: The shared workload engine doing the cross-site work.
+            engine: The shared workload engine doing the cross-region work.
         """
         self._engine = engine
 
@@ -129,7 +129,7 @@ class ContainerService:
         """Deploy a new container (runs in the background after accept).
 
         Builds the pull secret (if registry creds were given) and applies the
-        workload to all target sites.
+        workload to all target regions.
 
         Args:
             group: The owning group (from the request path).
@@ -155,7 +155,7 @@ class ContainerService:
 
         # No absence probe here: apply_workload runs one combined host+absence pass
         # over the same targets immediately before it mutates, which is both a
-        # stronger guard (nothing happens in between) and one fewer cross-site trip.
+        # stronger guard (nothing happens in between) and one fewer cross-region trip.
         body, code = await self._engine.apply_workload(
             ApplyRequest(
                 name=spec.name,
@@ -168,7 +168,7 @@ class ContainerService:
                 size=spec.size,
                 port=spec.port,
                 hostname=spec.hostname,
-                sites=spec.sites,
+                regions=spec.regions,
                 pull_secret_name=pull_name,
                 pull_secret_manifest=pull,
                 created=True,
@@ -201,7 +201,7 @@ class ContainerService:
         """
         oname = object_name(name, group)
         # accept_update already fetched (and authorized) this; reuse it to avoid a
-        # second multi-site fanout. Falls back to a fresh fetch for direct callers.
+        # second multi-region fanout. Falls back to a fresh fetch for direct callers.
         if existing is None:
             existing = await self._engine.load_existing(name, CONTAINER, user, group)
         image = spec.image
@@ -245,7 +245,7 @@ class ContainerService:
                 size=spec.size,
                 port=port,
                 hostname=spec.hostname,
-                sites=None,
+                regions=None,
                 pull_secret_name=pull_name,
                 pull_secret_manifest=pull,
                 created=False,
@@ -301,7 +301,7 @@ class ContainerService:
         statuses = await self._engine.stamp_pull(name, group, stamp)
         # Background work: the 202 went out long ago, so a failed patch has no
         # response left to land in. Say so in the log - without this an
-        # all-sites-failed pull completes silently and the client's statusUrl
+        # all-regions-failed pull completes silently and the client's statusUrl
         # just never shows a new revision.
         failed = [s for s in statuses if s.message]
         if failed:
@@ -309,11 +309,11 @@ class ContainerService:
                 "pull of '%s' (group '%s') failed in %s",
                 name,
                 group,
-                ", ".join(f"{s.site}: {s.message}" for s in failed),
+                ", ".join(f"{s.region}: {s.message}" for s in failed),
             )
 
     async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
-        """Get one container with live per-site status.
+        """Get one container with live per-region status.
 
         Args:
             name: The workload name.
@@ -334,12 +334,12 @@ class ContainerService:
             user: The authenticated caller.
 
         Returns:
-            The rollup plus per-site replicas and usage.
+            The rollup plus per-region replicas and usage.
         """
         return await self._engine.stats(CONTAINER, name, user, group)
 
     async def pods(self, name: str, group: str, user: Principal) -> PodRoster:
-        """The container's pods on the current site, read once.
+        """The container's pods on the current region, read once.
 
         Args:
             name: The workload name.
@@ -393,7 +393,7 @@ class ContainerService:
     async def stream_pods(
         self, name: str, group: str, user: Principal, *, interval: float | None
     ) -> AsyncIterator[StreamEvent]:
-        """Stream which pods the container has on the current site.
+        """Stream which pods the container has on the current region.
 
         Args:
             name: The workload name.
@@ -417,7 +417,7 @@ class ContainerService:
         since_seconds: int | None,
         tail_lines: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Follow one of the container's pods' logs, on the current site.
+        """Follow one of the container's pods' logs, on the current region.
 
         Args:
             name: The workload name.

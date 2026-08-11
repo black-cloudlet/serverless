@@ -43,8 +43,8 @@ spec:
               value: "true"
             - name: SERVERLESS_BASE_DOMAIN
               value: {{ .Values.global.baseDomain | quote }}
-            - name: SERVERLESS_LOCAL_SITE
-              value: {{ .Values.global.site | quote }}
+            - name: SERVERLESS_LOCAL_REGION
+              value: {{ .Values.global.region | quote }}
             - name: SERVERLESS_ROUTE_DOMAIN
               value: {{ tpl .Values.routeDomain . | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE
@@ -135,10 +135,10 @@ spec:
             - name: REQUESTS_CA_BUNDLE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
-            # Non-secret sites list (SERVERLESS_SITES); edited without touching
+            # Non-secret regions list (SERVERLESS_REGIONS); edited without touching
             # the Deployment.
             - configMapRef:
-                name: "{{ .Values.name }}-sites"
+                name: "{{ .Values.name }}-regions"
             {{- range .Values.externalSecrets.secrets }}
             - secretRef:
                 name: {{ .name }}
@@ -147,8 +147,8 @@ spec:
             {{- if .create }}
             - secretRef:
                 name: {{ .secretName }}
-                # ESO fails the WHOLE ExternalSecret if any one site's Vault path
-                # is missing, and `sites` is shared - so a site added before its
+                # ESO fails the WHOLE ExternalSecret if any one region's Vault path
+                # is missing, and `regions` is shared - so a region added before its
                 # entry exists would otherwise stop this pod starting in every
                 # cluster. Absent, registry cleanup is skipped, which is what it
                 # already does untokenised.

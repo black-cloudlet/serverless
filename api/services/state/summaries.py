@@ -1,13 +1,13 @@
-"""Merge a group's per-site KSVC listings into one summary per workload.
+"""Merge a group's per-region KSVC listings into one summary per workload.
 
 Pure, like :mod:`api.services.state.ksvc_state`: it takes what the fan-out already
 fetched and returns the response objects. The listing's I/O - the fan-out and
 the build-state read - stays in the engine, so the merge rules that decide what
-a workload deployed to one site of two reads as are testable with plain dicts.
+a workload deployed to one region of two reads as are testable with plain dicts.
 
-The merge is deliberately partial-tolerant. A site that did not answer is simply
-absent from the input, and a workload's rollup covers only the sites that did
-return it, so a single-site workload reads ``Ready`` rather than ``Failed``.
+The merge is deliberately partial-tolerant. A region that did not answer is simply
+absent from the input, and a workload's rollup covers only the regions that did
+return it, so a single-region workload reads ``Ready`` rather than ``Failed``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from api.models.common import (
     WorkloadSummary,
 )
 from api.services.manifests import route as route_svc
-from api.services.sites.deployer import overall_status
+from api.services.regions.deployer import overall_status
 from api.services.state import ksvc_state
 
 # createdAt is optional, so sort Nones last rather than letting a comparison fail.
@@ -37,15 +37,15 @@ def merge(
     route_domain: str,
     sort: str = "name",
 ) -> list[WorkloadSummary]:
-    """One summary per workload, merged across the sites that returned it.
+    """One summary per workload, merged across the regions that returned it.
 
     Args:
-        results: ``(site, ksvcs_or_None)`` per site; None means it did not answer.
+        results: ``(region, ksvcs_or_None)`` per region; None means it did not answer.
         group: The owning group.
         offering: The offering being listed ("function"/"container").
-        builds: Build states per site (``{site: {object_name: state}}``), for
-            the build-first rollup. Each site builds its own copy, so a
-            workload's state is rolled up across the sites that returned it.
+        builds: Build states per region (``{region: {object_name: state}}``), for
+            the build-first rollup. Each region builds its own copy, so a
+            workload's state is rolled up across the regions that returned it.
             Empty for an offering with no build.
         route_domain: Used to derive a host for a workload whose KSVC carries no
             host annotation.
@@ -56,7 +56,7 @@ def merge(
     """
     suffix = f"-{group}"
     merged: dict[str, dict] = {}
-    for site, items in results:
+    for region, items in results:
         if items is None:
             continue
         for obj in items:
@@ -74,7 +74,7 @@ def merge(
                     "host": None,
                     "size": None,
                     "createdAt": None,
-                    "sites": [],
+                    "regions": [],
                     "statuses": [],
                     "builds": [],
                 },
@@ -82,9 +82,9 @@ def merge(
             entry["host"] = entry["host"] or annotations.get(ANNOTATION_HOST)
             entry["size"] = entry["size"] or annotations.get(ANNOTATION_SIZE)
             entry["createdAt"] = entry["createdAt"] or ksvc_state.creation_time(obj)
-            entry["sites"].append(site)
+            entry["regions"].append(region)
             entry["statuses"].append(status)
-            entry["builds"].append(builds.get(site, {}).get(oname))
+            entry["builds"].append(builds.get(region, {}).get(oname))
 
     summaries = [
         WorkloadSummary(
@@ -97,7 +97,7 @@ def merge(
             ),
             size=entry["size"],
             createdAt=entry["createdAt"],
-            sites=sorted(entry["sites"]),
+            regions=sorted(entry["regions"]),
         )
         for name, entry in merged.items()
     ]

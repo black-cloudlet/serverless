@@ -4,7 +4,7 @@
   the gate that stops more streams being admitted than it can serve.
 * :mod:`~api.services.streams.sse` - the wire format, and the event type the
   streams yield.
-* :mod:`~api.services.streams.logs` - following pod logs on the local site.
+* :mod:`~api.services.streams.logs` - following pod logs on the local region.
 * :mod:`~api.services.streams.stats` - the live rollup, on an interval.
 
 The orchestration that authorizes a stream and builds its first event lives with

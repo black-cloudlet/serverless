@@ -2,11 +2,11 @@
 
 ``metrics.k8s.io`` reports per-container usage as Kubernetes *quantity* strings
 (e.g. cpu ``"1234567n"``, memory ``"123456Ki"``). We sum across all containers
-of all the workload's pods into one figure per site.
+of all the workload's pods into one figure per region.
 
 Figures are carried as :class:`Usage` - raw floats - and rounded only at the
-edge, so a per-site total can be summed again into a workload total without
-drifting from the sites it covers.
+edge, so a per-region total can be summed again into a workload total without
+drifting from the regions it covers.
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def total_usage(pod_metrics: list[dict]) -> Usage | None:
         pod_metrics: PodMetrics items for the workload's pods.
 
     Returns:
-        The site's usage, or None if nothing reported (e.g. scaled to zero).
+        The region's usage, or None if nothing reported (e.g. scaled to zero).
     """
     cpu_milli = 0.0
     mem_bytes = 0.0

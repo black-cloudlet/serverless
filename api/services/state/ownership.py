@@ -25,7 +25,7 @@ def owned_by(obj: dict, user: Principal, offering: str) -> bool:
 
     A caller who fails this must be told the workload does not exist rather than
     that they may not have it - the callers do that, since a 404 is right for a
-    read and a delete has to record the site instead.
+    read and a delete has to record the region instead.
 
     Args:
         obj: The workload's KSVC, already fetched.

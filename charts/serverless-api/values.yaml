@@ -1,10 +1,9 @@
 global:
   baseDomain: example.com
-  # Which of `sites` below THIS release is. Now that every site names its own
-  # registry, the release must always be able to tell which one it builds
-  # into, so this must match a `sites[].name` (or its cluster) for the chart
-  # to render.
-  site: central
+  # Which of `regions` below THIS release is; must match a `regions[].name` (or
+  # its cluster) for the chart to render. Every region names its own registry,
+  # so the release must always be able to tell which one it builds into.
+  region: central
 
 # Base name for everything the chart creates. The build controller's objects are
 # named `{name}-build-controller`.
@@ -63,7 +62,7 @@ api:
     # The cost is that it applies to the whole Route, not just the streams:
     # OpenShift has no per-path timeout. An ordinary request cannot actually sit
     # here that long - the API bounds its own cluster work with
-    # `siteOpTimeout` - but a client that stops reading a response does hold a
+    # `regionOpTimeout` - but a client that stops reading a response does hold a
     # connection until this expires.
     timeout: 65m
     # annotations:
@@ -71,7 +70,7 @@ api:
     annotations: {}
 
 # Rolls each finished build's digest onto the function's Knative Service in this
-# site (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no Service and no Route.
+# region (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no Service and no Route.
 buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
@@ -99,7 +98,7 @@ buildController:
   resyncSeconds: 300
 
   # Prune the unique b{n}.{date}.{time} tag kpack pushes per build, in this
-  # site's registry only - they accumulate for the life of the function and
+  # region's registry only - they accumulate for the life of the function and
   # count against quota (docs/BUILDING.md - Registry tag GC). Runs only when
   # `registry.deleteOnFunctionDelete` is true (the platform-wide "may we
   # delete registry content" switch) and a registry.apiTokens token exists;
@@ -189,7 +188,7 @@ sso:
   adminGroups:
     - platform-admins
 
-# Platform default; a site may override the host under `sites[].registry`.
+# Platform default; a region may override the host under `regions[].registry`.
 registry:
   url: registry.internal
   organization: ""
@@ -201,15 +200,15 @@ registry:
   # docs/BUILDING.md - Registry cleanup on delete, Registry tag GC.
   deleteOnFunctionDelete: true
 
-  # One Quay OAuth token per site (Organization -> Applications, scoped
+  # One Quay OAuth token per region (Organization -> Applications, scoped
   # `repo:admin` - NOT the push robot, which cannot call Quay's management API),
   # read from one Vault entry each and assembled into a single variable: a delete
-  # reclaims repositories in every site from whichever instance took the request.
-  # `{site}` is substituted per site.
+  # reclaims repositories in every region from whichever instance took the request.
+  # `{region}` is substituted per region.
   apiTokens:
     create: true
     secretName: serverless-api-registry-tokens
-    key: "cloudlet/platforms/serverless/{site}"
+    key: "cloudlet/platforms/serverless/{region}"
     property: registry-api-token
 
 # Runtimes offered to clients, mounted as a file. Keys: builder (a build.builders
@@ -268,7 +267,7 @@ build:
   # and be writable by the build ServiceAccount. Changing it on an install that
   # already has functions is a migration, not a config edit
   # (docs/BUILDING.md - Registry layout). Templated, but it must resolve to the
-  # SAME string in every site: only the registry HOST varies per site, and each
+  # SAME string in every region: only the registry HOST varies per region, and each
   # release computes this path for its peers too.
   builderRepository: serverless/builders
 
@@ -277,8 +276,8 @@ build:
   gitUsername: x-access-token
 
   # Read-only registry holding kpack's own images and the ClusterStack/
-  # ClusterStore content: pulled by every site, written by none, mirrored once.
-  # Empty `url` means it IS the site registry (today's behaviour) - no second
+  # ClusterStore content: pulled by every region, written by none, mirrored once.
+  # Empty `url` means it IS the region registry (today's behaviour) - no second
   # Secret, nothing added to the build accounts.
   kpackRegistry:
     # The host the kpack release uses for `images.registry` and
@@ -297,15 +296,15 @@ build:
   # builds use a per-function account the API creates.
   serviceAccount:
     name: kpack-builder
-    # This SITE's build credential: kpack pushes with it, the build pod and every
-    # function's KSVC here pull with it. The NAME is identical in every site - it
-    # is written into every site's KSVC - while the contents differ, so the Vault
-    # path is per site.
+    # This REGION's build credential: kpack pushes with it, the build pod and every
+    # function's KSVC here pull with it. The NAME is identical in every region - it
+    # is written into every region's KSVC - while the contents differ, so the Vault
+    # path is per region.
     registrySecret:
       name: serverless-registry-creds
       # False when the Secret is provided out-of-band.
       create: true
-      key: "cloudlet/platforms/serverless/{{ .Values.global.site }}"
+      key: "cloudlet/platforms/serverless/{{ .Values.global.region }}"
       usernameProperty: registry-username
       passwordProperty: registry-password
 
@@ -477,18 +476,18 @@ build:
             - { id: paketo-buildpacks/environment-variables, optional: true }
             - { id: paketo-buildpacks/image-labels, optional: true }
 
-# A site is a region; its cluster's API server is DERIVED as
+# A region is one deployment location; its cluster's API server is DERIVED as
 # https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
 # Identical in every cluster - an instance composes the peer's manifests from it,
-# so nothing per-release goes here (that is `global.site`). No credentials
+# so nothing per-release goes here (that is `global.region`). No credentials
 # here - this renders into a ConfigMap.
 #
-# Every site MUST set `registry.url`, and no two sites may share one: a site
+# Every region MUST set `registry.url`, and no two regions may share one: a region
 # builds into and prunes its own registry (docs/BUILDING.md - Registry tag GC),
-# and two sites on one registry would garbage-collect each other's serving
+# and two regions on one registry would garbage-collect each other's serving
 # images. The chart refuses to render either mistake. `organization` and
 # `repository` are optional and inherited from `registry` above unless set.
-sites:
+regions:
   - name: central
     cluster: central-0
     registry:
@@ -525,10 +524,10 @@ externalSecrets:
           property: admin-api-key
         # HMAC key for stream tickets - what a browser opens an SSE endpoint
         # with, since EventSource cannot send an Authorization header. Signed
-        # rather than stored, so every replica in every site verifies a ticket
+        # rather than stored, so every replica in every region verifies a ticket
         # any of them minted; that only works if they share this value. Unlike
-        # the registry tokens below it is NOT per site - a stream can land on
-        # either, so a per-site key would fail about half of them.
+        # the registry tokens below it is NOT per region - a stream can land on
+        # either, so a per-region key would fail about half of them.
         # Leave the Vault property unset to disable ticket minting: the streams
         # still take the Authorization header, so only the browser path goes.
         - secretKey: SERVERLESS_STREAM_TICKET_KEY

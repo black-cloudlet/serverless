@@ -1,6 +1,6 @@
-"""Reading a workload's stored and live state back out of a site.
+"""Reading a workload's stored and live state back out of a region.
 
-The counterpart to :mod:`api.services.sites.site_apply`: everything here fetches from
+The counterpart to :mod:`api.services.regions.region_apply`: everything here fetches from
 one cluster and nothing writes. It is separate from :mod:`api.services.state.ksvc_state`
 because these calls do I/O - which is what makes their error handling the
 interesting part, and why it differs per function rather than being uniform:
@@ -8,10 +8,10 @@ interesting part, and why it differs per function rather than being uniform:
 * the **kept-values** reads (:func:`secret_data`, :func:`secret_text`) fail loud.
   Returning ``{}`` for a Secret that exists but could not be read would make a
   valid "keep" look unset and fail the update as a 400, losing a stored secret.
-* the **decoration** reads (:func:`revision`, :func:`site_usage`,
+* the **decoration** reads (:func:`revision`, :func:`region_usage`,
   :func:`describe_spec`) are best-effort. A workload whose replica count or live
-  usage could not be fetched still has a status worth returning. ``site_usage``
-  also reports *that* it failed, because its caller sums across sites.
+  usage could not be fetched still has a status worth returning. ``region_usage``
+  also reports *that* it failed, because its caller sums across regions.
 
 Every function here blocks, and is called through ``asyncio.to_thread`` or the
 deployer's fan-out.
@@ -55,7 +55,7 @@ def existing_state(obj: dict, cluster: Cluster, offering: Offering, oname: str) 
 
     Args:
         obj: The workload's KSVC, already fetched.
-        cluster: The site to read the backing Secrets from.
+        cluster: The region to read the backing Secrets from.
         offering: The offering, for whatever it carries that this doesn't
             (:meth:`~api.services.offering.Offering.read_extra_state`).
         oname: The object name (``{name}-{group}``).
@@ -175,7 +175,7 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
 
     The Revision carries both the autoscaler's live scale and the specific
     rollout-failure conditions, so a single read feeds both the replica count
-    and the per-site error detail.
+    and the per-region error detail.
 
     Returns:
         The Revision object, or None if it has no revision yet or can't be read.
@@ -189,12 +189,12 @@ def revision(cluster: Cluster, name: str | None) -> dict | None:
 
 
 @dataclass(frozen=True)
-class SiteUsage:
-    """One site's usage read: whether it could be taken, and what it showed.
+class RegionUsage:
+    """One region's usage read: whether it could be taken, and what it showed.
 
-    ``measured`` is what a cross-site total needs and the other best-effort reads
-    here do not: they degrade to a null field on the site that failed, which is
-    visible, while a total summed over a site that did not answer is just a
+    ``measured`` is what a cross-region total needs and the other best-effort reads
+    here do not: they degrade to a null field on the region that failed, which is
+    visible, while a total summed over a region that did not answer is just a
     smaller number that still looks authoritative.
     """
 
@@ -202,24 +202,24 @@ class SiteUsage:
     total: metrics_svc.Usage | None
 
 
-def site_usage(cluster: Cluster, oname: str) -> SiteUsage:
-    """Best-effort live cpu/memory summed over one site's running pods.
+def region_usage(cluster: Cluster, oname: str) -> RegionUsage:
+    """Best-effort live cpu/memory summed over one region's running pods.
 
     Never raises: an unreadable metrics API must not fail a status that is
     otherwise worth returning. The *parse* is inside the guard for the same
     reason the read is - a quantity in a form :mod:`api.services.state.metrics`
     does not recognise (Kubernetes may render one in decimal-exponent notation)
-    would otherwise escape into the fan-out, where it becomes a ``Failed`` site
+    would otherwise escape into the fan-out, where it becomes a ``Failed`` region
     and a ``Failed`` rollup for a workload that is serving perfectly well.
 
     Returns:
-        The site's usage, with ``measured=False`` if the read or the parse failed.
+        The region's usage, with ``measured=False`` if the read or the parse failed.
     """
     try:
         items = cluster.get(
             ResourceKind.POD_METRICS,
             label_selector=f"serving.knative.dev/service={oname}",
         )
-        return SiteUsage(measured=True, total=metrics_svc.total_usage(items))
+        return RegionUsage(measured=True, total=metrics_svc.total_usage(items))
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
-        return SiteUsage(measured=False, total=None)
+        return RegionUsage(measured=False, total=None)

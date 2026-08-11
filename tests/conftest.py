@@ -34,16 +34,16 @@ runtimes:
 """
 
 
-def plan_for(sites, tag, *, replicated=(), image=False, labels=None):
-    """A BuildPlan covering `sites`, for the stub builders the suite uses.
+def plan_for(regions, tag, *, replicated=(), image=False, labels=None):
+    """A BuildPlan covering `regions`, for the stub builders the suite uses.
 
-    Every stub needs the same shape - one SiteBuild per site, differing only in
+    Every stub needs the same shape - one RegionBuild per region, differing only in
     whether it carries an Image - so building it here keeps them one line each.
 
     Args:
-        sites: Site names the plan covers.
-        tag: The image reference each site builds to.
-        replicated: Manifests every site applies (the git Secret).
+        regions: Region names the plan covers.
+        tag: The image reference each region builds to.
+        replicated: Manifests every region applies (the git Secret).
         image: Whether to include a kpack Image, for tests that exercise the
             re-tag comparison (it reads `spec.tag` off one).
         labels: Ownership labels to stamp on that Image.
@@ -51,7 +51,7 @@ def plan_for(sites, tag, *, replicated=(), image=False, labels=None):
     Returns:
         The plan.
     """
-    from common.build import BuildPlan, SiteBuild
+    from common.build import BuildPlan, RegionBuild
 
     def manifests():
         if not image:
@@ -69,7 +69,7 @@ def plan_for(sites, tag, *, replicated=(), image=False, labels=None):
 
     return BuildPlan(
         replicated=list(replicated),
-        per_site={s: SiteBuild(tag=tag, manifests=manifests()) for s in sites},
+        per_region={s: RegionBuild(tag=tag, manifests=manifests()) for s in regions},
     )
 
 

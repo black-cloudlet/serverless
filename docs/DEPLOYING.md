@@ -21,7 +21,7 @@ flowchart LR
     GITAPP[("GitOps repo (separate)<br/>ArgoCD ApplicationSet")]
     GITHELM[("This repo<br/>Helm chart + values")]
     ARGO["ArgoCD"]
-    subgraph Cluster["OpenShift - each site (A and B)"]
+    subgraph Cluster["OpenShift - each region (A and B)"]
         DEP["Deployment: serverless-api (active/active)"]
         BC["Deployment: serverless-api-build-controller"]
         CERT["cert-manager Certificate (ACME)"]
@@ -40,14 +40,14 @@ flowchart LR
 - **Helm chart (this repo)** templates: two `Namespace`s (`serverless-api` for the API and
   `serverless-workloads` for customer workloads, both annotated
   `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
-  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-sites`
-  **`ConfigMap`** holding just the **sites list** - each site's name and its cluster, which
+  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-regions`
+  **`ConfigMap`** holding just the **regions list** - each region's name and its cluster, which
   is the whole profile, since the API server URL is derived from the cluster name and the
-  base domain - loaded into both Deployments as the `SERVERLESS_SITES` env var (the rest of
+  base domain - loaded into both Deployments as the `SERVERLESS_REGIONS` env var (the rest of
   the config is plain `env` on each), a `serverless-api-runtimes` **`ConfigMap`** holding the
   available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
   workloads namespace (ARCHITECTURE.md: Networking & Exposure), **two `Deployment`s** - the API and the build
-  controller, which watches and writes this site only (BUILDING.md: Digest propagation),
+  controller, which watches and writes this region only (BUILDING.md: Digest propagation),
   configured under `api` and `buildController`
   respectively, sharing the root `image` section for registry and pull policy - a `Service`
   and `Route` for the API alone (the controller serves nothing, with a
@@ -55,11 +55,11 @@ flowchart LR
   user, in the workloads namespace), cert-manager `Certificate`, **one ESO `ExternalSecret`
   per kind of data** (each its own target Secret, referencing the pre-existing
   `ClusterSecretStore`; enabled ones `envFrom`'d into the API), and `values.yaml` describing
-  the site profiles. It does **not** ship a
+  the region profiles. It does **not** ship a
   SecretStore, and the API pod runs as the namespace `default` ServiceAccount (cluster auth is
   the client certificate, not the SA token).
 - **ArgoCD (separate GitOps repo)**: an `ApplicationSet` generates one Application **per
-  site**, each pointing at this repo's chart with a per-site values file. Sync waves order
+  region**, each pointing at this repo's chart with a per-region values file. Sync waves order
   Secrets/RBAC before the Deployment; health checks gate rollout.
 - All referenced images are the **internal mirrored** images (airgap, ARCHITECTURE.md: Airgapped Considerations).
 
@@ -93,19 +93,19 @@ Platform chart                                          once per cluster
     ├── ClusterStore        ...... the 21 buildpackages the orders use  [cluster-scoped]
     └── build SA + ExternalSecret  the credential those two pull with
 
-serverless-api chart                            one release per cluster/site
+serverless-api chart                            one release per cluster/region
 ├── Builder x3              ...... go | python | node   (workloads namespace)
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
-├── ExternalSecret          ...... this site's registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
-├── ExternalSecret          ...... the kpack registry's, pull-only (omitted when it is the site registry)
-├── ExternalSecret          ...... every site's Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
+├── ExternalSecret          ...... this region's registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
+├── ExternalSecret          ...... the kpack registry's, pull-only (omitted when it is the region registry)
+├── ExternalSecret          ...... every region's Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
 ├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Network policy for build pods)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
 ├── SCC + ClusterRole       ...... build pods' CNB uid/gid, off by default (DEPLOYING.md: OpenShift SCC for builds)  [cluster-scoped]
 ├── build-controller Deploy ...... Image watch -> ksvc digest (BUILDING.md: Digest propagation)
 └── (existing: API Deployment + Service + Route, namespaces, CA bundle,
-    sites/runtimes ConfigMaps, Certificate, RBAC, tenant NetworkPolicies)
+    regions/runtimes ConfigMaps, Certificate, RBAC, tenant NetworkPolicies)
 ```
 
 The kpack release's buildpack content is described by its own `clusterBuild` values, not
@@ -126,7 +126,7 @@ rather than adding one:
 |---|---|
 | **Ownership** | A function's `Image` and build `ServiceAccount` are ordinary owned resources of its KSVC, carrying the same `ownerReference` as its env Secret and DomainMapping. Deleting the function garbage-collects them - no explicit cleanup path, and no way to orphan an `Image` that would rebuild a deleted function forever (BUILDING.md: Lifecycle & Cleanup). ownerReferences cannot cross namespaces, so this only works co-located. |
 | **One git credential** | The workload's `{workload}-git` Secret is the *only* copy of the token. It is `kubernetes.io/basic-auth` carrying `kpack.io/git`, which is the shape kpack clones with, and the API reads the password back to rebuild on a later edit. Split across namespaces this had to be two Secrets holding the same token. |
-| **One registry credential per site** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in one namespace, so one `ExternalSecret` rather than a projection per namespace. The **name** is identical in every site because every site's KSVC references it; the contents are that site's, from a per-site Vault path (BUILDING.md: Registry & Git Credentials). |
+| **One registry credential per region** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in one namespace, so one `ExternalSecret` rather than a projection per namespace. The **name** is identical in every region because every region's KSVC references it; the contents are that region's, from a per-region Vault path (BUILDING.md: Registry & Git Credentials). |
 
 The cost is that build pods - which execute tenant source and resolve tenant dependency
 trees - are scheduled beside the running functions and share their namespace boundary.
@@ -142,7 +142,7 @@ That boundary is `networkPolicy` and quota, so the two are worth stating plainly
   concurrent builds plus the running functions, not just the latter.
 
 **Why the split is by scope.** `ClusterStack` and `ClusterStore` are **cluster-scoped
-singletons**: one object per name per cluster, shared by every consumer. A per-site
+singletons**: one object per name per cluster, shared by every consumer. A per-region
 application release cannot own something cluster-wide without two releases eventually
 fighting over the same object, so they sit in the kpack chart
 (`clusterBuild.stacks` / `clusterBuild.stores`) alongside the controller that reconciles
@@ -150,7 +150,7 @@ them and the ServiceAccount they pull with. The kpack chart stays generic: it cr
 whatever stacks and stores its values describe and knows nothing about Paketo or this
 platform.
 
-`Builder`s are namespaced and per-site, so they stay here, referencing the stack and store
+`Builder`s are namespaced and per-region, so they stay here, referencing the stack and store
 by name (`build.stack.name` / `build.store.name`). The cost of the split is that the
 `Builder` -> `ClusterStore` id contract now spans two releases: a buildpack id in an order
 with no matching source in the store shows up as a permanently not-Ready `Builder`, not as
@@ -251,7 +251,7 @@ oc -n kpack logs deploy/kpack-controller | grep -o 'unable to validate.*'
 
 ## Sample Manifests
 
-> Illustrative only - final values are templated by Helm and parameterized per site.
+> Illustrative only - final values are templated by Helm and parameterized per region.
 
 ### Knative Service (KSVC)
 
@@ -321,7 +321,7 @@ metadata:
 > On OpenShift Serverless the API does **not** create an OpenShift Route. It creates a
 > `DomainMapping` for the custom host in each cluster, and the Serverless Operator
 > auto-provisions the corresponding Route. The host is identical in both clusters;
-> `*.serverless.{base_domain}` DNS forwards to the active site.
+> `*.serverless.{base_domain}` DNS forwards to the active region.
 
 ```yaml
 apiVersion: serving.knative.dev/v1beta1
@@ -360,7 +360,7 @@ spec:
     kind: ClusterIssuer
 ```
 
-### RBAC for the CN user (per site, shared workload namespace)
+### RBAC for the CN user (per region, shared workload namespace)
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -384,7 +384,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]              # for GET /api/v1/groups/{group}/{type}/{name}/logs
     verbs: ["get"]
-  - apiGroups: ["metrics.k8s.io"]        # live per-site usage on /stats
+  - apiGroups: ["metrics.k8s.io"]        # live per-region usage on /stats
     resources: ["pods"]
     verbs: ["get", "list"]
   # The rest is gated on build.enabled (see templates/rbac.yaml):
@@ -447,7 +447,7 @@ spec:
 
 > This manifest is **not** part of this repository. It is shown so the platform team can wire
 > this chart into the central GitOps repo's `ApplicationSet`, generating one Application per
-> site that renders `charts/serverless-api` with a per-site values file.
+> region that renders `charts/serverless-api` with a per-region values file.
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -459,15 +459,15 @@ spec:
   generators:
     - list:
         elements:
-          - site: central
+          - region: central
             cluster: https://api.central-0.example.com:6443
             valuesFile: values-central.yaml
-          - site: south
+          - region: south
             cluster: https://api.south-0.example.com:6443
             valuesFile: values-south.yaml
   template:
     metadata:
-      name: "serverless-api-{{site}}"
+      name: "serverless-api-{{region}}"
     spec:
       project: serverless
       source:

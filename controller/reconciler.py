@@ -1,8 +1,8 @@
 """The control loop: watch local kpack Images, roll their digests onto the local KSVC.
 
-Both ends are local, and for the same reason: a site builds what it runs and
+Both ends are local, and for the same reason: a region builds what it runs and
 pushes to its own registry (docs/BUILDING.md - Active/Active Behaviour), so the Image is here
-because this site built it, and the digest it produced is only pullable here.
+because this region built it, and the digest it produced is only pullable here.
 Nothing in this loop reads or writes a peer cluster.
 
 One pass relists and then watches from that point, so nothing is lost when a
@@ -37,29 +37,29 @@ IMAGE_SELECTOR = f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE},{LABEL_OFFERING}={OFFER
 
 
 class Reconciler:
-    """Propagates ``Image.status.latestImage`` to the function's KSVC in this site."""
+    """Propagates ``Image.status.latestImage`` to the function's KSVC in this region."""
 
     def __init__(
         self,
         settings: CommonSettings,
         gc_factory: Callable[[str], TagGC] | None = None,
     ):
-        """Build the client for the site this controller sits in.
+        """Build the client for the region this controller sits in.
 
         Args:
-            settings: Shared settings (sites, local site, TLS material).
-            gc_factory: Builds the tag GC from the *resolved* site name - a
-                factory because ``local_site`` may be unset or a cluster name,
-                and the GC must prune the registry of the site actually
+            settings: Shared settings (regions, local region, TLS material).
+            gc_factory: Builds the tag GC from the *resolved* region name - a
+                factory because ``local_region`` may be unset or a cluster name,
+                and the GC must prune the registry of the region actually
                 watched. None runs the loop without GC.
 
         Raises:
-            ValidationError: If no sites are configured.
+            ValidationError: If no regions are configured.
         """
-        # Every site is constructed only to pick this one out; the rest are
+        # Every region is constructed only to pick this one out; the rest are
         # dropped unconnected, since nothing here touches a peer.
-        self._local = select_local(clusters_for(settings), settings.local_site)
-        self._gc = gc_factory(self._local.site) if gc_factory else None
+        self._local = select_local(clusters_for(settings), settings.local_region)
+        self._gc = gc_factory(self._local.region) if gc_factory else None
 
     @property
     def local(self) -> Cluster:
@@ -82,7 +82,7 @@ class Reconciler:
         )
         for image in images:
             self.reconcile(image)
-        logger.info("resynced %d image(s) in %s", len(images), self._local.site)
+        logger.info("resynced %d image(s) in %s", len(images), self._local.region)
         if self._gc is not None:
             # After the rollouts, on the same listing: the GC judges tags
             # against each Image's latest state, so it rides the relist that
@@ -151,14 +151,16 @@ class Reconciler:
             # it yet, or it was applied before builds followed the workload.
             return False
         except Exception:  # noqa: BLE001 - one bad read is not the loop's end
-            logger.exception("could not read '%s' in %s", workload, cluster.site)
+            logger.exception("could not read '%s' in %s", workload, cluster.region)
             return False
         if not needs_image(ksvc, digest):
             return False
         try:
             cluster.apply(with_image(ksvc, digest))
         except Exception:  # noqa: BLE001 - retried by the next resync
-            logger.exception("could not roll '%s' onto '%s' in %s", digest, workload, cluster.site)
+            logger.exception(
+                "could not roll '%s' onto '%s' in %s", digest, workload, cluster.region
+            )
             return False
-        logger.info("rolled '%s' onto '%s' in %s", digest, workload, cluster.site)
+        logger.info("rolled '%s' onto '%s' in %s", digest, workload, cluster.region)
         return True

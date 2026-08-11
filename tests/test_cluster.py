@@ -1,4 +1,4 @@
-"""Unit tests for the per-site Cluster client's resource resolution."""
+"""Unit tests for the per-region Cluster client's resource resolution."""
 
 from common.cluster import Cluster, ResourceKind
 

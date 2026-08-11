@@ -32,7 +32,7 @@ from api.models.container import ContainerResponse
 from api.models.function import FunctionResponse
 from api.services.builder import registry as registry_svc
 from api.services.manifests import secrets as secret_svc
-from api.services.sites import site_apply, site_read
+from api.services.regions import region_apply, region_read
 from api.services.state import ksvc_state
 from common.build import BuildBackend
 from common.cluster import Cluster, ResourceKind
@@ -51,7 +51,7 @@ class DeleteContext:
     registry is addressed by ``{group}/{name}``, not by the object name.
 
     Attributes:
-        cluster: The site being cleaned up, carrying its own registry.
+        cluster: The region being cleaned up, carrying its own registry.
         oname: The object name (``{name}-{group}``).
         name: The workload name.
         group: The owning group.
@@ -108,7 +108,7 @@ class Offering(Protocol):
 
         Args:
             common: The offering-agnostic response fields the engine assembled.
-            obj: The KSVC read back from a representative site.
+            obj: The KSVC read back from a representative region.
             spec: The parsed, redacted desired-state spec.
             build: The build status, when the offering has one.
 
@@ -128,14 +128,14 @@ class Offering(Protocol):
     def read_extra_state(self, cluster: Cluster, oname: str) -> dict:
         """Offering-specific carried-forward state, merged into the loaded state.
 
-        Runs off the event loop, on a site that has the workload.
+        Runs off the event loop, on a region that has the workload.
         """
         ...
 
     def after_delete(self, ctx: DeleteContext) -> None:
         """Clean up what the KSVC's ownerReferences do not cascade to.
 
-        Called on the local site once every site has confirmed the delete.
+        Called on the local region once every region has confirmed the delete.
         """
         ...
 
@@ -181,9 +181,9 @@ class FunctionOffering:
     ) -> WorkloadResponse:
         """The function response, carrying the build the engine rolled up.
 
-        The build-first folding happens in the engine, against each site's own
-        build: it is per site now, and only the engine holds the per-site states
-        (see :func:`~api.services.state.ksvc_state.sites_with_build_status`).
+        The build-first folding happens in the engine, against each region's own
+        build: it is per region now, and only the engine holds the per-region states
+        (see :func:`~api.services.state.ksvc_state.regions_with_build_status`).
         What is left here is reporting the rolled-up state on ``build``.
 
         No image is exposed: the built image is an internal artifact, so a client
@@ -206,7 +206,7 @@ class FunctionOffering:
     def managed_secrets(self, oname: str) -> set[tuple[ResourceKind, str]]:
         """None. A function's git Secret is carried forward, never pruned.
 
-        It is applied on every site so any of them can rebuild after a switchover
+        It is applied on every region so any of them can rebuild after a switchover
         (docs/BUILDING.md - Active/Active), and an update that omits the token
         keeps the stored copy - so pruning it would destroy the only thing that
         can rebuild the function.
@@ -215,32 +215,32 @@ class FunctionOffering:
 
     def read_extra_state(self, cluster: Cluster, oname: str) -> dict:
         """The stored git token, so a build-input change can rebuild without one."""
-        git = site_read.secret_text(cluster, secret_svc.git_secret_name(oname))
+        git = region_read.secret_text(cluster, secret_svc.git_secret_name(oname))
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
 
     def after_delete(self, ctx: DeleteContext) -> None:
-        """Remove one site's build objects, then the repositories it pushed to.
+        """Remove one region's build objects, then the repositories it pushed to.
 
-        Called once per site, because both leftovers are per site: each built its
+        Called once per region, because both leftovers are per region: each built its
         own image into its own registry. The build objects normally cascade with
         the KSVC and this is the sweep for ones that did not; the registry has no
         owner at all - no Kubernetes object references a repository - so it is
         deleted by name (docs/BUILDING.md - Registry cleanup on delete).
 
-        Where several sites share one registry the repository delete repeats and
+        Where several regions share one registry the repository delete repeats and
         the second call 404s, which :func:`delete_repositories` already tolerates.
         """
-        site_apply.delete_build_objects(ctx.cluster, ctx.oname)
+        region_apply.delete_build_objects(ctx.cluster, ctx.oname)
         registry_svc.delete_function_repositories(ctx.cluster.registry, ctx.group, ctx.name)
 
     def build_status(
         self, builder: BuildBackend, cluster: Cluster, name: str, group: str
     ) -> BuildStatusView | None:
-        """The function's build state from the local site, or None if it has none.
+        """The function's build state from the local region, or None if it has none.
 
-        One site builds and it is always the local one (docs/BUILDING.md), including
+        One region builds and it is always the local one (docs/BUILDING.md), including
         for a function deployed only elsewhere - so the Image is here whenever it
-        exists anywhere, and a cross-site fan-out would add latency to every GET for
+        exists anywhere, and a cross-region fan-out would add latency to every GET for
         something that cannot be found anywhere else.
 
         Never an error: a function whose image already exists must still report its
@@ -254,9 +254,9 @@ class FunctionOffering:
     def build_states(
         self, builder: BuildBackend, cluster: Cluster, group: str
     ) -> dict[str, BuildStatusView]:
-        """Every function's build state in the group, from the local site's Images.
+        """Every function's build state in the group, from the local region's Images.
 
-        Same site and same reasoning as :meth:`build_status`, in one read: a list
+        Same region and same reasoning as :meth:`build_status`, in one read: a list
         of twenty functions would otherwise be twenty kpack reads per poll.
         """
         return {

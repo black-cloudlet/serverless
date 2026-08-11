@@ -13,7 +13,7 @@ from api.models.common import (
     DEFAULT_PORT,
     PORT_MAX,
     PORT_MIN,
-    SITE_STATUSES,
+    REGION_STATUSES,
     STATUS_REASONS,
     Scaling,
     WorkloadStatus,
@@ -45,7 +45,7 @@ def _port_rules() -> PortCapability:
     """The container port rules, identical for both offerings.
 
     One function rather than two literals: the offerings agreeing is the point,
-    and two call sites constructing this separately is how they stop agreeing.
+    and two call regions constructing this separately is how they stop agreeing.
     """
     return PortCapability(required=False, default=DEFAULT_PORT, min=PORT_MIN, max=PORT_MAX)
 
@@ -54,14 +54,14 @@ def _base(settings: Settings) -> dict:
     """The platform capabilities common to both offerings (see models.info.BaseInfo)."""
     return dict(
         version=__version__,
-        sites=settings.site_names,
+        regions=settings.region_names,
         sizes=workload_sizes(),
         scaling=Scaling.capabilities(),
         routeDomain=settings.route_domain,
         defaultHostTemplate=route_svc.HOST_TEMPLATE,
         statuses=StatusVocabulary(
             workload=list(get_args(WorkloadStatus)),
-            site=list(SITE_STATUSES),
+            region=list(REGION_STATUSES),
             terminal=list(TERMINAL_STATUSES),
             reasons=list(STATUS_REASONS),
         ),

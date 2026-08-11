@@ -8,9 +8,9 @@ from api.auth.deps import require_auth
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
 from api.models.common import (
+    RegionStats,
+    RegionStatus,
     ResourceUsage,
-    SiteStats,
-    SiteStatus,
     WorkloadStatsResponse,
 )
 from api.models.container import ContainerResponse
@@ -23,14 +23,14 @@ def _model(kind, **fields):
 
 
 def _stats(overall="Ready"):
-    """A live stats view: two replicas at one site."""
+    """A live stats view: two replicas at one region."""
     return WorkloadStatsResponse(
         status=overall,
         replicas=2,
         usage=ResourceUsage(cpu="300m", memory="384Mi"),
-        sites=[
-            SiteStats(
-                site="site-a",
+        regions=[
+            RegionStats(
+                region="region-a",
                 status=overall,
                 replicas=2,
                 usage=ResourceUsage(cpu="300m", memory="384Mi"),
@@ -47,7 +47,7 @@ def _accepted(kind, name, group, **extra):
         type=kind,
         hostname=f"{name}.serverless.example.com",
         status="Pending",
-        sites=[],
+        regions=[],
         statusUrl=f"/api/v1/groups/{group}/{kind}s/{name}",
         **extra,
     )
@@ -61,7 +61,7 @@ def _ready(kind, name, group="team", **extra):
         type=kind,
         hostname="x.serverless.example.com",
         status="Ready",
-        sites=[SiteStatus(site="site-a", status="Ready")],
+        regions=[RegionStatus(region="region-a", status="Ready")],
         **extra,
     )
 
@@ -95,7 +95,7 @@ class FakeFunctions:
                 hostname="fn-a.example.com",
                 status="Ready",
                 size="small",
-                sites=["central"],
+                regions=["central"],
             )
         ]
 
@@ -130,7 +130,7 @@ class FakeContainers:
                 hostname="ctr-a.example.com",
                 status="Ready",
                 size="medium",
-                sites=["central", "south"],
+                regions=["central", "south"],
             )
         ]
 
@@ -162,7 +162,7 @@ def test_info_is_public_and_static():
     for path in ("/api/v1/containers/info", "/api/v1/functions/info"):
         body = c.get(path).json()
         assert body["version"]
-        assert isinstance(body["sites"], list)
+        assert isinstance(body["regions"], list)
         assert body["sizes"] == ["small", "medium", "large"]
         assert body["routeDomain"]
         assert body["defaultHostTemplate"] == "{name}-{group}.{routeDomain}"
@@ -190,9 +190,9 @@ def test_info_is_public_and_static():
 
 async def test_startup_warmup_is_best_effort(monkeypatch):
     """A failing OIDC discovery / cluster connect must not crash startup."""
-    from api.core.config import Settings, SiteConfig, SSOSettings
+    from api.core.config import RegionConfig, Settings, SSOSettings
     from api.main import _warmup
-    from api.services.sites.deployer import Deployer
+    from api.services.regions.deployer import Deployer
 
     class _BoomValidator:
         def warmup(self):
@@ -203,19 +203,19 @@ async def test_startup_warmup_is_best_effort(monkeypatch):
     settings = Settings(
         auth_enabled=True,
         sso=SSOSettings(),
-        sites=[SiteConfig(name="site-a", cluster="site-a-0")],
+        regions=[RegionConfig(name="region-a", cluster="region-a-0")],
         cluster_connect_timeout=0.01,
         cluster_read_timeout=0.01,
     )
 
     class _BoomCluster:
-        site = "site-a"
+        region = "region-a"
 
         def connect(self):
             raise RuntimeError("cluster unreachable")
 
     deployer = Deployer(settings)
-    deployer._clusters = {"site-a": _BoomCluster()}
+    deployer._clusters = {"region-a": _BoomCluster()}
     # Should complete without raising even though both warmups fail.
     await _warmup(settings, deployer)
 
@@ -318,14 +318,14 @@ def test_info_publishes_the_status_and_error_vocabularies():
     """Everything a client would otherwise hardcode and let drift."""
     from typing import get_args
 
-    from api.models.common import SITE_STATUSES, WorkloadStatus
+    from api.models.common import REGION_STATUSES, WorkloadStatus
     from common.errors import ValidationError, error_catalog
 
     body = TestClient(create_app()).get("/api/v1/containers/info").json()
 
     # derived from the Literal the responses are typed with, not a second list
     assert body["statuses"]["workload"] == list(get_args(WorkloadStatus))
-    assert body["statuses"]["site"] == list(SITE_STATUSES)
+    assert body["statuses"]["region"] == list(REGION_STATUSES)
     # a poller needs to know which values mean "stop"
     assert set(body["statuses"]["terminal"]) < set(body["statuses"]["workload"])
     assert "Building" not in body["statuses"]["terminal"]
@@ -355,20 +355,20 @@ def test_info_publishes_the_combined_name_and_group_limit():
 
 
 def test_our_own_error_is_published_in_the_catalog():
-    """SiteTotalFailure is defined in this repository, not the shared package.
+    """RegionTotalFailure is defined in this repository, not the shared package.
 
     error_catalog walks subclasses at call time, which is what lets us keep a
     platform-specific error locally and still have /info advertise it. The walk
     itself is cloudlet_apis.errors' behaviour and is tested there; this is the
-    part that would break silently if SiteTotalFailure stopped being imported.
+    part that would break silently if RegionTotalFailure stopped being imported.
     """
-    from common.errors import SiteTotalFailure, error_catalog
+    from common.errors import RegionTotalFailure, error_catalog
 
     codes = dict(error_catalog())
-    assert codes[SiteTotalFailure.code] == SiteTotalFailure.status_code
+    assert codes[RegionTotalFailure.code] == RegionTotalFailure.status_code
 
     body = TestClient(create_app()).get("/api/v1/containers/info").json()
-    assert {"code": "SITE_TOTAL_FAILURE", "status": 502} in body["errorCodes"]
+    assert {"code": "REGION_TOTAL_FAILURE", "status": 502} in body["errorCodes"]
 
 
 def test_framework_http_errors_get_a_meaningful_code_and_status(client):
@@ -416,23 +416,23 @@ def test_get_container_stats_is_live_state_only(client):
     assert body["status"] == "Ready"
     assert body["replicas"] == 2
     assert body["usage"] == {"cpu": "300m", "memory": "384Mi"}
-    site = body["sites"][0]
-    assert site == {
-        "site": "site-a",
+    region = body["regions"][0]
+    assert region == {
+        "region": "region-a",
         "status": "Ready",
         "reason": None,
         "replicas": 2,
         "usage": {"cpu": "300m", "memory": "384Mi"},
     }
     # nothing else: no desired-state config, and no identity echo of the path
-    assert set(body) == {"status", "reason", "replicas", "usage", "sites"}
+    assert set(body) == {"status", "reason", "replicas", "usage", "regions"}
 
 
 def test_get_function_stats_reports_a_running_build(client):
     # Building comes from the build read, which stays even though it is not a field
     body = client.get("/api/v1/groups/team/functions/foo/stats").json()
     assert body["status"] == "Building"
-    assert body["sites"][0]["status"] == "Building"
+    assert body["regions"][0]["status"] == "Building"
 
 
 def test_stats_path_name_validated_at_the_edge(client):
@@ -452,7 +452,7 @@ def test_list_functions(client):
     body = r.json()
     assert [w["name"] for w in body] == ["fn-a"]
     assert body[0]["type"] == "function" and body[0]["group"] == "team"
-    assert body[0]["sites"] == ["central"]
+    assert body[0]["regions"] == ["central"]
 
 
 def test_list_containers(client):
@@ -460,7 +460,7 @@ def test_list_containers(client):
     assert r.status_code == 200
     body = r.json()
     assert body[0]["name"] == "ctr-a"
-    assert body[0]["size"] == "medium" and body[0]["sites"] == ["central", "south"]
+    assert body[0]["size"] == "medium" and body[0]["regions"] == ["central", "south"]
 
 
 def test_list_accepts_sort_and_rejects_unknown(client):

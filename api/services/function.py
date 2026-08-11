@@ -34,7 +34,7 @@ class FunctionService:
         """Initialize the service.
 
         Args:
-            engine: The shared workload engine doing the cross-site work.
+            engine: The shared workload engine doing the cross-region work.
             runtimes: The available-runtimes registry. Required rather than
                 defaulted: reaching for the process-wide registry here would
                 make the service depend on module state that only the DI layer
@@ -104,10 +104,10 @@ class FunctionService:
         Args:
             req: The build request.
             user: The authenticated caller, for the ownership labels.
-            registries: The registry each targeted site builds into.
+            registries: The registry each targeted region builds into.
 
         Returns:
-            The build plan, one tag and one set of manifests per site.
+            The build plan, one tag and one set of manifests per region.
         """
         oname = object_name(req.name, req.group)
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
@@ -196,7 +196,7 @@ class FunctionService:
 
         Every input comes back off the workload itself - the KSVC's annotations
         and the ``{workload}-git`` Secret - which is the same reconstruction a
-        site that has never built the function does after a switchover
+        region that has never built the function does after a switchover
         (docs/BUILDING.md - Reconstruction after switchover). Nothing is taken
         from the request: a rebuild asks for the *current* definition to be built
         again, so accepting inputs here would make it an update in disguise.
@@ -319,7 +319,7 @@ class FunctionService:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
         req = self._build_request(name, group, existing, user)
-        # Every configured site; apply_build skips the ones not running it.
+        # Every configured region; apply_build skips the ones not running it.
         registries = self._engine.target_registries(None)
         await self._engine.apply_build(name, group, self._plan(req, user, registries))
 
@@ -339,8 +339,8 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        # A site builds what it runs, so the plan covers exactly the targets.
-        registries = self._engine.target_registries(spec.sites)
+        # A region builds what it runs, so the plan covers exactly the targets.
+        registries = self._engine.target_registries(spec.regions)
         plan = self._plan(
             BuildRequest(
                 name=spec.name,
@@ -359,13 +359,13 @@ class FunctionService:
 
         # No absence probe here: apply_workload runs one combined host+absence pass
         # over the same targets immediately before it mutates, which is both a
-        # stronger guard (nothing happens in between) and one fewer cross-site trip.
+        # stronger guard (nothing happens in between) and one fewer cross-region trip.
         body, code = await self._engine.apply_workload(
             ApplyRequest(
                 name=spec.name,
                 user=user,
                 group=group,
-                # No single image: each site deploys at the tag its own build
+                # No single image: each region deploys at the tag its own build
                 # pushes to, and reads Building until something lands there.
                 image="",
                 images=plan.tags,
@@ -374,7 +374,7 @@ class FunctionService:
                 scaling=spec.scaling,
                 size=spec.size,
                 hostname=spec.hostname,
-                sites=spec.sites,
+                regions=spec.regions,
                 port=spec.port,
                 # Pulled with the same credential kpack pushed with. The Secret is the
                 # chart's, shared by every function, so it is referenced, never applied.
@@ -385,11 +385,11 @@ class FunctionService:
                 git_url=spec.gitRepo,
                 branch=spec.branch,
                 path=spec.path,
-                # The git credential goes to every site so any of them can
-                # rebuild; each site gets its own Image (docs/BUILDING.md -
+                # The git credential goes to every region so any of them can
+                # rebuild; each region gets its own Image (docs/BUILDING.md -
                 # Active/Active Behaviour).
                 extra_secrets=plan.replicated,
-                site_resources=plan.manifests_by_site,
+                region_resources=plan.manifests_by_region,
             ),
             FUNCTION,
         )
@@ -423,7 +423,7 @@ class FunctionService:
                 pipeline is unavailable.
         """
         # Reuse the load_existing result from accept_update (already authorized) to
-        # avoid a second multi-site fanout; fall back to a fresh fetch otherwise.
+        # avoid a second multi-region fanout; fall back to a fresh fetch otherwise.
         if existing is None:
             existing = await self._engine.load_existing(name, FUNCTION, user, group)
 
@@ -457,14 +457,14 @@ class FunctionService:
         # Never rewritten here, whatever changed. After the create, the image is
         # the controller's alone (docs/BUILDING.md - Digest propagation): the
         # build this update declares has not pushed yet, so anything written now
-        # is a revision of the code already running. Per site, because each runs
+        # is a revision of the code already running. Per region, because each runs
         # what its own build pushed - one value would move a peer onto this
-        # site's registry.
+        # region's registry.
         image = existing["image"]
         images = dict(existing.get("images") or {})
         registries = self._engine.target_registries(None)
         replicated: list[dict] = []
-        site_resources: dict[str, list[dict]] = {}
+        region_resources: dict[str, list[dict]] = {}
         if token is not None:
             # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
             # not rebuild from, but it recreates a missing Image after a switchover.
@@ -484,11 +484,11 @@ class FunctionService:
                 registries,
             )
             replicated = plan.replicated
-            site_resources = plan.manifests_by_site
-            # A site not running it yet deploys at its own tag and reads
+            region_resources = plan.manifests_by_region
+            # A region not running it yet deploys at its own tag and reads
             # Building until its first build lands, exactly as a create does.
-            for site, tag in plan.tags.items():
-                images.setdefault(site, tag)
+            for region, tag in plan.tags.items():
+                images.setdefault(region, tag)
 
         body, code = await self._engine.apply_workload(
             ApplyRequest(
@@ -502,7 +502,7 @@ class FunctionService:
                 scaling=spec.scaling,
                 size=spec.size,
                 hostname=spec.hostname,
-                sites=None,
+                regions=None,
                 # Replaced like every other non-secret field: omitting it returns
                 # the function to 8080, as omitting `version` returns it to the
                 # platform's default runtime version.
@@ -519,14 +519,14 @@ class FunctionService:
                 kept_env=existing.get("env_values"),
                 kept_files=existing.get("files_values"),
                 extra_secrets=replicated,
-                site_resources=site_resources,
+                region_resources=region_resources,
             ),
             FUNCTION,
         )
         return body, code
 
     async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
-        """Get one function with live per-site status.
+        """Get one function with live per-region status.
 
         Args:
             name: The workload name.
@@ -547,12 +547,12 @@ class FunctionService:
             user: The authenticated caller.
 
         Returns:
-            The rollup plus per-site replicas and usage.
+            The rollup plus per-region replicas and usage.
         """
         return await self._engine.stats(FUNCTION, name, user, group)
 
     async def pods(self, name: str, group: str, user: Principal) -> PodRoster:
-        """The function's pods on the current site, read once.
+        """The function's pods on the current region, read once.
 
         Args:
             name: The workload name.
@@ -606,7 +606,7 @@ class FunctionService:
     async def stream_pods(
         self, name: str, group: str, user: Principal, *, interval: float | None
     ) -> AsyncIterator[StreamEvent]:
-        """Stream which pods the function has on the current site.
+        """Stream which pods the function has on the current region.
 
         Args:
             name: The workload name.
@@ -630,7 +630,7 @@ class FunctionService:
         since_seconds: int | None,
         tail_lines: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Follow one of the function's pods' logs, on the current site.
+        """Follow one of the function's pods' logs, on the current region.
 
         Args:
             name: The workload name.

@@ -333,9 +333,9 @@ async def test_a_wakeup_is_not_lost_when_a_put_races_a_drain():
 
 
 class FakeCluster:
-    """A local site: a scripted pod roster, and scripted per-pod log chunks."""
+    """A local region: a scripted pod roster, and scripted per-pod log chunks."""
 
-    site = "central"
+    region = "central"
     oname = "foo-team"
 
     def __init__(self, pods=None, chunks=None, *, live=False):
@@ -408,7 +408,7 @@ def _opening(pod="p1", container="user-container", revision="r1"):
         name="foo",
         group="team",
         type="function",
-        site="central",
+        region="central",
         pod=pod,
         container=container,
         revision=revision,
@@ -433,7 +433,7 @@ async def test_the_stream_opens_by_saying_which_pod_it_is_following(capacity):
 
     assert events[0].name == "open"
     assert events[0].data.pod == "p1"
-    assert events[0].data.site == "central"
+    assert events[0].data.region == "central"
     assert cluster.followed == ["p1"]
 
 
@@ -587,7 +587,7 @@ def test_a_pod_that_is_running_but_not_ready_says_so():
 
 
 def _roster(pods=()):
-    return PodRoster(name="foo", group="team", type="function", site="central", pods=list(pods))
+    return PodRoster(name="foo", group="team", type="function", region="central", pods=list(pods))
 
 
 def _pods_follow(cluster, capacity, **over):
@@ -669,7 +669,7 @@ async def test_an_unexpected_roster_failure_does_not_leak_its_text(capacity):
 
 
 def _stats(replicas):
-    return WorkloadStatsResponse(status="Ready", replicas=replicas, sites=[])
+    return WorkloadStatsResponse(status="Ready", replicas=replicas, regions=[])
 
 
 async def test_the_first_reading_is_sent_immediately():
@@ -764,15 +764,17 @@ async def _drain_all(stream, into):
 
 
 def _engine(cluster, capacity, *, owner_group="team", offering="function"):
-    from api.core.config import Settings, SiteConfig
+    from api.core.config import RegionConfig, Settings
     from api.models.common import LABEL_GROUP, LABEL_OFFERING
-    from api.services.sites.deployer import Deployer
+    from api.services.regions.deployer import Deployer
     from api.services.workloads import WorkloadService
 
-    settings = Settings(sites=[SiteConfig(name="central", cluster="central-0")], auth_enabled=False)
+    settings = Settings(
+        regions=[RegionConfig(name="central", cluster="central-0")], auth_enabled=False
+    )
     deployer = Deployer(settings)
     deployer._clusters = {"central": cluster}
-    deployer._local_site = "central"
+    deployer._local_region = "central"
     cluster.ksvc = {
         "metadata": {
             "name": "foo-team",
@@ -830,7 +832,7 @@ async def test_stream_pods_authorizes_and_sends_the_roster(capacity):
 
     assert events[0].name == "pods"
     assert events[0].data.name == "foo"
-    assert events[0].data.site == "central"
+    assert events[0].data.region == "central"
     assert [p.pod for p in events[0].data.pods] == ["p1"]
 
 
@@ -1112,7 +1114,7 @@ async def test_the_snapshot_returns_the_same_lines_the_stream_would(capacity):
     assert snap.lines[0].time is not None  # split off, as the stream splits it
     assert snap.lines[0].revision == "rev-7"
     assert snap.pod == "p1"
-    assert snap.site == "central"
+    assert snap.region == "central"
 
 
 async def test_the_snapshot_passes_its_bounds_to_the_cluster(capacity):
@@ -1262,7 +1264,7 @@ async def test_the_pods_snapshot_is_the_roster_the_stream_would_have_sent(capaci
     roster = await engine.pods(_offering(), "foo", _caller(), "team")
 
     assert [p.pod for p in roster.pods] == ["p1", "p2"]
-    assert roster.site == "central"
+    assert roster.region == "central"
     assert roster.name == "foo"
 
 

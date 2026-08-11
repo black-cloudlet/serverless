@@ -19,17 +19,17 @@ functions - scaling, env, files, hosts, status - is in ARCHITECTURE.md.
 | `registryUsername` | no | Registry username. Optional - omit both creds for a public image; if either is given, **both** are required. Returned on GET as the top-level `registryUsername`, like a secret's name. |
 | `registryToken` | no | Registry access token; used to create an `imagePullSecret`, **not persisted** and **never returned**. |
 | `name` | yes | Logical workload name (DNS-1123). |
-| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/containers/info`. |
+| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/containers/info`. |
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
 **Flow:**
 
 1. The API creates a Kubernetes `kubernetes.io/dockerconfigjson` **imagePullSecret** from
-   the supplied credentials in each site, **labeled** with the owning group (ARCHITECTURE.md: Authentication & Authorization) and linked
+   the supplied credentials in each region, **labeled** with the owning group (ARCHITECTURE.md: Authentication & Authorization) and linked
    to the KSVC's service account. The secret's `auths` entry is keyed to the **registry host
    parsed from the client's `image`** (the org runs several registries), not the platform's
    own registry.
-2. The API creates/updates the **KSVC** referencing `image` in **both sites**.
+2. The API creates/updates the **KSVC** referencing `image` in **both regions**.
 
 ## API - create & update
 
@@ -73,8 +73,8 @@ metadata.annotations["serverless.platform/pull-stamp"]                  the stor
 spec.template.metadata.annotations["serverless.platform/pull-stamp"]    what Knative diffs
 ```
 
-Both carry the same value, minted once per request and written to **every** site - a
-per-site value would leave the sites on different revisions. It is a merge patch rather
+Both carry the same value, minted once per request and written to **every** region - a
+per-region value would leave the regions on different revisions. It is a merge patch rather
 than the platform's usual full apply, for the same reason the function rebuild trigger is
 (BUILDING.md: What causes a new Build): nothing about the desired state changes, and the
 workload was just read, so there is nothing to create.

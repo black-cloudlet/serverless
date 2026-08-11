@@ -48,7 +48,7 @@ class FunctionCreate(BaseModel):
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"  # resource size; see services.ksvc
-    sites: list[str] | None = None
+    regions: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
     # Identical to a container's, deliberately: an app either serves on 8080 or
@@ -103,7 +103,7 @@ class FunctionResponse(WorkloadResponse):
     gitRepo: str | None = None
     branch: str | None = None
     path: str | None = None
-    # Present once the function has an Image on the local site; None on a site
+    # Present once the function has an Image on the local region; None on a region
     # that has never built it (e.g. straight after a switchover).
     build: BuildStatusView | None = None
     port: int | None = None  # explicit container port, or None for Knative's default

@@ -33,7 +33,7 @@ from common.build import (
     BuildPlan,
     BuildRequest,
     BuildStatus,
-    SiteBuild,
+    RegionBuild,
     cache_reference,
     image_reference,
 )
@@ -58,7 +58,7 @@ class KpackBackend:
         """
         self._build = build
         self._runtimes = runtimes
-        # Both registries a build reads: this site's, and the kpack registry the
+        # Both registries a build reads: this region's, and the kpack registry the
         # run image comes from. Empty entries are dropped, so an install with one
         # registry names one Secret.
         self._registry_secrets = [
@@ -81,7 +81,7 @@ class KpackBackend:
 
         Args:
             req: The build request.
-            registry: The registry that build pushes to - one site's.
+            registry: The registry that build pushes to - one region's.
 
         Returns:
             The fully-qualified image reference.
@@ -92,7 +92,7 @@ class KpackBackend:
         """Where a build caches its layers, or None to leave it to kpack.
 
         A sibling of the image repository in the same registry, so the cache
-        follows the image rather than being pulled across sites.
+        follows the image rather than being pulled across regions.
 
         Args:
             req: The build request.
@@ -161,21 +161,21 @@ class KpackBackend:
         Pure - no cluster call - so the caller can apply them in the same pass as
         the KSVC's other derived resources and have them owner-stamped.
 
-        The git Secret is replicated; the Image and ServiceAccount are per site.
-        Each site pushes to its own registry, so the objects are identical but
-        for the tag and the cache reference, and no two sites contend for one
+        The git Secret is replicated; the Image and ServiceAccount are per region.
+        Each region pushes to its own registry, so the objects are identical but
+        for the tag and the cache reference, and no two regions contend for one
         repository (docs/BUILDING.md - Registry layout).
 
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
-            registries: The registry each building site pushes to, keyed by site
-                name. Its keys are the sites that build - the workload's
+            registries: The registry each building region pushes to, keyed by region
+                name. Its keys are the regions that build - the workload's
                 targets. Passed in rather than resolved here: the caller holds
                 the clusters, and each carries its own registry.
 
         Returns:
-            The build plan; each site's manifests are in dependency order.
+            The build plan; each region's manifests are in dependency order.
 
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
@@ -184,10 +184,10 @@ class KpackBackend:
         builder, env = self._runtime_config(req.runtime, req.version)
         build_name = kpack.build_object_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
-        per_site: dict[str, SiteBuild] = {}
-        for site, registry in registries.items():
+        per_region: dict[str, RegionBuild] = {}
+        for region, registry in registries.items():
             tag = self.image_ref(req, registry)
-            per_site[site] = SiteBuild(
+            per_region[region] = RegionBuild(
                 tag=tag,
                 manifests=[
                     kpack.build_service_account(
@@ -216,7 +216,7 @@ class KpackBackend:
                     git_secret, labels, req.git_token, req.git_url, self._build.git_username
                 )
             ],
-            per_site=per_site,
+            per_region=per_region,
         )
 
     def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
@@ -230,7 +230,7 @@ class KpackBackend:
         (docs/BUILDING.md - Convergence rules).
 
         Args:
-            cluster: The cluster holding the Image (always the local site).
+            cluster: The cluster holding the Image (always the local region).
             name: The workload name.
             group: The owning group.
 
@@ -252,7 +252,7 @@ class KpackBackend:
             logger.info(
                 "no build to trigger for Image '%s' on %s; it has one coming",
                 image_name,
-                cluster.site,
+                cluster.region,
             )
             return False
         build_name = (latest.get("metadata") or {}).get("name")
@@ -264,7 +264,7 @@ class KpackBackend:
         logger.info(
             "triggered a rebuild of Image '%s' on %s via build '%s'",
             image_name,
-            cluster.site,
+            cluster.region,
             build_name,
         )
         return True
@@ -273,13 +273,13 @@ class KpackBackend:
         """Read a function's build state from one cluster.
 
         Args:
-            cluster: The cluster to read (normally the local site).
+            cluster: The cluster to read (normally the local region).
             name: The workload name.
             group: The owning group.
 
         Returns:
             The build status, or None when the function has no Image on this
-            cluster - which is the normal case for a site that has never built
+            cluster - which is the normal case for a region that has never built
             it, and must fall through to the KSVC status rather than read as a
             failure (docs/FUNCTIONS.md - Function Status Resolution).
         """
@@ -289,7 +289,7 @@ class KpackBackend:
         except NotFoundError:
             return None
         except Exception:  # noqa: BLE001 - kpack absent or unreadable is not fatal
-            logger.warning("could not read kpack Image '%s' on %s", image_name, cluster.site)
+            logger.warning("could not read kpack Image '%s' on %s", image_name, cluster.region)
             return None
         state, latest, message = kpack.build_status(image)
         return BuildStatus(state=state, image=latest, message=message)
@@ -306,7 +306,7 @@ class KpackBackend:
         KSVC statuses, exactly as :meth:`status` does for a single workload.
 
         Args:
-            cluster: The cluster to read (normally the local site).
+            cluster: The cluster to read (normally the local region).
             group: The owning group.
 
         Returns:
@@ -317,7 +317,9 @@ class KpackBackend:
         try:
             images = cluster.get(ResourceKind.KPACK_IMAGE, label_selector=selector)
         except Exception:  # noqa: BLE001 - kpack absent or unreadable is not fatal
-            logger.warning("could not list kpack Images for group '%s' on %s", group, cluster.site)
+            logger.warning(
+                "could not list kpack Images for group '%s' on %s", group, cluster.region
+            )
             return {}
         out: dict[str, BuildStatus] = {}
         for image in images:

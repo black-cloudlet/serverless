@@ -23,8 +23,8 @@ what functions share with containers is ARCHITECTURE.md.
 | `runtime` | yes | One of the platform's configured runtimes (the chart ships `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`api/services/builder/runtimes.py`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `branch`, and changing it rebuilds. |
 | `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/v1/functions/info`. |
-| `sites` | no | Which sites to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a site builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
-| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-site `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
+| `regions` | no | Which regions to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a region builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
+| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
 **Build flow (kpack / Cloud Native Buildpacks):**
@@ -33,42 +33,42 @@ The API does not *run* builds; it **declares** them. Full detail is in BUILDING.
 is the shape:
 
 1. The API validates the request and returns **`202 Accepted`**. Nothing is built yet.
-2. In the background it applies, to the **local** site only, the function's kpack `Image`
+2. In the background it applies, to the **local** region only, the function's kpack `Image`
    plus the per-function build `ServiceAccount`; the `{workload}-git` Secret holding
-   `gitToken` goes to **every target site**, so each can build and rebuild on its own.
+   `gitToken` goes to **every target region**, so each can build and rebuild on its own.
 3. **kpack** does the rest on its own: clone `gitRepo@branch`, run the runtime's `Builder`
    (the mirrored Paketo stack and buildpackages - ARCHITECTURE.md: Airgapped Considerations),
-   and push to **that site's** registry at
-   `{site registry base}/{group}/{name}:{branch}` (BUILDING.md: Registry layout).
-4. In the same pass as step 2, the API applies the **KSVC** to every target site, pointing
+   and push to **that region's** registry at
+   `{region registry base}/{group}/{name}:{branch}` (BUILDING.md: Registry layout).
+4. In the same pass as step 2, the API applies the **KSVC** to every target region, pointing
    at that **tag**. Until a build lands there is no image to pull, which is why a new
    function reads `Building` rather than `Failed` (see *Function Status Resolution*).
-5. When a build finishes, **that site's** build controller - a separate Deployment watching
+5. When a build finishes, **that region's** build controller - a separate Deployment watching
    `Image.status.latestImage` - rolls the resulting **digest** onto the function's KSVC
    **there** (BUILDING.md: Digest propagation). After the create, it is the only thing that
    writes that field.
 
 > The tag is a projection of the branch, not the commit: an OCI tag may not contain `/`,
 > so `feature/login` pushes to `feature-login` while the build still compiles that exact
-> ref. Each site builds and pulls within itself, so nothing crosses a site boundary to run
-> a function - at the cost of the two sites holding different digests of the same commit.
+> ref. Each region builds and pulls within itself, so nothing crosses a region boundary to run
+> a function - at the cost of the two regions holding different digests of the same commit.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as Client
     participant API as FastAPI API
-    participant ZA as Site A (kpack + Knative + registry)
-    participant ZB as Site B (kpack + Knative + registry)
+    participant ZA as Region A (kpack + Knative + registry)
+    participant ZB as Region B (kpack + Knative + registry)
 
     U->>API: POST /api/v1/groups/{group}/functions (git, runtime, ...)
     API->>API: AuthN (JWT) + AuthZ (group) + pre-flight
     API-->>U: 202 Accepted { status: "Pending", statusUrl }
-    par Deploy to all target sites, each at its OWN registry's tag
+    par Deploy to all target regions, each at its OWN registry's tag
         API->>ZA: apply Image + build SA + KSVC + DomainMapping
         API->>ZB: apply Image + build SA + KSVC + DomainMapping
     end
-    par Each site builds into its own registry and publishes to itself
+    par Each region builds into its own registry and publishes to itself
         ZA->>ZA: clone, build, push @digest -> its controller applies the KSVC
         ZB->>ZB: clone, build, push @digest -> its controller applies the KSVC
     end
@@ -101,7 +101,7 @@ Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
   "runtime": "python",
   "hostname": "image-resizer-team.serverless.example.com",
   "status": "Pending",
-  "sites": [],
+  "regions": [],
   "statusUrl": "/api/v1/groups/team/functions/image-resizer"
 }
 ```
@@ -133,9 +133,9 @@ body (secrets redacted) with the live status alongside:
       "content": "level: debug\n" },
     { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
   ],
-  "sites": [
-    { "site": "central", "status": "Ready", "revision": "image-resizer-00001", "replicas": 2 },
-    { "site": "south", "status": "Ready", "revision": "image-resizer-00001", "replicas": 1 }
+  "regions": [
+    { "region": "central", "status": "Ready", "revision": "image-resizer-00001", "replicas": 2 },
+    { "region": "south", "status": "Ready", "revision": "image-resizer-00001", "replicas": 1 }
   ]
 }
 ```
@@ -152,8 +152,8 @@ source, not images.)
 > status, size) with the list summary. `hostname` is the bare external host
 > (no scheme), mirroring the create body's `hostname`; reach the workload at
 > `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
-> the source fields) are read from the **local site** (uniform across sites); the
-> per-site `sites[]` status/`replicas` come from fanning out to every site. Live
+> the source fields) are read from the **local region** (uniform across regions); the
+> per-region `regions[]` status/`replicas` come from fanning out to every region. Live
 > **usage** is not here - see the `/stats` endpoint below.
 >
 > **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
@@ -181,9 +181,9 @@ source, not images.)
 >
 > **Live status.** `replicas` is the autoscaler's live scale
 > (`Revision.status.actualReplicas`), best-effort and `null` when it cannot be read.
-> It rides along on a read the per-site error detail needs anyway, which is why it
+> It rides along on a read the per-region error detail needs anyway, which is why it
 > is on this response and live **usage** is not: measuring usage is a PodMetrics
-> call per site, and the full GET is not the endpoint to poll.
+> call per region, and the full GET is not the endpoint to poll.
 >
 > **Polling live state: `GET .../{name}/stats`.** A lightweight view of what
 > changes on its own - the rollup, replica count and resource usage, nothing else:
@@ -194,16 +194,16 @@ source, not images.)
 >   "reason": null,
 >   "replicas": 3,
 >   "usage": { "cpu": "210m", "memory": "355Mi" },
->   "sites": [
->     { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
+>   "regions": [
+>     { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
 >       "usage": { "cpu": "120m", "memory": "180Mi" } },
->     { "site": "south", "status": "Ready", "reason": null, "replicas": 1,
+>     { "region": "south", "status": "Ready", "reason": null, "replicas": 1,
 >       "usage": { "cpu": "90m", "memory": "175Mi" } }
 >   ]
 > }
 > ```
 >
-> And when a site is failing, the same shape carries the cause:
+> And when a region is failing, the same shape carries the cause:
 >
 > ```json
 > {
@@ -211,10 +211,10 @@ source, not images.)
 >   "reason": "ImagePullFailed",
 >   "replicas": 2,
 >   "usage": null,
->   "sites": [
->     { "site": "central", "status": "Ready", "reason": null, "replicas": 2,
+>   "regions": [
+>     { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
 >       "usage": { "cpu": "120m", "memory": "180Mi" } },
->     { "site": "south", "status": "Failed", "reason": "ImagePullFailed",
+>     { "region": "south", "status": "Failed", "reason": "ImagePullFailed",
 >       "replicas": 0, "usage": null }
 >   ]
 > }
@@ -224,13 +224,13 @@ source, not images.)
 > read, it is just not a field here. `reason` is the machine-readable cause
 > behind a failure (one of `/info`'s `statuses.reasons`, `BuildFailed`
 > included), null when nothing failed or the cause was not recognized; the raw
-> condition text stays on the full GET's per-site `message`, which `/stats`
+> condition text stays on the full GET's per-region `message`, which `/stats`
 > deliberately does not carry. Usage covers each pod's user container only,
 > never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
-> API could not be read. The top-level totals are summed across sites **before**
-> rounding, so they need not equal the sum of the printed per-site figures; and a
-> total is `null` if any site could not be measured, rather than one quietly
-> missing a site. Usage is never fresher than the cluster's metrics-server scrape.
+> API could not be read. The top-level totals are summed across regions **before**
+> rounding, so they need not equal the sum of the printed per-region figures; and a
+> total is `null` if any region could not be measured, rather than one quietly
+> missing a region. Usage is never fresher than the cluster's metrics-server scrape.
 >
 > **Or don't poll at all: `GET .../{name}/stats/stream`.** The same body, pushed as
 > Server-Sent Events every few seconds instead of returned on request, so one
@@ -244,7 +244,7 @@ source, not images.)
 > curl -N -H "Authorization: Bearer $TOKEN" \
 >   "$API/api/v1/groups/$GROUP/functions/$NAME/pods"
 > #   event: pods
-> #   data: {"name":"orders","site":"central","pods":[
+> #   data: {"name":"orders","region":"central","pods":[
 > #           {"pod":"orders-team-00003-deployment-6b9f4c5d7-x2wql","revision":"orders-team-00003",
 > #            "phase":"Running","ready":true,"restarts":0,
 > #            "usage":{"cpu":"120m","memory":"180Mi"}}]}
@@ -403,7 +403,7 @@ POST /api/v1/groups/{group}/functions/{name}/build   ->   202 Accepted
 
 Every input comes back off the workload itself - `gitRepo`, `branch`, `path`, `runtime`
 and `version` from the KSVC's annotations, the token from the `{workload}-git` Secret -
-which is the same reconstruction a site that has never built the function does after a
+which is the same reconstruction a region that has never built the function does after a
 switchover (BUILDING.md: Reconstruction after switchover). Nothing is accepted from the
 request: a rebuild that took inputs would be a `PUT` in disguise.
 
@@ -444,17 +444,17 @@ info only (no live usage/replicas; use the single-workload GET for those):
     "status": "Ready",
     "size": "small",
     "createdAt": "2026-06-21T15:00:00+03:00",
-    "sites": ["central", "south"]
+    "regions": ["central", "south"]
   }
 ]
 ```
 
-> The list **fans out to all sites** and merges by workload name (best-effort):
-> each workload's `sites` lists the sites that returned it and `status` is
+> The list **fans out to all regions** and merges by workload name (best-effort):
+> each workload's `regions` lists the regions that returned it and `status` is
 > rolled up across them (`Ready`/`Deploying`/`Failed`, or `Terminating` while a
-> workload is being deleted). A site that is unreachable is skipped; only if
-> **every** site is down does the call fail (502). It returns general info only (no
-> live replicas/usage) - use the single-workload GET for per-site live health.
+> workload is being deleted). A region that is unreachable is skipped; only if
+> **every** region is down does the call fail (502). It returns general info only (no
+> live replicas/usage) - use the single-workload GET for per-region live health.
 
 ## Function Status Resolution
 
@@ -462,7 +462,7 @@ info only (no live usage/replicas; use the single-workload GET for those):
 
 ```
 GET /functions/{name}
-  1. look up each site's Image (in the same per-site pass as its KSVC)
+  1. look up each region's Image (in the same per-region pass as its KSVC)
        Building -> status "Building"
        Failed   -> status "Failed", reason "BuildFailed" (+ the build's text on message)
   2. no Image found, or the build succeeded
@@ -472,7 +472,7 @@ GET /functions/{name}
 The status model is Kubernetes' shape, one level up: `status` is a closed phase set
 that causes are never promoted into, and every failure names its cause on the
 machine-readable `reason` - one of `/info`'s `statuses.reasons` - with the human text on
-the site's `message`. `BuildFailed` is the one authoritative reason (read off the kpack
+the region's `message`. `BuildFailed` is the one authoritative reason (read off the kpack
 `Image`; the image will not arrive until a build input changes); `ImagePullFailed`,
 `CrashLooping`, `ConfigError` and `ProgressDeadlineExceeded` are derived best-effort from
 the failing Revision/KSVC conditions, so an unrecognized cause carries `reason: null`
@@ -487,24 +487,24 @@ Two properties this gives us:
 
 - A function whose first build is still running reports **building** rather than a
   confusing "not ready" ksvc state.
-- A site with **no** `Image` - one the function was never deployed to, or whose build
+- A region with **no** `Image` - one the function was never deployed to, or whose build
   objects have not landed yet - contributes nothing, and the handler falls through to its
   ksvc. The absence of a build is not an error.
 
-**Build state is per site.** Every site builds its own copy, so it is read in the same
-per-site thread that already fetches that site's KSVC - no extra round trip, and no way to
-attribute one site's build to another. Each `sites[]` row folds against **its own** build:
-a build running in one site says nothing about whether another site's image exists, and a
+**Build state is per region.** Every region builds its own copy, so it is read in the same
+per-region thread that already fetches that region's KSVC - no extra round trip, and no way to
+attribute one region's build to another. Each `regions[]` row folds against **its own** build:
+a build running in one region says nothing about whether another region's image exists, and a
 shared verdict would mask a real failure next to a healthy neighbour.
 
 The workload-level `build` is then rolled up (`ksvc_state.roll_up_builds`): a **failure
 anywhere wins**, carrying its own message, then `Building`, then whatever is left.
-Reporting `Ready` because the other site managed it would hide the site that did not.
+Reporting `Ready` because the other region managed it would hide the region that did not.
 
-**As implemented.** `KpackBackend.status` returns `None` for a site with no `Image`, and
+**As implemented.** `KpackBackend.status` returns `None` for a region with no `Image`, and
 `with_build_status` folds the rollup: `Building` wins over whatever the ksvc says, a
 failed build keeps the rollup `Failed` while the caller stamps `reason: "BuildFailed"`,
-and anything else hands the verdict back to the ksvc. A failing site whose own build
+and anything else hands the verdict back to the ksvc. A failing region whose own build
 failed likewise carries `reason: "BuildFailed"` with the build's text as its `message` -
 the pull error alone points at the registry when the cause is the build. The response
 still carries the `build` object (`state`/`message`). `Building` maps to HTTP `202`,
@@ -517,21 +517,21 @@ would report `Failed` for the whole of its first build.
 **The rule applies to every surface that reports status, not just the rollup.** Two of them
 used to escape it, and both showed a red failure for a perfectly normal build:
 
-- The **per-site rows**. `sites[]` is read straight off each ksvc, so a response could say
-  `Building` in `status` and `Failed` - `Unable to fetch image "..."` in the `sites`
-  table directly below it. While a build is in flight a failing site now reports `Building`
-  with `error: null` (`ksvc_state.sites_with_build_status`): that pull failure *is* the
+- The **per-region rows**. `regions[]` is read straight off each ksvc, so a response could say
+  `Building` in `status` and `Failed` - `Unable to fetch image "..."` in the `regions`
+  table directly below it. While a build is in flight a failing region now reports `Building`
+  with `error: null` (`ksvc_state.regions_with_build_status`): that pull failure *is* the
   running build, not an independent one. Only a **running** build masks anything - a failed
   build leaves the rows untouched, because then the image genuinely never arrives.
 - The **listing**. `GET .../functions` had no build read at all, so every new function
   was `Failed` on the list while being `Building` on its own GET. It now folds the same
-  way, using `BuildBackend.statuses` - one label-selected read per site for the whole
-  group, keyed by object name (`{name}-{group}`), paired with that site's ksvc read rather
-  than chained onto it, and rolled up across the sites that answered. A listing that cannot
+  way, using `BuildBackend.statuses` - one label-selected read per region for the whole
+  group, keyed by object name (`{name}-{group}`), paired with that region's ksvc read rather
+  than chained onto it, and rolled up across the regions that answered. A listing that cannot
   read kpack falls back to the ksvc statuses, exactly as a single GET does.
 
-`Building` is therefore a *site* status as well as a workload one, and
+`Building` is therefore a *region* status as well as a workload one, and
 `GET /api/v1/functions/info` publishes it in both vocabularies (`statuses.workload` and
-`statuses.site`) so a client hardcodes neither.
+`statuses.region`) so a client hardcodes neither.
 
 ---

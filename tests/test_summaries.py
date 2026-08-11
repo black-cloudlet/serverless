@@ -1,4 +1,4 @@
-"""Merging a group's per-site listings into one summary per workload.
+"""Merging a group's per-region listings into one summary per workload.
 
 Pure dict-in, model-out: no clusters, no fan-out. That is the point of the merge
 being its own module - the rules for what a partially-deployed workload reads as
@@ -32,28 +32,28 @@ def _merge(results, **kw):
     )
 
 
-def test_one_workload_across_two_sites_is_merged_into_one_row():
+def test_one_workload_across_two_regions_is_merged_into_one_row():
     out = _merge([("central", [_ksvc("app-team")]), ("south", [_ksvc("app-team")])])
     assert len(out) == 1
     assert out[0].name == "app"  # the -{group} suffix is the object name, not the display one
-    assert out[0].sites == ["central", "south"]
+    assert out[0].regions == ["central", "south"]
     assert out[0].status == "Ready"
 
 
-def test_a_workload_on_one_site_of_two_is_ready_not_degraded():
-    """Its rollup covers the sites that returned it, not the sites that exist."""
+def test_a_workload_on_one_region_of_two_is_ready_not_degraded():
+    """Its rollup covers the regions that returned it, not the regions that exist."""
     out = _merge([("central", [_ksvc("app-team")]), ("south", [])])
-    assert out[0].sites == ["central"]
+    assert out[0].regions == ["central"]
     assert out[0].status == "Ready"
 
 
-def test_a_site_that_did_not_answer_is_skipped_entirely():
+def test_a_region_that_did_not_answer_is_skipped_entirely():
     out = _merge([("central", [_ksvc("app-team")]), ("south", None)])
-    assert out[0].sites == ["central"]
+    assert out[0].regions == ["central"]
     assert out[0].status == "Ready"
 
 
-def test_a_failing_site_degrades_the_rollup():
+def test_a_failing_region_degrades_the_rollup():
     out = _merge([("central", [_ksvc("app-team")]), ("south", [_ksvc("app-team", ready=False)])])
     assert out[0].status == "Failed"
 
@@ -68,8 +68,8 @@ def test_a_running_build_wins_over_the_ksvc_status():
     assert out[0].status == "Building"
 
 
-def test_a_build_failing_in_one_site_is_what_the_listing_reports():
-    """Rolled up across sites: Ready in one is not the answer when another failed."""
+def test_a_build_failing_in_one_region_is_what_the_listing_reports():
+    """Rolled up across regions: Ready in one is not the answer when another failed."""
     out = _merge(
         [("central", [_ksvc("fn-team")]), ("south", [_ksvc("fn-team")])],
         offering="function",
@@ -81,8 +81,8 @@ def test_a_build_failing_in_one_site_is_what_the_listing_reports():
     assert out[0].status == "Failed"
 
 
-def test_a_build_state_is_not_attributed_across_sites():
-    """A site that returned the workload but has no build of it contributes None."""
+def test_a_build_state_is_not_attributed_across_regions():
+    """A region that returned the workload but has no build of it contributes None."""
     out = _merge(
         [("central", [_ksvc("fn-team", ready=False)]), ("south", [_ksvc("fn-team")])],
         offering="function",

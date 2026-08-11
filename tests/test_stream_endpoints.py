@@ -54,7 +54,7 @@ class FakeStreams:
             name=name,
             group=group,
             type="function",
-            site="central",
+            region="central",
             pods=[PodInfo(pod="foo-team-00001-abcde", phase="Running", ready=True)],
         )
 
@@ -78,7 +78,7 @@ class FakeStreams:
             name=name,
             group=group,
             type="function",
-            site="central",
+            region="central",
             pod=pod,
             container=container,
             lines=[LogLine(pod=pod, container=container, message="from the snapshot")],

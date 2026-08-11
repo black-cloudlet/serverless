@@ -10,7 +10,7 @@ from api.services.builder.kpack_backend import KpackBackend
 from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
 from api.services.manifests import secrets as secret_svc
 from common import kpack
-from common.config import CommonSettings, SiteConfig, SiteRegistry
+from common.config import CommonSettings, RegionConfig, RegionRegistry
 from common.errors import NotFoundError, ValidationError
 from tests.conftest import plan_for
 
@@ -24,7 +24,7 @@ def anyio_backend():
 
 def _settings(**over):
     base = dict(
-        sites=[SiteConfig(name="site-a", cluster="a-0")],
+        regions=[RegionConfig(name="region-a", cluster="a-0")],
         workloads_namespace="wl",
         build={"registry_secret": "reg-creds"},
         registry={"url": "registry.internal", "organization": "acme"},
@@ -52,10 +52,10 @@ def _builder(settings=None):
     return KpackBackend((settings or _settings()).build, _runtimes())
 
 
-def _registries(*sites, settings=None):
-    """The {site: registry} map a plan takes, as the engine builds it."""
+def _registries(*regions, settings=None):
+    """The {region: registry} map a plan takes, as the engine builds it."""
     settings = settings or _settings()
-    return {s: settings.registry_for(s) for s in (sites or ("site-a",))}
+    return {s: settings.registry_for(s) for s in (regions or ("region-a",))}
 
 
 def _request(**over):
@@ -78,9 +78,9 @@ def _plan(builder=None, registries=None, **over):
     return (builder or _builder()).plan(_request(**over), {"lbl": "v"}, registries or _registries())
 
 
-def _manifests(builder=None, site="site-a", **over):
+def _manifests(builder=None, region="region-a", **over):
     plan = _plan(builder, **over)
-    return plan.tag_for(site), plan.replicated + plan.manifests_for(site)
+    return plan.tag_for(region), plan.replicated + plan.manifests_for(region)
 
 
 def _by_kind(manifests, kind):
@@ -117,7 +117,7 @@ def test_service_account_carries_registry_in_both_lists():
 
 
 def test_the_build_account_also_carries_the_kpack_registry_credential():
-    """`export` pulls the run image from it, so a site credential alone fails
+    """`export` pulls the run image from it, so a region credential alone fails
     at the last phase of the first build. Docker auth is per host."""
     sa = kpack.build_service_account("fn-x", {}, "x-git", ["reg-creds", "kpack-creds"])
 
@@ -128,7 +128,7 @@ def test_the_build_account_also_carries_the_kpack_registry_credential():
 def test_an_unset_kpack_registry_names_one_credential():
     """The single-registry install: nothing extra, exactly as before."""
     plan = _plan(_builder(_settings(build={"registry_secret": "reg-creds"})))
-    sa = _by_kind(plan.manifests_for("site-a"), "ServiceAccount")
+    sa = _by_kind(plan.manifests_for("region-a"), "ServiceAccount")
 
     assert sa["imagePullSecrets"] == [{"name": "reg-creds"}]
 
@@ -141,7 +141,7 @@ def test_a_configured_kpack_registry_reaches_the_per_function_account():
             )
         )
     )
-    sa = _by_kind(plan.manifests_for("site-a"), "ServiceAccount")
+    sa = _by_kind(plan.manifests_for("region-a"), "ServiceAccount")
 
     assert sa["imagePullSecrets"] == [{"name": "reg-creds"}, {"name": "kpack-creds"}]
 
@@ -304,43 +304,43 @@ def test_manifests_are_convergent_across_repeated_calls():
     assert _manifests(builder)[1] == _manifests(builder)[1]
 
 
-def test_the_git_credential_replicates_and_every_site_gets_its_own_image():
-    plan = _plan(registries=_registries("site-a", "site-b"))
+def test_the_git_credential_replicates_and_every_region_gets_its_own_image():
+    plan = _plan(registries=_registries("region-a", "region-b"))
     # one token for the whole platform: it is not recoverable if its only copy
-    # was on the site that went away
+    # was on the region that went away
     assert [m["kind"] for m in plan.replicated] == ["Secret"]
-    # ...and one Image per site, since each pushes to its own registry
-    assert sorted(plan.per_site) == ["site-a", "site-b"]
-    for site in ("site-a", "site-b"):
-        assert [m["kind"] for m in plan.manifests_for(site)] == ["ServiceAccount", "Image"]
+    # ...and one Image per region, since each pushes to its own registry
+    assert sorted(plan.per_region) == ["region-a", "region-b"]
+    for region in ("region-a", "region-b"):
+        assert [m["kind"] for m in plan.manifests_for(region)] == ["ServiceAccount", "Image"]
 
 
-def test_each_sites_image_is_tagged_for_that_sites_registry():
-    """The whole point: two sites, two registries, two tags that cannot collide."""
+def test_each_regions_image_is_tagged_for_that_regions_registry():
+    """The whole point: two regions, two registries, two tags that cannot collide."""
     settings = _settings(
-        sites=[
-            SiteConfig(name="site-a", cluster="a-0", registry=SiteRegistry(url="registry.a")),
-            SiteConfig(name="site-b", cluster="b-0", registry=SiteRegistry(url="registry.b")),
+        regions=[
+            RegionConfig(name="region-a", cluster="a-0", registry=RegionRegistry(url="registry.a")),
+            RegionConfig(name="region-b", cluster="b-0", registry=RegionRegistry(url="registry.b")),
         ]
     )
-    plan = _plan(_builder(settings), _registries("site-a", "site-b", settings=settings))
+    plan = _plan(_builder(settings), _registries("region-a", "region-b", settings=settings))
 
-    assert plan.tag_for("site-a") == "registry.a/acme/payments/hello:main"
-    assert plan.tag_for("site-b") == "registry.b/acme/payments/hello:main"
-    # each site's Image pushes to its own, and caches beside it rather than
-    # pulling a cache across sites
-    for site, host in (("site-a", "registry.a"), ("site-b", "registry.b")):
-        image = _by_kind(plan.manifests_for(site), "Image")
+    assert plan.tag_for("region-a") == "registry.a/acme/payments/hello:main"
+    assert plan.tag_for("region-b") == "registry.b/acme/payments/hello:main"
+    # each region's Image pushes to its own, and caches beside it rather than
+    # pulling a cache across regions
+    for region, host in (("region-a", "registry.a"), ("region-b", "registry.b")):
+        image = _by_kind(plan.manifests_for(region), "Image")
         assert image["spec"]["tag"] == f"{host}/acme/payments/hello:main"
         assert image["spec"]["cache"]["registry"]["tag"] == (
             f"{host}/acme/payments/hello_cache:latest"
         )
 
 
-def test_a_site_with_no_registry_of_its_own_builds_into_the_platform_default():
+def test_a_region_with_no_registry_of_its_own_builds_into_the_platform_default():
     """The single-registry install, unchanged."""
-    plan = _plan(registries=_registries("site-a", "site-b"))
-    assert plan.tag_for("site-a") == plan.tag_for("site-b")
+    plan = _plan(registries=_registries("region-a", "region-b"))
+    assert plan.tag_for("region-a") == plan.tag_for("region-b")
 
 
 def test_pull_secret_is_the_credential_kpack_pushed_with():
@@ -353,7 +353,7 @@ def test_pull_secret_is_the_credential_kpack_pushed_with():
 
 class _StatusCluster:
     def __init__(self, objects=None):
-        self.site = self.name = "site-a"
+        self.region = self.name = "region-a"
         self._objects = objects or {}
 
     def get(self, kind, name=None, label_selector=None):
@@ -363,7 +363,7 @@ class _StatusCluster:
             raise NotFoundError(f"{name} not found") from None
 
 
-def test_status_returns_none_when_the_site_has_no_image():
+def test_status_returns_none_when_the_region_has_no_image():
     # normal after a switchover: the caller must fall through to the KSVC status
     assert _builder().status(_StatusCluster(), "hello", "payments") is None
 
@@ -443,27 +443,27 @@ def test_no_build_leaves_the_ksvc_rollup_untouched():
     assert with_build_status("Failed", None) == "Failed"
 
 
-def test_a_running_build_folds_into_the_per_site_rows_too():
-    """A failing site under a running build reports the build, not the pull error.
+def test_a_running_build_folds_into_the_per_region_rows_too():
+    """A failing region under a running build reports the build, not the pull error.
 
     Without this the detail view contradicts itself: `Building` in the header and
-    `Failed` - `Unable to fetch image ...` in the sites table right below it.
+    `Failed` - `Unable to fetch image ...` in the regions table right below it.
     """
-    from api.models.common import BuildStatusView, SiteStatus
-    from api.services.state.ksvc_state import sites_with_build_status
+    from api.models.common import BuildStatusView, RegionStatus
+    from api.services.state.ksvc_state import regions_with_build_status
 
-    sites = [
-        SiteStatus(
-            site="a",
+    regions = [
+        RegionStatus(
+            region="a",
             status="Failed",
             revision="fn-team-00001",
             reason="ImagePullFailed",
             message='Unable to fetch image "reg/team/fn:main": not found',
         ),
-        SiteStatus(site="b", status="Ready", revision="fn-team-00001"),
+        RegionStatus(region="b", status="Ready", revision="fn-team-00001"),
     ]
-    folded = sites_with_build_status(
-        sites, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
+    folded = regions_with_build_status(
+        regions, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
     )
 
     assert folded[0].status == "Building"
@@ -473,33 +473,33 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
     assert folded[0].reason is None
     assert folded[0].message is None
     assert folded[0].revision == "fn-team-00001"  # everything else is untouched
-    assert folded[1].status == "Ready"  # a site that isn't failing is left alone
+    assert folded[1].status == "Ready"  # a region that isn't failing is left alone
 
 
-def test_a_site_is_folded_against_its_own_build_not_a_neighbours():
-    """A build running in one site says nothing about another site's image.
+def test_a_region_is_folded_against_its_own_build_not_a_neighbours():
+    """A build running in one region says nothing about another region's image.
 
     Masking b's genuine failure because a happens to be building would hide it
-    behind a healthy neighbour - the failure mode per-site builds introduce.
+    behind a healthy neighbour - the failure mode per-region builds introduce.
     """
-    from api.models.common import BuildStatusView, SiteStatus
-    from api.services.state.ksvc_state import sites_with_build_status
+    from api.models.common import BuildStatusView, RegionStatus
+    from api.services.state.ksvc_state import regions_with_build_status
 
-    sites = [
-        SiteStatus(site="a", status="Failed", message="Unable to fetch image"),
-        SiteStatus(site="b", status="Failed", message="revision never became ready"),
+    regions = [
+        RegionStatus(region="a", status="Failed", message="Unable to fetch image"),
+        RegionStatus(region="b", status="Failed", message="revision never became ready"),
     ]
-    folded = sites_with_build_status(
-        sites, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
+    folded = regions_with_build_status(
+        regions, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
     )
 
     assert folded[0].status == "Building"
     assert (folded[1].status, folded[1].message) == ("Failed", "revision never became ready")
 
 
-def test_a_failure_in_any_site_is_the_build_the_workload_reports():
+def test_a_failure_in_any_region_is_the_build_the_workload_reports():
     """With its own message: it is the actionable state, and Ready elsewhere
-    would hide the site that did not manage it."""
+    would hide the region that did not manage it."""
     from api.models.common import BuildStatusView
     from api.services.state.ksvc_state import roll_up_builds
 
@@ -530,40 +530,40 @@ def test_rolling_up_no_builds_at_all_is_none():
 
 
 @pytest.mark.parametrize("state", ["Ready", "Unknown"])
-def test_a_settled_build_leaves_a_failing_site_untouched(state):
+def test_a_settled_build_leaves_a_failing_region_untouched(state):
     """A finished build leaves the rows exactly as the KSVC read them."""
-    from api.models.common import BuildStatusView, SiteStatus
-    from api.services.state.ksvc_state import sites_with_build_status
+    from api.models.common import BuildStatusView, RegionStatus
+    from api.services.state.ksvc_state import regions_with_build_status
 
-    sites = [SiteStatus(site="a", status="Failed", message="boom")]
+    regions = [RegionStatus(region="a", status="Failed", message="boom")]
 
-    assert sites_with_build_status(sites, {"a": BuildStatusView(state=state)}) == sites
-    assert sites_with_build_status(sites, {"a": None}) == sites
-    assert sites_with_build_status(sites, {}) == sites
+    assert regions_with_build_status(regions, {"a": BuildStatusView(state=state)}) == regions
+    assert regions_with_build_status(regions, {"a": None}) == regions
+    assert regions_with_build_status(regions, {}) == regions
 
 
-def test_a_failed_build_renames_its_failing_site_and_carries_the_cause():
+def test_a_failed_build_renames_its_failing_region_and_carries_the_cause():
     """The image genuinely never arrives, and the build's message is the cause -
     the pull error alone points at the registry when the build is what broke."""
-    from api.models.common import BuildStatusView, SiteStatus
-    from api.services.state.ksvc_state import sites_with_build_status
+    from api.models.common import BuildStatusView, RegionStatus
+    from api.services.state.ksvc_state import regions_with_build_status
 
-    sites = [SiteStatus(site="a", status="Failed", message="unable to fetch image")]
-    folded = sites_with_build_status(
-        sites, {"a": BuildStatusView(state="Failed", message="compile error")}
+    regions = [RegionStatus(region="a", status="Failed", message="unable to fetch image")]
+    folded = regions_with_build_status(
+        regions, {"a": BuildStatusView(state="Failed", message="compile error")}
     )
 
     assert folded[0].status == "Failed"
     assert folded[0].reason == "BuildFailed"
     assert folded[0].message == "compile error"
 
-    # A site still serving (Ready) is telling the truth; a failed build does not rename it.
-    serving = [SiteStatus(site="a", status="Ready")]
-    assert sites_with_build_status(serving, {"a": BuildStatusView(state="Failed")}) == serving
+    # A region still serving (Ready) is telling the truth; a failed build does not rename it.
+    serving = [RegionStatus(region="a", status="Ready")]
+    assert regions_with_build_status(serving, {"a": BuildStatusView(state="Failed")}) == serving
 
 
 def test_building_is_a_non_terminal_poll_state():
-    from api.services.sites.deployer import status_code_for
+    from api.services.regions.deployer import status_code_for
 
     assert status_code_for("Building", created=False) == 202
     assert status_code_for("Building", created=True) == 202
@@ -636,8 +636,8 @@ class _RecordingBuilder:
         return BuildStatus(state=self._state) if self._state else None
 
 
-class _SiteAwareBuilder(_RecordingBuilder):
-    """Reports a build only on the site that holds the Image, as a cluster does."""
+class _RegionAwareBuilder(_RecordingBuilder):
+    """Reports a build only on the region that holds the Image, as a cluster does."""
 
     def __init__(self, built_on: str, state: str):
         super().__init__(state)
@@ -646,7 +646,7 @@ class _SiteAwareBuilder(_RecordingBuilder):
     def status(self, cluster, name, group):
         from common.build import BuildStatus
 
-        return BuildStatus(state=self._state) if cluster.site == self._built_on else None
+        return BuildStatus(state=self._state) if cluster.region == self._built_on else None
 
 
 def _principal():
@@ -668,21 +668,21 @@ def _create_spec(**over):
     return FunctionCreate(**base)
 
 
-def _function_service(clusters, builder, local_site=None):
+def _function_service(clusters, builder, local_region=None):
     from api.services.function import FunctionService
     from tests.conftest import runtime_registry
     from tests.test_auth_and_deployer import _workload_service
 
     return FunctionService(
-        _workload_service(clusters, builder=builder, local_site=local_site), runtime_registry()
+        _workload_service(clusters, builder=builder, local_region=local_region), runtime_registry()
     )
 
 
 async def test_create_deploys_with_the_platform_pull_secret():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {})
-    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    cluster = _ApplyCluster("region-a", {})
+    svc = _function_service({"region-a": cluster}, _RecordingBuilder())
     await svc.create("payments", _create_spec(), _principal())
 
     pod = _applied_kind(cluster, "Service")[0]["spec"]["template"]["spec"]
@@ -694,8 +694,8 @@ async def test_create_deploys_with_the_platform_pull_secret():
 async def test_build_manifests_are_applied_and_owned_by_the_ksvc():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {})
-    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    cluster = _ApplyCluster("region-a", {})
+    svc = _function_service({"region-a": cluster}, _RecordingBuilder())
     await svc.create("payments", _create_spec(), _principal())
 
     images = _applied_kind(cluster, "Image")
@@ -712,42 +712,42 @@ def _git_secrets(cluster):
     return [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"].endswith("-git")]
 
 
-async def test_every_site_builds_and_every_site_gets_the_credential():
+async def test_every_region_builds_and_every_region_gets_the_credential():
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    local = _ApplyCluster("site-a", {})
-    remote = _ApplyCluster("site-b", {})
+    local = _ApplyCluster("region-a", {})
+    remote = _ApplyCluster("region-b", {})
     svc = _function_service(
-        {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
+        {"region-a": local, "region-b": remote}, _RecordingBuilder(), local_region="region-a"
     )
     await svc.create("payments", _create_spec(), _principal())
 
-    # every site builds what it runs, into its own registry - no two sites
+    # every region builds what it runs, into its own registry - no two regions
     # contend for one tag (docs/BUILDING.md - Registry layout)
     assert len(_applied_kind(local, "Image")) == 1
     assert len(_applied_kind(remote, "Image")) == 1
     assert len(_applied_kind(remote, "Service")) == 1
     # the token, though, must be everywhere: nothing can recover a token whose
-    # only copy was on the site that went away (docs/BUILDING.md - Active/Active)
+    # only copy was on the region that went away (docs/BUILDING.md - Active/Active)
     assert len(_git_secrets(local)) == 1
     assert len(_git_secrets(remote)) == 1
 
 
-async def test_a_site_that_runs_no_copy_of_the_function_does_not_build_one():
-    """A site builds what it runs, so a non-target site gets nothing to build with.
+async def test_a_region_that_runs_no_copy_of_the_function_does_not_build_one():
+    """A region builds what it runs, so a non-target region gets nothing to build with.
 
     This is what retires the unowned-build-object path: an ownerReference must
     name an owner in the same cluster, and now every Image has a KSVC beside it.
     """
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    local = _ApplyCluster("site-a", {})
-    remote = _ApplyCluster("site-b", {})
+    local = _ApplyCluster("region-a", {})
+    remote = _ApplyCluster("region-b", {})
     svc = _function_service(
-        {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
+        {"region-a": local, "region-b": remote}, _RecordingBuilder(), local_region="region-a"
     )
     spec = _create_spec()
-    spec.sites = ["site-b"]  # the local site is not a target
+    spec.regions = ["region-b"]  # the local region is not a target
     await svc.create("payments", spec, _principal())
 
     assert _applied_kind(local, "Image") == []
@@ -755,19 +755,19 @@ async def test_a_site_that_runs_no_copy_of_the_function_does_not_build_one():
     assert _applied_kind(local, "DomainMapping") == []
     assert len(_applied_kind(remote, "Image")) == 1
     assert len(_applied_kind(remote, "Service")) == 1
-    # The token follows the workload too, now that it is the sites running it
-    # that build. It still lands on every site the function is deployed to,
-    # which is what a switchover needs; a site the function was never on has
+    # The token follows the workload too, now that it is the regions running it
+    # that build. It still lands on every region the function is deployed to,
+    # which is what a switchover needs; a region the function was never on has
     # nothing to rebuild.
     assert _git_secrets(local) == []
     assert len(_git_secrets(remote)) == 1
 
 
-async def test_an_update_keeps_each_sites_own_image_rather_than_one_sites():
-    """The failure per-site registries make possible, and the reason for `images`.
+async def test_an_update_keeps_each_regions_own_image_rather_than_one_regions():
+    """The failure per-region registries make possible, and the reason for `images`.
 
-    Each site runs what its own build pushed, so carrying one representative
-    image across the fan-out would point a peer at this site's registry - which
+    Each region runs what its own build pushed, so carrying one representative
+    image across the fan-out would point a peer at this region's registry - which
     it has no credential for and, airgapped, may not reach at all.
     """
     from api.models.function import FunctionUpdate
@@ -777,14 +777,18 @@ async def test_an_update_keeps_each_sites_own_image_rather_than_one_sites():
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     a_digest = "registry.a/acme/payments/hello@sha256:" + "a" * 64
     b_digest = "registry.b/acme/payments/hello@sha256:" + "b" * 64
-    site_a = _ApplyCluster(
-        "site-a", {"hello-payments": _ksvc(image=a_digest)}, secrets={"hello-payments-git": stored}
+    region_a = _ApplyCluster(
+        "region-a",
+        {"hello-payments": _ksvc(image=a_digest)},
+        secrets={"hello-payments-git": stored},
     )
-    site_b = _ApplyCluster(
-        "site-b", {"hello-payments": _ksvc(image=b_digest)}, secrets={"hello-payments-git": stored}
+    region_b = _ApplyCluster(
+        "region-b",
+        {"hello-payments": _ksvc(image=b_digest)},
+        secrets={"hello-payments-git": stored},
     )
     svc = _function_service(
-        {"site-a": site_a, "site-b": site_b}, _RecordingBuilder(), local_site="site-a"
+        {"region-a": region_a, "region-b": region_b}, _RecordingBuilder(), local_region="region-a"
     )
 
     await svc.update(
@@ -794,18 +798,18 @@ async def test_an_update_keeps_each_sites_own_image_rather_than_one_sites():
         _principal(),
     )
 
-    assert extract_image(_applied_kind(site_a, "Service")[0]) == a_digest
-    assert extract_image(_applied_kind(site_b, "Service")[0]) == b_digest
+    assert extract_image(_applied_kind(region_a, "Service")[0]) == a_digest
+    assert extract_image(_applied_kind(region_b, "Service")[0]) == b_digest
 
 
-async def test_every_sites_build_objects_are_owned_by_the_ksvc_beside_them():
+async def test_every_regions_build_objects_are_owned_by_the_ksvc_beside_them():
     """Which is what deletes them - there is no cleanup code, and none needed."""
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    local = _ApplyCluster("site-a", {})
-    remote = _ApplyCluster("site-b", {})
+    local = _ApplyCluster("region-a", {})
+    remote = _ApplyCluster("region-b", {})
     svc = _function_service(
-        {"site-a": local, "site-b": remote}, _RecordingBuilder(), local_site="site-a"
+        {"region-a": local, "region-b": remote}, _RecordingBuilder(), local_region="region-a"
     )
     await svc.create("payments", _create_spec(), _principal())
 
@@ -814,8 +818,8 @@ async def test_every_sites_build_objects_are_owned_by_the_ksvc_beside_them():
         assert [o["name"] for o in image["metadata"]["ownerReferences"]] == ["hello-payments"]
 
 
-def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
-    """The fallback must not cost every GET an extra cross-site call."""
+def test_reading_the_build_status_does_not_fan_out_when_the_local_region_has_it():
+    """The fallback must not cost every GET an extra cross-region call."""
     from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
 
     seen = []
@@ -824,20 +828,20 @@ def test_reading_the_build_status_does_not_fan_out_when_the_local_site_has_it():
         def status(self, cluster, name, group):
             from common.build import BuildStatus
 
-            seen.append(cluster.site)
+            seen.append(cluster.region)
             return BuildStatus(state="Ready")
 
     svc = _workload_service(
-        {"site-a": _ApplyCluster("site-a", {}), "site-b": _ApplyCluster("site-b", {})},
+        {"region-a": _ApplyCluster("region-a", {}), "region-b": _ApplyCluster("region-b", {})},
         builder=_Counting(),
-        local_site="site-a",
+        local_region="region-a",
     )
 
     from api.services.offering import FUNCTION
 
     status = FUNCTION.build_status(svc.builder, svc.deployer.local_cluster(), "hello", "payments")
     assert status.state == "Ready"
-    assert seen == ["site-a"]
+    assert seen == ["region-a"]
 
 
 async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment():
@@ -849,10 +853,10 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a", {"hello-payments": _ksvc()}, secrets={"hello-payments-git": stored}
+        "region-a", {"hello-payments": _ksvc()}, secrets={"hello-payments-git": stored}
     )
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -863,7 +867,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
         _principal(),
     )
     # emitted even though no build input changed - that is what recreates the
-    # Image on a site that has never built this function
+    # Image on a region that has never built this function
     assert builder.calls == 1
     assert builder.reqs[0].git_token == "ghp_stored"
     assert len(_applied_kind(cluster, "Image")) == 1
@@ -880,12 +884,12 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(path="services/api")},
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -909,9 +913,9 @@ async def test_update_without_any_token_emits_no_build():
     from api.models.function import FunctionUpdate
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
+    cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc()})
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -931,9 +935,9 @@ async def test_a_branch_change_rebuilds_without_disturbing_the_running_image():
     from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc()})
+    cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc()})
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -984,11 +988,11 @@ def test_build_request_rejects_unusable_branches(bad):
 def test_a_slashed_branch_builds_that_ref_but_pushes_a_legal_tag():
     """`feature/login` is an everyday branch; `/` is illegal in an OCI tag."""
     plan = _plan(branch="feature/login")
-    assert plan.tag_for("site-a") == "registry.internal/acme/payments/hello:feature-login"
+    assert plan.tag_for("region-a") == "registry.internal/acme/payments/hello:feature-login"
     # the git revision keeps the real ref - only the tag is a projection
-    image = _by_kind(plan.manifests_for("site-a"), "Image")
+    image = _by_kind(plan.manifests_for("region-a"), "Image")
     assert image["spec"]["source"]["git"]["revision"] == "feature/login"
-    assert image["spec"]["tag"] == plan.tag_for("site-a")
+    assert image["spec"]["tag"] == plan.tag_for("region-a")
 
 
 def test_image_tag_projection_rules():
@@ -1048,7 +1052,7 @@ def test_no_source_path_leaves_sub_path_off_the_image():
 
 def test_the_source_path_does_not_change_the_image_tag():
     """Two directories in one repo are two functions, told apart by name."""
-    assert _plan(path="services/api").tag_for("site-a") == _plan().tag_for("site-a")
+    assert _plan(path="services/api").tag_for("region-a") == _plan().tag_for("region-a")
 
 
 @pytest.mark.parametrize(
@@ -1113,7 +1117,7 @@ def test_an_explicit_version_in_build_env_is_not_overridden():
         ]
     )
     plan = KpackBackend(_settings().build, runtimes).plan(_request(), {}, _registries())
-    env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
+    env = _by_kind(plan.manifests_for("region-a"), "Image")["spec"]["build"]["env"]
     versions = [e["value"] for e in env if e["name"] == "BP_CPYTHON_VERSION"]
     assert versions == ["3.11"], "a deliberate buildEnv entry must win over the default"
 
@@ -1134,7 +1138,7 @@ def _version_env(runtimes, **req):
     plan = KpackBackend(_settings().build, runtimes).plan(
         _request(runtime="go", **req), {}, _registries()
     )
-    env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
+    env = _by_kind(plan.manifests_for("region-a"), "Image")["spec"]["build"]["env"]
     return [e["value"] for e in env if e["name"] == "BP_GO_VERSION"]
 
 
@@ -1171,14 +1175,14 @@ def test_exactly_one_version_entry_is_emitted():
     plan = KpackBackend(_settings().build, pinned).plan(
         _request(runtime="go", version="1.25"), {}, _registries()
     )
-    env = _by_kind(plan.manifests_for("site-a"), "Image")["spec"]["build"]["env"]
+    env = _by_kind(plan.manifests_for("region-a"), "Image")["spec"]["build"]["env"]
     assert [e["name"] for e in env].count("BP_GO_VERSION") == 1
 
 
 def test_a_runtime_naming_no_version_env_gets_none_invented():
     runtimes = RuntimeRegistry([RuntimeSpec(name="go", builder="go")])
     plan = KpackBackend(_settings().build, runtimes).plan(_request(runtime="go"), {}, _registries())
-    image = _by_kind(plan.manifests_for("site-a"), "Image")
+    image = _by_kind(plan.manifests_for("region-a"), "Image")
     env = (image["spec"].get("build") or {}).get("env") or []
     assert not [e for e in env if e["name"].startswith("BP_")]
 
@@ -1191,12 +1195,12 @@ async def test_changing_the_version_rebuilds_but_leaves_the_running_image():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(version="3.11")},
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -1223,12 +1227,12 @@ async def test_omitting_the_version_returns_to_the_default_and_rebuilds():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(version="3.11")},
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
@@ -1248,12 +1252,12 @@ async def test_resending_the_same_version_is_not_a_rebuild():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(version="3.11")},
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -1324,8 +1328,8 @@ async def test_a_function_omitting_a_port_is_stamped_with_the_default():
     """
     from tests.test_auth_and_deployer import _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {})
-    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    cluster = _ApplyCluster("region-a", {})
+    svc = _function_service({"region-a": cluster}, _RecordingBuilder())
     body, _ = await svc.create("payments", _create_spec(), _principal())
 
     assert _pod_ports(cluster) == [{"containerPort": 8080}]
@@ -1335,8 +1339,8 @@ async def test_a_function_omitting_a_port_is_stamped_with_the_default():
 async def test_a_function_can_pin_a_port_for_an_app_that_hardcodes_one():
     from tests.test_auth_and_deployer import _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {})
-    svc = _function_service({"site-a": cluster}, _RecordingBuilder())
+    cluster = _ApplyCluster("region-a", {})
+    svc = _function_service({"region-a": cluster}, _RecordingBuilder())
     body, _ = await svc.create("payments", _create_spec(port=9000), _principal())
 
     assert _pod_ports(cluster) == [{"containerPort": 9000}]
@@ -1356,11 +1360,11 @@ async def test_a_function_port_is_replaced_on_update_not_kept():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(port=9000)},
         secrets={"hello-payments-git": stored},
     )
-    await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+    await _function_service({"region-a": cluster}, _RecordingBuilder()).update(
         "payments",
         "hello",
         FunctionUpdate(
@@ -1377,8 +1381,8 @@ async def test_a_function_port_is_reported_on_read():
     from api.services.offering import FUNCTION
     from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
 
-    cluster = _ApplyCluster("site-a", {"hello-payments": _ksvc(port=9000)})
-    engine = _workload_service({"site-a": cluster}, builder=_RecordingBuilder())
+    cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc(port=9000)})
+    engine = _workload_service({"region-a": cluster}, builder=_RecordingBuilder())
     body = await engine.get(FUNCTION, "hello", _principal(), "payments")
 
     assert body.port == 9000
@@ -1430,12 +1434,12 @@ async def test_changing_only_the_port_does_not_rebuild():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc()},  # deployed at the digest a build resolved
         secrets={"hello-payments-git": stored},
     )
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         # every build input identical to what is stored; only the port moves
@@ -1483,9 +1487,9 @@ def test_latest_build_orders_on_the_number_not_the_string():
 class _BuildCluster:
     """Serves a function's kpack Builds and records what was patched onto them."""
 
-    def __init__(self, builds, site="site-a"):
-        self.site = site
-        self.name = site
+    def __init__(self, builds, region="region-a"):
+        self.region = region
+        self.name = region
         self._builds = list(builds)
         self.patched = []
 
@@ -1532,14 +1536,14 @@ def test_triggering_an_image_that_has_never_built_is_not_a_failure():
 class _RebuildCluster:
     """An _ApplyCluster that also serves kpack Builds and records patches."""
 
-    def __init__(self, existing, secrets=None, builds=(), site="site-a"):
+    def __init__(self, existing, secrets=None, builds=(), region="region-a"):
         from tests.test_auth_and_deployer import _ApplyCluster
 
-        self._inner = _ApplyCluster(site, existing, secrets)
+        self._inner = _ApplyCluster(region, existing, secrets)
         self._builds = list(builds)
         self.patched = []
-        self.site = site
-        self.name = site
+        self.region = region
+        self.name = region
 
     def __getattr__(self, item):
         return getattr(self._inner, item)  # applied/deleted/apply/delete
@@ -1584,7 +1588,7 @@ class _TriggeringBuilder(_RecordingBuilder):
         self.triggered = []
 
     def trigger(self, cluster, name, group):
-        self.triggered.append((cluster.site, name, group))
+        self.triggered.append((cluster.region, name, group))
         return True
 
 
@@ -1620,13 +1624,13 @@ async def _run_build(svc, group="payments", name="hello"):
 async def test_build_builds_the_source_the_function_already_has():
     """No inputs are accepted, so they are read back off the workload itself.
 
-    The same reconstruction a site that has never built the function does after a
+    The same reconstruction a region that has never built the function does after a
     switchover: annotations for the source, the workload's own Secret for the token.
     """
     cluster = _build_cluster()
     builder = _TriggeringBuilder()
 
-    await _run_build(_build_service({"site-a": cluster}, builder))
+    await _run_build(_build_service({"region-a": cluster}, builder))
 
     assert builder.calls == 1
     req = builder.reqs[0]
@@ -1644,17 +1648,17 @@ async def test_build_builds_the_source_the_function_already_has():
 
 
 async def test_build_applies_the_build_and_then_triggers_it():
-    """Order matters: applying first is what makes a site with no Image build at all."""
+    """Order matters: applying first is what makes a region with no Image build at all."""
     from tests.test_auth_and_deployer import _applied_kind
 
     cluster = _build_cluster()
     builder = _TriggeringBuilder()
 
-    await _run_build(_build_service({"site-a": cluster}, builder))
+    await _run_build(_build_service({"region-a": cluster}, builder))
 
     assert len(_applied_kind(cluster, "Image")) == 1
-    assert len(_git_secrets(cluster)) == 1  # the site that clones needs the token
-    assert builder.triggered == [("site-a", "hello", "payments")]
+    assert len(_git_secrets(cluster)) == 1  # the region that clones needs the token
+    assert builder.triggered == [("region-a", "hello", "payments")]
 
 
 async def test_build_never_writes_the_workload():
@@ -1668,7 +1672,7 @@ async def test_build_never_writes_the_workload():
 
     cluster = _build_cluster()
 
-    await _run_build(_build_service({"site-a": cluster}, _TriggeringBuilder()))
+    await _run_build(_build_service({"region-a": cluster}, _TriggeringBuilder()))
 
     assert _applied_kind(cluster, "Service") == []
     assert _applied_kind(cluster, "DomainMapping") == []
@@ -1681,24 +1685,24 @@ async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
 
     cluster = _build_cluster()
 
-    await _run_build(_build_service({"site-a": cluster}, _TriggeringBuilder()))
+    await _run_build(_build_service({"region-a": cluster}, _TriggeringBuilder()))
 
     owners = _applied_kind(cluster, "Image")[0]["metadata"]["ownerReferences"]
     assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
 
 
-async def test_a_rebuild_skips_a_site_that_runs_no_copy_of_the_function():
+async def test_a_rebuild_skips_a_region_that_runs_no_copy_of_the_function():
     """No KSVC there means no build to re-declare - not an unowned one to apply."""
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     local = _RebuildCluster(existing={}, secrets={"hello-payments-git": stored}, builds=[])
-    # the token is on every site, which is what lets any of them build later
+    # the token is on every region, which is what lets any of them build later
     remote = _ApplyCluster(
-        "site-b", {"hello-payments": _deployed_ksvc()}, secrets={"hello-payments-git": stored}
+        "region-b", {"hello-payments": _deployed_ksvc()}, secrets={"hello-payments-git": stored}
     )
     svc = _build_service(
-        {"site-a": local, "site-b": remote}, _TriggeringBuilder(), local_site="site-a"
+        {"region-a": local, "region-b": remote}, _TriggeringBuilder(), local_region="region-a"
     )
 
     await _run_build(svc)
@@ -1714,7 +1718,7 @@ async def test_build_without_a_stored_token_is_rejected_before_the_202():
     from common.errors import ValidationError
 
     cluster = _build_cluster(secrets={})  # the git Secret is gone
-    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
     background = BackgroundTasks()
 
     with pytest.raises(ValidationError, match="no git token is stored"):
@@ -1732,7 +1736,7 @@ async def test_build_of_a_runtime_that_left_the_configmap_is_rejected_before_the
     cluster = _build_cluster()
     # the function was built with "python"; the platform now offers only "go"
     svc = _build_service(
-        {"site-a": cluster}, _TriggeringBuilder(), runtimes=runtime_registry(names=("go",))
+        {"region-a": cluster}, _TriggeringBuilder(), runtimes=runtime_registry(names=("go",))
     )
 
     with pytest.raises(ValidationError, match="unsupported runtime"):
@@ -1744,7 +1748,7 @@ async def test_build_is_accepted_as_pending_with_a_status_url():
     from fastapi import BackgroundTasks
 
     cluster = _build_cluster()
-    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
 
     body = await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
 
@@ -1785,7 +1789,7 @@ async def test_a_container_of_the_same_name_cannot_be_rebuilt():
         size="small",
     )
     cluster = _build_cluster(existing={"hello-payments": container})
-    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
 
     with pytest.raises(NotFoundError):
         await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
@@ -1817,7 +1821,7 @@ async def test_build_of_a_workload_with_no_stored_source_is_rejected():
         size="small",
     )
     cluster = _build_cluster(existing={"hello-payments": unstamped})
-    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
     background = BackgroundTasks()
 
     with pytest.raises(ValidationError, match="gitRepo, branch, runtime"):
@@ -1872,7 +1876,7 @@ def test_the_builder_repository_prefixes_the_function_image_and_its_cache():
     below the base (`base/python`) and a function is two (`base/{group}/{name}`).
     """
     # The layout lives on the registry, not the backend - the same backend
-    # builds into whichever one the site it is planning for uses.
+    # builds into whichever one the region it is planning for uses.
     registry = _layout_settings(repository="serverless/builders").registry
 
     assert _builder().image_ref(_request(), registry) == (
@@ -1893,9 +1897,9 @@ async def test_a_created_function_is_deployed_at_the_branch_tag():
     from api.services.state.ksvc_state import extract_image
     from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {})
+    cluster = _ApplyCluster("region-a", {})
     builder = _RecordingBuilder()
-    await _function_service({"site-a": cluster}, builder).create(
+    await _function_service({"region-a": cluster}, builder).create(
         "payments",
         FunctionCreate(
             name="hello",
@@ -1923,9 +1927,9 @@ async def test_no_api_path_writes_the_image_after_the_create():
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
 
-    def _site():
+    def _region():
         return _ApplyCluster(
-            "site-a",
+            "region-a",
             {"hello-payments": _ksvc(image=DEPLOYED)},
             secrets={"hello-payments-git": stored},
         )
@@ -1942,8 +1946,8 @@ async def test_no_api_path_writes_the_image_after_the_create():
             gitToken="ghp_rotated",
         ),
     ):
-        cluster = _site()
-        await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+        cluster = _region()
+        await _function_service({"region-a": cluster}, _RecordingBuilder()).update(
             "payments", "hello", spec, _principal()
         )
         assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
@@ -1980,12 +1984,12 @@ async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         # deployed under the old layout, at a digest a finished build resolved
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
         secrets={"hello-payments-git": stored},
     )
     builder = _MovedBuilder()
-    await _function_service({"site-a": cluster}, builder).update(
+    await _function_service({"region-a": cluster}, builder).update(
         "payments",
         "hello",
         # every build input identical to what is stored: a config-only edit
@@ -2020,9 +2024,9 @@ async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest()
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a", {"hello-payments": _ksvc(image=digest)}, secrets={"hello-payments-git": stored}
+        "region-a", {"hello-payments": _ksvc(image=digest)}, secrets={"hello-payments-git": stored}
     )
-    await _function_service({"site-a": cluster}, _SameLayout()).update(
+    await _function_service({"region-a": cluster}, _SameLayout()).update(
         "payments",
         "hello",
         FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
@@ -2050,7 +2054,7 @@ async def test_stored_inputs_that_no_longer_validate_are_a_400_not_a_500():
     ksvc = _deployed_ksvc()
     ksvc["metadata"]["annotations"][ANNOTATION_GIT_PATH] = "../etc"
     cluster = _build_cluster(existing={"hello-payments": ksvc})
-    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
 
     with pytest.raises(ValidationError, match="stored build inputs are not valid"):
         await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
@@ -2097,14 +2101,14 @@ async def test_build_is_refused_for_a_group_the_caller_is_not_in():
 
     from common.errors import ForbiddenError
 
-    svc = _build_service({"site-a": _build_cluster()}, _TriggeringBuilder())
+    svc = _build_service({"region-a": _build_cluster()}, _TriggeringBuilder())
     outsider = Principal(subject="u", username="mallory", groups=["other"])
 
     with pytest.raises(ForbiddenError):
         await svc.accept_build("payments", "hello", outsider, BackgroundTasks())
 
 
-async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202():
+async def test_a_rebuild_that_cannot_reach_the_local_region_does_not_fail_the_202():
     """The 202 is already sent, so the failure belongs in the log and the status.
 
     `run` is what swallows it; letting it escape would crash the background task
@@ -2114,7 +2118,7 @@ async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202(
 
     class _DownLocal(_RebuildCluster):
         def apply(self, manifest):
-            raise RuntimeError("site down")
+            raise RuntimeError("region down")
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _DownLocal(
@@ -2122,7 +2126,7 @@ async def test_a_rebuild_that_cannot_reach_the_local_site_does_not_fail_the_202(
         secrets={"hello-payments-git": stored},
         builds=[_build_obj(1)],
     )
-    svc = _build_service({"site-a": cluster}, _TriggeringBuilder())
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
 
     background = BackgroundTasks()
     body = await svc.accept_build("payments", "hello", _principal(), background)
@@ -2169,7 +2173,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(image=DEPLOYED)},
         secrets={"hello-payments-git": stored},
         images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
@@ -2180,7 +2184,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
         def image_ref(self, req, registry=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
-    await _function_service({"site-a": cluster}, _MovedBuilder()).update(
+    await _function_service({"region-a": cluster}, _MovedBuilder()).update(
         "payments",
         "hello",
         FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
@@ -2201,14 +2205,14 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"hello-payments": _ksvc(image=DEPLOYED)},
         secrets={"hello-payments-git": stored},
         images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
     )
     reclaimed = _reclaimed(monkeypatch)
 
-    await _function_service({"site-a": cluster}, _RecordingBuilder()).update(
+    await _function_service({"region-a": cluster}, _RecordingBuilder()).update(
         "payments",
         "hello",
         FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
@@ -2224,10 +2228,10 @@ async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
     from api.models.function import FunctionCreate
     from tests.test_auth_and_deployer import _ApplyCluster
 
-    cluster = _ApplyCluster("site-a", {})
+    cluster = _ApplyCluster("region-a", {})
     reclaimed = _reclaimed(monkeypatch)
 
-    await _function_service({"site-a": cluster}, _RecordingBuilder()).create(
+    await _function_service({"region-a": cluster}, _RecordingBuilder()).create(
         "payments",
         FunctionCreate(
             name="hello",
@@ -2252,13 +2256,13 @@ async def test_the_build_endpoint_re_tags_too(monkeypatch):
         def image_ref(self, req, registry=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
-    await _run_build(_build_service({"site-a": cluster}, _MovedTriggering()))
+    await _run_build(_build_service({"region-a": cluster}, _MovedTriggering()))
 
     assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
     assert reclaimed == ["reg/acme/payments/hello:main"]
 
 
-# --- failure_cause: the machine-readable reason behind a Failed site ---------
+# --- failure_cause: the machine-readable reason behind a Failed region ---------
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,7 @@ from api.auth.deps import get_auth
 from api.core.config import Settings, get_settings
 from api.dependencies import get_runtimes, get_stream_capacity, get_workload_service
 from api.routers import containers, functions, info, streams
-from api.services.sites.deployer import Deployer
+from api.services.regions.deployer import Deployer
 
 logger = get_logger(__name__)
 
@@ -42,9 +42,9 @@ async def _warmup(settings: Settings, deployer: Deployer) -> None:
     tasks = []
     if settings.auth_enabled:
         tasks.append(_warm("SSO discovery", get_auth().warmup, timeout))
-    if settings.sites:
+    if settings.regions:
         for cluster in deployer.resolve_targets(None):
-            tasks.append(_warm(f"cluster {cluster.site}", cluster.connect, timeout))
+            tasks.append(_warm(f"cluster {cluster.region}", cluster.connect, timeout))
     if tasks:
         await asyncio.gather(*tasks)
 
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     # follower reading through a client that has just been shut under it logs a
     # traceback for what is only an orderly shutdown.
     get_stream_capacity().shutdown()
-    service.deployer.close()  # release per-site cluster HTTP clients
+    service.deployer.close()  # release per-region cluster HTTP clients
 
 
 def create_app() -> FastAPI:

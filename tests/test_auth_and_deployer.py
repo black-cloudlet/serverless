@@ -1,10 +1,10 @@
 import pytest
 
-from api.core.config import Settings, SiteConfig, SSOSettings
-from api.models.common import SiteStatus
+from api.core.config import RegionConfig, Settings, SSOSettings
+from api.models.common import RegionStatus
 from api.services.offering import CONTAINER, FUNCTION
-from api.services.sites.deployer import Deployer, aggregate, status_code_for
-from common.errors import SiteTotalFailure, ValidationError
+from api.services.regions.deployer import Deployer, aggregate, status_code_for
+from common.errors import RegionTotalFailure, ValidationError
 from tests.conftest import plan_for, runtime_registry
 
 
@@ -79,40 +79,43 @@ def test_empty_admin_key_disables_key_auth(monkeypatch):
 
 
 def test_aggregate_all_ok():
-    statuses = [SiteStatus(site="a", status="Ready"), SiteStatus(site="b", status="Ready")]
+    statuses = [RegionStatus(region="a", status="Ready"), RegionStatus(region="b", status="Ready")]
     assert aggregate(statuses) == "Ready"
     assert status_code_for("Ready", created=True) == 201
 
 
 def test_aggregate_still_rolling_out():
-    # a just-applied workload (sites not Ready yet) reports Deploying, not Ready
-    statuses = [SiteStatus(site="a", status="Ready"), SiteStatus(site="b", status="Deploying")]
+    # a just-applied workload (regions not Ready yet) reports Deploying, not Ready
+    statuses = [
+        RegionStatus(region="a", status="Ready"),
+        RegionStatus(region="b", status="Deploying"),
+    ]
     assert aggregate(statuses) == "Deploying"
 
 
 def test_aggregate_partial():
     statuses = [
-        SiteStatus(site="a", status="Ready"),
-        SiteStatus(site="b", status="Failed", message="boom"),  # unreachable -> Failed
+        RegionStatus(region="a", status="Ready"),
+        RegionStatus(region="b", status="Failed", message="boom"),  # unreachable -> Failed
     ]
     assert aggregate(statuses) == "Failed"
     assert status_code_for("Failed", created=True) == 207
 
 
 def test_aggregate_total_failure():
-    statuses = [SiteStatus(site="a", status="Failed", message="x")]
-    with pytest.raises(SiteTotalFailure):
+    statuses = [RegionStatus(region="a", status="Failed", message="x")]
+    with pytest.raises(RegionTotalFailure):
         aggregate(statuses)
 
 
 def test_overall_status_rollup():
-    from api.services.sites.deployer import overall_status
+    from api.services.regions.deployer import overall_status
 
     assert overall_status(["Ready", "Ready"]) == "Ready"
     assert overall_status(["Deploying", "Deploying"]) == "Deploying"
-    # a normal rollout where one site is ahead is still in-progress, not Failed
+    # a normal rollout where one region is ahead is still in-progress, not Failed
     assert overall_status(["Ready", "Deploying"]) == "Deploying"
-    # any failed (or unreachable, mapped to Failed) site -> Failed
+    # any failed (or unreachable, mapped to Failed) region -> Failed
     assert overall_status(["Ready", "Failed"]) == "Failed"
     assert overall_status(["Deploying", "Failed"]) == "Failed"
     assert overall_status([]) == "Failed"
@@ -139,11 +142,11 @@ def test_ksvc_status_distinguishes_failed_from_deploying():
     assert ksvc_status({}) == ("Deploying", None)  # brand-new, no status block
 
 
-def _settings_with_sites():
+def _settings_with_regions():
     return Settings(
-        sites=[
-            SiteConfig(name="site-a", cluster="site-a-0"),
-            SiteConfig(name="site-b", cluster="site-b-0"),
+        regions=[
+            RegionConfig(name="region-a", cluster="region-a-0"),
+            RegionConfig(name="region-b", cluster="region-b-0"),
         ]
     )
 
@@ -156,70 +159,70 @@ def test_global_cert_and_ca_paths():
 
 
 def test_resolve_targets_default_all():
-    d = Deployer(_settings_with_sites())
-    assert [z.site for z in d.resolve_targets(None)] == ["site-a", "site-b"]
+    d = Deployer(_settings_with_regions())
+    assert [z.region for z in d.resolve_targets(None)] == ["region-a", "region-b"]
 
 
-def test_resolve_targets_unknown_site():
-    d = Deployer(_settings_with_sites())
+def test_resolve_targets_unknown_region():
+    d = Deployer(_settings_with_regions())
     with pytest.raises(ValidationError):
-        d.resolve_targets(["site-c"])
+        d.resolve_targets(["region-c"])
 
 
 def test_local_cluster_selection():
-    d = Deployer(_settings_with_sites())
-    # unset -> first configured site
-    assert d.local_cluster().site == "site-a"
-    # match by site name
-    d._local_site = "site-b"
-    assert d.local_cluster().site == "site-b"
-    # match by cluster name (Cluster.name), not just site name
-    d._local_site = "site-b-0"
-    assert d.local_cluster().site == "site-b"
-    # unknown value -> an error, not a silent adoption of the first site: a
-    # process serving as a site it is not would build and reconcile wrongly.
-    d._local_site = "nope"
+    d = Deployer(_settings_with_regions())
+    # unset -> first configured region
+    assert d.local_cluster().region == "region-a"
+    # match by region name
+    d._local_region = "region-b"
+    assert d.local_cluster().region == "region-b"
+    # match by cluster name (Cluster.name), not just region name
+    d._local_region = "region-b-0"
+    assert d.local_cluster().region == "region-b"
+    # unknown value -> an error, not a silent adoption of the first region: a
+    # process serving as a region it is not would build and reconcile wrongly.
+    d._local_region = "nope"
     with pytest.raises(ValidationError):
         d.local_cluster()
 
 
-async def test_fanout_captures_per_site_errors():
-    d = Deployer(_settings_with_sites())
+async def test_fanout_captures_per_region_errors():
+    d = Deployer(_settings_with_regions())
 
     def fn(cluster):
-        if cluster.site == "site-b":
+        if cluster.region == "region-b":
             raise RuntimeError("kaboom")
-        return SiteStatus(site=cluster.site, status="Ready")
+        return RegionStatus(region=cluster.region, status="Ready")
 
     statuses = await d.fanout(d.resolve_targets(None), fn)
-    by_site = {s.site: s for s in statuses}
-    assert by_site["site-a"].status == "Ready"
-    assert by_site["site-b"].message == "kaboom"
+    by_region = {s.region: s for s in statuses}
+    assert by_region["region-a"].status == "Ready"
+    assert by_region["region-b"].message == "kaboom"
 
 
-async def test_fanout_times_out_unreachable_site():
+async def test_fanout_times_out_unreachable_region():
     import time
 
-    d = Deployer(_settings_with_sites())
+    d = Deployer(_settings_with_regions())
     d._op_timeout = 0.05  # tighten for the test
 
     def fn(cluster):
-        if cluster.site == "site-b":
+        if cluster.region == "region-b":
             time.sleep(0.5)  # simulate an unreachable/slow cluster
-        return SiteStatus(site=cluster.site, status="Ready")
+        return RegionStatus(region=cluster.region, status="Ready")
 
     statuses = await d.fanout(d.resolve_targets(None), fn)
-    by_site = {s.site: s for s in statuses}
-    # the healthy site still returns; the slow one is reported, not blocking
-    assert by_site["site-a"].status == "Ready"
-    assert by_site["site-b"].status == "Timeout"
-    assert by_site["site-b"].message is not None
+    by_region = {s.region: s for s in statuses}
+    # the healthy region still returns; the slow one is reported, not blocking
+    assert by_region["region-a"].status == "Ready"
+    assert by_region["region-b"].status == "Timeout"
+    assert by_region["region-b"].message is not None
 
 
 class _FakeCluster:
     def __init__(self, name, existing=None):
         self.name = name
-        self.site = name
+        self.region = name
         self._existing = existing or {}
 
     def get(self, kind, name, namespace=None):
@@ -249,13 +252,13 @@ class _NullBuilder:
         return {}
 
 
-def _workload_service(clusters, builder=None, local_site=None):
+def _workload_service(clusters, builder=None, local_region=None):
     from api.services.workloads import WorkloadService
 
-    settings = _settings_with_sites()
+    settings = _settings_with_regions()
     d = Deployer(settings)
     d._clusters = clusters  # inject fakes (name -> _FakeCluster)
-    d._local_site = local_site
+    d._local_region = local_region
     return WorkloadService(settings, d, builder or _NullBuilder())
 
 
@@ -300,7 +303,9 @@ def test_a_name_and_group_each_legal_alone_are_rejected_when_too_long_together()
 
 
 async def test_host_available_when_unused():
-    svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
+    svc = _workload_service(
+        {"region-a": _FakeCluster("region-a"), "region-b": _FakeCluster("region-b")}
+    )
     # no DomainMapping exists -> no raise
     await svc.assert_host_available(
         "app-team.serverless.example.com", "app", "team", svc.deployer.resolve_targets(None)
@@ -315,8 +320,8 @@ async def test_host_taken_by_other_workload_conflicts():
     dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={host: dm}),
-            "site-b": _FakeCluster("site-b"),
+            "region-a": _FakeCluster("region-a", existing={host: dm}),
+            "region-b": _FakeCluster("region-b"),
         }
     )
     with pytest.raises(ConflictError):
@@ -330,8 +335,8 @@ async def test_host_owned_by_same_workload_ok():
     dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}}
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={host: dm}),
-            "site-b": _FakeCluster("site-b", existing={host: dm}),
+            "region-a": _FakeCluster("region-a", existing={host: dm}),
+            "region-b": _FakeCluster("region-b", existing={host: dm}),
         }
     )
     # same owner -> update, no conflict
@@ -339,7 +344,9 @@ async def test_host_owned_by_same_workload_ok():
 
 
 async def test_workload_absent_ok():
-    svc = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
+    svc = _workload_service(
+        {"region-a": _FakeCluster("region-a"), "region-b": _FakeCluster("region-b")}
+    )
     await svc.assert_workload_absent("app", "team", svc.deployer.resolve_targets(None))
 
 
@@ -349,8 +356,8 @@ async def test_workload_already_exists_conflicts():
     ksvc = {"metadata": {"name": "app-team"}}
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": ksvc}),
-            "site-b": _FakeCluster("site-b"),
+            "region-a": _FakeCluster("region-a", existing={"app-team": ksvc}),
+            "region-b": _FakeCluster("region-b"),
         }
     )
     with pytest.raises(ConflictError):
@@ -371,8 +378,8 @@ async def test_load_existing_returns_image():
 
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("container")}),
-            "site-b": _FakeCluster("site-b", existing={"app-team": _ksvc("container")}),
+            "region-a": _FakeCluster("region-a", existing={"app-team": _ksvc("container")}),
+            "region-b": _FakeCluster("region-b", existing={"app-team": _ksvc("container")}),
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -387,8 +394,8 @@ async def test_load_existing_offering_mismatch_404():
 
     svc = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": _ksvc("container")}),
-            "site-b": _FakeCluster("site-b"),
+            "region-a": _FakeCluster("region-a", existing={"app-team": _ksvc("container")}),
+            "region-b": _FakeCluster("region-b"),
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -403,7 +410,9 @@ async def test_accept_container_returns_pending_and_schedules():
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
 
-    engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
+    engine = _workload_service(
+        {"region-a": _FakeCluster("region-a"), "region-b": _FakeCluster("region-b")}
+    )
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
@@ -420,7 +429,7 @@ async def test_get_reports_size_and_replicas_but_carries_no_usage():
     """The full GET keeps `replicas` and drops `usage`.
 
     Not an arbitrary split: `replicas` rides along on the Revision read the
-    per-site failure detail needs anyway, so it is free, while usage is a
+    per-region failure detail needs anyway, so it is free, while usage is a
     PodMetrics call of its own. Reading PodMetrics here is an assertion failure -
     that is what keeps the cost off a response nobody polls for live numbers.
     """
@@ -431,7 +440,7 @@ async def test_get_reports_size_and_replicas_but_carries_no_usage():
 
     class _NoMetricsCluster:
         def __init__(self, name):
-            self.site = name
+            self.region = name
             self.name = name
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
@@ -455,13 +464,13 @@ async def test_get_reports_size_and_replicas_but_carries_no_usage():
                 return {"status": {"actualReplicas": 3}}
             raise AssertionError(f"the full GET must not read {kind}")
 
-    engine = _workload_service({"site-a": _NoMetricsCluster("site-a")})
+    engine = _workload_service({"region-a": _NoMetricsCluster("region-a")})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
     assert body.size == "medium"
-    site = body.sites[0]
-    assert site.replicas == 3  # from Revision.status.actualReplicas
-    assert not hasattr(site, "usage")  # live usage is a /status field now
+    region = body.regions[0]
+    assert region.replicas == 3  # from Revision.status.actualReplicas
+    assert not hasattr(region, "usage")  # live usage is a /status field now
 
 
 class _StatsCluster:
@@ -473,7 +482,7 @@ class _StatsCluster:
     """
 
     def __init__(self, name, pods=None, replicas=2, offering="container", group="team"):
-        self.site = name
+        self.region = name
         self.name = name
         self._pods = pods
         self._replicas = replicas
@@ -516,7 +525,7 @@ async def test_stats_returns_live_state_and_reads_nothing_else():
     from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
-        {"site-a": _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")] * 2)}
+        {"region-a": _StatsCluster("region-a", pods=[_metrics_pod("60m", "90Mi")] * 2)}
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
@@ -525,30 +534,30 @@ async def test_stats_returns_live_state_and_reads_nothing_else():
     assert body.replicas == 2
     # summed over the user containers, ignoring the queue-proxy sidecar
     assert (body.usage.cpu, body.usage.memory) == ("120m", "180Mi")
-    site = body.sites[0]
-    assert (site.site, site.status, site.replicas) == ("site-a", "Ready", 2)
-    assert (site.usage.cpu, site.usage.memory) == ("120m", "180Mi")
+    region = body.regions[0]
+    assert (region.region, region.status, region.replicas) == ("region-a", "Ready", 2)
+    assert (region.usage.cpu, region.usage.memory) == ("120m", "180Mi")
 
 
-async def test_stats_totals_across_sites_from_the_raw_figures():
+async def test_stats_totals_across_regions_from_the_raw_figures():
     """The workload total is summed before rounding, so it is not 0m here."""
     from cloudlet_apis.auth import Principal
 
-    def site(name):
+    def region(name):
         return _StatsCluster(name, pods=[_metrics_pod("500u", "1536Ki")] * 2)
 
-    engine = _workload_service({"site-a": site("site-a"), "site-b": site("site-b")})
+    engine = _workload_service({"region-a": region("region-a"), "region-b": region("region-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
 
-    assert body.sites[0].usage.cpu == "1m"  # each site holds 2 x 0.5m
+    assert body.regions[0].usage.cpu == "1m"  # each region holds 2 x 0.5m
     assert body.usage.cpu == "2m"
     assert body.usage.memory == "6Mi"
     assert body.replicas == 4
 
 
-async def test_stats_total_is_null_when_a_site_could_not_be_measured():
-    """A total that quietly drops a site is worse than no total."""
+async def test_stats_total_is_null_when_a_region_could_not_be_measured():
+    """A total that quietly drops a region is worse than no total."""
     from cloudlet_apis.auth import Principal
 
     from common.cluster import ResourceKind
@@ -559,56 +568,56 @@ async def test_stats_total_is_null_when_a_site_could_not_be_measured():
                 raise RuntimeError("metrics API unavailable")
             return super().get(kind, name, label_selector, namespace)
 
-    good = _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")])
-    engine = _workload_service({"site-a": good, "site-b": _NoMetrics("site-b")})
+    good = _StatsCluster("region-a", pods=[_metrics_pod("60m", "90Mi")])
+    engine = _workload_service({"region-a": good, "region-b": _NoMetrics("region-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
 
     assert body.usage is None  # not "60m", which would understate the workload
-    assert body.sites[0].usage.cpu == "60m"  # what site-a reported still stands
-    assert body.sites[1].usage is None
+    assert body.regions[0].usage.cpu == "60m"  # what region-a reported still stands
+    assert body.regions[1].usage is None
     assert body.replicas == 4  # replicas came off the Revision, which answered
 
 
-async def test_stats_survives_a_site_that_is_entirely_down():
+async def test_stats_survives_a_region_that_is_entirely_down():
     from cloudlet_apis.auth import Principal
 
     class _Down:
-        site = name = "site-b"
+        region = name = "region-b"
 
         def get(self, *a, **k):
-            raise RuntimeError("site down")
+            raise RuntimeError("region down")
 
-    up = _StatsCluster("site-a", pods=[_metrics_pod("60m", "90Mi")])
-    engine = _workload_service({"site-a": up, "site-b": _Down()})
+    up = _StatsCluster("region-a", pods=[_metrics_pod("60m", "90Mi")])
+    engine = _workload_service({"region-a": up, "region-b": _Down()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
 
     assert body.status == "Failed"
-    by_site = {s.site: s for s in body.sites}
-    assert by_site["site-a"].usage.cpu == "60m"  # the healthy site still reports
-    assert by_site["site-b"].status == "Failed"
-    assert by_site["site-b"].usage is None
+    by_region = {s.region: s for s in body.regions}
+    assert by_region["region-a"].usage.cpu == "60m"  # the healthy region still reports
+    assert by_region["region-b"].status == "Failed"
+    assert by_region["region-b"].usage is None
     assert body.usage is None and body.replicas is None
 
 
 async def test_stats_scaled_to_zero_is_not_an_error():
     from cloudlet_apis.auth import Principal
 
-    engine = _workload_service({"site-a": _StatsCluster("site-a", pods=[], replicas=0)})
+    engine = _workload_service({"region-a": _StatsCluster("region-a", pods=[], replicas=0)})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(CONTAINER, "app", user, "team")
 
     assert body.replicas == 0
     assert body.usage is None  # nothing running, so nothing measured
-    assert body.sites[0].usage is None
+    assert body.regions[0].usage is None
 
 
-async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
+async def test_stats_folds_a_running_build_into_the_rollup_and_the_regions():
     """Build-first, on both surfaces - matching the full GET (#38).
 
     A function whose image is not built yet has a KSVC that cannot pull it. Left
-    unfolded the header would read Building over a site row saying Failed.
+    unfolded the header would read Building over a region row saying Failed.
     """
     from cloudlet_apis.auth import Principal
 
@@ -616,7 +625,7 @@ async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
     from common.cluster import ResourceKind
 
     class _C:
-        site = name = "site-a"
+        region = name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             from api.models.common import LABEL_GROUP, LABEL_OFFERING
@@ -635,12 +644,12 @@ async def test_stats_folds_a_running_build_into_the_rollup_and_the_sites():
         def status(self, cluster, name, group):
             return BuildStatus(state="Building")
 
-    engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
+    engine = _workload_service({"region-a": _C()}, builder=_BuildingBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.stats(FUNCTION, "fn", user, "team")
 
     assert body.status == "Building"  # not Failed, and not Deploying
-    assert body.sites[0].status == "Building"  # and the row agrees with the header
+    assert body.regions[0].status == "Building"  # and the row agrees with the header
 
 
 async def test_stats_hides_another_groups_workload_as_404():
@@ -648,26 +657,26 @@ async def test_stats_hides_another_groups_workload_as_404():
 
     from common.errors import NotFoundError
 
-    engine = _workload_service({"site-a": _StatsCluster("site-a", pods=[], group="other")})
+    engine = _workload_service({"region-a": _StatsCluster("region-a", pods=[], group="other")})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await engine.stats(CONTAINER, "app", user, "team")
 
 
 async def test_stats_of_an_unconfirmable_workload_fails_closed():
-    """A site that cannot answer means "absent" is not established -> 503, not 404."""
+    """A region that cannot answer means "absent" is not established -> 503, not 404."""
     from cloudlet_apis.auth import Principal
 
     from common.errors import ServiceUnavailableError
 
     class _Down:
-        site = "site-b"
-        name = "site-b"
+        region = "region-b"
+        name = "region-b"
 
         def get(self, *a, **k):
-            raise RuntimeError("site down")
+            raise RuntimeError("region down")
 
-    engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _Down()})
+    engine = _workload_service({"region-a": _FakeCluster("region-a"), "region-b": _Down()})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
         await engine.stats(CONTAINER, "app", user, "team")
@@ -691,7 +700,7 @@ def _list_ksvc(oname, size, host, ready=True):
 
 class _ListCluster:
     def __init__(self, name, items):
-        self.site = name
+        self.region = name
         self.name = name
         self._items = items
 
@@ -737,8 +746,8 @@ async def test_get_returns_redacted_spec():
     )
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             from api.services.manifests.secrets import build_pull_secret
@@ -753,7 +762,7 @@ async def test_get_returns_redacted_spec():
                 return build_pull_secret(name, {}, "reg.example.com", "bob", "s3cr3t")
             raise RuntimeError("revision/metrics are best-effort here")
 
-    engine = _workload_service({"site-a": _C()})
+    engine = _workload_service({"region-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
 
@@ -825,8 +834,8 @@ async def test_get_function_returns_build_inputs_and_build_state():
     }
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
@@ -837,7 +846,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
         def status(self, cluster, name, group):
             return BuildStatus(state="Ready", image="reg/team/fn@sha256:abc")
 
-    engine = _workload_service({"site-a": _C()}, builder=_ReadyBuilder())
+    engine = _workload_service({"region-a": _C()}, builder=_ReadyBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(FUNCTION, "fn", user, "team")
 
@@ -891,8 +900,8 @@ async def test_get_function_building_image_reports_building():
     }
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
@@ -903,16 +912,16 @@ async def test_get_function_building_image_reports_building():
         def status(self, cluster, name, group):
             return BuildStatus(state="Building")
 
-    engine = _workload_service({"site-a": _C()}, builder=_BuildingBuilder())
+    engine = _workload_service({"region-a": _C()}, builder=_BuildingBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(FUNCTION, "fn", user, "team")
 
     assert body.build.state == "Building"
     assert body.status == "Building"
-    # The per-site row agrees with the headline instead of contradicting it: the
+    # The per-region row agrees with the headline instead of contradicting it: the
     # KSVC's pull failure IS the running build, not a second, independent one.
-    assert body.sites[0].status == "Building"
-    assert body.sites[0].message is None
+    assert body.regions[0].status == "Building"
+    assert body.regions[0].message is None
     assert body.path is None  # no sub-directory -> built from the repository root
     assert body.version is None  # took the platform default; /info says what that is
 
@@ -925,15 +934,15 @@ async def test_get_overall_status_reflects_rollout_state():
     ksvc = _bare_ksvc()
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("replicas/usage/spec extras are best-effort here")
 
-    engine = _workload_service({"site-a": _C()})
+    engine = _workload_service({"region-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     async def _overall():
@@ -949,9 +958,9 @@ async def test_get_overall_status_reflects_rollout_state():
     assert await _overall() == "Failed"
 
 
-async def test_get_failed_site_surfaces_ready_condition_message():
-    """A reachable site whose KSVC failed to roll out carries the Ready-condition
-    reason in the per-site `error` (not a bare status=Failed, error=null)."""
+async def test_get_failed_region_surfaces_ready_condition_message():
+    """A reachable region whose KSVC failed to roll out carries the Ready-condition
+    reason in the per-region `error` (not a bare status=Failed, error=null)."""
     from cloudlet_apis.auth import Principal
 
     from common.cluster import ResourceKind
@@ -969,30 +978,30 @@ async def test_get_failed_site_surfaces_ready_condition_message():
     }
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("replicas/usage/spec extras are best-effort here")
 
-    engine = _workload_service({"site-a": _C()})
+    engine = _workload_service({"region-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
 
-    site = body.sites[0]
-    assert site.status == "Failed"
-    assert site.message == 'Revision "app-team-00001" failed: image pull backoff'
+    region = body.regions[0]
+    assert region.status == "Failed"
+    assert region.message == 'Revision "app-team-00001" failed: image pull backoff'
 
     # Falls back to the reason code when the condition carries no message.
     ksvc["status"]["conditions"][0].pop("message")
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.sites[0].message == "RevisionFailed"
+    assert body.regions[0].message == "RevisionFailed"
 
 
-async def test_get_failed_site_prefers_revision_specific_reason():
-    """The per-site error is the Revision's specific failing sub-condition (the
+async def test_get_failed_region_prefers_revision_specific_reason():
+    """The per-region error is the Revision's specific failing sub-condition (the
     real cause), not the KSVC's generic aggregate message."""
     from cloudlet_apis.auth import Principal
 
@@ -1029,8 +1038,8 @@ async def test_get_failed_site_prefers_revision_specific_reason():
     }
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
@@ -1039,18 +1048,18 @@ async def test_get_failed_site_prefers_revision_specific_reason():
                 return revision
             raise RuntimeError("usage/spec extras are best-effort here")
 
-    engine = _workload_service({"site-a": _C()})
+    engine = _workload_service({"region-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
 
-    site = body.sites[0]
-    assert site.status == "Failed"
-    assert site.message == 'Unable to fetch image "reg/app:1": not found'
-    assert site.replicas == 0  # same Revision read still feeds the replica count
+    region = body.regions[0]
+    assert region.status == "Failed"
+    assert region.message == 'Unable to fetch image "reg/app:1": not found'
+    assert region.replicas == 0  # same Revision read still feeds the replica count
 
 
-async def test_get_ready_site_has_no_error():
-    """A healthy (Ready) site leaves `error` null - it's only set on failure."""
+async def test_get_ready_region_has_no_error():
+    """A healthy (Ready) region leaves `error` null - it's only set on failure."""
     from cloudlet_apis.auth import Principal
 
     from common.cluster import ResourceKind
@@ -1059,18 +1068,18 @@ async def test_get_ready_site_has_no_error():
     ksvc["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
 
     class _C:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("best-effort extras")
 
-    engine = _workload_service({"site-a": _C()})
+    engine = _workload_service({"region-a": _C()})
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
-    assert body.sites[0].status == "Ready" and body.sites[0].message is None
+    assert body.regions[0].status == "Ready" and body.regions[0].message is None
 
 
 async def test_list_overall_status_per_workload():
@@ -1081,7 +1090,7 @@ async def test_list_overall_status_per_workload():
     failed["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
 
     engine = _workload_service(
-        {"site-a": _ListCluster("site-a", [deploying, failed])}, local_site="site-a"
+        {"region-a": _ListCluster("region-a", [deploying, failed])}, local_region="region-a"
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     summaries = {s.name: s.status for s in await engine.list(CONTAINER, user, "team")}
@@ -1114,16 +1123,16 @@ async def test_list_folds_the_build_state_in_like_get_does():
     class _Builder(_NullBuilder):
         def statuses(self, cluster, group):
             # One read for the whole listing, not one per function.
-            reads.append((cluster.site, group))
+            reads.append((cluster.region, group))
             return {
                 "fn-team": BuildStatus(state="Building"),
                 "bad-team": BuildStatus(state="Failed", message="compile error"),
             }
 
     engine = _workload_service(
-        {"site-a": _ListCluster("site-a", [building, broken, serving])},
+        {"region-a": _ListCluster("region-a", [building, broken, serving])},
         builder=_Builder(),
-        local_site="site-a",
+        local_region="region-a",
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     summaries = {s.name: s.status for s in await engine.list(FUNCTION, user, "team")}
@@ -1133,7 +1142,7 @@ async def test_list_folds_the_build_state_in_like_get_does():
     assert summaries["bad"] == "Failed"
     # no build in flight -> the KSVC has the last word, as after a switchover
     assert summaries["old"] == "Ready"
-    assert reads == [("site-a", "team")]  # local site only, once
+    assert reads == [("region-a", "team")]  # local region only, once
 
 
 async def test_list_of_containers_reads_no_build():
@@ -1145,9 +1154,9 @@ async def test_list_of_containers_reads_no_build():
             raise AssertionError("a container listing must not read the build backend")
 
     engine = _workload_service(
-        {"site-a": _ListCluster("site-a", [_bare_ksvc("app-team")])},
+        {"region-a": _ListCluster("region-a", [_bare_ksvc("app-team")])},
         builder=_Builder(),
-        local_site="site-a",
+        local_region="region-a",
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     summaries = await engine.list(CONTAINER, user, "team")
@@ -1161,9 +1170,9 @@ class _ApplyCluster:
     def __init__(self, name, existing, secrets=None, images=None, registry=None):
         from common.config import RegistryConfig
 
-        self.site = name
+        self.region = name
         self.name = name
-        # A real Cluster resolves its site's registry at construction; a fake
+        # A real Cluster resolves its region's registry at construction; a fake
         # that stands in for one has to carry it too.
         self.registry = registry or RegistryConfig()
         self._existing = existing  # oname -> ksvc dict
@@ -1226,8 +1235,8 @@ async def test_update_prunes_backing_no_longer_referenced():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _ApplyCluster("site-a", {"api-team": existing})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1262,8 +1271,8 @@ async def test_create_does_not_prune():
 
     from api.services.container import ContainerService
 
-    cluster = _ApplyCluster("site-a", {})  # nothing exists yet
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster("region-a", {})  # nothing exists yet
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1292,8 +1301,8 @@ async def test_container_update_rotates_pull_secret():
         scaling=Scaling(),
         size="small",  # public image: no pull secret
     )
-    cluster = _ApplyCluster("site-a", {"api-team": existing})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1361,9 +1370,9 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         git_url="https://git/old.git",
         branch="main",
     )
-    cluster = _ApplyCluster("site-a", {"fn-team": existing})
+    cluster = _ApplyCluster("region-a", {"fn-team": existing})
     builder = _StubBuilder()
-    engine = _workload_service({"site-a": cluster}, builder=builder)
+    engine = _workload_service({"region-a": cluster}, builder=builder)
     fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1418,9 +1427,9 @@ async def test_function_update_without_token_keeps_image():
         git_url="https://git/old.git",
         branch="main",
     )
-    cluster = _ApplyCluster("site-a", {"fn-team": existing})
+    cluster = _ApplyCluster("region-a", {"fn-team": existing})
     builder = _StubBuilder()
-    engine = _workload_service({"site-a": cluster}, builder=builder)
+    engine = _workload_service({"region-a": cluster}, builder=builder)
     fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1459,8 +1468,8 @@ async def test_function_create_persists_git_secret():
                 replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
             )
 
-    cluster = _ApplyCluster("site-a", {})  # nothing exists yet
-    engine = _workload_service({"site-a": cluster}, builder=_StubBuilder())
+    cluster = _ApplyCluster("region-a", {})  # nothing exists yet
+    engine = _workload_service({"region-a": cluster}, builder=_StubBuilder())
     fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1511,9 +1520,9 @@ async def test_function_update_reuses_stored_git_token():
         branch="main",
     )
     stored = build_git_secret(git_secret_name("fn-team"), {}, "ghp_stored")
-    cluster = _ApplyCluster("site-a", {"fn-team": existing}, secrets={"fn-team-git": stored})
+    cluster = _ApplyCluster("region-a", {"fn-team": existing}, secrets={"fn-team-git": stored})
     builder = _StubBuilder()
-    engine = _workload_service({"site-a": cluster}, builder=builder)
+    engine = _workload_service({"region-a": cluster}, builder=builder)
     fsvc = FunctionService(engine, runtime_registry())
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1553,8 +1562,10 @@ async def test_container_update_keeps_secret_env_value_when_omitted():
         size="small",
     )
     env_secret = res.build_secret("api-team-env", {}, {"API_KEY": "stored-secret"})
-    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-env": env_secret})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster(
+        "region-a", {"api-team": existing}, secrets={"api-team-env": env_secret}
+    )
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1599,8 +1610,8 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
         pull_secret="api-team-pull",
     )
     pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
-    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster("region-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1649,8 +1660,8 @@ async def test_update_container_username_change_without_token_rejected():
         pull_secret="api-team-pull",
     )
     pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
-    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _ApplyCluster("region-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # A different username with no token can't rotate the credential -> synchronous 400.
@@ -1698,8 +1709,8 @@ async def test_container_update_both_creds_null_removes_pull_secret():
         pull_secret="api-team-pull",
     )
     pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
-    cluster = _ApplyCluster("site-a", {"api-team": existing}, secrets={"api-team-pull": pull})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster("region-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1740,8 +1751,8 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
     )
 
     class _FlakySecretCluster:
-        site = "site-a"
-        name = "site-a"
+        region = "region-a"
+        name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE and name == "api-team":
@@ -1750,7 +1761,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
                 raise RuntimeError("etcd read timeout")  # transient, not a 404
             raise NotFoundError("nf")
 
-    engine = _workload_service({"site-a": _FlakySecretCluster()})
+    engine = _workload_service({"region-a": _FlakySecretCluster()})
     user = Principal(subject="u", username="alice", groups=["team"])
     # A transient failure reading the backing Secret must NOT look like "no stored
     # value" (which would 400 a valid keep) - it surfaces as a retryable 503.
@@ -1758,7 +1769,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
         await engine.load_existing("api", CONTAINER, user, "team")
 
 
-async def test_load_existing_reads_secrets_from_local_site():
+async def test_load_existing_reads_secrets_from_local_region():
     from cloudlet_apis.auth import Principal
 
     from api.models.common import Scaling
@@ -1777,84 +1788,84 @@ async def test_load_existing_reads_secrets_from_local_site():
         scaling=Scaling(),
         size="small",
     )
-    # Both sites have the workload but with different stored secret values; the read
-    # must come from the local site (the cheapest, most reliable hop).
+    # Both regions have the workload but with different stored secret values; the read
+    # must come from the local region (the cheapest, most reliable hop).
     local = _ApplyCluster(
-        "site-a",
+        "region-a",
         {"api-team": ksvc},
         secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "local-val"})},
     )
     remote = _ApplyCluster(
-        "site-b",
+        "region-b",
         {"api-team": ksvc},
         secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "remote-val"})},
     )
-    engine = _workload_service({"site-a": local, "site-b": remote}, local_site="site-a")
+    engine = _workload_service({"region-a": local, "region-b": remote}, local_region="region-a")
     user = Principal(subject="u", username="alice", groups=["team"])
 
     state = await engine.load_existing("api", CONTAINER, user, "team")
     assert state["env_values"] == {"K": "local-val"}
 
 
-async def test_list_fans_out_and_merges_sites():
+async def test_list_fans_out_and_merges_regions():
     from cloudlet_apis.auth import Principal
 
-    # orders is deployed to both sites; web only to site-a.
-    site_a = _ListCluster(
-        "site-a",
+    # orders is deployed to both regions; web only to region-a.
+    region_a = _ListCluster(
+        "region-a",
         [
             _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
             _list_ksvc("web-team", "small", "web-team.ex.com"),
         ],
     )
-    site_b = _ListCluster(
-        "site-b",
+    region_b = _ListCluster(
+        "region-b",
         [
             _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
         ],
     )
-    engine = _workload_service({"site-a": site_a, "site-b": site_b})
+    engine = _workload_service({"region-a": region_a, "region-b": region_b})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     out = await engine.list(CONTAINER, user, "team")
     assert [w.name for w in out] == ["orders", "web"]  # sorted, suffix stripped
 
     orders = next(w for w in out if w.name == "orders")
-    assert orders.sites == ["site-a", "site-b"]  # merged across both sites
+    assert orders.regions == ["region-a", "region-b"]  # merged across both regions
     assert orders.size == "medium"
     assert orders.hostname == "orders-team.ex.com"
     assert orders.status == "Ready"
 
     web = next(w for w in out if w.name == "web")
-    # single-site workload: only the site that has it, status over just that site
-    assert web.sites == ["site-a"]
-    assert web.status == "Ready"  # not a false Failed for the absent site
+    # single-region workload: only the region that has it, status over just that region
+    assert web.regions == ["region-a"]
+    assert web.status == "Ready"  # not a false Failed for the absent region
 
 
-async def test_list_skips_unreachable_site_best_effort():
+async def test_list_skips_unreachable_region_best_effort():
     from cloudlet_apis.auth import Principal
 
     class _Boom:
         def __init__(self, name):
-            self.site = name
+            self.region = name
             self.name = name
 
         def get(self, *a, **k):
-            raise RuntimeError("site down")
+            raise RuntimeError("region down")
 
-    # site-a answers, site-b is down -> merge what site-a returned, don't fail.
-    site_a = _ListCluster(
-        "site-a",
+    # region-a answers, region-b is down -> merge what region-a returned, don't fail.
+    region_a = _ListCluster(
+        "region-a",
         [
             _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
         ],
     )
-    engine = _workload_service({"site-a": site_a, "site-b": _Boom("site-b")})
+    engine = _workload_service({"region-a": region_a, "region-b": _Boom("region-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     out = await engine.list(CONTAINER, user, "team")
     assert [w.name for w in out] == ["orders"]
-    assert out[0].sites == ["site-a"]  # only the reachable site contributes
+    assert out[0].regions == ["region-a"]  # only the reachable region contributes
 
 
 async def test_list_sort_by_created_at():
@@ -1866,13 +1877,13 @@ async def test_list_sort_by_created_at():
         return k
 
     local = _ListCluster(
-        "site-a",
+        "region-a",
         [
             _with_created("aaa-team", "2026-01-02T00:00:00Z"),  # name first, created newer
             _with_created("bbb-team", "2026-01-01T00:00:00Z"),  # name last, created older
         ],
     )
-    engine = _workload_service({"site-a": local}, local_site="site-a")
+    engine = _workload_service({"region-a": local}, local_region="region-a")
     user = Principal(subject="u", username="alice", groups=["team"])
 
     by_name = await engine.list(CONTAINER, user, "team")  # default
@@ -1883,23 +1894,23 @@ async def test_list_sort_by_created_at():
     assert [w.name for w in by_created] == ["bbb", "aaa"]  # oldest first
 
 
-async def test_list_errors_when_all_sites_fail():
+async def test_list_errors_when_all_regions_fail():
     from cloudlet_apis.auth import Principal
 
-    from common.errors import SiteTotalFailure
+    from common.errors import RegionTotalFailure
 
     class _Boom:
         def __init__(self, name):
-            self.site = name
+            self.region = name
             self.name = name
 
         def get(self, *a, **k):
-            raise RuntimeError("site down")
+            raise RuntimeError("region down")
 
-    # Only when *every* site is unreachable is the list failed.
-    engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
+    # Only when *every* region is unreachable is the list failed.
+    engine = _workload_service({"region-a": _Boom("region-a"), "region-b": _Boom("region-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
-    with pytest.raises(SiteTotalFailure):
+    with pytest.raises(RegionTotalFailure):
         await engine.list(CONTAINER, user, "team")
 
 
@@ -1911,7 +1922,7 @@ async def test_accept_rejects_group_caller_is_not_member_of():
     from api.services.container import ContainerService
     from common.errors import ForbiddenError
 
-    engine = _workload_service({"site-a": _FakeCluster("site-a")})
+    engine = _workload_service({"region-a": _FakeCluster("region-a")})
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])  # not 'other'
     spec = ContainerCreate(
@@ -1928,7 +1939,7 @@ class _DeleteCluster:
         from common.config import RegistryConfig
 
         self.name = name
-        self.site = name
+        self.region = name
         self.registry = registry or RegistryConfig()
         self._ksvc = ksvc  # the KSVC dict, or None if absent
         self.deleted = []  # [(ResourceKind, name)]
@@ -1953,8 +1964,8 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
 
     from common.cluster import ResourceKind
 
-    cluster = _DeleteCluster("site-a", _ksvc("container"))
-    engine = _workload_service({"site-a": cluster})
+    cluster = _DeleteCluster("region-a", _ksvc("container"))
+    engine = _workload_service({"region-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await engine.delete(CONTAINER, "app", user, "team")
@@ -1967,21 +1978,21 @@ async def test_delete_missing_workload_is_404():
 
     from common.errors import NotFoundError
 
-    cluster = _DeleteCluster("site-a", None)  # no KSVC present
-    engine = _workload_service({"site-a": cluster})
+    cluster = _DeleteCluster("region-a", None)  # no KSVC present
+    engine = _workload_service({"region-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await engine.delete(CONTAINER, "app", user, "team")
     assert cluster.deleted == []  # nothing deleted when the workload is absent
 
 
-async def test_delete_fails_closed_when_a_site_cannot_be_reached():
-    """An unreachable site cannot prove the workload is gone.
+async def test_delete_fails_closed_when_a_region_cannot_be_reached():
+    """An unreachable region cannot prove the workload is gone.
 
     Reporting 404 there would read as "already deleted" while the workload is
-    still serving on the site that did not answer - and would do so *after*
+    still serving on the region that did not answer - and would do so *after*
     tearing down the build objects, leaving a running function that can never
-    rebuild. Every other cross-site check in the engine fails closed with 503;
+    rebuild. Every other cross-region check in the engine fails closed with 503;
     delete has to as well.
     """
     from cloudlet_apis.auth import Principal
@@ -1989,10 +2000,10 @@ async def test_delete_fails_closed_when_a_site_cannot_be_reached():
     from common.cluster import ResourceKind
     from common.errors import ServiceUnavailableError
 
-    up = _DeleteCluster("site-a", _ksvc("function"))
+    up = _DeleteCluster("region-a", _ksvc("function"))
     down = _DownCluster()
-    down.site = down.name = "site-b"
-    engine = _workload_service({"site-a": up, "site-b": down}, builder=_NullBuilder())
+    down.region = down.name = "region-b"
+    engine = _workload_service({"region-a": up, "region-b": down}, builder=_NullBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(ServiceUnavailableError):
@@ -2002,7 +2013,7 @@ async def test_delete_fails_closed_when_a_site_cannot_be_reached():
     assert not any(kind != ResourceKind.KNATIVE_SERVICE for kind, _ in up.deleted)
 
 
-async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
+async def test_delete_reaps_orphaned_build_objects_once_every_region_answers():
     """A conclusive "gone everywhere" is what licenses the build-object cleanup.
 
     The KSVC being absent does not mean the build objects are: a partial delete
@@ -2015,8 +2026,8 @@ async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
     from common.cluster import ResourceKind
     from common.errors import NotFoundError
 
-    cluster = _DeleteCluster("site-a", None)  # KSVC absent, build objects orphaned
-    engine = _workload_service({"site-a": cluster}, builder=_NullBuilder())
+    cluster = _DeleteCluster("region-a", None)  # KSVC absent, build objects orphaned
+    engine = _workload_service({"region-a": cluster}, builder=_NullBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(NotFoundError):
@@ -2027,8 +2038,8 @@ async def test_delete_reaps_orphaned_build_objects_once_every_site_answers():
     assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
 
 
-async def test_delete_reclaims_every_sites_registry_with_that_sites_token(monkeypatch):
-    """Each site built its own image into its own registry, so each is reclaimed.
+async def test_delete_reclaims_every_regions_registry_with_that_regions_token(monkeypatch):
+    """Each region built its own image into its own registry, so each is reclaimed.
 
     From whichever instance took the request: a delete lands on one API, and the
     peer's repositories have nothing else that would ever address them.
@@ -2045,13 +2056,13 @@ async def test_delete_reclaims_every_sites_registry_with_that_sites_token(monkey
         lambda registry, group, name: calls.append((registry.url, registry.api_token, name)),
     )
 
-    site_a = _DeleteCluster(
-        "site-a", _ksvc("function"), registry=RegistryConfig(url="registry.a", api_token="tok-a")
+    region_a = _DeleteCluster(
+        "region-a", _ksvc("function"), registry=RegistryConfig(url="registry.a", api_token="tok-a")
     )
-    site_b = _DeleteCluster(
-        "site-b", _ksvc("function"), registry=RegistryConfig(url="registry.b", api_token="tok-b")
+    region_b = _DeleteCluster(
+        "region-b", _ksvc("function"), registry=RegistryConfig(url="registry.b", api_token="tok-b")
     )
-    engine = _workload_service({"site-a": site_a, "site-b": site_b}, builder=_NullBuilder())
+    engine = _workload_service({"region-a": region_a, "region-b": region_b}, builder=_NullBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await engine.delete(FUNCTION, "app", user, "team")
@@ -2065,9 +2076,9 @@ async def test_delete_reclaims_every_sites_registry_with_that_sites_token(monkey
 async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
     """An object_name collision resolving to another group must not delete anything.
 
-    The refusal is recorded per site rather than raised inside the fan-out, which
-    would swallow it into a per-site error string and make it indistinguishable
-    from an unreachable site.
+    The refusal is recorded per region rather than raised inside the fan-out, which
+    would swallow it into a per-region error string and make it indistinguishable
+    from an unreachable region.
     """
     from cloudlet_apis.auth import Principal
 
@@ -2076,8 +2087,8 @@ async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
 
     foreign = _ksvc("function")
     foreign["metadata"]["labels"] = {LABEL_GROUP: "other", LABEL_OFFERING: "function"}
-    cluster = _DeleteCluster("site-a", foreign)
-    engine = _workload_service({"site-a": cluster}, builder=_NullBuilder())
+    cluster = _DeleteCluster("region-a", foreign)
+    engine = _workload_service({"region-a": cluster}, builder=_NullBuilder())
     user = Principal(subject="u", username="alice", groups=["team"])
 
     with pytest.raises(NotFoundError):
@@ -2086,9 +2097,9 @@ async def test_delete_of_another_groups_workload_is_404_and_deletes_nothing():
 
 
 async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
-    """Host and name are answered in a single visit per site.
+    """Host and name are answered in a single visit per region.
 
-    Two separate fan-outs cost two cross-site round trips and described two
+    Two separate fan-outs cost two cross-region round trips and described two
     different instants. Merging them must not weaken either verdict, so both
     conflicts and the fail-closed behaviour are pinned here.
     """
@@ -2099,7 +2110,7 @@ async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
 
     # host held by someone else -> conflict, even though the name is free
     taken = {host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}}
-    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=taken)})
+    svc = _workload_service({"region-a": _FakeCluster("region-a", existing=taken)})
     with pytest.raises(ConflictError, match="hostname"):
         await svc.assert_deployable(
             "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
@@ -2107,7 +2118,7 @@ async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
 
     # name already used -> conflict, even though the host is free
     exists = {"app-team": {"metadata": {"name": "app-team"}}}
-    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=exists)})
+    svc = _workload_service({"region-a": _FakeCluster("region-a", existing=exists)})
     with pytest.raises(ConflictError, match="already exists"):
         await svc.assert_deployable(
             "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
@@ -2118,11 +2129,11 @@ async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
         "app-team": {"metadata": {"name": "app-team"}},
         host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}},
     }
-    svc = _workload_service({"site-a": _FakeCluster("site-a", existing=own)})
+    svc = _workload_service({"region-a": _FakeCluster("region-a", existing=own)})
     await svc.assert_deployable("app", "team", svc.deployer.resolve_targets(None), host=host)
 
-    # a site that cannot answer proves neither -> 503, not a silent pass
-    svc = _workload_service({"site-a": _DownCluster()})
+    # a region that cannot answer proves neither -> 503, not a silent pass
+    svc = _workload_service({"region-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_deployable(
             "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
@@ -2152,8 +2163,8 @@ async def test_apply_sets_owner_references_on_derived():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _ApplyCluster("site-a", {"api-team": existing})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -2189,38 +2200,38 @@ async def test_apply_sets_owner_references_on_derived():
 
 
 class _DownCluster:
-    """A site that is unreachable: every read fails with a non-404 error."""
+    """A region that is unreachable: every read fails with a non-404 error."""
 
-    def __init__(self, name="site-a"):
-        self.site = name
+    def __init__(self, name="region-a"):
+        self.region = name
         self.name = name
 
     def get(self, *a, **k):
         raise RuntimeError("connection refused")  # not a NotFoundError
 
 
-async def test_host_check_fails_closed_when_site_unreachable():
-    # An unreachable site can't prove the host is free -> 503, not a silent pass.
+async def test_host_check_fails_closed_when_region_unreachable():
+    # An unreachable region can't prove the host is free -> 503, not a silent pass.
     from common.errors import ServiceUnavailableError
 
-    svc = _workload_service({"site-a": _DownCluster()})
+    svc = _workload_service({"region-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_host_available(
             "h.example.com", "app", "team", svc.deployer.resolve_targets(None)
         )
 
 
-async def test_absent_check_fails_closed_when_site_unreachable():
+async def test_absent_check_fails_closed_when_region_unreachable():
     from common.errors import ServiceUnavailableError
 
-    svc = _workload_service({"site-a": _DownCluster()})
+    svc = _workload_service({"region-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_workload_absent("app", "team", svc.deployer.resolve_targets(None))
 
 
 async def test_host_check_still_available_on_real_404():
-    # A genuine NotFound (404) still reads as available across a reachable site.
-    svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get -> NotFoundError
+    # A genuine NotFound (404) still reads as available across a reachable region.
+    svc = _workload_service({"region-a": _FakeCluster("region-a")})  # get -> NotFoundError
     await svc.assert_host_available(
         "h.example.com", "app", "team", svc.deployer.resolve_targets(None)
     )
@@ -2236,7 +2247,7 @@ async def test_accept_rejects_invalid_spec_synchronously():
     from api.services.container import ContainerService
     from common.errors import ValidationError
 
-    engine = _workload_service({"site-a": _DownCluster()})  # would error if reached
+    engine = _workload_service({"region-a": _DownCluster()})  # would error if reached
     svc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
@@ -2276,7 +2287,7 @@ async def test_update_reuses_existing_without_refetch():
         scaling=Scaling(),
         size="small",
     )
-    engine = _workload_service({"site-a": _ApplyCluster("site-a", {"api-team": existing_ksvc})})
+    engine = _workload_service({"region-a": _ApplyCluster("region-a", {"api-team": existing_ksvc})})
 
     calls = {"n": 0}
     original = engine.load_existing
@@ -2295,14 +2306,14 @@ async def test_update_reuses_existing_without_refetch():
     assert calls["n"] == 0  # reused the passed-in existing, no second fanout
 
 
-async def test_load_existing_unreachable_site_is_503_not_404():
-    # A workload that can't be confirmed absent because the site is down must
+async def test_load_existing_unreachable_region_is_503_not_404():
+    # A workload that can't be confirmed absent because the region is down must
     # surface ServiceUnavailable, not a misleading NotFound.
     from cloudlet_apis.auth import Principal
 
     from common.errors import ServiceUnavailableError
 
-    svc = _workload_service({"site-a": _DownCluster()})  # get() raises RuntimeError
+    svc = _workload_service({"region-a": _DownCluster()})  # get() raises RuntimeError
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
         await svc.load_existing("app", CONTAINER, user, "team")
@@ -2313,7 +2324,7 @@ async def test_load_existing_truly_absent_is_404():
 
     from common.errors import NotFoundError
 
-    svc = _workload_service({"site-a": _FakeCluster("site-a")})  # get() -> NotFoundError
+    svc = _workload_service({"region-a": _FakeCluster("region-a")})  # get() -> NotFoundError
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await svc.load_existing("app", CONTAINER, user, "team")
@@ -2325,37 +2336,37 @@ def _ready_ksvc(name="app-team"):
     return k
 
 
-async def test_get_omits_404_site_and_stays_healthy():
-    # A site that returns a clean 404 (workload not deployed there) is omitted from
-    # the per-site report and does NOT drag the rollup to Failed.
+async def test_get_omits_404_region_and_stays_healthy():
+    # A region that returns a clean 404 (workload not deployed there) is omitted from
+    # the per-region report and does NOT drag the rollup to Failed.
     from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": _ready_ksvc()}),
-            "site-b": _FakeCluster("site-b"),  # 404 here
+            "region-a": _FakeCluster("region-a", existing={"app-team": _ready_ksvc()}),
+            "region-b": _FakeCluster("region-b"),  # 404 here
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
     assert body.status == "Ready"
-    assert [s.site for s in body.sites] == ["site-a"]  # site-b omitted, not Failed
+    assert [s.region for s in body.regions] == ["region-a"]  # region-b omitted, not Failed
 
 
-async def test_get_down_site_still_degrades():
-    # An UNREACHABLE site is different from a 404: it stays visible and degrades.
+async def test_get_down_region_still_degrades():
+    # An UNREACHABLE region is different from a 404: it stays visible and degrades.
     from cloudlet_apis.auth import Principal
 
     engine = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": _ready_ksvc()}),
-            "site-b": _DownCluster("site-b"),  # unreachable
+            "region-a": _FakeCluster("region-a", existing={"app-team": _ready_ksvc()}),
+            "region-b": _DownCluster("region-b"),  # unreachable
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
     assert body.status == "Failed"
-    assert {s.site for s in body.sites} == {"site-a", "site-b"}
+    assert {s.region for s in body.regions} == {"region-a", "region-b"}
 
 
 async def test_get_absent_everywhere_is_404():
@@ -2363,19 +2374,23 @@ async def test_get_absent_everywhere_is_404():
 
     from common.errors import NotFoundError
 
-    engine = _workload_service({"site-a": _FakeCluster("site-a"), "site-b": _FakeCluster("site-b")})
+    engine = _workload_service(
+        {"region-a": _FakeCluster("region-a"), "region-b": _FakeCluster("region-b")}
+    )
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(NotFoundError):
         await engine.get(CONTAINER, "app", user, "team")
 
 
-async def test_get_all_sites_down_is_503():
-    # Can't confirm absence when every site is unreachable -> 503, not a false 404.
+async def test_get_all_regions_down_is_503():
+    # Can't confirm absence when every region is unreachable -> 503, not a false 404.
     from cloudlet_apis.auth import Principal
 
     from common.errors import ServiceUnavailableError
 
-    engine = _workload_service({"site-a": _DownCluster("site-a"), "site-b": _DownCluster("site-b")})
+    engine = _workload_service(
+        {"region-a": _DownCluster("region-a"), "region-b": _DownCluster("region-b")}
+    )
     user = Principal(subject="u", username="alice", groups=["team"])
     with pytest.raises(ServiceUnavailableError):
         await engine.get(CONTAINER, "app", user, "team")
@@ -2403,7 +2418,7 @@ def _existing_container_ksvc():
 
 
 async def test_prune_failure_aborts_update_fail_closed():
-    """A non-404 prune error must abort the site's update: the new spec never goes
+    """A non-404 prune error must abort the region's update: the new spec never goes
     live, so it can't sit alongside the stale, now-unreferenced secret."""
     from cloudlet_apis.auth import Principal
 
@@ -2415,11 +2430,11 @@ async def test_prune_failure_aborts_update_fail_closed():
         def delete(self, kind, name):  # a real API error, not a 404
             raise RuntimeError("boom: API error, not a 404")
 
-    cluster = _PruneFails("site-a", {"api-team": _existing_container_ksvc()})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _PruneFails("region-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    with pytest.raises(SiteTotalFailure):  # single site failed -> total failure
+    with pytest.raises(RegionTotalFailure):  # single region failed -> total failure
         await csvc.update(
             "team",
             "api",
@@ -2445,8 +2460,8 @@ async def test_prune_not_found_is_tolerated():
             self.deleted.append((kind, name))
             raise NotFoundError("already gone")
 
-    cluster = _PruneMissing("site-a", {"api-team": _existing_container_ksvc()})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _PruneMissing("region-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
     await csvc.update(  # must not raise
@@ -2482,8 +2497,8 @@ async def test_prune_runs_before_apply_on_update():
             self.ops.append(("delete", kind))
             return super().delete(kind, name)
 
-    cluster = _OpLog("site-a", {"api-team": _existing_container_ksvc()})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _OpLog("region-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # The fixture KSVC sits on a custom host; an update with no hostname resolves
@@ -2527,7 +2542,7 @@ async def test_accept_update_rejects_taken_host_synchronously():
 
     class _HostTaken:
         def __init__(self, name):
-            self.site = name
+            self.region = name
             self.name = name
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
@@ -2538,7 +2553,7 @@ async def test_accept_update_rejects_taken_host_synchronously():
                 return {"metadata": {"name": name, "labels": {LABEL_WORKLOAD: "shop-team"}}}
             raise NotFoundError("not found")
 
-    csvc = ContainerService(_workload_service({"site-a": _HostTaken("site-a")}))
+    csvc = ContainerService(_workload_service({"region-a": _HostTaken("region-a")}))
     user = Principal(subject="u", username="alice", groups=["team"])
     bg = BackgroundTasks()
     with pytest.raises(ConflictError):
@@ -2570,8 +2585,8 @@ async def test_update_unchanged_host_retires_no_mapping():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _ApplyCluster("site-a", {"api-team": existing})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
     # no hostname -> default host
@@ -2582,23 +2597,23 @@ async def test_update_unchanged_host_retires_no_mapping():
 
 
 async def test_list_total_failure_details_have_message_key():
-    """The list total-failure details share deployer.aggregate's {site, message}
+    """The list total-failure details share deployer.aggregate's {region, message}
     shape so clients parse one envelope."""
     from cloudlet_apis.auth import Principal
 
     class _Boom:
         def __init__(self, name):
-            self.site = name
+            self.region = name
             self.name = name
 
         def get(self, *a, **k):
-            raise RuntimeError("site down")
+            raise RuntimeError("region down")
 
-    engine = _workload_service({"site-a": _Boom("site-a"), "site-b": _Boom("site-b")})
+    engine = _workload_service({"region-a": _Boom("region-a"), "region-b": _Boom("region-b")})
     user = Principal(subject="u", username="alice", groups=["team"])
-    with pytest.raises(SiteTotalFailure) as ei:
+    with pytest.raises(RegionTotalFailure) as ei:
         await engine.list(CONTAINER, user, "team")
-    assert all(set(d) == {"site", "message"} for d in ei.value.details)
+    assert all(set(d) == {"region", "message"} for d in ei.value.details)
 
 
 def test_deployer_close_releases_every_cluster():
@@ -2607,12 +2622,12 @@ def test_deployer_close_releases_every_cluster():
     class _C:
         def __init__(self, name):
             self.name = name
-            self.site = name
+            self.region = name
 
         def close(self):
-            closed.append(self.site)
+            closed.append(self.region)
 
-    d = Deployer(_settings_with_sites())
+    d = Deployer(_settings_with_regions())
     d._clusters = {"a": _C("a"), "b": _C("b")}
     d.close()
     assert sorted(closed) == ["a", "b"]
@@ -2621,8 +2636,8 @@ def test_deployer_close_releases_every_cluster():
 def test_cluster_close_closes_api_client_and_resets():
     from common.cluster import Cluster
 
-    settings = _settings_with_sites()
-    c = Cluster(settings.sites[0], settings)
+    settings = _settings_with_regions()
+    c = Cluster(settings.regions[0], settings)
     calls = {"n": 0}
 
     class _Api:
@@ -2650,18 +2665,18 @@ async def test_get_reports_terminating_during_delete():
     terminating["metadata"]["deletionTimestamp"] = "2026-06-29T12:00:00Z"
     engine = _workload_service(
         {
-            "site-a": _FakeCluster("site-a", existing={"app-team": terminating}),
-            "site-b": _FakeCluster("site-b"),  # 404 here
+            "region-a": _FakeCluster("region-a", existing={"app-team": terminating}),
+            "region-b": _FakeCluster("region-b"),  # 404 here
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     body = await engine.get(CONTAINER, "app", user, "team")
     assert body.status == "Terminating"
-    assert body.sites[0].status == "Terminating"
+    assert body.regions[0].status == "Terminating"
 
 
 def test_overall_status_terminating_precedence():
-    from api.services.sites.deployer import overall_status
+    from api.services.regions.deployer import overall_status
 
     assert overall_status(["Terminating", "Ready"]) == "Terminating"
     assert overall_status(["Terminating", "Deploying"]) == "Terminating"
@@ -2709,11 +2724,11 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
     from api.services.container import ContainerService
     from common.cluster import ResourceKind
 
-    cluster = _BackingFails("site-a", {})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _BackingFails("region-a", {})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    with pytest.raises(SiteTotalFailure):  # single site failed
+    with pytest.raises(RegionTotalFailure):  # single region failed
         await csvc.create("team", ContainerCreate(name="api", image="reg/x:1", port=8080), user)
     assert (ResourceKind.KNATIVE_SERVICE, "api-team") in cluster.deleted
 
@@ -2728,11 +2743,11 @@ async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
     from api.services.container import ContainerService
     from common.cluster import ResourceKind
 
-    cluster = _BackingFails("site-a", {"api-team": _existing_container_ksvc()})
-    csvc = ContainerService(_workload_service({"site-a": cluster}))
+    cluster = _BackingFails("region-a", {"api-team": _existing_container_ksvc()})
+    csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
-    with pytest.raises(SiteTotalFailure):
+    with pytest.raises(RegionTotalFailure):
         await csvc.update(
             "team",
             "api",
@@ -2749,7 +2764,7 @@ def _function_service_with_runtimes(names, builder="python"):
     from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
     from api.services.function import FunctionService
 
-    engine = _workload_service({"site-a": _FakeCluster("site-a")})
+    engine = _workload_service({"region-a": _FakeCluster("region-a")})
     # `builder` is what makes a runtime buildable; pass None for one that is
     # advertised but unusable (the shape of an unmounted runtimes ConfigMap).
     registry = RuntimeRegistry([RuntimeSpec(name=n, builder=builder) for n in names])
@@ -2829,7 +2844,7 @@ async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
     Server-side apply returns the stored object - already trusted enough to
     source the ownerReference every derived resource hangs off - and Knative has
     not reconciled microseconds later, so a follow-up GET buys nothing and costs
-    a cross-site round trip on every site of every deploy.
+    a cross-region round trip on every region of every deploy.
     """
     from cloudlet_apis.auth import Principal
 
@@ -2846,8 +2861,8 @@ async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
             return super().get(kind, name, label_selector, namespace)
 
     _CountingApply.ksvc_gets = 0
-    cluster = _CountingApply("site-a", {})
-    engine = _workload_service({"site-a": cluster})
+    cluster = _CountingApply("region-a", {})
+    engine = _workload_service({"region-a": cluster})
     user = Principal(subject="u", username="alice", groups=["team"])
 
     body, _ = await ContainerService(engine).create(
@@ -2857,7 +2872,7 @@ async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
     # exactly one: the pre-flight absence probe. The post-apply read-back is gone.
     assert _CountingApply.ksvc_gets == 1
     # and the status still comes back, sourced from the apply response
-    assert body.sites[0].status == "Deploying"  # just written, not yet reconciled
+    assert body.regions[0].status == "Deploying"  # just written, not yet reconciled
 
 
 def _thread_recording_cluster(seen):
@@ -2873,7 +2888,7 @@ def _thread_recording_cluster(seen):
     }
 
     class _ThreadRecordingCluster:
-        site = name = "site-a"
+        region = name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             here = threading.current_thread().name
@@ -2891,8 +2906,8 @@ def _thread_recording_cluster(seen):
     return _ThreadRecordingCluster()
 
 
-async def test_get_reads_a_sites_revision_on_the_fanout_thread_and_never_measures():
-    """No per-site, per-request thread pool - and no metrics call at all.
+async def test_get_reads_a_regions_revision_on_the_fanout_thread_and_never_measures():
+    """No per-region, per-request thread pool - and no metrics call at all.
 
     The Revision read used to run in a ThreadPoolExecutor constructed inside the
     fan-out worker - nesting a pool inside the default executor the worker was
@@ -2905,7 +2920,7 @@ async def test_get_reads_a_sites_revision_on_the_fanout_thread_and_never_measure
     from cloudlet_apis.auth import Principal
 
     seen: dict[str, str] = {}
-    engine = _workload_service({"site-a": _thread_recording_cluster(seen)})
+    engine = _workload_service({"region-a": _thread_recording_cluster(seen)})
     user = Principal(subject="u", username="alice", groups=["team"])
     await engine.get(CONTAINER, "app", user, "team")
 
@@ -2919,7 +2934,7 @@ async def test_stats_reads_revision_and_usage_on_the_fanout_thread():
     from cloudlet_apis.auth import Principal
 
     seen: dict[str, str] = {}
-    engine = _workload_service({"site-a": _thread_recording_cluster(seen)})
+    engine = _workload_service({"region-a": _thread_recording_cluster(seen)})
     user = Principal(subject="u", username="alice", groups=["team"])
     await engine.stats(CONTAINER, "app", user, "team")
 
@@ -2928,10 +2943,10 @@ async def test_stats_reads_revision_and_usage_on_the_fanout_thread():
     assert seen["usage"] == seen["ksvc"], "usage read spawned a thread"
 
 
-async def test_get_reads_every_sites_build_concurrently():
-    """Each site's build is read in that site's own fan-out thread.
+async def test_get_reads_every_regions_build_concurrently():
+    """Each region's build is read in that region's own fan-out thread.
 
-    The build is per site now, so a GET pays one build read per site. Run in
+    The build is per region now, so a GET pays one build read per region. Run in
     sequence that is N round trips added to every read; run inside the fan-out
     each rides along with the KSVC read it belongs to.
 
@@ -2966,8 +2981,8 @@ async def test_get_reads_every_sites_build_concurrently():
     spans: dict[str, list[float]] = {}
 
     class _Cluster:
-        def __init__(self, site):
-            self.site = self.name = site
+        def __init__(self, region):
+            self.region = self.name = region
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
@@ -2978,16 +2993,16 @@ async def test_get_reads_every_sites_build_concurrently():
 
     class _SlowBuilder(_NullBuilder):
         def status(self, cluster, name, group):
-            spans[cluster.site] = [time.monotonic()]
+            spans[cluster.region] = [time.monotonic()]
             time.sleep(0.05)
-            spans[cluster.site].append(time.monotonic())
+            spans[cluster.region].append(time.monotonic())
             return BuildStatus(state="Ready")
 
     engine = _workload_service(
-        {"site-a": _Cluster("site-a"), "site-b": _Cluster("site-b")}, builder=_SlowBuilder()
+        {"region-a": _Cluster("region-a"), "region-b": _Cluster("region-b")}, builder=_SlowBuilder()
     )
     user = Principal(subject="u", username="alice", groups=["team"])
     await engine.get(FUNCTION, "app", user, "team")
 
-    (a_start, a_end), (b_start, b_end) = spans["site-a"], spans["site-b"]
-    assert a_start < b_end and b_start < a_end, "the per-site build reads did not overlap"
+    (a_start, a_end), (b_start, b_end) = spans["region-a"], spans["region-b"]
+    assert a_start < b_end and b_start < a_end, "the per-region build reads did not overlap"

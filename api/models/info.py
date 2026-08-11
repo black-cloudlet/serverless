@@ -59,16 +59,16 @@ class StatusVocabulary(BaseModel):
 
     Attributes:
         workload: Values of the workload ``status`` - what a poller switches on.
-        site: Values of a per-site ``status`` inside ``sites[]``.
+        region: Values of a per-region ``status`` inside ``regions[]``.
         terminal: The subset of ``workload`` that a poller should stop on;
             anything else is still in flight.
-        reasons: Values of the workload and per-site ``reason`` fields - the
+        reasons: Values of the workload and per-region ``reason`` fields - the
             machine-readable causes behind a failure. Best-effort: a failure
             whose cause was not recognized carries no reason, only ``error``.
     """
 
     workload: list[str]
-    site: list[str]
+    region: list[str]
     terminal: list[str]
     reasons: list[str] = []
 
@@ -99,7 +99,7 @@ class BaseInfo(BaseModel):
 
     Attributes:
         version: The running API version.
-        sites: The configured site names a workload can target.
+        regions: The configured region names a workload can target.
         sizes: The resource t-shirt sizes.
         scaling: The per-metric autoscaling options and their bounds.
         routeDomain: The base domain; a custom host must be one label under it.
@@ -112,7 +112,7 @@ class BaseInfo(BaseModel):
     """
 
     version: str
-    sites: list[str]
+    regions: list[str]
     sizes: list[str]
     scaling: ScalingCapabilities
     routeDomain: str
