@@ -123,10 +123,8 @@ class Settings(CommonSettings):
     runtimes_file: str = "/etc/serverless/runtimes/runtimes.yaml"
 
     # env: SERVERLESS_SSO__ISSUER, SERVERLESS_SSO__SWAGGER_CLIENT_SECRET, ...
-    # Every SSOConfig field carries a default, so this needs no subclass just to
-    # declare ours. The chart sets the issuer explicitly and so should any other
-    # deployment: the package's default is the platform's realm, and a service
-    # that leaves it unset trusts that realm rather than failing to start.
+    # The chart sets the issuer explicitly and so should any deployment: unset,
+    # the package's default realm is trusted rather than startup failing.
     sso: SSOConfig = Field(default_factory=SSOConfig)
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth
     # rather than shipping a usable default credential. NOT in `sso`: this is the

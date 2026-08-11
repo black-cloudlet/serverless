@@ -183,10 +183,9 @@ sso:
   # Templated, so it can be derived rather than repeated per environment.
   issuer: https://sso.internal/realms/serverless
   audience: ""
-  # The Keycloak client Swagger UI's "Authorize" logs in with - NOT this release
-  # name, which is what it read before and which is not a registered client.
-  # Must match the client id in the realm, or the docs login fails at the
-  # authorize step with an error only Keycloak's log explains.
+  # Must match the client id registered in the realm - NOT this release name,
+  # which is what it read before. A mismatch fails the docs login at the
+  # authorize step, with an error only Keycloak's log explains.
   swaggerClientId: serverless-api-swagger
   groupsClaim: groups
   adminGroups:
@@ -537,17 +536,11 @@ externalSecrets:
         - secretKey: SERVERLESS_STREAM_TICKET_KEY
           key: cloudlet/platforms/serverless
           property: stream-ticket-key
-        # Secret of the Keycloak client Swagger UI's "Authorize" logs in with.
-        # Set it and the API proxies the token exchange server-side, so the
-        # client can be registered CONFIDENTIAL - which is what an SSO policy
-        # that forbids public clients requires. The browser still runs the
-        # authorization leg with PKCE; only the token leg carries this, and it
-        # never leaves the pod.
-        # For a PUBLIC client (PKCE, no secret) DELETE these three lines rather
-        # than leaving the Vault property empty: ESO fails the whole
-        # ExternalSecret when a property is missing, which would take the admin
-        # key and the ticket key down with it. Removed, the login still works -
-        # this entry is only needed where a public client is refused.
+        # Only where the SSO realm forbids PUBLIC clients: the API then proxies
+        # Swagger's token exchange so the client can be CONFIDENTIAL, and this
+        # never leaves the pod (docs/ARCHITECTURE.md - The Swagger "Authorize"
+        # client). Otherwise DELETE these three lines - an empty Vault property
+        # fails the whole ExternalSecret, taking the other keys with it.
         - secretKey: SERVERLESS_SSO__SWAGGER_CLIENT_SECRET
           key: cloudlet/platforms/serverless
           property: swagger-client-secret
