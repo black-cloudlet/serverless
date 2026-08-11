@@ -386,7 +386,8 @@ class FunctionService:
                 branch=spec.branch,
                 path=spec.path,
                 # The git credential goes to every site so any of them can
-                # rebuild; each site gets its own Image (docs/PER-SITE-REGISTRY.md).
+                # rebuild; each site gets its own Image (docs/BUILDING.md -
+                # Active/Active Behaviour).
                 extra_secrets=plan.replicated,
                 site_resources=plan.manifests_by_site,
             ),

@@ -78,7 +78,7 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
 def roll_up_builds(builds: Iterable[BuildStatusView | None]) -> BuildStatusView | None:
     """Collapse the per-site build states into the one the workload reports.
 
-    Every site builds its own copy (docs/PER-SITE-REGISTRY.md), so "the
+    Every site builds its own copy (docs/BUILDING.md - Active/Active Behaviour), so "the
     function's build" is no longer a single thing. A failure anywhere wins, and
     carries its own message: it is the actionable state, and reporting ``Ready``
     because the other site managed it would hide the site that did not. Failing

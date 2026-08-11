@@ -15,7 +15,7 @@ so it is *checked*: every site must build into its own registry (the chart
 refuses to render otherwise), and a controller that finds another site on its
 registry host refuses to sweep - two sites pruning one repository would each
 protect only their own serving digest and delete the other's
-(docs/PER-SITE-REGISTRY.md). And *reconciled*, unlike the API's fire-once
+(docs/BUILDING.md - Registry tag GC). And *reconciled*, unlike the API's fire-once
 cleanup on delete: garbage is re-derived from live state every sweep, so a
 crash or an unreachable registry leaks nothing permanently - the next sweep
 collects it.
@@ -165,7 +165,7 @@ class TagGC:
             return (
                 f"site '{site}' shares registry {self._registry.host} with "
                 f"{', '.join(sorted(sharing))}; every site must build into its own "
-                "registry (docs/PER-SITE-REGISTRY.md), and pruning a shared one "
+                "registry (docs/BUILDING.md - Registry layout), and pruning a shared one "
                 "would delete tags a peer site still serves"
             )
         if not self._registry.delete_on_function_delete:

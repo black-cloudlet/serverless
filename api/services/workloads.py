@@ -675,7 +675,7 @@ class WorkloadService:
 
         Per site, because each site's tag moves independently - which is what
         makes moving an install onto per-site registries a re-apply rather than
-        a migration (docs/PER-SITE-REGISTRY.md - Migration).
+        a migration (docs/BUILDING.md - Moving a function's repository).
 
         A no-op in the normal case, which is what the tag comparison buys - the
         cost is one GET per site per write.

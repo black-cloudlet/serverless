@@ -71,7 +71,7 @@ api:
     annotations: {}
 
 # Rolls each finished build's digest onto the function's Knative Service in this
-# site (docs/PER-SITE-REGISTRY.md). Serves no HTTP, so no Service and no Route.
+# site (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no Service and no Route.
 buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.

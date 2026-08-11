@@ -17,7 +17,7 @@ data:
   {{- $hosts := dict }}
   {{- range .Values.sites }}
   {{- if not (and .registry .registry.url) }}
-  {{- fail (printf "serverless-api: site %q must set `registry.url` - every site builds into its own registry, and sharing one would let a site's tag GC delete images a peer still serves (docs/PER-SITE-REGISTRY.md)" .name) }}
+  {{- fail (printf "serverless-api: site %q must set `registry.url` - every site builds into its own registry, and sharing one would let a site's tag GC delete images a peer still serves (docs/BUILDING.md - Registry tag GC)" .name) }}
   {{- end }}
   {{- $host := regexReplaceAll "^https?://" (trimSuffix "/" .registry.url) "" }}
   {{- if hasKey $hosts $host }}

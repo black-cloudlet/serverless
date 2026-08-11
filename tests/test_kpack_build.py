@@ -723,7 +723,7 @@ async def test_every_site_builds_and_every_site_gets_the_credential():
     await svc.create("payments", _create_spec(), _principal())
 
     # every site builds what it runs, into its own registry - no two sites
-    # contend for one tag (docs/PER-SITE-REGISTRY.md)
+    # contend for one tag (docs/BUILDING.md - Registry layout)
     assert len(_applied_kind(local, "Image")) == 1
     assert len(_applied_kind(remote, "Image")) == 1
     assert len(_applied_kind(remote, "Service")) == 1

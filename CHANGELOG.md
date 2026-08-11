@@ -18,6 +18,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **docs/PER-SITE-REGISTRY.md is retired.** It was the change record for the
+  per-site registry redesign, and the system it described is long since the
+  system BUILDING.md describes - the durable parts it alone held (why the KSVC
+  image resolves per site, why a site's registry lives in the shared `sites[]`
+  list, the no-NetworkPolicy note, the peer-registry reachability question)
+  moved into BUILDING.md (Registry layout, Open Questions), and every
+  cross-reference in code, chart and docs now points at the BUILDING.md
+  section that answers it. The migration it recorded is complete.
 - **`corsAllowOrigins` entries are rendered with `tpl`**, so an origin can be
   derived (e.g. `https://portal.{{ .Values.global.baseDomain }}`) instead of
   repeated per environment. Each entry is templated before being JSON-encoded,
