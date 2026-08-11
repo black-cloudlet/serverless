@@ -125,4 +125,9 @@ if __name__ == "__main__":
 
     settings = get_settings()
 
-    uvicorn.run("api.main:app", host="0.0.0.0", port=settings.port)  # noqa: S104
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",  # noqa: S104
+        port=settings.port,
+        timeout_graceful_shutdown=10,
+    )

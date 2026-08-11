@@ -675,7 +675,7 @@ class WorkloadService:
 
         Per site, because each site's tag moves independently - which is what
         makes moving an install onto per-site registries a re-apply rather than
-        a migration (docs/PER-SITE-REGISTRY.md - Migration).
+        a migration (docs/BUILDING.md - Moving a function's repository).
 
         A no-op in the normal case, which is what the tag comparison buys - the
         cost is one GET per site per write.
@@ -1339,13 +1339,19 @@ class WorkloadService:
         container: str,
         since_seconds: int | None,
         limit_bytes: int | None,
+        tail_lines: int | None = None,
     ) -> PodLogSnapshot:
         """One pod's log as it stands, read once (``follow=false``).
 
         The non-streaming half of :meth:`stream_pod_logs`, through the same
         authorization, so the pod-ownership rule cannot differ between them. What
         it returns is bounded by what the node still holds - there is no history
-        behind that, whichever way it is read.
+        behind that, whichever way it is read - and further by the configured
+        snapshot bounds: the newest ``snapshot_tail_lines`` lines, within
+        ``snapshot_max_bytes``. Bounded *here*, not left to the caller, because
+        the node can hold tens of megabytes and this read shares a process with
+        the health probes: an unbounded snapshot parsed into one response is
+        how a polling client makes the API unready.
 
         No stream slot: the read ends, so it is not a stream and must not be
         rationed as one.
@@ -1358,7 +1364,10 @@ class WorkloadService:
             pod: The pod to read.
             container: The pod container to read.
             since_seconds: Only lines newer than this, if set.
-            limit_bytes: Cap on the bytes read, if set.
+            limit_bytes: Cap on the bytes read, if set; clamped to the
+                configured ceiling either way.
+            tail_lines: Newest lines wanted, if set; clamped to the configured
+                snapshot bound either way.
 
         Returns:
             The snapshot.
@@ -1373,28 +1382,39 @@ class WorkloadService:
         cluster = self.deployer.local_cluster()
         authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
 
-        def read() -> tuple[str | None, str]:
+        config = self.capacity.config
+        # tail_lines picks the *newest* lines; limit_bytes truncates from the
+        # start of what was picked. Applied together, the tail does the real
+        # bounding and the byte ceiling backstops pathological line lengths.
+        capped_bytes = min(limit_bytes or config.snapshot_max_bytes, config.snapshot_max_bytes)
+        capped_tail = min(tail_lines or config.snapshot_tail_lines, config.snapshot_tail_lines)
+
+        def read() -> tuple[str | None, list[LogLine]]:
             revision = authorize()
-            return revision, cluster.pod_logs(
+            text = cluster.pod_logs(
                 pod,
                 container=container,
                 since_seconds=since_seconds,
-                limit_bytes=limit_bytes,
+                limit_bytes=capped_bytes,
+                tail_lines=capped_tail,
             )
+            # Split exactly as the stream splits, so a client renders one shape
+            # whichever way it read the log. On this thread, not the event
+            # loop: even bounded, it is regex-and-model work per line.
+            return revision, [
+                LogLine(
+                    pod=pod,
+                    container=container,
+                    revision=revision,
+                    time=stamp,
+                    message=message,
+                )
+                for stamp, message in (
+                    logs_stream.split_timestamp(line) for line in text.splitlines()
+                )
+            ]
 
-        revision, text = await asyncio.to_thread(read)
-        # Split exactly as the stream splits, so a client renders one shape
-        # whichever way it read the log.
-        lines = [
-            LogLine(
-                pod=pod,
-                container=container,
-                revision=revision,
-                time=stamp,
-                message=message,
-            )
-            for stamp, message in (logs_stream.split_timestamp(line) for line in text.splitlines())
-        ]
+        revision, lines = await asyncio.to_thread(read)
         return PodLogSnapshot(
             name=name,
             group=group,
@@ -1416,6 +1436,7 @@ class WorkloadService:
         pod: str,
         container: str,
         since_seconds: int | None,
+        tail_lines: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Follow one of the workload's pods' logs, on the local site.
 
@@ -1438,6 +1459,11 @@ class WorkloadService:
             container: The pod container to read.
             since_seconds: How far back the log starts, so a client sees recent
                 context rather than only what arrives after it connected.
+            tail_lines: Start at the newest this-many lines instead, however old
+                they are - what a viewer opening an *existing* pod wants, since
+                a pod quiet for longer than any time window would otherwise
+                show nothing until it next writes. Clamped to the snapshot
+                bound: it is the same "history a client gets at once".
 
         Returns:
             The event stream, beginning with an ``open`` event.
@@ -1470,14 +1496,18 @@ class WorkloadService:
             revision=revision,
         )
 
+        config = self.capacity.config
         return _slot_guarded(
             slot,
             logs_stream.follow(
                 cluster=cluster,
                 capacity=self.capacity,
-                config=self.capacity.config,
+                config=config,
                 opening=opening,
                 since_seconds=since_seconds,
+                tail_lines=(
+                    min(tail_lines, config.snapshot_tail_lines) if tail_lines is not None else None
+                ),
             ),
         )
 

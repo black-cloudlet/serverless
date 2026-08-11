@@ -7,6 +7,75 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- **`tailLines` on `GET .../logs/pods/{pod}`, for the follow and the snapshot
+  alike.** A follow opened with `sinceSeconds` alone shows nothing for a pod
+  that has been quiet longer than the window - the very pod a user opens the
+  Logs tab on. `tailLines` starts at the newest this-many lines *however old
+  they are*, then keeps following; it is clamped to `stream.snapshotTailLines`
+  either way. The console now opens follows with it.
+
+### Changed
+
+- **docs/PER-SITE-REGISTRY.md is retired.** It was the change record for the
+  per-site registry redesign, and the system it described is long since the
+  system BUILDING.md describes - the durable parts it alone held (why the KSVC
+  image resolves per site, why a site's registry lives in the shared `sites[]`
+  list, the no-NetworkPolicy note, the peer-registry reachability question)
+  moved into BUILDING.md (Registry layout, Open Questions), and every
+  cross-reference in code, chart and docs now points at the BUILDING.md
+  section that answers it. The migration it recorded is complete.
+- **`corsAllowOrigins` entries are rendered with `tpl`**, so an origin can be
+  derived (e.g. `https://portal.{{ .Values.global.baseDomain }}`) instead of
+  repeated per environment. Each entry is templated before being JSON-encoded,
+  so rendered text cannot break the encoding.
+
+### Fixed
+
+- **The chart's default image references match what CI actually publishes.**
+  `api.repository` and `buildController.repository` defaulted to
+  `serverless/serverless-api` and `serverless/serverless-build-controller` -
+  paths release.yml never pushes to, so a default install pulled images that
+  do not exist. `image.registry` now carries the org (`ghcr.io/black-cloudlet`)
+  and the repositories are `serverless/api` and `serverless/build-controller`,
+  matching what the release publishes; re-homing to a mirror is one registry
+  override.
+- **A building function no longer reports `ImagePullFailed` next to
+  `Building`.** The build-first fold rewrote a failing site row to `Building`
+  and cleared its message, but left the derived `reason` on the row - and the
+  headline promotes the first per-site reason, so every surface read
+  `Building` + `ImagePullFailed` during a perfectly normal first build. The
+  reason is cleared with the message: both describe the pull failure the
+  running build explains.
+- **Shutdown is bounded (10s) instead of waiting on streams that never end.**
+  Uvicorn's graceful shutdown waits for in-flight requests, and an SSE stream
+  is an in-flight request that finishes by design only when its client leaves -
+  so every restart (probe kill, deploy, node drain) hung for the pod's whole
+  termination grace period and ended in SIGKILL (exit 137) with the streams
+  cut mid-event anyway. Now ordinary requests get ten seconds to drain, then
+  the streams are closed deliberately; their clients reconnect on their own.
+- **A container writing without newlines can no longer grow the API's memory.**
+  The line-reassembly buffer behind a followed log held a partial line until
+  its newline arrived - which for binary spew or a runaway single-line dump is
+  never. Past 1 MiB the partial line is delivered in pieces instead of held.
+
+- **The log snapshot (`?follow=false`) is bounded by the API, and no longer
+  blocks the event loop.** The node can hold tens of megabytes for one
+  container, and the snapshot read, parsed and serialized all of it into a
+  single response on the event loop - a client polling it (the console's
+  fallback when a stream cannot be opened does, every 5s) starved the health
+  probes until the pod went unready and was restarted, which killed every open
+  stream and pushed more clients onto the same fallback. A snapshot now
+  returns the newest `stream.snapshotTailLines` (2000) lines within
+  `stream.snapshotMaxBytes` (2 MiB; a caller's `limitBytes` is clamped to it),
+  and the per-line parsing runs on a worker thread.
+- **The health probes get explicit timings.** The probe endpoints share one
+  event loop with the SSE streams, and the kubelet's 1s default timeout with
+  3 failures flapped the pod unready - and then restarted it - under exactly
+  the load streaming produces. Both probes now allow 5s per response, and
+  liveness tolerates a minute of misses before killing the pod's open streams.
+
 ### Changed
 
 - **BREAKING: the status contract now follows Kubernetes' shape.** Three

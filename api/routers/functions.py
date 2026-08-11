@@ -221,16 +221,18 @@ async def stream_function_pod_logs(
     container: str = "user-container",
     sinceSeconds: Annotated[int | None, Query(gt=0)] = None,
     limitBytes: Annotated[int | None, Query(gt=0)] = None,
+    tailLines: Annotated[int | None, Query(gt=0)] = None,
 ) -> Response:
     """Follow one of the function's pods' logs, or read what it holds right now.
 
     Current site only, either way: Kubernetes keeps no log buffer beyond the node
     that wrote it. Get ``pod`` from ``GET .../{name}/pods``.
 
-    Following is the default. ``follow=false`` returns a single JSON snapshot of
-    whatever the node still holds - bounded by its log rotation, so it is the
-    recent past and never the whole history - for a caller that cannot hold a
-    connection open. ``limitBytes`` applies only to that form.
+    Following is the default. ``follow=false`` returns a single JSON snapshot -
+    the newest lines the node still holds, within the deployment's snapshot
+    bounds (``stream.snapshotTailLines`` / ``snapshotMaxBytes``) - for a caller
+    that cannot hold a connection open. ``limitBytes`` applies only to that
+    form, and is clamped to the deployment's ceiling.
 
     A followed stream ends with an ``end`` event when the pod's log does - a
     scale-down or a new revision, which on Knative is routine and is not reported
@@ -250,7 +252,11 @@ async def stream_function_pod_logs(
         follow: Stream the log (default), or return what the node holds now.
         container: The pod container to read (default the user-container).
         sinceSeconds: Start the log this many seconds back.
-        limitBytes: Cap the bytes read; ``follow=false`` only.
+        limitBytes: Cap the bytes read; ``follow=false`` only, clamped to the
+            deployment's snapshot ceiling.
+        tailLines: Start at the newest this-many lines instead, however old
+            they are - the right opening for a pod that has been quiet longer
+            than any time window. Clamped to the deployment's snapshot bound.
 
     Returns:
         The event stream, or the snapshot.
@@ -264,10 +270,17 @@ async def stream_function_pod_logs(
             container=container,
             since_seconds=sinceSeconds,
             limit_bytes=limitBytes,
+            tail_lines=tailLines,
         )
     return sse.stream(
         await svc.stream_pod_logs(
-            name, group, user, pod=pod, container=container, since_seconds=sinceSeconds
+            name,
+            group,
+            user,
+            pod=pod,
+            container=container,
+            since_seconds=sinceSeconds,
+            tail_lines=tailLines,
         )
     )
 

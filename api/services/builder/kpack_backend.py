@@ -164,7 +164,7 @@ class KpackBackend:
         The git Secret is replicated; the Image and ServiceAccount are per site.
         Each site pushes to its own registry, so the objects are identical but
         for the tag and the cache reference, and no two sites contend for one
-        repository (docs/PER-SITE-REGISTRY.md).
+        repository (docs/BUILDING.md - Registry layout).
 
         Args:
             req: The build request.

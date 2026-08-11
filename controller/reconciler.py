@@ -1,7 +1,7 @@
 """The control loop: watch local kpack Images, roll their digests onto the local KSVC.
 
 Both ends are local, and for the same reason: a site builds what it runs and
-pushes to its own registry (docs/PER-SITE-REGISTRY.md), so the Image is here
+pushes to its own registry (docs/BUILDING.md - Active/Active Behaviour), so the Image is here
 because this site built it, and the digest it produced is only pullable here.
 Nothing in this loop reads or writes a peer cluster.
 

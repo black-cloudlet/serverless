@@ -73,6 +73,15 @@ class StreamConfig(BaseModel):
             a client that never closes its side.
         ticket_ttl_seconds: How long a stream ticket stays valid. Only ever
             spent opening one connection, so this is a window, not a session.
+        snapshot_tail_lines: Newest lines a ``follow=false`` log snapshot
+            returns. Applied always, whatever the caller asks: the node may
+            hold tens of megabytes, and an unbounded snapshot is parsed into
+            one response - large enough, that is the process's memory and the
+            event loop's time, which is exactly what fails the health probes.
+        snapshot_max_bytes: Hard ceiling on the bytes one snapshot reads. A
+            caller's ``limitBytes`` is clamped to it, and it applies when the
+            caller sets none - a backstop for pathological line lengths, where
+            a line cap alone bounds nothing.
     """
 
     max_concurrent: int = Field(32, ge=1)
@@ -83,6 +92,8 @@ class StreamConfig(BaseModel):
     queue_size: int = Field(1000, ge=1)
     max_seconds: int = Field(3600, ge=1)
     ticket_ttl_seconds: int = Field(60, ge=1)
+    snapshot_tail_lines: int = Field(2000, ge=1)
+    snapshot_max_bytes: int = Field(2 * 1024 * 1024, ge=1)
 
     @property
     def max_workers(self) -> int:

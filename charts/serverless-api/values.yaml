@@ -14,7 +14,7 @@ name: serverless-api
 # the pull policy once. Repository and per-deployment overrides are in `api` and
 # `buildController` below.
 image:
-  registry: registry.internal
+  registry: ghcr.io/black-cloudlet
   # Empty takes the chart's appVersion, so a released chart pins its own images.
   tag: ""
   pullPolicy: IfNotPresent
@@ -22,7 +22,7 @@ image:
 # The REST API (docs/ARCHITECTURE.md). The only deployment clients reach, hence
 # the Service and Route.
 api:
-  repository: serverless/serverless-api
+  repository: serverless/api
   # Overrides image.tag for this deployment only; normally left empty.
   tag: ""
   replicaCount: 2
@@ -71,12 +71,12 @@ api:
     annotations: {}
 
 # Rolls each finished build's digest onto the function's Knative Service in this
-# site (docs/PER-SITE-REGISTRY.md). Serves no HTTP, so no Service and no Route.
+# site (docs/BUILDING.md - Digest propagation). Serves no HTTP, so no Service and no Route.
 buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
   enabled: true
-  repository: serverless/serverless-build-controller
+  repository: serverless/build-controller
   tag: ""
   # More is safe but redundant: replicas converge rather than race, which is why
   # there is no leader election (docs/BUILDING.md - Convergence rules).
@@ -113,7 +113,7 @@ buildController:
     intervalSeconds: 21600
     # Newest per-build tags kept beyond the protected ones; matches
     # build.history.success's default, so images track the Build history.
-    keepBuilds: 3
+    keepBuilds: 0
 
 namespaces:
   # The API itself. Builds and workloads live in `workloads` below.
@@ -132,7 +132,12 @@ namespaces:
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
+# Each entry is rendered with tpl, so an origin can be derived from other
+# values instead of repeated per environment. Origins must be the exact form
+# the browser sends: scheme + host (+ port), no trailing slash - the API
+# matches them verbatim.
 corsAllowOrigins: []
+#  - https://portal.{{ .Values.global.baseDomain }}
 #  - https://acme.service-now.com
 
 # Bounds on the Server-Sent Events endpoints (/pods, /logs/pods/{pod}, /stats/stream).
@@ -165,6 +170,15 @@ stream:
   # Lifetime of a stream ticket. It is spent opening one connection, so this is
   # a window, not a session.
   ticketTtlSeconds: 60
+  # Bounds on the one-shot log snapshot (`?follow=false`). The node may hold
+  # tens of megabytes for one container, and an unbounded snapshot is parsed
+  # into a single response - large enough, that is the API's memory and the
+  # event loop's time, which is exactly what fails the health probes when a
+  # client polls it. A snapshot returns the newest `snapshotTailLines` lines,
+  # and never reads more than `snapshotMaxBytes` (a caller's `limitBytes` is
+  # clamped to it) - a backstop for pathological line lengths.
+  snapshotTailLines: 2000
+  snapshotMaxBytes: 2097152
 
 sso:
   # Templated, so it can be derived rather than repeated per environment.
@@ -357,8 +371,8 @@ build:
   # keeping a couple of: their pods hold the per-phase logs.
   # docs/BUILDING.md - Build history.
   history:
-    success: 3
-    failed: 3
+    success: 0
+    failed: 1
 
   # Build pod requests/limits. A build is far heavier than the function it
   # produces; without these it is BestEffort and evicted first under pressure.

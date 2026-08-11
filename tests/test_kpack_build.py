@@ -457,6 +457,7 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
             site="a",
             status="Failed",
             revision="fn-team-00001",
+            reason="ImagePullFailed",
             message='Unable to fetch image "reg/team/fn:main": not found',
         ),
         SiteStatus(site="b", status="Ready", revision="fn-team-00001"),
@@ -466,6 +467,10 @@ def test_a_running_build_folds_into_the_per_site_rows_too():
     )
 
     assert folded[0].status == "Building"
+    # reason goes with the message: both describe the pull failure the running
+    # build explains, and a reason left here is what the headline promotes -
+    # which read as `Building` + `ImagePullFailed` on every surface.
+    assert folded[0].reason is None
     assert folded[0].message is None
     assert folded[0].revision == "fn-team-00001"  # everything else is untouched
     assert folded[1].status == "Ready"  # a site that isn't failing is left alone
@@ -718,7 +723,7 @@ async def test_every_site_builds_and_every_site_gets_the_credential():
     await svc.create("payments", _create_spec(), _principal())
 
     # every site builds what it runs, into its own registry - no two sites
-    # contend for one tag (docs/PER-SITE-REGISTRY.md)
+    # contend for one tag (docs/BUILDING.md - Registry layout)
     assert len(_applied_kind(local, "Image")) == 1
     assert len(_applied_kind(remote, "Image")) == 1
     assert len(_applied_kind(remote, "Service")) == 1

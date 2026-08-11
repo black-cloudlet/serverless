@@ -58,7 +58,9 @@ class FakeStreams:
             pods=[PodInfo(pod="foo-team-00001-abcde", phase="Running", ready=True)],
         )
 
-    async def pod_logs(self, name, group, user, *, pod, container, since_seconds, limit_bytes):
+    async def pod_logs(
+        self, name, group, user, *, pod, container, since_seconds, limit_bytes, tail_lines=None
+    ):
         self.seen = dict(
             name=name,
             group=group,
@@ -67,6 +69,7 @@ class FakeStreams:
             container=container,
             since_seconds=since_seconds,
             limit_bytes=limit_bytes,
+            tail_lines=tail_lines,
             follow=False,
         )
         if self.raises:
@@ -81,7 +84,9 @@ class FakeStreams:
             lines=[LogLine(pod=pod, container=container, message="from the snapshot")],
         )
 
-    async def stream_pod_logs(self, name, group, user, *, pod, container, since_seconds):
+    async def stream_pod_logs(
+        self, name, group, user, *, pod, container, since_seconds, tail_lines=None
+    ):
         self.seen = dict(
             name=name,
             group=group,
@@ -89,6 +94,7 @@ class FakeStreams:
             pod=pod,
             container=container,
             since_seconds=since_seconds,
+            tail_lines=tail_lines,
         )
         if self.raises:
             raise self.raises
@@ -472,13 +478,24 @@ def test_follow_true_is_still_a_stream(value):
 
 def test_the_snapshot_passes_its_own_parameters_through():
     svc = FakeStreams()
-    build(svc).get(f"{LOGS}?follow=false&container=queue-proxy&sinceSeconds=30&limitBytes=4096")
+    build(svc).get(
+        f"{LOGS}?follow=false&container=queue-proxy&sinceSeconds=30&limitBytes=4096&tailLines=7"
+    )
 
     assert svc.seen["follow"] is False
     assert svc.seen["container"] == "queue-proxy"
     assert svc.seen["since_seconds"] == 30
     # limitBytes is meaningful only here - a follow has no total to cap.
     assert svc.seen["limit_bytes"] == 4096
+    assert svc.seen["tail_lines"] == 7
+
+
+def test_the_follow_takes_tail_lines_too():
+    """tailLines opens the follow at the pod's recent history, however old."""
+    svc = FakeStreams(events=[])
+    build(svc).get(f"{LOGS}?tailLines=100")
+
+    assert svc.seen["tail_lines"] == 100
 
 
 def test_a_snapshot_of_a_pod_that_is_not_ours_is_the_same_404_as_the_stream():

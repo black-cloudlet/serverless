@@ -190,7 +190,12 @@ class _Tail:
 
 
 def _read(
-    cluster: Cluster, tail: _Tail, opening: PodLogStreamOpen, since: int | None, buf: _Buffer
+    cluster: Cluster,
+    tail: _Tail,
+    opening: PodLogStreamOpen,
+    since: int | None,
+    tail_lines: int | None,
+    buf: _Buffer,
 ) -> None:
     """Follow the pod's log into the buffer (runs on a stream-pool thread).
 
@@ -201,7 +206,7 @@ def _read(
     """
     try:
         follow = cluster.follow_pod_logs(
-            opening.pod, container=opening.container, since_seconds=since
+            opening.pod, container=opening.container, since_seconds=since, tail_lines=tail_lines
         )
     except Exception as exc:  # noqa: BLE001 - reported to the client, never raised
         logger.warning("could not follow pod '%s': %s", opening.pod, exc)
@@ -243,6 +248,7 @@ async def follow(
     config: StreamConfig,
     opening: PodLogStreamOpen,
     since_seconds: int | None,
+    tail_lines: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Stream one pod's log until it ends, the client leaves, or the cap passes.
 
@@ -254,6 +260,9 @@ async def follow(
             authorized against.
         since_seconds: How far back the log starts, so a client sees recent
             context rather than only what arrives after it connected.
+        tail_lines: Start at the newest this-many lines instead, however old
+            they are - the right opening for a pod that has been quiet longer
+            than any time window.
 
     Yields:
         The ``open`` event, then ``log``/``warning`` events and heartbeats, and a
@@ -271,7 +280,9 @@ async def follow(
     # it. Those are exactly the streams that leak threads.
     # `start_on`, not a bare run_in_executor: the follower is the longest-lived
     # worker in the system, and its log lines need the request's correlation id.
-    tail.future = start_on(capacity.executor, _read, cluster, tail, opening, since_seconds, buf)
+    tail.future = start_on(
+        capacity.executor, _read, cluster, tail, opening, since_seconds, tail_lines, buf
+    )
     try:
         yield StreamEvent("open", opening)
 

@@ -106,7 +106,7 @@ class BuildPlan:
         per_site: The build objects each site applies, keyed by site name. Per
             site because each pushes to its own registry, so the tag differs;
             one shared tag would have two clusters racing to push it
-            (docs/PER-SITE-REGISTRY.md).
+            (docs/BUILDING.md - Registry layout).
     """
 
     replicated: list[dict]

@@ -247,6 +247,32 @@ override over the platform default, and every cluster client carries the answer 
 the one value that would silently be the wrong registry there. A site that names no
 registry of its own inherits the default, which is exactly the single-registry install.
 
+### Why per-site resolution sits where it does
+
+Two placement decisions carry the per-site design, and both are about which process
+composes what:
+
+**The KSVC image is resolved per site, inside the per-cluster fan-out.** A function's
+image is `{site registry base}/{group}/{name}:{branch}` - a different string per site -
+so the apply composes the KSVC inside the per-cluster closure rather than once outside
+it. That is only the create path: afterwards the field belongs to each site's build
+controller (BUILDING.md: Who writes the ksvc image), which pins a digest from its own
+registry - per-site divergence is carried by the mechanism that already owned the field.
+A container is unaffected: its image is the caller's, one value everywhere.
+
+**A site's registry lives in the shared `sites[]` list, never in per-release values.**
+The API instance handling a write composes manifests for *every* site, so it must know
+every site's registry - not just its own. `sites[]` is the same ConfigMap in every
+cluster, which is also what keeps the convergence rules (BUILDING.md: Convergence rules)
+intact: two instances in two clusters compose the same `Image` for site X because they
+read site X's registry from the same list. Secrets stay out of it - the list is
+ConfigMap data, so a site override carries `url`/`organization`/`repository` only.
+
+**No NetworkPolicy follows from any of this.** A registry is never a Service or a
+Route - always off-cluster - so the `allow-egress-external` rule (off-cluster allowed,
+only the in-cluster CIDRs carved out) covers each site's registry and the shared kpack
+registry with nothing added.
+
 ### Moving a function's repository
 
 `spec.tag` is **immutable on a kpack `Image`** - `validateTag` compares against the
@@ -980,7 +1006,7 @@ like the controller:
 pruning a repository protects only its *own* site's serving digest; two sites on one
 registry would each delete tags the other still serves. So the chart requires
 `sites[].registry.url` on every site and refuses to render two sites on one registry
-(docs/PER-SITE-REGISTRY.md), and the controller independently refuses to sweep - loudly,
+(BUILDING.md: Registry layout), and the controller independently refuses to sweep - loudly,
 naming the sites and the shared host - when its resolved registry matches another
 site's, as the backstop for a hand-rolled config.
 
@@ -1418,14 +1444,20 @@ Either form is attached per build through `spec.build.services`, alongside the C
    convergence rule it must follow is recorded above (rule 4); what is undecided is the
    endpoint's auth model (per-function shared secret vs. provider signature) and how a
    push maps to a function when several functions build from one monorepo.
+6. **Peer-registry reachability** - a function delete reclaims repositories in *every*
+   site's registry from whichever API instance took the request (BUILDING.md: Registry
+   cleanup on delete), so the internal network must route each site's registry host
+   from every cluster. If it does not, deletes leak repositories in the peer site and a
+   different reclamation story is needed.
 
 ### Resolved
 
 - **One registry, one builder site** - reversed. Every site now builds what it runs, into
-  its own registry, and publishes only to itself (BUILDING.md: Active/Active Behaviour).
-  The rationale, the alternatives rejected and the migration are recorded in
-  docs/PER-SITE-REGISTRY.md. The cost is that two sites run different bytes for the same
-  commit; what it buys is that no site depends on another to build, serve, or recover.
+  its own registry, and publishes only to itself (BUILDING.md: Active/Active Behaviour;
+  the split and its rationale are under BUILDING.md: Registry layout). The migration is
+  complete, and its record retired with it. The cost is that two sites run different
+  bytes for the same commit; what it buys is that no site depends on another to build,
+  serve, or recover.
 
 - **`javascript` -> `node` rename** - done. The runtimes list is `python`, `go`, `node`
   across the chart values, the runtimes ConfigMap, the contract docstring and the tests.
