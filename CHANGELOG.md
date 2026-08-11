@@ -19,7 +19,26 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   overrides and values keys (including `global.site` -> `global.region`) at
   rollout.
 
+### Changed (dependencies)
+
+- **cloudlet-apis floor raised to `>=0.4`.** The API embeds `SSOConfig`
+  directly now (every field defaults, so there is no `SSOSettings` subclass),
+  reads the Swagger client secret off it, and uses the renamed `SSOGroup`.
+  None of that exists in 0.3, and the API does not start against it.
+
 ### Added
+
+- **`SERVERLESS_SSO__SWAGGER_CLIENT_SECRET`, for an SSO realm that forbids public
+  clients.** Swagger UI's "Authorize" logs in with Auth Code + PKCE, which
+  needs no secret - which is exactly what makes its Keycloak client a *public*
+  one, and what a policy against public clients blocks. The API itself is a
+  resource server and registers no client at all, so only the docs login is
+  affected. Set this (Vault property `swagger-client-secret`, via ESO) and the
+  API proxies the token exchange at `POST /auth/token`, adding the secret
+  server-side so the client can be registered **confidential**; the browser
+  still runs the authorization leg with PKCE and never sees it. Unset, the
+  public-client flow is unchanged, which is what local development wants. See
+  docs/ARCHITECTURE.md - The Swagger "Authorize" client.
 
 - **`tailLines` on `GET .../logs/pods/{pod}`, for the follow and the snapshot
   alike.** A follow opened with `sinceSeconds` alone shows nothing for a pod
@@ -44,6 +63,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   so rendered text cannot break the encoding.
 
 ### Fixed
+
+- **The chart sent the wrong Swagger client id.** `sso.swaggerClientId`
+  defaulted to `serverless-api` - the release name, not a registered Keycloak
+  client. Everywhere else (the API's own default, `.env.example`, the tests)
+  says `serverless-api-swagger`, but the chart sets the env var explicitly, so
+  a chart install won: "Authorize" on `/docs` went to Keycloak with an unknown
+  client id and failed at the authorize step. The default is now
+  `serverless-api-swagger`. **Check it against your realm** - if your client is
+  registered under another name, this value is the one to override.
 
 - **The chart's default image references match what CI actually publishes.**
   `api.repository` and `buildController.repository` defaulted to

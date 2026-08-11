@@ -411,6 +411,30 @@ sequenceDiagram
   (client-credentials grant) - any client with a valid SSO bearer token authenticates the
   same way.
 
+#### The Swagger "Authorize" client (and realms that forbid public clients)
+
+Because the API is a resource server it registers **no OAuth client of its own** to serve
+traffic. The one client the platform needs is for the interactive docs: Swagger UI's
+"Authorize" button, which logs in with **Authorization Code + PKCE** and therefore needs no
+secret - which is precisely what makes it a **public** client.
+
+Where the SSO realm forbids public clients, set `SERVERLESS_SSO__SWAGGER_CLIENT_SECRET`
+(Vault -> ESO, `swagger-client-secret`). The browser still runs the authorization leg
+against SSO with PKCE, but posts the code to **`POST /auth/token`** on the API, which adds
+the secret and completes the exchange **server-side** - so the client can be registered
+**confidential** and the secret never reaches a browser. Unset, the public-client flow is
+used unchanged.
+
+That endpoint is unauthenticated by necessity, so it only ever completes a login:
+`authorization_code` and `refresh_token` are the only grants forwarded, and the client id
+and secret come from configuration rather than the request. Register the client with
+Standard Flow on, PKCE required (`S256`), and **Service Accounts and Direct Access Grants
+off**.
+
+Note what this does *not* do: the user's own tokens still reach the browser, since Swagger
+UI calls the API with them. It keeps the **client secret** server-side, which is what the
+public-client rule is about - it is not a BFF holding tokens in a server-side session.
+
 #### Static API keys (admin/operator automation, non-OIDC)
 
 For **admin** automation that can't do OIDC, the API also accepts a **static admin API key**

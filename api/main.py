@@ -93,6 +93,8 @@ def create_app() -> FastAPI:
     )
     mount_offline_docs(app)
     if settings.auth_enabled:
+        # With sso.swagger_client_secret set this also mounts the token proxy,
+        # so the Swagger client can be a confidential one.
         wire_sso_login(app, settings.sso)
 
     if settings.cors_allow_origins:

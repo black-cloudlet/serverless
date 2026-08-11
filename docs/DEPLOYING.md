@@ -441,6 +441,15 @@ spec:
       remoteRef:
         key: cloudlet/platforms/serverless-api
         property: admin-api-key
+    # Only where the SSO realm forbids PUBLIC clients: with this set the API
+    # proxies Swagger's token exchange and adds the secret server-side, so the
+    # client can be confidential (docs/ARCHITECTURE.md - The Swagger "Authorize"
+    # client). Otherwise OMIT the entry entirely - an empty Vault property fails
+    # the whole ExternalSecret, taking the other keys in it down too.
+    - secretKey: SERVERLESS_SSO__SWAGGER_CLIENT_SECRET
+      remoteRef:
+        key: cloudlet/platforms/serverless-api
+        property: swagger-client-secret
 ```
 
 ### ArgoCD ApplicationSet - *reference only (lives in the separate GitOps repo)*

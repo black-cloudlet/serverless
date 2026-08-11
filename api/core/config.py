@@ -24,24 +24,6 @@ from common.config import (  # noqa: F401
 )
 
 
-class SSOSettings(SSOConfig):
-    """The shared SSO model with this deployment's defaults filled in.
-
-    ``SSOConfig.issuer`` is required - a package shared by every API must not
-    carry one environment's identity provider as a fallback - so ours is
-    re-declared here, where it is ours to be wrong about.
-
-    A subclass rather than a ``default_factory``: pydantic-settings builds the
-    nested model from the env vars it finds, so a factory's defaults are lost the
-    moment any sibling field is set from the environment.
-    """
-
-    issuer: str = "https://sso.internal/realms/serverless"
-    # Public Keycloak client Swagger UI uses for its "Authorize" login
-    # (Authorization Code + PKCE; no secret). From Helm values, not a secret.
-    swagger_client_id: str = "serverless-api-swagger"
-
-
 class StreamConfig(BaseModel):
     """Bounds on the SSE streams (``/pods``, ``/logs/pods/{pod}``, ``/stats/stream``).
 
@@ -140,9 +122,13 @@ class Settings(CommonSettings):
     # in local dev/tests -> the loader falls back to built-in defaults.
     runtimes_file: str = "/etc/serverless/runtimes/runtimes.yaml"
 
-    sso: SSOSettings = Field(default_factory=SSOSettings)
+    # env: SERVERLESS_SSO__ISSUER, SERVERLESS_SSO__SWAGGER_CLIENT_SECRET, ...
+    # The chart sets the issuer explicitly and so should any deployment: unset,
+    # the package's default realm is trusted rather than startup failing.
+    sso: SSOConfig = Field(default_factory=SSOConfig)
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth
-    # rather than shipping a usable default credential.
+    # rather than shipping a usable default credential. NOT in `sso`: this is the
+    # non-OIDC fallback, for admin automation that cannot do SSO at all.
     admin_api_key: str = ""
 
     # What the SSE streams are allowed to consume. env: SERVERLESS_STREAM__*.

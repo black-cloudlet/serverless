@@ -1,6 +1,6 @@
 import pytest
 
-from api.core.config import RegionConfig, Settings, SSOSettings
+from api.core.config import RegionConfig, Settings, SSOConfig
 from api.models.common import RegionStatus
 from api.services.offering import CONTAINER, FUNCTION
 from api.services.regions.deployer import Deployer, aggregate, status_code_for
@@ -20,7 +20,7 @@ def _auth_with_admin_key(monkeypatch, raw_key, admin_groups=("platform-admins",)
     settings = Settings(
         auth_enabled=True,
         admin_api_key=raw_key,
-        sso=SSOSettings(admin_groups=list(admin_groups)),
+        sso=SSOConfig(admin_groups=list(admin_groups)),
     )
     monkeypatch.setattr("api.auth.deps.get_settings", lambda: settings)
     get_auth.cache_clear()
@@ -37,9 +37,9 @@ def test_require_auth_via_bearer_admin_key(monkeypatch):
     req = SimpleNamespace(headers={"Authorization": "Bearer opaque-s3cret"})
     p = require_auth(req)
     assert p.username == "admin" and p.is_admin is True
-    # The configured admin groups, mapped the same way a token's claim is: the
-    # normalized name as the key, the spelling config used underneath.
-    assert p.groups == {"platform-admins": "platform-admins"}
+    # The configured admin groups, paired the same way a token's claim is: the
+    # normalized name, and the spelling config used alongside it.
+    assert [(g.name, g.sso_name) for g in p.groups] == [("platform-admins", "platform-admins")]
     assert p.can_access_group("platform-admins") is True
 
     # An unrecognised, non-JWT token must be rejected, not silently allowed.
