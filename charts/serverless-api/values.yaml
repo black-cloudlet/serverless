@@ -22,7 +22,10 @@ image:
 # The REST API (docs/ARCHITECTURE.md). The only deployment clients reach, hence
 # the Service and Route.
 api:
-  repository: serverless/serverless-api
+  # Must match what release.yml publishes: ghcr.io/black-cloudlet/serverless/api
+  # (and .../build-controller below). A mirrored install keeps this path and
+  # overrides only image.registry - so the mirror must preserve it.
+  repository: black-cloudlet/serverless/api
   # Overrides image.tag for this deployment only; normally left empty.
   tag: ""
   replicaCount: 2
@@ -76,7 +79,7 @@ buildController:
   # `build.enabled: false` with this on is a render-time error: the chart would
   # grant no read on images.kpack.io.
   enabled: true
-  repository: serverless/serverless-build-controller
+  repository: black-cloudlet/serverless/build-controller
   tag: ""
   # More is safe but redundant: replicas converge rather than race, which is why
   # there is no leader election (docs/BUILDING.md - Convergence rules).
