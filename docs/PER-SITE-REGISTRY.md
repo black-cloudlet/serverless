@@ -469,7 +469,7 @@ sites:
 
 buildController:
   enabled: true
-  repository: black-cloudlet/serverless/build-controller
+  repository: build-controller
   tag: ""
   replicaCount: 1
   labels: {}

@@ -25,13 +25,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- **The chart's default image repositories match what CI actually publishes.**
+- **The chart's default image references match what CI actually publishes.**
   `api.repository` and `buildController.repository` defaulted to
   `serverless/serverless-api` and `serverless/serverless-build-controller` -
   paths release.yml never pushes to, so a default install pulled images that
-  do not exist. They now name what the release publishes
-  (`black-cloudlet/serverless/api`, `black-cloudlet/serverless/build-controller`);
-  a mirrored install keeps the path and overrides only `image.registry`.
+  do not exist. `image.registry` now carries the full publish prefix
+  (`ghcr.io/black-cloudlet/serverless`) and the repositories are just `api`
+  and `build-controller`, so re-homing to a mirror is one registry override
+  rather than one per deployment.
 - **A building function no longer reports `ImagePullFailed` next to
   `Building`.** The build-first fold rewrote a failing site row to `Building`
   and cleared its message, but left the derived `reason` on the row - and the
