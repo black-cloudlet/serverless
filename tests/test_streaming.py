@@ -62,7 +62,22 @@ async def collect(stream, count, timeout=5.0):
 
 
 def names(events):
-    return [e.name for e in events]
+    # A str item is a pre-rendered batch of `log` frames - the hot path is
+    # rendered on the follower thread so the event loop only forwards bytes.
+    return [("log" if isinstance(e, str) else e.name) for e in events]
+
+
+def log_lines(events):
+    """The JSON payloads of the pre-rendered ``log`` frames, in order."""
+    payloads = []
+    for e in events:
+        if not isinstance(e, str):
+            continue
+        assert e.startswith("event: log\n"), "only log frames cross the stream pre-rendered"
+        for line in e.splitlines():
+            if line.startswith("data: "):
+                payloads.append(json.loads(line[len("data: ") :]))
+    return payloads
 
 
 # --- framing ---------------------------------------------------------------
@@ -139,6 +154,36 @@ def test_a_message_that_looks_like_a_timestamp_is_not_split_twice():
     stamp, text = logs_stream.split_timestamp("2024-03-01T10:00:00Z 2024-03-01T11:00:00Z later")
     assert stamp is not None
     assert text == "2024-03-01T11:00:00Z later"
+
+
+def test_a_drain_of_rendered_frames_coalesces_into_one_yield():
+    """The loop pays one yield per burst, not per line - the fix for a chatty
+    pod starving the health probes off the shared event loop."""
+    beat = sse.heartbeat()
+    items = ["event: log\ndata: 1\n\n", "event: log\ndata: 2\n\n", beat, "event: log\ndata: 3\n\n"]
+
+    out = list(logs_stream._coalesced(items))
+
+    assert out == [
+        "event: log\ndata: 1\n\nevent: log\ndata: 2\n\n",  # wire-identical: frames concatenate
+        beat,
+        "event: log\ndata: 3\n\n",
+    ]
+
+
+async def test_the_response_passes_pre_rendered_frames_through_untouched():
+    from api.routers import sse as sse_router
+
+    async def gen():
+        yield "event: log\ndata: {}\n\n"
+        yield sse.heartbeat()
+
+    resp = sse_router.stream(gen())
+    chunks = [c async for c in resp.body_iterator]
+
+    assert chunks[0] == sse.preamble()
+    assert chunks[1] == "event: log\ndata: {}\n\n"
+    assert chunks[2] == ": heartbeat\n\n"
 
 
 # --- line assembly ---------------------------------------------------------
@@ -437,30 +482,31 @@ async def test_the_stream_opens_by_saying_which_pod_it_is_following(capacity):
     assert cluster.followed == ["p1"]
 
 
-async def test_log_lines_arrive_as_events_carrying_their_pod_and_revision(capacity):
+async def test_log_lines_arrive_as_rendered_frames_carrying_their_pod_and_revision(capacity):
+    """Lines cross pre-rendered (str), so the loop only forwards bytes."""
     cluster = FakeCluster(
         {"p1": "foo-team-00007"},
         {"p1": [b"2024-03-01T10:00:00Z first\n2024-03-01T10:00:01Z second\n"]},
     )
-    events = await collect(
-        _follow(cluster, capacity, opening=_opening(revision="foo-team-00007")), 3
-    )
+    events = [
+        e async for e in _follow(cluster, capacity, opening=_opening(revision="foo-team-00007"))
+    ]
 
-    logs = [e for e in events if e.name == "log"]
-    assert [line.data.message for line in logs] == ["first", "second"]
-    assert logs[0].data.pod == "p1"
-    assert logs[0].data.revision == "foo-team-00007"
-    assert logs[0].data.container == "user-container"
-    assert logs[0].data.time is not None
+    lines = log_lines(events)
+    assert [line["message"] for line in lines] == ["first", "second"]
+    assert lines[0]["pod"] == "p1"
+    assert lines[0]["revision"] == "foo-team-00007"
+    assert lines[0]["container"] == "user-container"
+    assert lines[0]["time"] is not None
 
 
 async def test_only_the_named_pod_is_followed(capacity):
     """The whole point of the per-pod shape: one stream, one pod, one thread."""
     cluster = FakeCluster({"p1": "r1", "p2": "r1"}, {"p1": [b"mine\n"], "p2": [b"not mine\n"]})
-    events = await collect(_follow(cluster, capacity), 2)
+    events = [e async for e in _follow(cluster, capacity)]
 
     assert cluster.followed == ["p1"]
-    assert [e.data.message for e in events if e.name == "log"] == ["mine"]
+    assert [line["message"] for line in log_lines(events)] == ["mine"]
 
 
 async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
@@ -472,7 +518,7 @@ async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
     assert names(events)[-1] == "end"
     assert "replaced" in events[-1].data.reason
     # ...and the final lines are delivered before it closes.
-    assert [e.data.message for e in events if e.name == "log"] == ["last words"]
+    assert [line["message"] for line in log_lines(events)] == ["last words"]
 
 
 async def test_a_pod_that_cannot_be_read_warns_and_ends_rather_than_hanging(capacity):
@@ -497,9 +543,9 @@ async def test_teardown_closes_the_follow(capacity):
 
 async def test_the_slow_client_warning_reports_how_much_was_lost(capacity):
     cluster = FakeCluster({"p1": "r1"}, {"p1": [b"x\n" * 50]})
-    events = await collect(_follow(cluster, capacity), 12, timeout=5.0)
+    events = [e async for e in _follow(cluster, capacity)]
 
-    warnings = [e for e in events if e.name == "warning"]
+    warnings = [e for e in events if not isinstance(e, str) and e.name == "warning"]
     assert warnings, "a queue overflow has to be reported"
     assert warnings[0].data.droppedLines > 0
 

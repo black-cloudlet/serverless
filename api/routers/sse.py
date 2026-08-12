@@ -62,13 +62,16 @@ def switchable(snapshot: type[BaseModel], events: str) -> dict:
     }
 
 
-def stream(events: AsyncIterator[sse.StreamEvent]) -> StreamingResponse:
+def stream(events: AsyncIterator[sse.StreamEvent | str]) -> StreamingResponse:
     """Render a service's events as an SSE response.
 
     Args:
         events: The event stream, already authorized and opened by the service -
             so anything that should be a status code has been raised before this
-            is called, and an error envelope was still possible.
+            is called, and an error envelope was still possible. A str item is a
+            frame the service already rendered off the event loop (the log
+            streams' line path - see api.services.streams.logs) and passes
+            through untouched.
 
     Returns:
         The streaming response.
@@ -78,7 +81,7 @@ def stream(events: AsyncIterator[sse.StreamEvent]) -> StreamingResponse:
         try:
             yield sse.preamble()
             async for event in events:
-                yield sse.render(event)
+                yield event if isinstance(event, str) else sse.render(event)
         except APIError as exc:
             # The status line went out with the first byte, so this is the only
             # place left to say what went wrong.

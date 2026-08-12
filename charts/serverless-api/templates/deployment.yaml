@@ -172,6 +172,18 @@ spec:
           # Constant-response endpoints answering slowly means "busy", which
           # readiness should reflect eventually (three misses, not one) and
           # liveness should tolerate far longer before killing open streams.
+          #
+          # Until this passes, neither probe below runs - so a slow cold start
+          # (OIDC discovery and per-region connects time out one by one when a
+          # dependency is down) is "still starting", not six liveness strikes
+          # against a socket that is not open yet.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.api.service.targetPort }}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
           readinessProbe:
             httpGet:
               path: /readyz
@@ -179,13 +191,20 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          # 18, not 6: readiness already sheds traffic at ~30s, which is the
+          # remedy for a busy loop - killing the pod is not. A restart here cuts
+          # every open stream, whose clients reconnect within seconds onto the
+          # other replica and push the same load there: with the two thresholds
+          # close together that cascaded, taking the replicas down in turn.
+          # Liveness is for a wedged process, and a wedged process is still
+          # wedged three minutes later.
           livenessProbe:
             httpGet:
               path: /healthz
               port: {{ .Values.api.service.targetPort }}
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 6
+            failureThreshold: 18
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
       volumes:

@@ -39,7 +39,13 @@ api:
       cpu: 250m
       memory: 512Mi
     limits:
-      cpu: "1"
+      # The health probes share the process's one event loop with everything
+      # else it serves, and a CPU limit is enforced as throttling - at "1" a
+      # streaming burst stretched into multi-second stalls that missed the 5s
+      # probe timeout and restarted the pod. "2" gives the loop headroom to
+      # answer while the stream threads work; the request stays low, so the
+      # slack is only used when the node has it.
+      cpu: "2"
       memory: 512Mi
 
   service:

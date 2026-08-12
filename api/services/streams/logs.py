@@ -14,8 +14,15 @@ Two moving parts remain, because the read is blocking and endless:
 * :class:`_Buffer` - the hand-off. Bounded, because a pod logging faster than
   its reader must cost a *reported* gap rather than the process's memory.
 
-The events are :class:`~api.services.streams.sse.StreamEvent`; nothing here
-knows it is being rendered as SSE.
+Log lines cross the buffer as **rendered SSE frames** (str), everything else as
+:class:`~api.services.streams.sse.StreamEvent`. The line path is the exception
+deliberately: a pod can log tens of thousands of lines a second, and rendering
+each on the event loop - the model dump, the frame, one generator hop per line -
+starved the loop until the health probes missed and the kubelet restarted the
+pod (killing every stream, whose clients then reconnected onto the surviving
+replica and took it down the same way). The follower thread is already doing
+per-line work, so it renders too, and the loop only forwards bytes - one yield
+per buffer drain, not per line.
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ import asyncio
 import re
 import threading
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
 
 from cloudlet_apis.logging import get_logger
@@ -33,7 +40,7 @@ from api.core.config import StreamConfig
 from api.models.common import LogLine, PodLogStreamOpen, StreamEnd, StreamWarning
 from api.services.state.ksvc_state import ISRAEL_TZ
 from api.services.streams.capacity import StreamCapacity, start_on
-from api.services.streams.sse import StreamEvent, heartbeat
+from api.services.streams.sse import StreamEvent, heartbeat, render
 from common.cluster import Cluster
 
 # `timestamps=True` prefixes every line with an RFC3339Nano stamp. Matched rather
@@ -87,6 +94,11 @@ class _Buffer:
     instead of the buffer, which is the same leak one level down. Here the thread
     appends under a lock and only wakes the loop on the empty-to-filled edge, so a
     burst of a thousand lines costs one wakeup and drops what does not fit.
+
+    Items are rendered SSE frames (str) for log lines and
+    :class:`~api.services.streams.sse.StreamEvent` for the rare control message;
+    the buffer itself never looks at them (see the module docstring for why the
+    hot path is pre-rendered).
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop, maxsize: int):
@@ -104,8 +116,8 @@ class _Buffer:
         self._lock = threading.Lock()
         self._ready = asyncio.Event()
 
-    def put(self, item: StreamEvent) -> None:
-        """Offer one event (called from the follower thread; never blocks)."""
+    def put(self, item: StreamEvent | str) -> None:
+        """Offer one event or rendered frame (from the follower thread; never blocks)."""
         with self._lock:
             if len(self._items) >= self._maxsize:
                 self._dropped += 1
@@ -122,7 +134,7 @@ class _Buffer:
             except RuntimeError:  # noqa: S110 - loop already closed; teardown is under way
                 pass
 
-    def drain(self) -> list[StreamEvent]:
+    def drain(self) -> list[StreamEvent | str]:
         """Take everything buffered (called on the event loop)."""
         with self._lock:
             items = list(self._items)
@@ -222,16 +234,20 @@ def _read(
     try:
         for line in follow.lines():
             stamp, message = split_timestamp(line)
+            # Rendered here, on this thread, not on the event loop - the whole
+            # point of the pre-rendered hot path (module docstring).
             buf.put(
-                StreamEvent(
-                    "log",
-                    LogLine(
-                        pod=opening.pod,
-                        container=opening.container,
-                        revision=opening.revision,
-                        time=stamp,
-                        message=message,
-                    ),
+                render(
+                    StreamEvent(
+                        "log",
+                        LogLine(
+                            pod=opening.pod,
+                            container=opening.container,
+                            revision=opening.revision,
+                            time=stamp,
+                            message=message,
+                        ),
+                    )
                 )
             )
     except Exception:  # noqa: BLE001 - a closed stream lands here on teardown
@@ -239,6 +255,32 @@ def _read(
     finally:
         follow.close()
         tail.ended.set()
+
+
+def _coalesced(items: list[StreamEvent | str]) -> Iterator[StreamEvent | str]:
+    """Join each run of rendered frames into one, leaving control events alone.
+
+    The wire is identical - SSE frames concatenate - but the loop pays one yield
+    (and the transport one write) per drain instead of per line, which under a
+    fire-hosing pod is the difference between a busy loop and a starved one.
+
+    Args:
+        items: One buffer drain: rendered frames (str) and control events.
+
+    Yields:
+        The items in order, with adjacent frames concatenated.
+    """
+    frames: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            frames.append(item)
+            continue
+        if frames:
+            yield "".join(frames)
+            frames.clear()
+        yield item
+    if frames:
+        yield "".join(frames)
 
 
 async def follow(
@@ -249,7 +291,7 @@ async def follow(
     opening: PodLogStreamOpen,
     since_seconds: int | None,
     tail_lines: int | None = None,
-) -> AsyncIterator[StreamEvent]:
+) -> AsyncIterator[StreamEvent | str]:
     """Stream one pod's log until it ends, the client leaves, or the cap passes.
 
     Args:
@@ -265,8 +307,9 @@ async def follow(
             than any time window.
 
     Yields:
-        The ``open`` event, then ``log``/``warning`` events and heartbeats, and a
-        final ``end`` when the pod stops producing.
+        The ``open`` event, then ``log`` frames (pre-rendered SSE, str - see the
+        module docstring), ``warning`` events and heartbeats, and a final ``end``
+        when the pod stops producing.
     """
     loop = asyncio.get_running_loop()
     buf = _Buffer(loop, config.queue_size)
@@ -291,7 +334,7 @@ async def follow(
             if now >= deadline:
                 # Deliver what is already buffered before ending: the rollover
                 # must not cost the client lines that had in fact arrived.
-                for event in buf.drain():
+                for event in _coalesced(buf.drain()):
                     yield event
                 # Not an error: the client reconnects, which SSE does unprompted.
                 yield StreamEvent(
@@ -301,7 +344,7 @@ async def follow(
             await buf.wait(min(deadline, now + config.heartbeat_seconds) - now)
 
             sent = False
-            for event in buf.drain():
+            for event in _coalesced(buf.drain()):
                 sent = True
                 yield event
 

@@ -64,6 +64,31 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **A fire-hosing pod's log stream no longer starves the health probes.** A
+  followed log rendered every line into its SSE frame *on the event loop* - the
+  same loop `/healthz` and `/readyz` answer from. A pod logging fast enough
+  (with the streams' clients keeping up, so nothing was dropped) kept the loop
+  busy past the kubelet's 5s probe timeout; the pod went unready and was then
+  liveness-killed, and every cut stream reconnected within seconds onto the
+  surviving replica - same load, fewer pods - which is how one replica's
+  restart cascaded into the other's. Lines are now rendered on the follower
+  thread (which was already doing the per-line parsing) and cross to the loop
+  as pre-rendered frames, a buffer-drain at a time, so the loop only forwards
+  bytes: one yield per burst, not per line. The wire format is unchanged -
+  concatenated SSE frames are the same stream.
+
+- **A busy pod is no longer restarted for being busy.** The liveness threshold
+  moves from 6 misses to 18 (~3 minutes): readiness already sheds traffic at
+  ~30s, which is the correct remedy for a saturated event loop, and a restart
+  is what turned one slow replica into a platform-wide cascade (see above). A
+  `startupProbe` (60s budget) now covers the window before the socket opens -
+  startup blocks on OIDC discovery and per-region connects, each of which
+  times out slowly when a dependency is down, and every probe in that window
+  used to count "connection refused" toward the liveness kill. The CPU limit
+  rises to `2` (requests unchanged): limits are enforced as throttling, and at
+  `1` the loop's probe answers stretched past their timeout exactly when the
+  stream threads were busiest.
+
 - **The chart sent the wrong Swagger client id.** `sso.swaggerClientId`
   defaulted to `serverless-api` - the release name, not a registered Keycloak
   client. Everywhere else (the API's own default, `.env.example`, the tests)

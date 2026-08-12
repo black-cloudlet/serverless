@@ -99,7 +99,7 @@ class _SlotGuardedStream:
     several owners cannot double-free.
     """
 
-    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent, None]):
+    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]):
         self._slot = slot
         self._inner = inner
         # Bound to the slot only - a reference to `self` here would keep this
@@ -109,7 +109,7 @@ class _SlotGuardedStream:
     def __aiter__(self) -> _SlotGuardedStream:
         return self
 
-    async def __anext__(self) -> StreamEvent:
+    async def __anext__(self) -> StreamEvent | str:
         try:
             return await self._inner.__anext__()
         except BaseException:
@@ -125,7 +125,9 @@ class _SlotGuardedStream:
             self._slot.release()
 
 
-def _slot_guarded(slot: StreamSlot, inner: AsyncGenerator[StreamEvent, None]) -> _SlotGuardedStream:
+def _slot_guarded(
+    slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]
+) -> _SlotGuardedStream:
     """Wrap ``inner`` so ``slot`` is released however the stream ends."""
     return _SlotGuardedStream(slot, inner)
 
@@ -1441,7 +1443,7 @@ class WorkloadService:
         container: str,
         since_seconds: int | None,
         tail_lines: int | None = None,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncIterator[StreamEvent | str]:
         """Follow one of the workload's pods' logs, on the local region.
 
         Local region only: Kubernetes keeps no log buffer beyond the node that
