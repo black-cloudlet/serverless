@@ -15,6 +15,7 @@ costs every client.
 - [Where we are now](#where-we-are-now)
 - [The decision that gates everything: whose edge is it](#the-decision-that-gates-everything-whose-edge-is-it)
 - [The scheme: one host, one prefix per API](#the-scheme-one-host-one-prefix-per-api)
+  - [The prefix is per API, never per workload](#the-prefix-is-per-api-never-per-workload)
 - [Why prefix-and-strip](#why-prefix-and-strip)
 - [What the edge is](#what-the-edge-is)
 - [What this API has to change](#what-this-api-has-to-change)
@@ -78,7 +79,31 @@ https://portal.example.com/inventory/api/v2/items
 https://portal.example.com/                       -> the portal UI
 ```
 
-Rules, and the reason for each:
+### The prefix is per API, never per workload
+
+The first thing to be clear about, because the scheme above invites the question:
+**tenant workloads keep their hostnames** - `{name}-{group}.serverless.{base_domain}`,
+exactly as ARCHITECTURE.md (Networking & Exposure) already has them. Only the
+control-plane APIs move onto paths. That asymmetry is deliberate:
+
+- **The count is unbounded and self-service.** Platform APIs are a handful, claimed in
+  a registry by a human. Workloads are created by tenants at will, so a path scheme
+  means a central mutable routing table that grows per tenant and has to be written at
+  deploy time. A DNS wildcard needs no allocation step at all: one record covers every
+  workload that will ever exist.
+- **It would put tenant traffic through the portal's edge.** That edge would become the
+  capacity constraint and the failure domain for every workload's data plane. Today a
+  portal outage does not touch a running function, and that is worth keeping.
+- **Knative is host-based.** A `DomainMapping` maps a *host*, and the ingress dispatches
+  on the `Host` header. Prefixing a KSVC means rewriting, which breaks any workload that
+  builds absolute URLs - the same class of bug as the four this API has to fix below,
+  except in tenant code we neither own nor can patch.
+
+The rule: **paths for what the portal consumes** - control plane, small N, our code,
+one edge - and **hosts for what the world consumes** - data plane, unbounded N,
+tenants' code, called by clients that have never heard of the portal.
+
+### Rules for a slug
 
 - **The slug is the API, not the team and not the version.** `serverless`, not
   `platform-serverless-v1`. Teams reorganize and versions move; the offering doesn't.
@@ -109,7 +134,8 @@ flowchart LR
 
 | Option | What it means | Verdict |
 |--------|---------------|---------|
-| **A. Host per API** (today) | `serverless.{base_domain}`, `inventory.{base_domain}`, ... | The status quo. Per-API DNS, cert, CORS entry, SSO origin. Rejected |
+| **A. Host per API** (today) | `serverless.{base_domain}`, `inventory.{base_domain}`, ... | The status quo. Per-API DNS record, cert, CORS entry, SSO origin. Rejected |
+| **A′. Host per API under one wildcard** | `serverless.api.{base_domain}`, ... behind a `*.api.{base_domain}` cert | The cheap answer. Host routing, so **zero** app changes and no DNS or cert cost per API. Cross-origin forever, which is the one thing it cannot fix |
 | **B. Path per API, edge strips the prefix** | Edge maps `/serverless/*` → the Service's `/*` | **Recommended.** No client-visible change to the API's own paths, one host, one cert. Costs: the app must learn its external prefix (see below) |
 | **C. Path per API, no strip** | Each app natively serves `/serverless/api/v1/...` | Technically the cleanest - nothing anywhere has to know about a prefix it cannot see - but it rewrites every existing client's URLs and every API's router. Worth adopting for **new** APIs; not worth a migration for the ones already shipped |
 | **D. Subdomain per API + iframe** | The portal frames each API's UI | Not same-origin, not one address, and it solves nothing the others don't |
@@ -118,6 +144,22 @@ B is the recommendation. C is what a greenfield platform should have done, and t
 onboarding contract below is written so a new API can choose C (declare its prefix as
 its own base path, and the edge match becomes a no-op strip) without changing anything
 about how it is mounted.
+
+**The honest case against B**, because it should be argued before it is adopted rather
+than after. Path routing is normally sold on DNS and certificate economics, and here
+that argument is weak: we already run a wildcard cert and a wildcard DNS zone, so
+option A′ adds an API for close to nothing while B costs four fixes in this repo (and
+the same four in every repo that follows). Path routing also takes the app's address
+away from the app - host routing has none of that class of bug - and it turns the path
+namespace into something that needs central governance, where DNS already governs
+hostnames for free.
+
+What survives all of that is the requirement itself: the API should feel like part of
+the portal. **Only same-origin delivers that**, and same-origin means paths - no CORS,
+no preflight on every call, one SSO origin, one base URL the portal never configures
+per API. That is a product decision, and it is the whole reason to prefer B over A′.
+If it ever stops being the requirement, A′ is the cheaper platform and this design
+should be dropped rather than half-built.
 
 ## What the edge is
 
