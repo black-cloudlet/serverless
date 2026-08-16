@@ -371,6 +371,10 @@ The Route that exposes the **API itself** is values-driven: `route.host` (defaul
 HAProxy router timeouts or rate-limit annotations). This is distinct from the per-**workload**
 host convention above.
 
+A host of its own is what the API has today, and it is why the portal calls it
+cross-origin. PORTAL-INTEGRATION.md is the design for folding it - and the other teams'
+APIs - onto the portal's own host under a path prefix each. Not implemented.
+
 ---
 
 ## Authentication & Authorization
@@ -780,7 +784,9 @@ The API is the backend for a **ServiceNow** frontend; the design accommodates th
 - **CORS.** When a ServiceNow Service Portal widget calls the API **from the browser**, set
   `SERVERLESS_CORS_ALLOW_ORIGINS` (Helm `corsAllowOrigins`) to the ServiceNow instance
   origin(s); the API enables CORS (preflight + `Authorization` header) only then. Server-side
-  ServiceNow calls (IntegrationHub / Scripted REST) need no CORS.
+  ServiceNow calls (IntegrationHub / Scripted REST) need no CORS. CORS is a consequence of
+  the API having a host of its own; PORTAL-INTEGRATION.md is the design that removes it by
+  serving the API from the portal's host under a path prefix.
 - **Async submit + poll.** `POST`/`PUT` return **202** immediately with a `statusUrl`;
   the ServiceNow workflow polls `GET {statusUrl}` until `Ready`/`Failed`. This avoids
   ServiceNow REST timeouts on slow FaaS builds and matches its long-running-task patterns.

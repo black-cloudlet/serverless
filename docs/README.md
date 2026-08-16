@@ -11,6 +11,7 @@ document is a bug.
 | [FUNCTIONS.md](./FUNCTIONS.md) | The function offering (FaaS): running code built from source, and how build state folds into a function's status. |
 | [BUILDING.md](./BUILDING.md) | How source becomes an image: kpack, buildpacks, runtime versions, credentials, and the build flow. |
 | [DEPLOYING.md](./DEPLOYING.md) | Installing and operating the platform: charts, GitOps, RBAC, sample manifests. |
+| [PORTAL-INTEGRATION.md](./PORTAL-INTEGRATION.md) | **Design, not yet built.** Serving this API and the other teams' from the portal's own host, one path prefix each. |
 
 Start with ARCHITECTURE.md. Read the offering document for the workload type you
 care about, then BUILDING.md if it is a function.
