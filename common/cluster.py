@@ -12,6 +12,7 @@ import threading
 from collections.abc import Iterator
 from enum import Enum
 
+import urllib3
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
 
@@ -121,7 +122,20 @@ class Cluster:
             return built
         with self._client_lock:
             if self._api_client_obj is None:
-                self._api_client_obj = client.ApiClient(self._configuration)
+                api_client = client.ApiClient(self._configuration)
+                # Default CONNECT timeout at the connection-pool level, so no
+                # call to this cluster can hang on an unanswered SYN - including
+                # the dynamic client's discovery, which takes no per-request
+                # timeout and would otherwise wedge its thread forever against a
+                # cluster that blackholes connections. Connect only, not read:
+                # the long-lived streams (a log follow, the controller's watch)
+                # are idle between bytes by design, and the watch has no
+                # per-request override to exempt itself with. Ordinary calls
+                # carry their own read timeout via ``self._opts``.
+                api_client.rest_client.pool_manager.connection_pool_kw["timeout"] = urllib3.Timeout(
+                    connect=self._connect_timeout, read=None
+                )
+                self._api_client_obj = api_client
             return self._api_client_obj
 
     @property
@@ -232,7 +246,10 @@ class Cluster:
         Blocking, and deliberately finite: ``timeout_seconds`` closes the stream
         and ends the iteration, so a caller relists and an expired
         ``resource_version`` heals itself. The per-request read timeout is not
-        applied - a watch is idle between events by design.
+        applied - a watch is idle between events by design. (The pool-level
+        default in ``_api_client`` bounds only the connect, for the same
+        reason: a read bound there would tear down a quiet watch, and the
+        dynamic client's ``watch`` accepts no per-request override.)
 
         Args:
             kind: The resource kind to follow.

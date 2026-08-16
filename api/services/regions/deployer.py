@@ -8,9 +8,10 @@ HTTP 502. The Kubernetes client is synchronous, so per-region work runs in threa
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import Executor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Callable
 
+from cloudlet_apis.errors import ServiceUnavailableError
 from cloudlet_apis.logging import get_logger
 
 from api.core.config import Settings
@@ -25,6 +26,63 @@ logger = get_logger(__name__)
 RegionFn = Callable[[Cluster], RegionStatus]
 
 
+class ReadPoolSaturated(ServiceUnavailableError):
+    """The read pool refused an admission.
+
+    Its own type so the fan-out can tell "the API is saturated" (this request's
+    503) from a ``ServiceUnavailableError`` a region function raised doing its
+    work (that region's failure row) - the two must not be conflated.
+    """
+
+
+class ReadPool:
+    """The bounded executor every cluster *read* runs on, with admission.
+
+    The same medicine :class:`~api.services.streams.capacity.StreamCapacity`
+    applies to streams, applied to the read fan-outs. Without it every read
+    rents a thread from the process-wide default executor - sized by a formula,
+    shared with everything, queue unbounded - so a burst of page reads (a
+    console tab polling row stats) makes *unrelated* requests inherit its
+    latency invisibly. Here the pool is sized from config and admission past
+    ``workers + max_queued`` is refused with 503: shed load is visible, a
+    silently growing queue is not.
+
+    Admission is counted on the event loop (every caller is a coroutine), so
+    the counter needs no lock.
+    """
+
+    def __init__(self, workers: int, max_queued: int):
+        """Build the pool.
+
+        Args:
+            workers: Threads reads run on.
+            max_queued: Reads allowed to wait for a thread beyond ``workers``.
+        """
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cluster-read")
+        self._limit = workers + max_queued
+        self._inflight = 0
+
+    async def run(self, fn, *args):
+        """Run one blocking read on the pool, or refuse it.
+
+        Raises:
+            ServiceUnavailableError: If ``workers + max_queued`` reads are
+                already in flight.
+        """
+        if self._inflight >= self._limit:
+            logger.warning("refusing cluster read: %d already in flight", self._inflight)
+            raise ReadPoolSaturated("the API is saturated with cluster reads; retry shortly")
+        self._inflight += 1
+        try:
+            return await run_on(self._executor, fn, *args)
+        finally:
+            self._inflight -= 1
+
+    def shutdown(self) -> None:
+        """Stop the pool without waiting: socket timeouts bound what's running."""
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
 class Deployer:
     """Owns the per-region cluster clients and runs work across them concurrently."""
 
@@ -35,14 +93,29 @@ class Deployer:
             settings: Global settings; only the per-region timeout, local region, and
                 the built Clusters are retained.
         """
-        self._op_timeout = settings.region_op_timeout
+        self._op_timeout = settings.cluster_op_timeout
+        self._read_timeout = settings.cluster_read_op_timeout
         self._local_region = settings.local_region
         self._clusters: dict[str, Cluster] = clusters_for(settings)
+        self._read_pool = ReadPool(settings.cluster_read_workers, settings.cluster_read_max_queued)
 
     def close(self) -> None:
-        """Release every region's cluster client (connection pools) at shutdown."""
+        """Release the read pool and every region's cluster client at shutdown."""
+        self._read_pool.shutdown()
         for cluster in self._clusters.values():
             cluster.close()
+
+    async def run_read(self, fn, *args):
+        """Run one blocking cluster read on the bounded read pool.
+
+        For the single-cluster reads that serve GETs (a spec read on the
+        representative region), so they share the fan-out's pool and admission
+        instead of the process-wide default executor.
+
+        Raises:
+            ServiceUnavailableError: If the read pool is saturated.
+        """
+        return await self._read_pool.run(fn, *args)
 
     def local_cluster(self) -> Cluster:
         """The cluster this API instance sits in.
@@ -89,7 +162,12 @@ class Deployer:
         return targets
 
     async def fanout(
-        self, targets: list[Cluster], fn: RegionFn, *, executor: Executor | None = None
+        self,
+        targets: list[Cluster],
+        fn: RegionFn,
+        *,
+        executor: Executor | None = None,
+        read: bool = False,
     ) -> list[RegionStatus]:
         """Run ``fn`` on every target concurrently, collecting per-region results.
 
@@ -99,28 +177,44 @@ class Deployer:
         Args:
             targets: The clusters to run on.
             fn: The per-region operation returning a RegionStatus.
-            executor: Pool to run on; None takes the default one. A stream passes
-                its own so that repeating this fan-out for as long as a client
-                stays connected cannot starve ordinary requests.
+            executor: Pool to run on; None takes the read pool for a read and the
+                default executor otherwise. A stream passes its own so that
+                repeating this fan-out for as long as a client stays connected
+                cannot starve ordinary requests.
+            read: This fan-out serves a page read: run it on the bounded read
+                pool and bound each region by ``cluster_read_op_timeout``, so a
+                slow cluster costs its own column in the response - which the
+                rollup already renders - not the whole page. A write keeps the
+                minute-scale ``cluster_op_timeout``: it is worth waiting for.
 
         Returns:
             One RegionStatus per target.
+
+        Raises:
+            ServiceUnavailableError: If ``read`` and the read pool is saturated.
         """
+        timeout = self._read_timeout if read else self._op_timeout
 
         async def run(cluster: Cluster) -> RegionStatus:
             try:
                 # Backstop: a down/slow region fails fast and is reported as an
                 # error rather than blocking the whole fan-out indefinitely.
-                return await asyncio.wait_for(
-                    run_on(executor, fn, cluster), timeout=self._op_timeout
-                )
+                if read and executor is None:
+                    result = self._read_pool.run(fn, cluster)
+                else:
+                    result = run_on(executor, fn, cluster)
+                return await asyncio.wait_for(result, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning("region %s operation timed out", cluster.region)
                 return RegionStatus(
                     region=cluster.region,
                     status="Timeout",
-                    message=f"region unreachable (timed out after {self._op_timeout}s)",
+                    message=f"region unreachable (timed out after {timeout}s)",
                 )
+            except ReadPoolSaturated:
+                # The API's condition, not the region's: reported as this
+                # request's 503, never as a "Failed" region row.
+                raise
             except Exception as exc:  # noqa: BLE001 - surfaced as per-region error
                 logger.exception("region %s operation failed", cluster.region)
                 return RegionStatus(region=cluster.region, status="Failed", message=str(exc))
@@ -134,7 +228,8 @@ class Deployer:
 
         A region whose call fails or times out yields ``(region, None)`` instead of
         aborting the whole fan-out - for reads (e.g. listings) where a down region
-        should be skipped, not fatal.
+        should be skipped, not fatal. Always a read: it runs on the bounded read
+        pool under ``cluster_read_op_timeout``.
 
         Args:
             targets: The clusters to run on.
@@ -142,14 +237,19 @@ class Deployer:
 
         Returns:
             One ``(region, result_or_None)`` tuple per target.
+
+        Raises:
+            ServiceUnavailableError: If the read pool is saturated.
         """
 
         async def run(cluster: Cluster) -> tuple[str, object | None]:
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(fn, cluster), timeout=self._op_timeout
+                    self._read_pool.run(fn, cluster), timeout=self._read_timeout
                 )
                 return cluster.region, result
+            except ReadPoolSaturated:
+                raise  # the API's condition, not the region's - see fanout
             except Exception:  # noqa: BLE001 - per-region failure is non-fatal here
                 logger.exception("region %s listing failed", cluster.region)
                 return cluster.region, None

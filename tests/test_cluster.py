@@ -149,3 +149,25 @@ def test_watch_does_not_impose_the_per_request_read_timeout():
     list(_cluster_calling(api).watch(ResourceKind.KPACK_IMAGE))
 
     assert "_request_timeout" not in api.watch_kwargs
+
+
+def test_the_connection_pool_bounds_the_connect_for_calls_with_no_timeout():
+    """Discovery passes no per-request timeout; the pool default is what stops a
+    blackholed cluster from wedging that thread forever. Connect only - a read
+    bound here would tear down an idle watch or log follow between bytes."""
+    import urllib3
+
+    from common.cluster import Cluster
+    from common.config import CommonSettings, RegionConfig
+
+    settings = CommonSettings(
+        regions=[RegionConfig(name="central", cluster="central-0")],
+        cluster_connect_timeout=1.5,
+    )
+    cluster = Cluster(settings.regions[0], settings)
+    timeout = cluster._api_client.rest_client.pool_manager.connection_pool_kw["timeout"]
+
+    assert isinstance(timeout, urllib3.Timeout)
+    assert timeout.connect_timeout == 1.5
+    assert timeout.read_timeout in (None, urllib3.Timeout.DEFAULT_TIMEOUT)
+    cluster.close()

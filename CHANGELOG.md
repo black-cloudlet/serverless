@@ -62,7 +62,35 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   repeated per environment. Each entry is templated before being JSON-encoded,
   so rendered text cannot break the encoding.
 
+### Changed (rename)
+
+- **`SERVERLESS_REGION_OP_TIMEOUT` is now `SERVERLESS_CLUSTER_OP_TIMEOUT`**
+  (setting `cluster_op_timeout`). It bounds one *cluster's* operation inside a
+  fan-out, which is also how its siblings were already named
+  (`cluster_connect_timeout`, `cluster_read_timeout`) - "region" was the odd one
+  out. Deployments overriding the old env var must rename it; the chart never
+  set it, so a default install is unaffected.
+
 ### Fixed
+
+- **A slow or unreachable peer region no longer slows every page.** The read
+  fan-outs (`list`, `get`, `stats`) waited on the slowest region under the same
+  minute-scale backstop the writes need (`cluster_op_timeout`) - so one slow
+  cluster held every response, and one *blackholed* cluster was worse: the
+  dynamic client's discovery carries no timeout at all, and each attempt wedged
+  a thread from the small process-wide executor forever. Three bounds close
+  this, one per layer:
+  - reads get their own backstop, **`cluster_read_op_timeout`** (default 5s):
+    a region that misses it becomes its own degraded column in the response -
+    which the merge already renders - instead of the whole page's latency;
+  - reads run on a **bounded pool of their own** (`cluster_read_workers` /
+    `cluster_read_max_queued`), so a burst of page reads queues predictably and
+    is refused with 503 past the bound, rather than silently inflating every
+    other request's latency through the shared default executor;
+  - the Kubernetes client's connection pool gets a **default connect timeout**,
+    so no call - discovery included - can hang on an unanswered SYN. Connect
+    only: the long-lived streams (log follows, the controller's watch) are idle
+    between bytes by design, and stay exempt.
 
 - **A fire-hosing pod's log stream no longer starves the health probes.** A
   followed log rendered every line into its SSE frame *on the event loop* - the

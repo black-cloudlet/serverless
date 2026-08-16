@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from api.core.config import RegionConfig, Settings, SSOConfig
@@ -217,6 +219,88 @@ async def test_fanout_times_out_unreachable_region():
     assert by_region["region-a"].status == "Ready"
     assert by_region["region-b"].status == "Timeout"
     assert by_region["region-b"].message is not None
+
+
+async def test_a_read_fanout_gives_up_on_a_slow_region_quickly():
+    """A page read is bounded by cluster_read_op_timeout, not the minute-scale
+    write backstop: a slow cluster costs its own column, never the page."""
+    import time
+
+    d = Deployer(_settings_with_regions())
+    d._read_timeout = 0.05
+    d._op_timeout = 30.0  # the write backstop stays long; the read must not use it
+
+    def fn(cluster):
+        if cluster.region == "region-b":
+            time.sleep(0.5)
+        return RegionStatus(region=cluster.region, status="Ready")
+
+    start = time.monotonic()
+    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
+    assert time.monotonic() - start < 0.4  # gave up at the read timeout, not the op one
+    by_region = {s.region: s for s in statuses}
+    assert by_region["region-a"].status == "Ready"
+    assert by_region["region-b"].status == "Timeout"
+
+
+async def test_gather_each_is_bounded_by_the_read_timeout():
+    import time
+
+    d = Deployer(_settings_with_regions())
+    d._read_timeout = 0.05
+
+    def fn(cluster):
+        if cluster.region == "region-b":
+            time.sleep(0.5)
+        return ["item"]
+
+    start = time.monotonic()
+    results = dict(await d.gather_each(d.resolve_targets(None), fn))
+    assert time.monotonic() - start < 0.4
+    assert results["region-a"] == ["item"]
+    assert results["region-b"] is None  # skipped, not fatal
+
+
+async def test_a_saturated_read_pool_refuses_with_503_not_failed_regions():
+    """Pool saturation is the API's condition: the request 503s; it must not be
+    dressed up as every region having failed (which would read as a 502)."""
+    import threading
+
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    from api.services.regions.deployer import ReadPool, ReadPoolSaturated
+
+    pool = ReadPool(workers=1, max_queued=0)
+    release = threading.Event()
+    try:
+        blocker = asyncio.ensure_future(pool.run(release.wait))
+        await asyncio.sleep(0.05)  # the one worker is now occupied
+        with pytest.raises(ServiceUnavailableError):
+            await pool.run(lambda: "refused")
+        assert issubclass(ReadPoolSaturated, ServiceUnavailableError)
+    finally:
+        release.set()
+        await blocker
+        pool.shutdown()
+
+
+async def test_a_region_function_raising_503_stays_a_region_failure():
+    """Only the pool's own saturation escapes the fan-out; a region whose work
+    raised ServiceUnavailableError is that region's failure row."""
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    d = Deployer(_settings_with_regions())
+
+    def fn(cluster):
+        if cluster.region == "region-b":
+            raise ServiceUnavailableError("registry down")
+        return RegionStatus(region=cluster.region, status="Ready")
+
+    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
+    by_region = {s.region: s for s in statuses}
+    assert by_region["region-a"].status == "Ready"
+    assert by_region["region-b"].status == "Failed"
+    assert "registry down" in by_region["region-b"].message
 
 
 class _FakeCluster:

@@ -68,7 +68,7 @@ api:
     # The cost is that it applies to the whole Route, not just the streams:
     # OpenShift has no per-path timeout. An ordinary request cannot actually sit
     # here that long - the API bounds its own cluster work with
-    # `regionOpTimeout` - but a client that stops reading a response does hold a
+    # `SERVERLESS_CLUSTER_OP_TIMEOUT` - but a client that stops reading a response does hold a
     # connection until this expires.
     timeout: 65m
     # annotations:

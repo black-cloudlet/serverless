@@ -916,7 +916,7 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.fanout(targets, fetch)
+        results = await self.deployer.fanout(targets, fetch, read=True)
         statuses = [s for s in results if s is not None]  # drop regions without it
 
         if not reps:
@@ -954,7 +954,7 @@ class WorkloadService:
             status_reason = "BuildFailed"
         else:
             status_reason = next((s.reason for s in statuses if s.reason), None)
-        spec = await asyncio.to_thread(region_read.describe_spec, cluster, obj)
+        spec = await self.deployer.run_read(region_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
         # (guarded above) and every entry holds an object, and describe_spec
         # always returns a WorkloadSpec. Guarding them would advertise a nullable
@@ -1044,7 +1044,7 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.fanout(targets, fetch, executor=executor)
+        results = await self.deployer.fanout(targets, fetch, executor=executor, read=True)
         statuses = [s for s in results if s is not None]  # drop regions without it
 
         if not reps:

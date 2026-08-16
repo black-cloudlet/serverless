@@ -209,7 +209,23 @@ class CommonSettings(BaseSettings):
 
     cluster_connect_timeout: float = 2.0
     cluster_read_timeout: float = 5.0
-    region_op_timeout: float = 60.0
+    # Backstop on one cluster's whole operation inside a write fan-out (an apply
+    # is several sequential calls). Named cluster_*, like the socket timeouts
+    # above: it bounds work against one cluster, whatever region carries it.
+    cluster_op_timeout: float = 60.0
+    # The same backstop for the read fan-outs (list/get/stats). Deliberately
+    # short: these feed pages, and a slow cluster should cost its own column in
+    # the response - which the merge already renders - not the whole page. Kept
+    # apart from cluster_op_timeout because a write is worth waiting a minute
+    # for and a page read never is.
+    cluster_read_op_timeout: float = 5.0
+    # The pool the read fan-outs run on, and how much may queue for it. Reads
+    # get a bounded pool of their own so a burst (a console tab polling rows)
+    # queues predictably and can never drain the process-wide default executor
+    # everything else shares; past workers+queued the read is refused with 503,
+    # which is visible, instead of latency creeping, which is not.
+    cluster_read_workers: int = 16
+    cluster_read_max_queued: int = 32
 
     regions: list[RegionConfig] = Field(default_factory=list)
     local_region: str | None = None
