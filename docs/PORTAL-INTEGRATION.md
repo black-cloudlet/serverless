@@ -13,7 +13,7 @@ costs every client.
 ## Contents
 
 - [Where we are now](#where-we-are-now)
-- [The decision that gates everything: whose edge is it](#the-decision-that-gates-everything-whose-edge-is-it)
+- [The edge is ours](#the-edge-is-ours)
 - [The scheme: one host, one prefix per API](#the-scheme-one-host-one-prefix-per-api)
   - [The prefix is per API, never per workload](#the-prefix-is-per-api-never-per-workload)
 - [Why prefix-and-strip](#why-prefix-and-strip)
@@ -32,7 +32,7 @@ costs every client.
 
 | Thing | Address | How the portal reaches it |
 |-------|---------|---------------------------|
-| Portal (ServiceNow frontend) | `portal.{base_domain}` or `{instance}.service-now.com` | - |
+| Portal | `portal.{base_domain}` - ours, on an edge we control | - |
 | This API | `serverless.{base_domain}` (chart `api.route.host`) | Cross-origin XHR + `Authorization: Bearer` |
 | Other teams' APIs | a host each | the same, one CORS entry each |
 | Tenant workloads | `{name}-{group}.serverless.{base_domain}` | not the portal's concern |
@@ -45,28 +45,24 @@ learns out of band. None of that is hard. All of it is per API, forever, and it 
 what makes the platform feel like a set of separate systems the portal happens to
 link to.
 
-## The decision that gates everything: whose edge is it
+## The edge is ours
 
-**Everything below assumes the host the portal is served from is an edge we control**
-- an OpenShift Route, or an ingress/gateway in front of it. If the portal is
-**ServiceNow SaaS** (`{instance}.service-now.com`), it is not: we cannot mount paths
-under someone else's domain, and no amount of design changes that.
+The portal is served from **our own edge** - `portal.{base_domain}`, fronted by an
+OpenShift Route or a gateway in front of it - not from a SaaS domain we do not
+control. That settles the question the rest of this design would otherwise have to
+hedge against, and it settles it the good way:
 
-So there are two shapes, and they differ only in **which host** the prefixes hang off:
+- The shared host **is** the portal's host. `/` serves the UI, `/{slug}/...` serve the
+  APIs, and there is no separate API hostname to name, certify or explain.
+- Every API on it is therefore **same-origin with the portal**. No CORS, no preflight
+  on any browser call, one SSO origin for the whole platform.
 
-| If the portal is... | The shared host is | Same-origin? |
-|---------------------|--------------------|--------------|
-| served from our own edge (`portal.{base_domain}`) | that same host - `/` is the UI, `/{slug}/...` are the APIs | **Yes.** CORS disappears |
-| ServiceNow SaaS | a dedicated **API edge** host, `api.{base_domain}` | No - but it is **one** origin to allow, once, for every API |
-
-The rest of the design - prefixes, stripping, the app changes, the onboarding
-contract - is identical either way, which is the point: pick the host you can get
-today, and the work is not wasted if the portal moves later. Only the CORS line and
-the SSO redirect URIs differ.
-
-A third option, serving the portal from our edge and reverse-proxying ServiceNow
-underneath it, buys same-origin at the price of owning a proxy for someone else's
-SPA (asset URLs, websockets, its own auth redirects). Not recommended.
+Had the portal been SaaS (`{instance}.service-now.com`), none of that would have been
+available - paths cannot be mounted under someone else's domain - and the fallback
+would have been a dedicated `api.{base_domain}` carrying the same prefixes
+cross-origin. Worth recording only because it is the one change that would invalidate
+the same-origin half of this document; the prefixes, the stripping, the app changes and
+the onboarding contract would all survive it unchanged.
 
 ## The scheme: one host, one prefix per API
 
@@ -316,8 +312,7 @@ requirement, not a per-team choice.
 
 The old host keeps serving throughout; nothing is cut over by a deploy.
 
-1. **Decide the edge host** (the fork at the top) and claim the slug `serverless` in
-   the registry.
+1. **Claim the slug `serverless`** in the registry, on `portal.{base_domain}`.
 2. **Land the app changes** - `external_base_path` and the four fixes - with the
    default `""`, so the direct-host deployment is byte-identical. Add the test that
    runs the app under a non-empty prefix.
@@ -334,7 +329,7 @@ The old host keeps serving throughout; nothing is cut over by a deploy.
 
 | Item | Notes |
 |------|-------|
-| **Portal host ownership** | The fork at the top. If the portal is ServiceNow SaaS, the shared host is `api.{base_domain}` and same-origin is off the table until the portal moves - everything else stands |
+| **The portal's own `/` routes** | The UI and the APIs now share a path namespace. Whatever the portal uses for its own client-side routes has to stay clear of the registered slugs, which is why a slug is a reserved word - but the convention for it (a `/ui` prefix on the portal's side? slugs simply never colliding?) is the portal team's call, not made here |
 | **Audience strategy** | Token exchange per API vs. one shared platform audience. Needs the SSO team: whether the exchange grant can be enabled for the portal's client |
 | **Who owns the edge config** | The platform team merging every registry PR is a bottleneck by design at first, and a bottleneck by accident at ten APIs. Gateway API's per-namespace `HTTPRoute` delegation is the exit; worth choosing before the count grows |
 | **Rate limiting & quotas** | A shared edge is the natural place for both, and they are already open in ARCHITECTURE.md. Whether that justifies option 3 (a real gateway) is a separate decision from this one |
