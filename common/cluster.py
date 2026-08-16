@@ -8,6 +8,7 @@ the platform operates on.
 
 from __future__ import annotations
 
+import socket
 import threading
 from collections.abc import Iterator
 from enum import Enum
@@ -18,6 +19,28 @@ from kubernetes.dynamic import DynamicClient
 
 from common.config import CommonSettings, RegionConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
+
+
+def _keepalive_socket_options() -> list[tuple]:
+    """TCP keepalive options for the cluster connection pools.
+
+    The long-lived streams (a watch, a log follow) deliberately carry no read
+    timeout - they are idle between bytes by design - which leaves them with no
+    defence against a connection that dies *silently* (a NAT/conntrack entry or
+    LB dropping it without RST): the server-side timeout can never arrive over
+    a dead connection, and the blocked thread would sit in recv for however
+    long the kernel default keepalive takes (hours). With these, the kernel
+    probes an idle connection after 30s and gives up within ~a minute more, so
+    a wedged watch costs minutes, not a reconcile loop until restart.
+
+    The TCP_* constants are Linux; anything the platform lacks is skipped, and
+    SO_KEEPALIVE alone still buys the kernel-default probing.
+    """
+    options = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 6)):
+        if hasattr(socket, name):
+            options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
+    return options
 
 
 class ResourceKind(Enum):
@@ -134,6 +157,11 @@ class Cluster:
                 # carry their own read timeout via ``self._opts``.
                 api_client.rest_client.pool_manager.connection_pool_kw["timeout"] = urllib3.Timeout(
                     connect=self._connect_timeout, read=None
+                )
+                # Keepalive is what bounds the streams that read timeout
+                # deliberately does not - see _keepalive_socket_options.
+                api_client.rest_client.pool_manager.connection_pool_kw["socket_options"] = (
+                    _keepalive_socket_options()
                 )
                 self._api_client_obj = api_client
             return self._api_client_obj

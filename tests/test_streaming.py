@@ -338,7 +338,7 @@ def test_the_interval_bounds_have_to_be_coherent():
 
 async def test_the_buffer_drops_and_counts_rather_than_growing():
     """A workload outrunning its reader must cost a reported gap, not memory."""
-    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=3)
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=3, max_bytes=1 << 20)
     for i in range(10):
         buf.put(sse.StreamEvent("log", StreamError(code="c", message=str(i))))
 
@@ -351,7 +351,7 @@ async def test_the_buffer_drops_and_counts_rather_than_growing():
 
 
 async def test_the_buffer_wakes_the_loop_from_a_thread():
-    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10)
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10, max_bytes=1 << 20)
 
     def producer():
         time.sleep(0.05)
@@ -364,7 +364,7 @@ async def test_the_buffer_wakes_the_loop_from_a_thread():
 
 async def test_a_wakeup_is_not_lost_when_a_put_races_a_drain():
     """The edge-triggered wakeup is only safe because drain empties under the lock."""
-    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10)
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10, max_bytes=1 << 20)
     buf.put(sse.StreamEvent("log", StreamError(code="c", message="first")))
     assert len(buf.drain()) == 1
     # Deque is empty again, so this put must wake the loop rather than assume
@@ -1319,3 +1319,56 @@ async def test_the_pods_snapshot_hides_another_group_s_workload_as_a_404(capacit
 
     with pytest.raises(NotFoundError):
         await engine.pods(_offering(), "foo", _caller(), "team")
+
+
+async def test_the_buffer_is_bounded_by_bytes_as_well_as_lines():
+    """queue_size alone is no bound for a pod writing without newlines: each
+    "line" arrives as a ~1MB piece, and a thousand of those is a gigabyte."""
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=1000, max_bytes=100)
+
+    buf.put("x" * 80)  # fits
+    buf.put("y" * 80)  # would blow the byte budget -> dropped and counted
+    buf.put("z" * 30)  # 80+30 still over budget -> dropped too
+    assert buf.take_dropped() == 2
+    assert [len(i) for i in buf.drain()] == [80]
+
+    # An overweight frame is still accepted into an EMPTY buffer - it is the
+    # only way that content can ever be delivered - it is pile-up that is refused.
+    buf.put("w" * 500)
+    assert [len(i) for i in buf.drain()] == [500]
+    assert buf.take_dropped() == 0
+
+    # Draining resets the byte budget along with the items.
+    buf.put("a" * 80)
+    assert buf.take_dropped() == 0
+
+
+async def test_the_rollover_reports_lines_dropped_since_the_last_tick(capacity):
+    """The deadline path must not present the log as gapless when it wasn't:
+    drops accumulated since the last tick are reported before the `end`."""
+
+    class Endless:
+        def __init__(self):
+            self._open = True
+
+        def lines(self):
+            i = 0
+            while self._open:
+                i += 1
+                yield f"line {i}"
+
+        def close(self):
+            self._open = False
+
+    class FirehoseCluster(FakeCluster):
+        def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
+            return Endless()
+
+    config = FAST.model_copy(update={"max_seconds": 1, "queue_size": 2, "heartbeat_seconds": 0.02})
+    events = [e async for e in _follow(FirehoseCluster({"p1": "r1"}), capacity, config=config)]
+
+    assert names(events)[-1] == "end"
+    assert "time limit" in events[-1].data.reason
+    warnings = [e for e in events if not isinstance(e, str) and e.name == "warning"]
+    assert warnings, "an endless producer against queue_size=2 must have dropped lines"
+    assert all(w.data.droppedLines > 0 for w in warnings)

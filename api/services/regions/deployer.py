@@ -8,6 +8,7 @@ HTTP 502. The Kubernetes client is synchronous, so per-region work runs in threa
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Callable
 
@@ -48,7 +49,13 @@ class ReadPool:
     silently growing queue is not.
 
     Admission is counted on the event loop (every caller is a coroutine), so
-    the counter needs no lock.
+    the counter needs no lock. What it counts is *thread occupancy*, not
+    awaits: a read the caller's ``wait_for`` gave up on is still running on its
+    worker - the executor cannot interrupt a thread - so the slot is released
+    from the future's done callback, which fires when the thread actually
+    finishes. Released on cancellation instead, a stalling region would fill
+    the pool with zombie reads while the accounting reported it empty, and the
+    503 shedding this class exists for would never fire.
     """
 
     def __init__(self, workers: int, max_queued: int):
@@ -67,16 +74,37 @@ class ReadPool:
 
         Raises:
             ServiceUnavailableError: If ``workers + max_queued`` reads are
-                already in flight.
+                already in flight - abandoned-but-still-running ones included.
         """
         if self._inflight >= self._limit:
             logger.warning("refusing cluster read: %d already in flight", self._inflight)
             raise ReadPoolSaturated("the API is saturated with cluster reads; retry shortly")
+        loop = asyncio.get_running_loop()
         self._inflight += 1
-        try:
-            return await run_on(self._executor, fn, *args)
-        finally:
-            self._inflight -= 1
+        # Submitted directly, and the release hangs on the CONCURRENT future:
+        # run_in_executor's asyncio wrapper acknowledges a cancel immediately
+        # even while the thread runs on, so a callback there (or a finally on
+        # the await) would free the slot the moment a caller's wait_for gave
+        # up - long before the worker did. The concurrent future completes only
+        # when the thread actually finishes (or was cancelled before starting),
+        # which is the occupancy this counts. Context copied as start_on does,
+        # so the read's log lines keep the request's correlation id.
+        ctx = contextvars.copy_context()
+        concurrent_future = self._executor.submit(ctx.run, fn, *args)
+
+        def release(_cf) -> None:
+            # Runs on the worker thread; the counter is only touched on the loop.
+            try:
+                loop.call_soon_threadsafe(self._release)
+            except RuntimeError:  # noqa: S110 - loop closed; teardown is under way
+                pass
+
+        concurrent_future.add_done_callback(release)
+        return await asyncio.wrap_future(concurrent_future)
+
+    def _release(self) -> None:
+        """Give the admission back (runs on the loop when the thread finishes)."""
+        self._inflight -= 1
 
     def shutdown(self) -> None:
         """Stop the pool without waiting: socket timeouts bound what's running."""

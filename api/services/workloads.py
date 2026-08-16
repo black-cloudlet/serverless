@@ -1331,7 +1331,9 @@ class WorkloadService:
             group=group,
             type=kind,  # type: ignore[arg-type]
             region=self.deployer.local_region(),
-            pods=await asyncio.to_thread(read),
+            # The read pool, like every page read: the console's non-streaming
+            # fallback polls this, and the default executor has no admission.
+            pods=await self.deployer.run_read(read),
         )
 
     async def pod_logs(
@@ -1420,7 +1422,9 @@ class WorkloadService:
                 )
             ]
 
-        revision, lines = await asyncio.to_thread(read)
+        # The read pool, like every page read: the console's non-streaming
+        # fallback polls this, and the default executor has no admission.
+        revision, lines = await self.deployer.run_read(read)
         return PodLogSnapshot(
             name=name,
             group=group,

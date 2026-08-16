@@ -171,3 +171,21 @@ def test_the_connection_pool_bounds_the_connect_for_calls_with_no_timeout():
     assert timeout.connect_timeout == 1.5
     assert timeout.read_timeout in (None, urllib3.Timeout.DEFAULT_TIMEOUT)
     cluster.close()
+
+
+def test_the_connection_pool_enables_tcp_keepalive():
+    """The streams that deliberately carry no read timeout (watch, log follow)
+    have no other defence against a silently dead connection: the server-side
+    timeout cannot arrive over dead TCP, and the blocked thread is the build
+    controller's whole reconcile loop."""
+    import socket as socket_mod
+
+    from common.cluster import Cluster
+    from common.config import CommonSettings, RegionConfig
+
+    settings = CommonSettings(regions=[RegionConfig(name="central", cluster="central-0")])
+    cluster = Cluster(settings.regions[0], settings)
+    options = cluster._api_client.rest_client.pool_manager.connection_pool_kw["socket_options"]
+
+    assert (socket_mod.SOL_SOCKET, socket_mod.SO_KEEPALIVE, 1) in options
+    cluster.close()

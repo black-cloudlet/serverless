@@ -169,6 +169,10 @@ stream:
   # Log lines held for a client that reads slower than the workload writes.
   # Past this, lines are dropped and the gap is reported - never grown into.
   queueSize: 1000
+  # Bytes that buffer may hold, whatever queueSize still allows. The line bound
+  # alone is no bound for a pod writing without newlines - each "line" then
+  # arrives as a ~1MB piece, and queueSize of those is a gigabyte per stream.
+  queueMaxBytes: 2097152
   # How long one stream lives before ending itself; the client reconnects on its
   # own. MUST stay under api.route.timeout, so a stream is never cut mid-event.
   maxSeconds: 3600

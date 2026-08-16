@@ -70,6 +70,8 @@ spec:
               value: {{ .Values.stream.heartbeatSeconds | quote }}
             - name: SERVERLESS_STREAM__QUEUE_SIZE
               value: {{ .Values.stream.queueSize | quote }}
+            - name: SERVERLESS_STREAM__QUEUE_MAX_BYTES
+              value: {{ .Values.stream.queueMaxBytes | quote }}
             - name: SERVERLESS_STREAM__MAX_SECONDS
               value: {{ .Values.stream.maxSeconds | quote }}
             - name: SERVERLESS_STREAM__TICKET_TTL_SECONDS

@@ -3090,3 +3090,28 @@ async def test_get_reads_every_regions_build_concurrently():
 
     (a_start, a_end), (b_start, b_end) = spans["region-a"], spans["region-b"]
     assert a_start < b_end and b_start < a_end, "the per-region build reads did not overlap"
+
+
+async def test_admission_counts_the_thread_not_the_await():
+    """A read the caller timed out on is still occupying its worker; the pool
+    must refuse new work while zombies hold it, or shedding never fires."""
+    import threading
+
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    from api.services.regions.deployer import ReadPool
+
+    pool = ReadPool(workers=1, max_queued=0)
+    release = threading.Event()
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(pool.run(release.wait), timeout=0.05)
+        # The await is gone; the THREAD is not. The slot must still be held.
+        with pytest.raises(ServiceUnavailableError):
+            await pool.run(lambda: "must be refused")
+        release.set()
+        await asyncio.sleep(0.1)  # let the zombie finish and release via its callback
+        assert await pool.run(lambda: "ok") == "ok"
+    finally:
+        release.set()
+        pool.shutdown()

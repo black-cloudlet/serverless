@@ -97,20 +97,31 @@ class _Buffer:
 
     Items are rendered SSE frames (str) for log lines and
     :class:`~api.services.streams.sse.StreamEvent` for the rare control message;
-    the buffer itself never looks at them (see the module docstring for why the
-    hot path is pre-rendered).
+    the buffer itself never looks inside them (see the module docstring for why
+    the hot path is pre-rendered).
+
+    Bounded twice, and both bounds matter. The line count caps the ordinary
+    case; the byte budget caps the pathological one, where a pod writes without
+    newlines and every "line" arrives as a ~1MB piece (LogFollow.MAX_LINE_BYTES)
+    - a thousand of those is a gigabyte, which against the pod's memory limit is
+    an OOM kill wearing a log stream's clothes. Either bound overrun costs a
+    *reported* drop, exactly as the count bound always did.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, maxsize: int):
+    def __init__(self, loop: asyncio.AbstractEventLoop, maxsize: int, max_bytes: int):
         """Initialize the buffer.
 
         Args:
             loop: The event loop to wake; captured because the producer is a
                 thread, which has no running loop of its own.
             maxsize: Events held before new ones are dropped and counted.
+            max_bytes: Frame bytes held before new frames are dropped and
+                counted, whatever the count bound still allows.
         """
         self._loop = loop
         self._maxsize = maxsize
+        self._max_bytes = max_bytes
+        self._bytes = 0
         self._items: deque = deque()
         self._dropped = 0
         self._lock = threading.Lock()
@@ -118,10 +129,16 @@ class _Buffer:
 
     def put(self, item: StreamEvent | str) -> None:
         """Offer one event or rendered frame (from the follower thread; never blocks)."""
+        size = len(item) if isinstance(item, str) else 0
         with self._lock:
-            if len(self._items) >= self._maxsize:
+            # An overweight frame is still accepted into an EMPTY buffer: it is
+            # the only way that content can ever be delivered, and one frame is
+            # bounded by MAX_LINE_BYTES - it is the pile-up that must not grow.
+            over_bytes = self._bytes + size > self._max_bytes and self._items
+            if len(self._items) >= self._maxsize or over_bytes:
                 self._dropped += 1
                 return
+            self._bytes += size
             self._items.append(item)
             # Only on the empty-to-filled edge. `drain` clears the flag under
             # this same lock and only ever leaves the deque empty, so a producer
@@ -139,6 +156,7 @@ class _Buffer:
         with self._lock:
             items = list(self._items)
             self._items.clear()
+            self._bytes = 0
             self._ready.clear()
         return items
 
@@ -312,7 +330,7 @@ async def follow(
         when the pod stops producing.
     """
     loop = asyncio.get_running_loop()
-    buf = _Buffer(loop, config.queue_size)
+    buf = _Buffer(loop, config.queue_size, config.queue_max_bytes)
     tail = _Tail()
     deadline = loop.time() + config.max_seconds
 
@@ -336,6 +354,21 @@ async def follow(
                 # must not cost the client lines that had in fact arrived.
                 for event in _coalesced(buf.drain()):
                     yield event
+                # ...and report what was NOT delivered, exactly as a normal tick
+                # would: a client reconnecting across the rollover must not read
+                # the log as gapless when lines were in fact skipped.
+                dropped = buf.take_dropped()
+                if dropped:
+                    yield StreamEvent(
+                        "warning",
+                        StreamWarning(
+                            message=(
+                                "the client is reading slower than the pod is logging; "
+                                "lines were skipped"
+                            ),
+                            droppedLines=dropped,
+                        ),
+                    )
                 # Not an error: the client reconnects, which SSE does unprompted.
                 yield StreamEvent(
                     "end", StreamEnd(reason="the stream reached its time limit; reconnect")

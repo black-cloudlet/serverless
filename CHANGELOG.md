@@ -73,6 +73,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **A log stream's buffer is bounded by bytes as well as lines**
+  (`stream.queueMaxBytes`, default 2MiB). The line bound alone was no bound for
+  a pod writing without newlines: each "line" then arrives as a ~1MB piece, and
+  `queueSize` of those was a potential gigabyte per stream against the pod's
+  memory limit - an OOM kill wearing a log stream's clothes. Either bound
+  overrun costs a *reported* drop, as the line bound always did; and the
+  rollover at `stream.maxSeconds` now reports lines dropped since the last
+  tick instead of presenting the log as gapless across the reconnect.
+
+- **Read-pool admission counts threads, not awaits.** A read the caller timed
+  out on is still occupying its worker - the executor cannot interrupt a
+  thread - but the slot was released when the await ended, so a stalling
+  region could fill the pool with zombie reads while the accounting reported
+  it empty and the 503 shedding never fired. The slot is now released when the
+  thread actually finishes. The `follow=false` pods roster and log snapshot
+  also moved onto the read pool: the console's non-streaming fallback polls
+  exactly these, and they were still renting from the unbounded default
+  executor.
+
+- **The cluster connection pools enable TCP keepalive.** The streams that
+  deliberately carry no read timeout (the controller's watch, a log follow)
+  had no defence against a connection dying *silently* - a NAT/conntrack entry
+  or LB dropping it without RST leaves the server-side timeout undeliverable
+  and the thread blocked in recv for hours. For the build controller that
+  thread is the whole reconcile loop. The kernel now probes an idle connection
+  after 30s and gives up within about a minute more.
+
 - **A slow or unreachable peer region no longer slows every page.** The read
   fan-outs (`list`, `get`, `stats`) waited on the slowest region under the same
   minute-scale backstop the writes need (`cluster_op_timeout`) - so one slow
