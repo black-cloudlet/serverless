@@ -114,11 +114,11 @@ class Settings(CommonSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
-    # Prefix the whole API is served under - endpoints, docs, OpenAPI, the SSO
-    # token proxy. The chart ships /api/serverless; empty (this default) serves
-    # /v1/... bare, which is what a local run wants.
-    # env: SERVERLESS_EXTERNAL_BASE_PATH.
-    external_base_path: str = ""
+    # The path the whole API is served under - endpoints, docs, OpenAPI, the
+    # SSO token proxy. The chart ships /api/serverless; empty (this default)
+    # serves /v1/... bare, which is what a local run wants.
+    # env: SERVERLESS_BASE_PATH.
+    base_path: str = ""
 
     # Browser origins allowed to call the API (e.g. the ServiceNow portal).
     # Empty disables CORS. env: SERVERLESS_CORS_ALLOW_ORIGINS (JSON list).
@@ -146,28 +146,28 @@ class Settings(CommonSettings):
     # cannot set that header - needs this set.
     stream_ticket_key: str = ""
 
-    @field_validator("external_base_path")
+    @field_validator("base_path")
     @classmethod
     def _normalize_base_path(cls, value: str) -> str:
-        """Accept the prefix in the one shape the rest of the code assumes.
+        """Accept the base path in the one shape the rest of the code assumes.
 
-        It is used by concatenation in both directions, so two spellings of the
-        same mount would produce two different URLs.
+        Everything is concatenated onto it, so two spellings of the same base
+        path would produce two different sets of URLs.
 
         Args:
-            value: The configured prefix.
+            value: The configured base path.
 
         Returns:
-            Either empty, or a prefix with a leading and no trailing slash.
+            Either empty, or a path with a leading and no trailing slash.
 
         Raises:
-            ValueError: If a non-empty prefix has no leading slash.
+            ValueError: If a non-empty base path has no leading slash.
         """
         value = value.rstrip("/")
         if not value:
             return ""
         if not value.startswith("/"):
-            raise ValueError(f"external_base_path must start with '/' (got {value!r})")
+            raise ValueError(f"base_path must start with '/' (got {value!r})")
         return value
 
 

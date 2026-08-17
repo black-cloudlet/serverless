@@ -371,8 +371,8 @@ The Route that exposes the **API itself** is values-driven: `route.host` (defaul
 HAProxy router timeouts or rate-limit annotations). This is distinct from the per-**workload**
 host convention above.
 
-The API need not be at the root of that host: `externalBasePath` serves the whole of it
-under a path prefix, so it can share a host with other platform APIs (REST API
+The API need not be at the root of that host: `basePath` is the path the whole of it
+is served under, so it can share a host with other platform APIs (REST API
 Specification, below).
 
 ---
@@ -662,18 +662,17 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 
 ## REST API Specification
 
-Base path: **`/api/serverless/v1`**. The prefix in front of the version is the chart's
-`externalBasePath`, and that is the value it ships - the API mounted under its own slug,
-so it can share a host with the platform's other APIs. Every path below is written in
-full, because that is the whole of it: there is one path per endpoint and nothing
-answers beside it. The docs, the OpenAPI document and the SSO token proxy sit under the
-same prefix; only `/healthz` and `/readyz` stay at the root, since the kubelet reaches
+Base path: **`/api/serverless/v1`** - the chart's `basePath` followed by the version.
+Naming the base path for the API is what lets it share a host with the platform's
+others. Every path below is written in full, because that is the whole of it: there is
+one path per endpoint and nothing answers beside it. The docs, the OpenAPI document and the SSO token proxy sit under the
+same base path; only `/healthz` and `/readyz` sit outside it, since the kubelet reaches
 the pod directly.
 
 Two consequences, stated once. **Whatever fronts the API must forward the path whole** -
 a plain Route with `spec.path`, no `rewrite-target` - because a router that strips the
-prefix leaves nothing that matches. And a deployment that sets a different
-`externalBasePath` moves every path below with it: a local run leaves it empty and calls
+leading segments leaves nothing that matches. And a deployment that sets a different
+`basePath` moves every path below with it: a local run leaves it empty and calls
 `/v1/...`.
 
 All endpoints require a valid SSO bearer token (ARCHITECTURE.md: Authentication & Authorization) **except the public
@@ -704,8 +703,8 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `POST` | `/api/serverless/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
 | `GET` | `/api/serverless/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `regions`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
 | `GET` | `/api/serverless/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
-| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth), and the only paths NOT under the prefix - the kubelet reaches the pod directly. Constant responses; they never touch a cluster, so a down region cannot fail a probe. |
-| `GET` | `/api/serverless/{docs,redoc,openapi.json}` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). Under the prefix like everything else, so several APIs on one host each keep their own. |
+| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth), and the only paths outside the base path - the kubelet reaches the pod directly. Constant responses; they never touch a cluster, so a down region cannot fail a probe. |
+| `GET` | `/api/serverless/{docs,redoc,openapi.json}` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). Under the base path like everything else, so several APIs on one host each keep their own. |
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
 `status` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
@@ -800,7 +799,7 @@ The API is the backend for a **ServiceNow** frontend; the design accommodates th
   origin(s); the API enables CORS (preflight + `Authorization` header) only then. Server-side
   ServiceNow calls (IntegrationHub / Scripted REST) need no CORS. CORS is a consequence of
   the API having an origin of its own: serving it from the portal's host under a path
-  prefix (`externalBasePath`) makes it same-origin and removes the need entirely.
+  base path (`basePath`) makes it same-origin and removes the need entirely.
 - **Async submit + poll.** `POST`/`PUT` return **202** immediately with a `statusUrl`;
   the ServiceNow workflow polls `GET {statusUrl}` until `Ready`/`Failed`. This avoids
   ServiceNow REST timeouts on slow FaaS builds and matches its long-running-task patterns.
