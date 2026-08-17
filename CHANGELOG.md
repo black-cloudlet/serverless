@@ -9,28 +9,29 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed (paths)
 
-- **BREAKING: the API's base path is now `/v1`, not `/api/v1`** - though the
-  chart's default hides it from existing clients, see below. This lets the API
-  be mounted on a shared edge as `/api/{slug}/v1/...` alongside other platform
-  APIs: that grammar (matching Kubernetes' `/apis/{group}/{version}/...`) needs
-  the prefix to be additive for `root_path` to express it, which it only is if
-  the app itself serves `/v1/...`. The four routers, the `statusUrl` and the
-  stream-ticket regex moved down a segment.
-- **`SERVERLESS_EXTERNAL_BASE_PATH` (chart `externalBasePath`) puts a prefix
-  back** on every path the API *hands* a client: a 202's `statusUrl`, the
-  OpenAPI `servers` entry, the SSO redirect, a stream ticket's path. **The chart
-  defaults it to `/api`**, reproducing the previous `/api/v1/...` surface, so an
-  upgrade that changes no values is invisible to existing clients. A deployment
-  that overrides it to `""` **will** break its callers.
-- Both directions live in `api/core/paths.py` and are the identity when no
-  prefix is set. `tests/test_mount_prefix.py` runs the app under one; the rest
-  of the suite reaches it at the root, where the two paths are the same string.
-  The sharpest case is the stream tickets, which are signed over the path a
-  browser asks for and verified against the one that survives the edge.
-- Known gap, upstream: `cloudlet_apis.web.mount_offline_docs` writes the Swagger
-  and ReDoc pages' URLs root-relative, so under a prefix both load blank.
-  `api/main.py` registers `root_path`-aware versions ahead of it as a stopgap;
-  the fix belongs in the shared package.
+- **`SERVERLESS_EXTERNAL_BASE_PATH` (chart `externalBasePath`) is the prefix the
+  whole API is served under**, so it can share a host with other platform APIs
+  at `/api/{slug}/v1/...` - the grammar Kubernetes uses for
+  `/apis/{group}/{version}/...`. Endpoints, the docs and their assets, the
+  OpenAPI document and the SSO token proxy all sit beneath it, and **nothing
+  answers beside it**: there is one path per endpoint and it is the complete
+  one. Only `/healthz` and `/readyz` stay at the root, where the kubelet reaches
+  the pod directly.
+- **The chart defaults it to `/api`**, which reproduces the `/api/v1/...`
+  surface exactly, so an upgrade that changes no values is invisible to existing
+  clients. A deployment that overrides it to `""` serves a bare `/v1/...` and
+  **will** break its callers.
+- **Whatever fronts the API must forward the path whole** - a plain Route with
+  `spec.path`, no `haproxy.router.openshift.io/rewrite-target`. A router that
+  strips the prefix leaves nothing that matches.
+- Internally the version segment stopped being repeated in four router modules:
+  `api.core.paths.api_base()` is the one definition of where endpoints live, and
+  `include_router` applies it. `tests/test_mount_prefix.py` runs the app under a
+  prefix and asserts what it publishes is what answers.
+- Requires **cloudlet-apis >=0.5**, whose `mount_offline_docs` and
+  `wire_sso_login` take the prefix. Under 0.4 those took no such argument and
+  wrote root-relative URLs, so the docs pages loaded blank behind a prefix and
+  the token proxy sat at the host root, where every API's would collide.
 
 ### Changed (rename)
 

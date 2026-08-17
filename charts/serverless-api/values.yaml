@@ -131,22 +131,23 @@ namespaces:
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
-# Prefix the API is reached under. The app routes on /v1/... either way; this is
-# what is put back on every path it HANDS a client (a 202's statusUrl, the
-# OpenAPI `servers` entry, the SSO redirect, a stream ticket's path).
+# Prefix the API is served under. Everything hangs off it - the endpoints
+# (`{externalBasePath}/v1/...`), the docs, their assets, the OpenAPI document,
+# the SSO token proxy - and nothing answers beside it. Only /healthz and /readyz
+# stay at the root, since the kubelet reaches the pod directly.
 #
 # The default is `/api`, NOT empty: it reproduces the /api/v1/... surface served
-# before the base path moved to /v1, so an upgrade is invisible to every client
+# before the version segment moved, so an upgrade is invisible to every client
 # already calling it. Emptying it here breaks all of them on the next upgrade.
 #
 #   /api              this API on its own host, unchanged from before  (default)
-#   /api/serverless   mounted on a shared edge under its own slug
+#   /api/serverless   mounted on a shared host under its own slug
 #   ""                the bare /v1/... surface; no client speaks this today
 #
 # Whatever fronts the API must forward the path WHOLE - a plain Route with
-# `spec.path`, no haproxy.router.openshift.io/rewrite-target. Endpoints tolerate
-# a stripped prefix, but the Swagger asset mount answers on the full path only,
-# so a rewriting router leaves /docs and /redoc loading blank.
+# `spec.path`, no haproxy.router.openshift.io/rewrite-target. There is one path
+# per endpoint and it is the complete one, so a router that strips the prefix
+# leaves nothing that matches.
 externalBasePath: /api
 
 # Each entry is rendered with tpl, so an origin can be derived from other

@@ -9,7 +9,6 @@ from cloudlet_apis.auth import StreamTickets
 from fastapi import APIRouter, Depends
 
 from api.auth.deps import CurrentUser, get_tickets
-from api.core.paths import to_external
 from api.models.stream import StreamTicketRequest, StreamTicketResponse
 from api.services.state.ksvc_state import ISRAEL_TZ
 
@@ -45,11 +44,9 @@ async def create_stream_ticket(
         ServiceUnavailableError: If this deployment has no signing key
             configured, in which case streams take the Authorization header only.
     """
-    # Signed over the internal path (normalized by the model), echoed back as
-    # the external one, which is the URL the caller is about to open.
     ticket = tickets.mint(user, body.path)
     return StreamTicketResponse(
         ticket=ticket.value,
         expiresAt=datetime.fromtimestamp(ticket.expires_at, tz=ISRAEL_TZ),
-        path=to_external(body.path),
+        path=body.path,
     )

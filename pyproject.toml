@@ -10,10 +10,11 @@ requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
-    # >=0.4: SSOConfig defaults every field (so `sso` needs no subclass here),
-    # carries `swagger_client_secret`, and renamed the auth group object to
-    # SSOGroup. 0.3 has none of those, and this API does not start against it.
-    "cloudlet-apis>=0.4,<1",
+    # >=0.5: `mount_offline_docs` and `wire_sso_login` take the `prefix` this
+    # API is served under, so the docs, their assets and the SSO token proxy
+    # sit beneath it like everything else. 0.4 takes no such argument and
+    # create_app raises on it, so this floor is not advisory.
+    "cloudlet-apis>=0.5,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "kubernetes>=36.0.3",

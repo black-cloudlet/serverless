@@ -9,24 +9,18 @@ from cloudlet_apis.auth import wire_sso_login
 from cloudlet_apis.logging import configure_logging, get_logger
 from cloudlet_apis.requestid import RequestIDMiddleware
 from cloudlet_apis.web import health_router, mount_offline_docs, register_exception_handlers
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from fastapi.responses import HTMLResponse
 
 from api import __version__
 from api.auth.deps import get_auth
 from api.core.config import Settings, get_settings
-from api.core.paths import V1
+from api.core.paths import api_base
 from api.dependencies import get_runtimes, get_stream_capacity, get_workload_service
 from api.routers import containers, functions, info, streams
 from api.services.regions.deployer import Deployer
 
 logger = get_logger(__name__)
-
-# Where the vendored Swagger/ReDoc assets are mounted; both the mount and the
-# pages' asset URLs are built from it (see _mount_docs).
-_DOCS_STATIC = "/static"
 
 
 async def _warm(label: str, fn, timeout: float) -> None:
@@ -81,49 +75,6 @@ async def lifespan(app: FastAPI):
     service.deployer.close()  # release per-region cluster HTTP clients
 
 
-def _mount_docs(app: FastAPI) -> None:
-    """Serve the offline Swagger/ReDoc pages, correctly under a mount prefix.
-
-    ``mount_offline_docs`` writes the pages' OpenAPI and asset URLs
-    root-relative, so under a prefix the browser resolves them against the
-    origin and both load blank. These two routes register first and win; the
-    shared call still runs for the static mount. A stopgap - the fix belongs in
-    ``cloudlet_apis``, which every API mounted under a prefix needs.
-
-    Args:
-        app: The application, built with ``docs_url``/``redoc_url`` of None.
-    """
-
-    @app.get("/docs", include_in_schema=False)
-    async def swagger_ui_html(request: Request) -> HTMLResponse:
-        root = request.scope.get("root_path", "").rstrip("/")
-        # An app may be built without the OAuth2 redirect route; None would be
-        # interpolated as the literal "None".
-        redirect = app.swagger_ui_oauth2_redirect_url
-        return get_swagger_ui_html(
-            openapi_url=f"{root}{app.openapi_url}",
-            title=f"{app.title} - Swagger UI",
-            oauth2_redirect_url=f"{root}{redirect}" if redirect else None,
-            init_oauth=app.swagger_ui_init_oauth,
-            swagger_js_url=f"{root}{_DOCS_STATIC}/swagger-ui-bundle.js",
-            swagger_css_url=f"{root}{_DOCS_STATIC}/swagger-ui.css",
-            swagger_favicon_url=f"{root}{_DOCS_STATIC}/favicon-32x32.png",
-        )
-
-    @app.get("/redoc", include_in_schema=False)
-    async def redoc_html(request: Request) -> HTMLResponse:
-        root = request.scope.get("root_path", "").rstrip("/")
-        return get_redoc_html(
-            openapi_url=f"{root}{app.openapi_url}",
-            title=f"{app.title} - ReDoc",
-            redoc_js_url=f"{root}{_DOCS_STATIC}/redoc.standalone.js",
-            redoc_favicon_url=f"{root}{_DOCS_STATIC}/favicon-32x32.png",
-            with_google_fonts=False,
-        )
-
-    mount_offline_docs(app, mount_path=_DOCS_STATIC)
-
-
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application.
 
@@ -132,6 +83,8 @@ def create_app() -> FastAPI:
     """
     configure_logging()
     settings = get_settings()
+    # Everything the API serves hangs off this, and nothing answers beside it.
+    mount = settings.external_base_path
 
     app = FastAPI(
         title="Serverless API",
@@ -140,15 +93,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
-        # Reaches the OpenAPI `servers` entry and the SSO token URL; empty is
-        # the root mount and changes nothing.
-        root_path=settings.external_base_path,
+        openapi_url=f"{mount}/openapi.json",
     )
-    _mount_docs(app)
+    mount_offline_docs(app, prefix=mount)
     if settings.auth_enabled:
         # With sso.swagger_client_secret set this also mounts the token proxy,
         # so the Swagger client can be a confidential one.
-        wire_sso_login(app, settings.sso)
+        wire_sso_login(app, settings.sso, prefix=mount)
 
     if settings.cors_allow_origins:
         app.add_middleware(
@@ -164,9 +115,11 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
 
     register_exception_handlers(app)
-    app.include_router(health_router)  # unversioned: probes, not the API surface
+    # Unprefixed: the probes are the kubelet's, which reaches the pod directly
+    # and never goes through whatever serves the API to everyone else.
+    app.include_router(health_router)
     for router in (info.router, streams.router, functions.router, containers.router):
-        app.include_router(router, prefix=V1)
+        app.include_router(router, prefix=api_base())
 
     return app
 

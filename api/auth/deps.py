@@ -21,7 +21,6 @@ from cloudlet_apis.errors import UnauthenticatedError
 from fastapi import Depends, Query, Request
 
 from api.core.config import get_settings
-from api.core.paths import to_internal
 
 
 @lru_cache
@@ -137,8 +136,7 @@ def require_stream_auth(
     if ticket is not None:
         # Verified against the path alone. The query string holds the ticket
         # itself, so signing over it would mean signing over the signature.
-        # Normalized because the ticket was minted over the internal path.
-        return tickets.verify(ticket, to_internal(request.url.path))
+        return tickets.verify(ticket, request.url.path)
     if header_user is None:
         raise UnauthenticatedError(
             "Missing or malformed Authorization header. A browser should open this "
