@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 api = [
-    "cloudlet-apis[web,auth]>=0.4,<1",
+    "cloudlet-apis[web,auth]>=0.5,<1",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.1",
     "pyyaml>=6.0.3",

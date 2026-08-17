@@ -8,6 +8,8 @@ of the suite runs with no base path configured, where the complete path is just
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from cloudlet_apis.auth import Principal, StreamTickets
 from fastapi.testclient import TestClient
@@ -66,7 +68,7 @@ def test_the_api_base_is_the_base_path_plus_the_version(monkeypatch, configured,
     get_settings.cache_clear()
     monkeypatch.setenv("SERVERLESS_BASE_PATH", configured)
     try:
-        assert api_base() == expected
+        assert api_base(get_settings()) == expected
     finally:
         get_settings.cache_clear()
 
@@ -138,17 +140,29 @@ def test_the_openapi_document_is_served_and_addressed_under_the_base_path(served
 
 
 @pytest.mark.parametrize("page", ["/docs", "/redoc"])
-def test_the_docs_publish_urls_that_answer(served_under, page):
-    """Asserting the HTML alone would pass while every asset 404'd."""
+def test_every_url_the_docs_publish_actually_resolves(served_under, page):
+    """Fetched, not matched against.
+
+    A substring assertion passes on a URL prefixed twice - the doubled string
+    still contains the right one - which is how the pages once shipped asking
+    for /api/serverless/api/serverless/openapi.json.
+    """
     client = _client()
 
     html = client.get(f"{BASE_PATH}{page}").text
-    assert f"{BASE_PATH}/openapi.json" in html
-    assert f"{BASE_PATH}/static/" in html
+    published = re.findall(r"""(?:url: '|src="|href=")(/[^'"]+)""", html)
 
-    assert client.get(f"{BASE_PATH}/static/swagger-ui.css").status_code == 200
-    # Nothing at the root, where another API on the same host would answer.
-    assert client.get(page).status_code == 404
+    assert published, "the page addressed nothing"
+    for url in published:
+        assert url.startswith(f"{BASE_PATH}/"), url
+        assert client.get(url).status_code == 200, url
+
+
+def test_the_docs_answer_nowhere_else(served_under):
+    """Another API on the same host would be the one answering at the root."""
+    client = _client()
+
+    assert client.get("/docs").status_code == 404
     assert client.get("/static/swagger-ui.css").status_code == 404
 
 

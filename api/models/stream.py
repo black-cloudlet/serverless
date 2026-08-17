@@ -7,6 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, field_validator
 
+from api.core.config import get_settings
 from api.core.paths import api_base
 
 # The only paths a ticket may be minted for. Anchored and explicit rather than
@@ -30,7 +31,7 @@ def stream_path_pattern() -> re.Pattern[str]:
     Returns:
         The compiled pattern a mintable path must match.
     """
-    return re.compile(f"^{re.escape(api_base())}{_STREAM_SUFFIX}")
+    return re.compile(f"^{re.escape(api_base(get_settings()))}{_STREAM_SUFFIX}")
 
 
 class StreamTicketRequest(BaseModel):
@@ -52,7 +53,7 @@ class StreamTicketRequest(BaseModel):
         if not stream_path_pattern().match(value):
             raise ValueError(
                 "path must be a streaming endpoint under "
-                f"{api_base()}/groups/{{group}}/{{functions|containers}}/{{name}}/: "
+                f"{api_base(get_settings())}/groups/{{group}}/{{functions|containers}}/{{name}}/: "
                 "'pods', 'stats/stream', or 'logs/pods/{pod}'"
             )
         return value

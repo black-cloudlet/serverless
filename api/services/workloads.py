@@ -377,7 +377,7 @@ class WorkloadService:
             hostname=host,
             status="Pending",
             regions=[],
-            statusUrl=f"{api_base()}/groups/{group}/{offering.name}s/{name}",
+            statusUrl=f"{api_base(self.settings)}/groups/{group}/{offering.name}s/{name}",
             **extra,
         )
 

@@ -242,7 +242,7 @@ source, not images.)
 > ```bash
 > # 1. the roster (also a stream; pods come and go on every revision)
 > curl -N -H "Authorization: Bearer $TOKEN" \
->   "$API/v1/groups/$GROUP/functions/$NAME/pods"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods"
 > #   event: pods
 > #   data: {"name":"orders","region":"central","pods":[
 > #           {"pod":"orders-team-00003-deployment-6b9f4c5d7-x2wql","revision":"orders-team-00003",
@@ -251,7 +251,7 @@ source, not images.)
 >
 > # 2. follow one of them
 > curl -N -H "Authorization: Bearer $TOKEN" \
->   "$API/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
 > ```
 >
 > **`?follow=false` on either** answers once, in JSON, and ends - for a caller that
@@ -261,9 +261,9 @@ source, not images.)
 >
 > ```bash
 > curl -H "Authorization: Bearer $TOKEN" \
->   "$API/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
 > curl -H "Authorization: Bearer $TOKEN" \
->   "$API/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
 > ```
 >
 > The snapshot returns the same `lines` a follow would have delivered, so a client

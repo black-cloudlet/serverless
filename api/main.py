@@ -119,7 +119,7 @@ def create_app() -> FastAPI:
     # directly and never goes through whatever serves the API to everyone else.
     app.include_router(health_router)
     for router in (info.router, streams.router, functions.router, containers.router):
-        app.include_router(router, prefix=api_base())
+        app.include_router(router, prefix=api_base(settings))
 
     return app
 

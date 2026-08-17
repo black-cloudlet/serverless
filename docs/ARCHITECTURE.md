@@ -435,6 +435,12 @@ and secret come from configuration rather than the request. Register the client 
 Standard Flow on, PKCE required (`S256`), and **Service Accounts and Direct Access Grants
 off**.
 
+**The redirect URI carries the base path.** Swagger's callback is
+`https://{host}{basePath}/docs/oauth2-redirect`, so the Keycloak client's valid redirect
+URIs must list that exact path - changing `basePath` moves it. Registering the old one, or
+only the host, fails the login with `invalid_redirect_uri` after the user has already
+authenticated, which reads as an SSO outage rather than a configuration gap.
+
 Note what this does *not* do: the user's own tokens still reach the browser, since Swagger
 UI calls the API with them. It keeps the **client secret** server-side, which is what the
 public-client rule is about - it is not a BFF holding tokens in a server-side session.
