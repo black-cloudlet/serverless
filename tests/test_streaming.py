@@ -1332,15 +1332,28 @@ async def test_the_buffer_is_bounded_by_bytes_as_well_as_lines():
     assert buf.take_dropped() == 2
     assert [len(i) for i in buf.drain()] == [80]
 
-    # An overweight frame is still accepted into an EMPTY buffer - it is the
-    # only way that content can ever be delivered - it is pile-up that is refused.
+    # A frame too big for an EMPTY buffer is refused too, not waved through: one
+    # frame is NOT bounded by MAX_LINE_BYTES (JSON escaping expands the raw line
+    # several times over), so admitting it would leave the budget advisory.
     buf.put("w" * 500)
-    assert [len(i) for i in buf.drain()] == [500]
-    assert buf.take_dropped() == 0
+    assert buf.drain() == []
+    assert buf.take_dropped() == 1
 
     # Draining resets the byte budget along with the items.
     buf.put("a" * 80)
     assert buf.take_dropped() == 0
+
+
+async def test_the_byte_budget_counts_bytes_not_characters():
+    """The budget is a memory bound, and a workload logging outside ASCII spends
+    up to four bytes a character - counted as one, the buffer holds four times
+    what was configured."""
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=1000, max_bytes=100)
+
+    buf.put("א" * 40)  # 40 characters, 80 bytes: fits
+    buf.put("א" * 40)  # another 80 bytes would not
+    assert buf.take_dropped() == 1
+    assert len(buf.drain()) == 1
 
 
 async def test_the_rollover_reports_lines_dropped_since_the_last_tick(capacity):

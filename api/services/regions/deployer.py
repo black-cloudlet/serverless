@@ -56,6 +56,12 @@ class ReadPool:
     finishes. Released on cancellation instead, a stalling region would fill
     the pool with zombie reads while the accounting reported it empty, and the
     503 shedding this class exists for would never fire.
+
+    Admission is taken for a whole fan-out at once (:meth:`reserve`), not one
+    region at a time. Taken per region, a fan-out refused part-way through
+    would leave the regions it had already started burning the pool for results
+    the 503 throws away - ``gather`` does not cancel their siblings - which is
+    how shedding feeds itself instead of relieving the pool.
     """
 
     def __init__(self, workers: int, max_queued: int):
@@ -69,18 +75,43 @@ class ReadPool:
         self._limit = workers + max_queued
         self._inflight = 0
 
-    async def run(self, fn, *args):
-        """Run one blocking read on the pool, or refuse it.
+    def reserve(self, count: int) -> "ReadReservation":
+        """Admit ``count`` reads together, or refuse the group.
+
+        Args:
+            count: How many reads the caller is about to run.
+
+        Returns:
+            The reservation to run them against.
 
         Raises:
-            ServiceUnavailableError: If ``workers + max_queued`` reads are
-                already in flight - abandoned-but-still-running ones included.
+            ServiceUnavailableError: If the group does not fit under
+                ``workers + max_queued`` reads in flight -
+                abandoned-but-still-running ones included.
         """
-        if self._inflight >= self._limit:
-            logger.warning("refusing cluster read: %d already in flight", self._inflight)
+        if self._inflight + count > self._limit:
+            logger.warning(
+                "refusing %d cluster read(s): %d already in flight", count, self._inflight
+            )
             raise ReadPoolSaturated("the API is saturated with cluster reads; retry shortly")
+        self._inflight += count
+        return ReadReservation(self, count)
+
+    async def run(self, fn, *args):
+        """Reserve one admission and run one blocking read on the pool.
+
+        Raises:
+            ServiceUnavailableError: If the pool is saturated.
+        """
+        reservation = self.reserve(1)
+        try:
+            return await reservation.run(fn, *args)
+        finally:
+            reservation.release_unspent()
+
+    async def _run_reserved(self, fn, *args):
+        """Run a read whose admission a :class:`ReadReservation` already took."""
         loop = asyncio.get_running_loop()
-        self._inflight += 1
         # Submitted directly, and the release hangs on the CONCURRENT future:
         # run_in_executor's asyncio wrapper acknowledges a cancel immediately
         # even while the thread runs on, so a callback there (or a finally on
@@ -90,7 +121,13 @@ class ReadPool:
         # which is the occupancy this counts. Context copied as start_on does,
         # so the read's log lines keep the request's correlation id.
         ctx = contextvars.copy_context()
-        concurrent_future = self._executor.submit(ctx.run, fn, *args)
+        try:
+            concurrent_future = self._executor.submit(ctx.run, fn, *args)
+        except RuntimeError:
+            # The pool was shut down under us: no thread will ever run, so no
+            # done callback will ever give this admission back either.
+            self._release()
+            raise
 
         def release(_cf) -> None:
             # Runs on the worker thread; the counter is only touched on the loop.
@@ -103,12 +140,50 @@ class ReadPool:
         return await asyncio.wrap_future(concurrent_future)
 
     def _release(self) -> None:
-        """Give the admission back (runs on the loop when the thread finishes)."""
+        """Give one admission back (runs on the loop when the thread finishes)."""
         self._inflight -= 1
 
     def shutdown(self) -> None:
         """Stop the pool without waiting: socket timeouts bound what's running."""
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+class ReadReservation:
+    """Read-pool admissions taken up front, spent one read at a time.
+
+    Held by a fan-out for as long as it runs, so the pool is either big enough
+    for the whole fan-out or refuses it before any region starts. Whatever is
+    never spent - a fan-out cancelled before its last region began - is given
+    back by :meth:`release_unspent`; a read that did start gives its own slot
+    back when its thread finishes, not when the caller stops waiting.
+    """
+
+    def __init__(self, pool: ReadPool, count: int):
+        """Hold ``count`` admissions already taken from ``pool``.
+
+        Args:
+            pool: The pool the admissions came from.
+            count: How many were taken.
+        """
+        self._pool = pool
+        self._unspent = count
+
+    async def run(self, fn, *args):
+        """Spend one of the reservation's admissions on a blocking read.
+
+        Raises:
+            RuntimeError: If more reads are run than were reserved.
+        """
+        if self._unspent <= 0:
+            raise RuntimeError("more cluster reads were run than the fan-out reserved")
+        self._unspent -= 1
+        return await self._pool._run_reserved(fn, *args)
+
+    def release_unspent(self) -> None:
+        """Give back every admission that was never spent (runs on the loop)."""
+        unspent, self._unspent = self._unspent, 0
+        for _ in range(unspent):
+            self._pool._release()
 
 
 class Deployer:
@@ -140,10 +215,25 @@ class Deployer:
         representative region), so they share the fan-out's pool and admission
         instead of the process-wide default executor.
 
+        Bounded by ``cluster_read_op_timeout``, exactly as the read fan-outs
+        are. Without a bound the caller waits for as long as the cluster call
+        does, and since a slot is only released when the *thread* finishes, one
+        wedged read would hold its worker for the whole request - enough of them
+        and every cluster read in the process is shed until restart.
+
         Raises:
-            ServiceUnavailableError: If the read pool is saturated.
+            ServiceUnavailableError: If the read pool is saturated, or the read
+                did not finish within ``cluster_read_op_timeout``.
         """
-        return await self._read_pool.run(fn, *args)
+        try:
+            return await asyncio.wait_for(
+                self._read_pool.run(fn, *args), timeout=self._read_timeout
+            )
+        except asyncio.TimeoutError as exc:
+            logger.warning("cluster read timed out after %ss", self._read_timeout)
+            raise ServiceUnavailableError(
+                f"the cluster did not answer within {self._read_timeout}s; retry shortly"
+            ) from exc
 
     def local_cluster(self) -> Cluster:
         """The cluster this API instance sits in.
@@ -219,16 +309,21 @@ class Deployer:
             One RegionStatus per target.
 
         Raises:
-            ServiceUnavailableError: If ``read`` and the read pool is saturated.
+            ServiceUnavailableError: If ``read`` and the read pool cannot admit
+                the whole fan-out.
         """
         timeout = self._read_timeout if read else self._op_timeout
+        # Reserved for every target before any of them starts: admitted region
+        # by region, a fan-out shed half way through would leave the regions
+        # already running to burn the pool for a result the 503 discards.
+        reservation = self._read_pool.reserve(len(targets)) if read and executor is None else None
 
         async def run(cluster: Cluster) -> RegionStatus:
             try:
                 # Backstop: a down/slow region fails fast and is reported as an
                 # error rather than blocking the whole fan-out indefinitely.
-                if read and executor is None:
-                    result = self._read_pool.run(fn, cluster)
+                if reservation is not None:
+                    result = reservation.run(fn, cluster)
                 else:
                     result = run_on(executor, fn, cluster)
                 return await asyncio.wait_for(result, timeout=timeout)
@@ -247,7 +342,11 @@ class Deployer:
                 logger.exception("region %s operation failed", cluster.region)
                 return RegionStatus(region=cluster.region, status="Failed", message=str(exc))
 
-        return await asyncio.gather(*(run(c) for c in targets))
+        try:
+            return await asyncio.gather(*(run(c) for c in targets))
+        finally:
+            if reservation is not None:
+                reservation.release_unspent()
 
     async def gather_each(
         self, targets: list[Cluster], fn: Callable[[Cluster], object]
@@ -267,13 +366,15 @@ class Deployer:
             One ``(region, result_or_None)`` tuple per target.
 
         Raises:
-            ServiceUnavailableError: If the read pool is saturated.
+            ServiceUnavailableError: If the read pool cannot admit the whole
+                fan-out.
         """
+        reservation = self._read_pool.reserve(len(targets))  # for all of them, or none - see fanout
 
         async def run(cluster: Cluster) -> tuple[str, object | None]:
             try:
                 result = await asyncio.wait_for(
-                    self._read_pool.run(fn, cluster), timeout=self._read_timeout
+                    reservation.run(fn, cluster), timeout=self._read_timeout
                 )
                 return cluster.region, result
             except ReadPoolSaturated:
@@ -282,7 +383,10 @@ class Deployer:
                 logger.exception("region %s listing failed", cluster.region)
                 return cluster.region, None
 
-        return await asyncio.gather(*(run(c) for c in targets))
+        try:
+            return await asyncio.gather(*(run(c) for c in targets))
+        finally:
+            reservation.release_unspent()
 
 
 def aggregate(statuses: list[RegionStatus]) -> str:

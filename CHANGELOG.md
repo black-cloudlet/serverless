@@ -78,18 +78,26 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   a pod writing without newlines: each "line" then arrives as a ~1MB piece, and
   `queueSize` of those was a potential gigabyte per stream against the pod's
   memory limit - an OOM kill wearing a log stream's clothes. Either bound
-  overrun costs a *reported* drop, as the line bound always did; and the
-  rollover at `stream.maxSeconds` now reports lines dropped since the last
-  tick instead of presenting the log as gapless across the reconnect.
+  overrun costs a *reported* drop, as the line bound always did - including a
+  single frame too large to fit the budget on its own, since JSON escaping can
+  expand one raw line several times over. Bytes are counted as bytes, not
+  characters, so a workload logging outside ASCII gets the budget it was
+  configured with. The rollover at `stream.maxSeconds` now reports lines
+  dropped since the last tick instead of presenting the log as gapless across
+  the reconnect.
 
 - **Read-pool admission counts threads, not awaits.** A read the caller timed
   out on is still occupying its worker - the executor cannot interrupt a
   thread - but the slot was released when the await ended, so a stalling
   region could fill the pool with zombie reads while the accounting reported
   it empty and the 503 shedding never fired. The slot is now released when the
-  thread actually finishes. The `follow=false` pods roster and log snapshot
-  also moved onto the read pool: the console's non-streaming fallback polls
-  exactly these, and they were still renting from the unbounded default
+  thread actually finishes, and a fan-out is admitted for all of its regions at
+  once - refused part way through, it would leave the regions already running
+  to burn the pool for a result the 503 discards. Every read is bounded by
+  `cluster_read_op_timeout`, the single-cluster ones included, so no caller
+  waits on a wedged worker indefinitely. The `follow=false` pods roster and log
+  snapshot also moved onto the read pool: the console's non-streaming fallback
+  polls exactly these, and they were still renting from the unbounded default
   executor.
 
 - **The cluster connection pools enable TCP keepalive.** The streams that
@@ -114,10 +122,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
     `cluster_read_max_queued`), so a burst of page reads queues predictably and
     is refused with 503 past the bound, rather than silently inflating every
     other request's latency through the shared default executor;
-  - the Kubernetes client's connection pool gets a **default connect timeout**,
-    so no call - discovery included - can hang on an unanswered SYN. Connect
-    only: the long-lived streams (log follows, the controller's watch) are idle
-    between bytes by design, and stay exempt.
+  - every request the Kubernetes client makes carries a **default connect
+    timeout**, so no call - discovery and the watch included - can hang on an
+    unanswered SYN. Connect only: the long-lived streams (log follows, the
+    controller's watch) are idle between bytes by design, and stay exempt. Not
+    the connection pool's `timeout`, which cannot serve as a default here:
+    urllib3 falls back to it only for its own sentinel, and the generated client
+    always passes `timeout=` explicitly.
 
 - **A fire-hosing pod's log stream no longer starves the health probes.** A
   followed log rendered every line into its SSE frame *on the event loop* - the

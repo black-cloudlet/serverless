@@ -303,6 +303,63 @@ async def test_a_region_function_raising_503_stays_a_region_failure():
     assert "registry down" in by_region["region-b"].message
 
 
+async def test_a_read_fanout_is_admitted_whole_or_not_at_all():
+    """Admitted region by region, a fan-out refused half way through would leave
+    the regions it had already started burning the pool for a result the 503
+    throws away - gather cancels no siblings - which is how shedding feeds itself."""
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    from api.services.regions.deployer import ReadPool
+
+    d = Deployer(_settings_with_regions())
+    d._read_pool.shutdown()
+    d._read_pool = ReadPool(workers=1, max_queued=0)  # one slot; the fan-out needs two
+    started = []
+
+    def fn(cluster):
+        started.append(cluster.region)
+        return RegionStatus(region=cluster.region, status="Ready")
+
+    try:
+        with pytest.raises(ServiceUnavailableError):
+            await d.fanout(d.resolve_targets(None), fn, read=True)
+        assert started == []
+        # ...and the refusal left nothing behind: the whole reservation is back.
+        assert d._read_pool._inflight == 0
+    finally:
+        d._read_pool.shutdown()
+
+
+async def test_a_single_read_is_bounded_by_the_read_timeout():
+    """run_read is on the same bounded pool as the fan-outs, and a slot is only
+    released when the THREAD finishes: a caller that waits forever turns one
+    wedged cluster call into a permanently occupied worker."""
+    import time
+
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    d = Deployer(_settings_with_regions())
+    d._read_timeout = 0.05
+
+    start = time.monotonic()
+    with pytest.raises(ServiceUnavailableError):
+        await d.run_read(lambda: time.sleep(0.5))
+    assert time.monotonic() - start < 0.4
+
+
+async def test_an_admission_is_given_back_when_the_pool_refuses_the_submit():
+    """A read that never reaches a thread gets no done callback either, so the
+    slot it took would be held for the life of the process."""
+    from api.services.regions.deployer import ReadPool
+
+    pool = ReadPool(workers=1, max_queued=0)
+    pool.shutdown()
+
+    with pytest.raises(RuntimeError):
+        await pool.run(lambda: "never runs")
+    assert pool._inflight == 0
+
+
 class _FakeCluster:
     def __init__(self, name, existing=None):
         self.name = name

@@ -85,6 +85,24 @@ def split_timestamp(line: str) -> tuple[datetime | None, str]:
     return stamp.astimezone(ISRAEL_TZ), message
 
 
+def _frame_bytes(frame: str) -> int:
+    """How much memory a rendered frame costs, in bytes.
+
+    ``len`` counts characters, and the budget this feeds is a memory bound: a
+    workload logging anything outside ASCII (Hebrew, CJK, an emoji) spends up to
+    four bytes per character, so counting characters would let the buffer hold
+    several times the configured budget. ``isascii`` is a flag check on CPython,
+    so the ordinary all-ASCII frame pays nothing for the distinction.
+
+    Args:
+        frame: The rendered SSE frame.
+
+    Returns:
+        Its length in UTF-8 bytes.
+    """
+    return len(frame) if frame.isascii() else len(frame.encode("utf-8"))
+
+
 class _Buffer:
     """Bounded hand-off from the follower thread to the event loop.
 
@@ -106,6 +124,13 @@ class _Buffer:
     - a thousand of those is a gigabyte, which against the pod's memory limit is
     an OOM kill wearing a log stream's clothes. Either bound overrun costs a
     *reported* drop, exactly as the count bound always did.
+
+    The byte budget is a bound on the buffer, not a target: a single frame too
+    big to fit in an empty buffer is dropped rather than admitted. One frame is
+    *not* bounded by MAX_LINE_BYTES - that bounds the raw line, and JSON
+    escaping expands it (a megabyte of control bytes renders as six), so
+    admitting one unconditionally would leave the pathological case unbounded
+    in exactly the way this exists to prevent.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop, maxsize: int, max_bytes: int):
@@ -129,12 +154,9 @@ class _Buffer:
 
     def put(self, item: StreamEvent | str) -> None:
         """Offer one event or rendered frame (from the follower thread; never blocks)."""
-        size = len(item) if isinstance(item, str) else 0
+        size = _frame_bytes(item) if isinstance(item, str) else 0
         with self._lock:
-            # An overweight frame is still accepted into an EMPTY buffer: it is
-            # the only way that content can ever be delivered, and one frame is
-            # bounded by MAX_LINE_BYTES - it is the pile-up that must not grow.
-            over_bytes = self._bytes + size > self._max_bytes and self._items
+            over_bytes = self._bytes + size > self._max_bytes
             if len(self._items) >= self._maxsize or over_bytes:
                 self._dropped += 1
                 return
