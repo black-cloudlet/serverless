@@ -1,17 +1,12 @@
-"""The API served under a mount prefix, the way the portal's edge serves it.
+"""The API served under a mount prefix.
 
-The whole class of bug this file exists for is invisible in the rest of the
-suite: every other test reaches the app at the root, where the internal and
-external paths are the same string, so nothing that confuses the two can fail.
-Behind the edge they differ by ``/api/serverless`` and the confusion is a 404 on
-a ``statusUrl``, a blank Swagger page, or - the expensive one - a 401 on every
-browser stream (docs/PORTAL-INTEGRATION.md - What this API has to change).
+Every other test reaches the app at the root, where the internal and external
+paths are the same string and nothing that confuses the two can fail. Under a
+prefix that confusion is a 404 on a ``statusUrl``, a blank Swagger page, or a
+401 on every browser stream.
 
-Both directions the edge might be configured are exercised: the *stripped* path
-(what an edge with ``rewrite-target`` sends, and what this is designed for) and
-the *unstripped* one, which Starlette also routes because it matches with
-``root_path`` removed. They must behave identically, or a ticket minted through
-one fails through the other.
+Both edge configurations are exercised - stripped and unstripped - since
+Starlette routes either and a ticket must verify under both.
 """
 
 from __future__ import annotations
@@ -26,8 +21,7 @@ from api.core.paths import to_external, to_internal
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
 
-# The stubs the streaming and service tests already build, rather than a second
-# copy of each here: what this file varies is the mount prefix, not the fakes.
+# The stubs the other suites already build; this file varies the prefix, not them.
 from tests.test_auth_and_deployer import _FakeCluster, _workload_service
 from tests.test_stream_endpoints import FakeStreams
 
@@ -109,9 +103,8 @@ def test_without_a_prefix_both_directions_are_the_identity():
 async def test_status_url_carries_the_prefix(prefixed):
     """A 202's poll target is called by the client, so it is the external path.
 
-    Through the real service, not a stub with a canned body: the concatenation
-    under test happens in ``WorkloadService._pending`` and a fake that returns
-    its own ``statusUrl`` would pass whatever this file asserted.
+    Through the real service: a stub returning its own ``statusUrl`` would pass
+    whatever this asserted.
     """
     from fastapi import BackgroundTasks
 
@@ -134,8 +127,7 @@ def test_openapi_advertises_the_prefix_as_its_server(prefixed):
     schema = TestClient(create_app()).get("/openapi.json").json()
 
     assert schema["servers"] == [{"url": PREFIX}]
-    # The paths themselves stay internal - the server entry is what carries the
-    # prefix, and putting it in both would double it.
+    # Paths stay internal; carrying the prefix in both would double it.
     assert "/v1/groups/{group}/functions" in schema["paths"]
 
 
@@ -146,8 +138,7 @@ def test_the_offline_docs_reference_the_prefix(prefixed, page):
 
     assert f"{PREFIX}/openapi.json" in html
     assert f"{PREFIX}/static/" in html
-    # No bare root-relative reference survived: the browser is on {PREFIX}/docs
-    # and would resolve one against the portal's origin.
+    # A bare root-relative reference would resolve against the portal's origin.
     assert "url: '/openapi.json'" not in html
     assert '"/static/' not in html
 
@@ -168,12 +159,7 @@ def _streaming_client():
 
 
 def test_a_ticket_minted_externally_opens_the_stripped_stream(prefixed):
-    """The one that 401s if mint and verify disagree about which path they hold.
-
-    The browser mints for the URL it is about to open - the external one - and
-    the edge then strips the prefix before the stream request arrives. The
-    ticket has to survive that.
-    """
+    """The one that 401s if mint and verify disagree about which path they hold."""
     client = _streaming_client()
 
     minted = client.post("/v1/stream-tickets", json={"path": EXTERNAL_STREAM}).json()
@@ -228,12 +214,9 @@ def as_before(monkeypatch):
 def test_the_old_paths_still_reach_the_api(as_before):
     """``externalBasePath: /api`` is what makes the base-path move invisible.
 
-    The API routes on ``/v1/...`` now, and every client in existence calls
-    ``/api/v1/...``. The Route forwards the path whole - OpenShift does not
-    rewrite unless told to - and Starlette matches it with ``root_path``
-    removed, so the old URL lands on the new route. If this breaks, the chart's
-    default is no longer a safe upgrade and the deployment needs a redirect
-    instead (docs/PORTAL-INTEGRATION.md - Rollout order).
+    Every existing client calls ``/api/v1/...``; the Route forwards that whole
+    and Starlette matches it with ``root_path`` removed. If this breaks, the
+    chart's default is no longer a safe upgrade.
     """
     client = _streaming_client()
 

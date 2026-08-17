@@ -131,18 +131,16 @@ namespaces:
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
-# Where the API is reached from outside. The app itself routes on /v1/...; this
-# is the prefix in front of that on the way in, and the one put back on every
-# path the API HANDS a client (a 202's statusUrl, the OpenAPI `servers` entry,
-# the SSO redirect, a stream ticket's path). docs/PORTAL-INTEGRATION.md.
+# Prefix the API is reached under. The app routes on /v1/... either way; this is
+# what is put back on every path it HANDS a client (a 202's statusUrl, the
+# OpenAPI `servers` entry, the SSO redirect, a stream ticket's path).
 #
-# The default is `/api`, NOT empty, and that is deliberate: it reproduces the
-# /api/v1/... surface this API served before the base path moved to /v1, so an
-# upgrade is invisible to every client already calling it. Leaving it empty here
-# would serve a bare /v1/... and break all of them on the next `helm upgrade`.
+# The default is `/api`, NOT empty: it reproduces the /api/v1/... surface served
+# before the base path moved to /v1, so an upgrade is invisible to every client
+# already calling it. Emptying it here breaks all of them on the next upgrade.
 #
 #   /api              this API on its own host, unchanged from before  (default)
-#   /api/serverless   mounted on the portal's edge under its slug
+#   /api/serverless   mounted on a shared edge under its own slug
 #   ""                the bare /v1/... surface; no client speaks this today
 externalBasePath: /api
 

@@ -45,9 +45,8 @@ async def create_stream_ticket(
         ServiceUnavailableError: If this deployment has no signing key
             configured, in which case streams take the Authorization header only.
     """
-    # Signed over the internal path (the model normalized it there), echoed back
-    # as the external one - the caller is about to open that URL, and behind the
-    # edge it is not the path this API routed on (api.core.paths).
+    # Signed over the internal path (normalized by the model), echoed back as
+    # the external one, which is the URL the caller is about to open.
     ticket = tickets.mint(user, body.path)
     return StreamTicketResponse(
         ticket=ticket.value,

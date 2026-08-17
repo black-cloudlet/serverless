@@ -377,9 +377,8 @@ class WorkloadService:
             hostname=host,
             status="Pending",
             regions=[],
-            # External, not the path this app routed on: this is handed to a
-            # client to call back with, and behind the portal's edge the two
-            # differ by the mount prefix (api.core.paths).
+            # External: the client calls this back, so it carries the mount
+            # prefix rather than the path this app routed on.
             statusUrl=to_external(f"/v1/groups/{group}/{offering.name}s/{name}"),
             **extra,
         )

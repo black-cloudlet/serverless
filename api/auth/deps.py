@@ -137,11 +137,7 @@ def require_stream_auth(
     if ticket is not None:
         # Verified against the path alone. The query string holds the ticket
         # itself, so signing over it would mean signing over the signature.
-        #
-        # Normalized first, and this is the whole reason api.core.paths exists:
-        # the ticket was minted over the internal path, while what arrives here
-        # is whatever survived the edge. Compare the two raw and every browser
-        # stream 401s the moment this API is served under a prefix.
+        # Normalized because the ticket was minted over the internal path.
         return tickets.verify(ticket, to_internal(request.url.path))
     if header_user is None:
         raise UnauthenticatedError(

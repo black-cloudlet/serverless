@@ -25,8 +25,6 @@ Start with **[docs/](docs/README.md)**, which indexes the set:
 - **[Functions](docs/FUNCTIONS.md)** / **[Containers](docs/CONTAINERS.md)** - the two offerings.
 - **[Building](docs/BUILDING.md)** - how source becomes an image (kpack + buildpacks).
 - **[Deploying](docs/DEPLOYING.md)** - charts, GitOps, RBAC, sample manifests.
-- **[Portal Integration](docs/PORTAL-INTEGRATION.md)** - *design, not yet built*: one host for
-  the portal and every platform API, a path prefix each.
 - **[Changelog](CHANGELOG.md)** - notable changes per release.
 
 The code is the source of truth; where a document disagrees with it, the document is

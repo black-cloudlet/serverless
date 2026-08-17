@@ -9,38 +9,28 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed (paths)
 
-- **BREAKING: the API's base path is now `/v1`, not `/api/v1`** - and the chart
-  papers over it, so read the second paragraph before assuming this breaks you.
-  The API is being mounted on the portal's edge alongside the other teams' APIs,
-  one path prefix each, as `/api/serverless/v1/...`
-  (docs/PORTAL-INTEGRATION.md). That grammar - `api`, then the API, then its
-  version, matching Kubernetes' `/apis/{group}/{version}/...` - only works if
-  the app itself serves `/v1/...`, because the prefix has to be additive for
-  `root_path` to express it. So the four routers, the `statusUrl` and the
-  stream-ticket path regex all moved down a segment.
-- **`SERVERLESS_EXTERNAL_BASE_PATH` (chart `externalBasePath`) is what puts a
-  prefix back.** The app routes on `/v1/...`; this is the prefix in front of
-  that on the way in, and the one restored on every path the API *hands* a
-  client - a 202's `statusUrl`, the OpenAPI `servers` entry, the SSO redirect,
-  a stream ticket's path. **The chart defaults it to `/api`**, which reproduces
-  the previous `/api/v1/...` surface exactly, so an upgrade that changes no
-  values is invisible to every existing client. Set `/api/serverless` when
-  moving behind the portal's edge; set `""` only for the bare `/v1/...` surface,
-  which nothing speaks today. A deployment that overrides this to `""` on
-  upgrade **will** break its callers.
-- Both directions of the translation are `api/core/paths.py`, and both are the
-  identity when no prefix is configured. `tests/test_mount_prefix.py` runs the
-  app under a prefix - the rest of the suite reaches it at the root, where the
-  internal and external paths are the same string and nothing that confuses the
-  two can fail. The sharpest case it covers is the stream tickets: one is signed
-  over the path a browser asks for and verified against the path that survives
-  the edge, so without normalizing both to the internal path, every browser
-  stream 401s behind a prefix.
+- **BREAKING: the API's base path is now `/v1`, not `/api/v1`** - though the
+  chart's default hides it from existing clients, see below. This lets the API
+  be mounted on a shared edge as `/api/{slug}/v1/...` alongside other platform
+  APIs: that grammar (matching Kubernetes' `/apis/{group}/{version}/...`) needs
+  the prefix to be additive for `root_path` to express it, which it only is if
+  the app itself serves `/v1/...`. The four routers, the `statusUrl` and the
+  stream-ticket regex moved down a segment.
+- **`SERVERLESS_EXTERNAL_BASE_PATH` (chart `externalBasePath`) puts a prefix
+  back** on every path the API *hands* a client: a 202's `statusUrl`, the
+  OpenAPI `servers` entry, the SSO redirect, a stream ticket's path. **The chart
+  defaults it to `/api`**, reproducing the previous `/api/v1/...` surface, so an
+  upgrade that changes no values is invisible to existing clients. A deployment
+  that overrides it to `""` **will** break its callers.
+- Both directions live in `api/core/paths.py` and are the identity when no
+  prefix is set. `tests/test_mount_prefix.py` runs the app under one; the rest
+  of the suite reaches it at the root, where the two paths are the same string.
+  The sharpest case is the stream tickets, which are signed over the path a
+  browser asks for and verified against the one that survives the edge.
 - Known gap, upstream: `cloudlet_apis.web.mount_offline_docs` writes the Swagger
-  and ReDoc pages' OpenAPI and asset URLs root-relative, so behind a prefix the
-  browser asks the portal for them and both pages load blank. `api/main.py`
-  registers root_path-aware versions of the two pages ahead of it as a stopgap;
-  the fix belongs in the shared package, which every API on the edge needs.
+  and ReDoc pages' URLs root-relative, so under a prefix both load blank.
+  `api/main.py` registers `root_path`-aware versions ahead of it as a stopgap;
+  the fix belongs in the shared package.
 
 ### Changed (rename)
 
