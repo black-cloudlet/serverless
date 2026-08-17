@@ -102,7 +102,8 @@ def require_stream_auth(
         str | None,
         Query(
             description=(
-                "A ticket from POST /v1/stream-tickets, for browsers: EventSource "
+                "A ticket from POST /api/serverless/v1/stream-tickets, for browsers: "
+                "EventSource "
                 "cannot send an Authorization header. Clients that can send one should, "
                 "and omit this."
             )
@@ -140,7 +141,7 @@ def require_stream_auth(
     if header_user is None:
         raise UnauthenticatedError(
             "Missing or malformed Authorization header. A browser should open this "
-            "stream with a ticket from POST /v1/stream-tickets instead."
+            "stream with a ticket from POST /api/serverless/v1/stream-tickets instead."
         )
     return header_user
 

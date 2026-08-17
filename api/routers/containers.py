@@ -187,7 +187,7 @@ async def stream_container_pods(
     empty roster is normal - the workload is deployed here and scaled to zero.
 
     Browsers authenticate a stream with ``?ticket=`` from
-    ``POST /v1/stream-tickets``; everything else sends the usual
+    ``POST /api/serverless/v1/stream-tickets``; everything else sends the usual
     ``Authorization`` header.
 
     Args:

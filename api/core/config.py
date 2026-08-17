@@ -114,9 +114,10 @@ class Settings(CommonSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
-    # Prefix this API is reached under when it is not mounted at the root of its
-    # own host. The app routes on /v1/... either way; this is what api.core.paths
-    # puts back on a path handed to a client. env: SERVERLESS_EXTERNAL_BASE_PATH.
+    # Prefix the whole API is served under - endpoints, docs, OpenAPI, the SSO
+    # token proxy. The chart ships /api/serverless; empty (this default) serves
+    # /v1/... bare, which is what a local run wants.
+    # env: SERVERLESS_EXTERNAL_BASE_PATH.
     external_base_path: str = ""
 
     # Browser origins allowed to call the API (e.g. the ServiceNow portal).

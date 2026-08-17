@@ -131,24 +131,25 @@ namespaces:
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
-# Prefix the API is served under. Everything hangs off it - the endpoints
-# (`{externalBasePath}/v1/...`), the docs, their assets, the OpenAPI document,
-# the SSO token proxy - and nothing answers beside it. Only /healthz and /readyz
-# stay at the root, since the kubelet reaches the pod directly.
+# Prefix the API is served under. Everything hangs off it - the endpoints at
+# {this}/v1/..., the docs, their assets, the OpenAPI document, the SSO token
+# proxy - and nothing answers beside it. Only /healthz and /readyz stay at the
+# root, since the kubelet reaches the pod directly.
 #
-# The default is `/api`, NOT empty: it reproduces the /api/v1/... surface served
-# before the version segment moved, so an upgrade is invisible to every client
-# already calling it. Emptying it here breaks all of them on the next upgrade.
+# The default mounts this API under its own slug, so it can share a host with
+# the platform's other APIs and a client's URL says which one it is calling:
 #
-#   /api              this API on its own host, unchanged from before  (default)
-#   /api/serverless   mounted on a shared host under its own slug
-#   ""                the bare /v1/... surface; no client speaks this today
+#   https://{host}/api/serverless/v1/groups/{group}/functions
+#
+# This is a BREAKING change of address for a client on the previous /api/v1/...
+# surface. Set `externalBasePath: /api` to serve that instead, and keep both
+# alive by rendering the chart twice while callers move.
 #
 # Whatever fronts the API must forward the path WHOLE - a plain Route with
 # `spec.path`, no haproxy.router.openshift.io/rewrite-target. There is one path
 # per endpoint and it is the complete one, so a router that strips the prefix
 # leaves nothing that matches.
-externalBasePath: /api
+externalBasePath: /api/serverless
 
 # Each entry is rendered with tpl, so an origin can be derived from other
 # values instead of repeated per environment. Origins must be the exact form

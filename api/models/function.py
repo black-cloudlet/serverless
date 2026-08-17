@@ -40,7 +40,7 @@ class FunctionCreate(BaseModel):
     # or validation errors that print the spec.
     gitToken: str = Field(repr=False)
     runtime: str
-    # One of the runtime's advertised `versions` (GET /v1/functions/info).
+    # One of the runtime's advertised `versions` (GET /api/serverless/v1/functions/info).
     # Omitted means the platform default for that runtime - never the
     # buildpack's own default, which drifts with the buildpackage.
     version: str | None = None
@@ -97,7 +97,7 @@ class FunctionResponse(WorkloadResponse):
     type: Literal["function", "container"] = "function"
     runtime: str | None = None
     # The version the caller asked for, or None when they took the default. The
-    # default itself is on GET /v1/functions/info, so a client can resolve
+    # default itself is on GET /api/serverless/v1/functions/info, so a client can resolve
     # what None means without this echoing a value nobody submitted.
     version: str | None = None
     gitRepo: str | None = None

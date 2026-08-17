@@ -19,7 +19,7 @@ def api_base() -> str:
     """The complete path this API's endpoints are served under.
 
     Returns:
-        The configured mount prefix followed by the version segment, e.g.
-        ``/api/v1`` or ``/api/serverless/v1``.
+        The configured mount prefix followed by the version segment -
+        ``/api/serverless/v1`` as the chart ships it.
     """
     return f"{get_settings().external_base_path}{V1}"

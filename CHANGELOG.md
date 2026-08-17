@@ -17,10 +17,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   answers beside it**: there is one path per endpoint and it is the complete
   one. Only `/healthz` and `/readyz` stay at the root, where the kubelet reaches
   the pod directly.
-- **The chart defaults it to `/api`**, which reproduces the `/api/v1/...`
-  surface exactly, so an upgrade that changes no values is invisible to existing
-  clients. A deployment that overrides it to `""` serves a bare `/v1/...` and
-  **will** break its callers.
+- **BREAKING: the chart defaults it to `/api/serverless`**, so the shipped
+  address is `/api/serverless/v1/groups/{group}/functions` where it was
+  `/api/v1/groups/{group}/functions`. Every client moves. A deployment that
+  needs the old surface can set `externalBasePath: /api`, and rendering the
+  chart twice serves both while callers migrate.
 - **Whatever fronts the API must forward the path whole** - a plain Route with
   `spec.path`, no `haproxy.router.openshift.io/rewrite-target`. A router that
   strips the prefix leaves nothing that matches.

@@ -186,32 +186,30 @@ def test_a_ticket_is_still_bound_to_one_stream(prefixed):
     assert client.get(f"{other}?ticket={minted['ticket']}").status_code == 401
 
 
-# --- the compatibility setting the chart ships ------------------------------
+# --- a different prefix ------------------------------------------------------
 
 
 @pytest.fixture
-def as_before(monkeypatch):
-    """The chart's default: the /api/v1/... surface this API served before."""
+def under_api(monkeypatch):
+    """The previous surface, which a deployment can still choose to serve."""
     get_settings.cache_clear()
     monkeypatch.setenv("SERVERLESS_EXTERNAL_BASE_PATH", "/api")
     yield
     get_settings.cache_clear()
 
 
-def test_the_old_paths_are_what_the_chart_default_serves(as_before):
-    """``externalBasePath: /api`` is what makes the base-path move invisible.
-
-    Every existing client calls ``/api/v1/...``. If this breaks, the chart's
-    default is no longer a safe upgrade.
-    """
+def test_the_prefix_is_the_whole_of_the_address(under_api):
+    """Nothing is pinned to the shipped default; the setting moves everything."""
     client = _client()
 
     assert client.get("/api/v1/functions/info").status_code == 200
-    assert client.get("/api/v1/containers/info").status_code == 200
     assert client.get("/api/docs").status_code == 200
+    assert client.get("/api/openapi.json").status_code == 200
+    # ...and the slug the chart ships is not special.
+    assert client.get(f"{BASE}/functions/info").status_code == 404
 
 
-async def test_the_old_status_url_is_what_a_client_gets_back(as_before):
+async def test_the_status_url_follows_the_prefix(under_api):
     from fastapi import BackgroundTasks
 
     from api.models.container import ContainerCreate
@@ -227,11 +225,11 @@ async def test_the_old_status_url_is_what_a_client_gets_back(as_before):
     assert body.statusUrl == "/api/v1/groups/team/containers/app"
 
 
-def test_an_old_browser_stream_still_authenticates(as_before):
+def test_a_browser_stream_follows_the_prefix(under_api):
     client = _client()
-    old_stream = "/api/v1/groups/team/functions/foo/pods"
+    stream = "/api/v1/groups/team/functions/foo/pods"
 
-    minted = client.post("/api/v1/stream-tickets", json={"path": old_stream}).json()
+    minted = client.post("/api/v1/stream-tickets", json={"path": stream}).json()
 
-    assert minted["path"] == old_stream
-    assert client.get(f"{old_stream}?ticket={minted['ticket']}").status_code == 200
+    assert minted["path"] == stream
+    assert client.get(f"{stream}?ticket={minted['ticket']}").status_code == 200

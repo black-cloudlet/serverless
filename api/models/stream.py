@@ -38,9 +38,9 @@ class StreamTicketRequest(BaseModel):
 
     Attributes:
         path: The exact path the ticket will be used on - the complete one, as
-            the caller will open it, e.g.
-            ``/api/v1/groups/payments/functions/orders/pods``. Query string
-            excluded: the ticket travels in it.
+            the caller will open it, e.g. one under
+            ``/api/serverless/v1/groups/{group}/functions/{name}/``. Query
+            string excluded: the ticket travels in it.
     """
 
     path: str
