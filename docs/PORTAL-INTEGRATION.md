@@ -5,10 +5,15 @@ making them one: the portal serves the UI, and every platform API - this one and
 other teams' - hangs off the **same host** under its **own path prefix**, so a caller
 (and a browser) sees one product rather than a directory of hostnames.
 
-Nothing here is implemented yet. It is written as a decision record so the path
-scheme, the app-side changes and the onboarding contract are agreed **before** the
-first API is mounted - once a path is published it is a contract, and moving it later
-costs every client.
+**The app-side half is built** (steps 2-3 of Rollout order): the API serves `/v1/...`,
+takes `externalBasePath`, and everything it hands a client carries the prefix when one
+is set. What is **not** built is the edge - no Route, no registry, no portal change -
+so nothing about the current deployment has moved. The remaining steps are the ones
+that need decisions outside this repo.
+
+The rest is written as a decision record, so the path scheme and the onboarding
+contract are agreed **before** the first API is mounted - once a path is published it
+is a contract, and moving it later costs every client.
 
 ## Contents
 
@@ -255,7 +260,7 @@ serves `/api/v1/...`, so as long as that is true every external scheme has to en
 external path becomes `/api/{slug}` + `/v1/...`, which is both additive and the URL we
 actually want.
 
-The change itself is mechanical - four router prefixes
+The change itself was mechanical - four router prefixes
 (`api/routers/{functions,containers,info,streams}.py`), the `statusUrl` literal, and
 the ticket-path regex in `api/models/stream.py` - plus docstrings and tests. It is
 still a **breaking change for anything calling the API directly today**, which is why
@@ -276,12 +281,27 @@ Introduce one setting - `external_base_path` (`SERVERLESS_EXTERNAL_BASE_PATH`, e
 `/api/serverless`, default `""` so a bare deployment is unchanged) - and drive all four
 from it. One setting, because the failure mode of two is that they disagree.
 
-| # | What breaks | Where | Fix |
-|---|-------------|-------|-----|
-| 1 | **`statusUrl` points at the wrong path.** Every 202 returns a root-relative path; behind the edge the client must call `/api/serverless/v1/...`. A portal that joins its own base URL onto this works by accident and breaks the moment the prefix changes | `api/services/workloads.py:379` | Prefix it with `external_base_path`. The server is the one that knows where it is mounted; a client should not have to reconstruct it |
-| 2 | **Swagger's "Try it out" calls the wrong URL**, and `/docs` collides with every other API on the host | `api/main.py` (`mount_offline_docs`) | Pass `root_path=external_base_path` to `FastAPI(...)`. OpenAPI then advertises `servers: [{"url": "/api/serverless"}]` and the docs move to `/api/serverless/docs`, which is what a shared host needs anyway |
-| 3 | **SSO redirect URIs move** under the prefix - the login route and the token proxy added for the confidential Swagger client | `api/main.py` (`wire_sso_login`) | Same `root_path`, plus registering `https://{edge-host}/api/serverless/*` as a valid redirect URI and web origin on the SSO client. This is a Keycloak change, not a code change, and it is the one that has to land *with* the deploy |
-| 4 | **Every browser stream 401s.** A ticket is signed over the path the portal asks for and verified against `request.url.path`. The portal mints for `/api/serverless/v1/.../pods`; the app, behind a stripping edge, sees `/v1/.../pods`. The signature is over a different string, so it never matches | mint: `api/routers/streams.py`; verify: `api/auth/deps.py:139`; the path regex: `api/models/stream.py:16` | Normalize **both** sides to the app-internal path: strip `external_base_path` before signing and before verifying. Cover it with a test that runs the app with a non-empty `root_path` - this is invisible in every test that does not |
+The translation itself is two functions in `api/core/paths.py` - `to_external` for a
+path being handed out, `to_internal` for one being handed in - and with no prefix
+configured both are the identity, which is why they are applied unconditionally rather
+than behind an `if`.
+
+| # | What breaks | Where | How it is fixed |
+|---|-------------|-------|-----------------|
+| 1 | **`statusUrl` points at the wrong path.** Every 202 returns a root-relative path; behind the edge the client must call `/api/serverless/v1/...`. A portal that joins its own base URL onto this works by accident and breaks the moment the prefix changes | `api/services/workloads.py` | `to_external`. The server is the one that knows where it is mounted; a client should not have to reconstruct it |
+| 2 | **Swagger's "Try it out" calls the wrong URL**, and `/docs` collides with every other API on the host | `api/main.py` | `root_path=external_base_path` on the app. OpenAPI then advertises `servers: [{"url": "/api/serverless"}]`, and the docs move to `/api/serverless/docs` - which is what a shared host needs anyway. See the upstream caveat below |
+| 3 | **SSO redirect URIs move** under the prefix - the login route and the token proxy for the confidential Swagger client | `api/main.py` (`wire_sso_login`) | The same `root_path`: `cloudlet_apis` already builds the token URL from it. What is left is registering `https://{edge-host}/api/serverless/*` as a valid redirect URI and web origin on the SSO client - a Keycloak change, and the one that has to land *with* the deploy |
+| 4 | **Every browser stream 401s.** A ticket is signed over the path the portal asks for and verified against `request.url.path`. The portal mints for `/api/serverless/v1/.../pods`; the app, behind a stripping edge, sees `/v1/.../pods`. The signature is over a different string, so it never matches | mint: `api/models/stream.py`; verify: `api/auth/deps.py` | `to_internal` on **both** sides, so the signature is over one string whichever way the caller wrote the path. The two halves fix different edges - normalizing the mint is what makes a *stripping* edge work, normalizing the verify is what makes a *non-stripping* one work - and `tests/test_mount_prefix.py` covers both, because each passes while the other is broken |
+
+**The upstream caveat on #2.** `cloudlet_apis.web.mount_offline_docs` writes the OpenAPI
+and asset URLs into the Swagger/ReDoc pages root-relative (`/openapi.json`,
+`/static/...`). Behind the edge the browser resolves those against the origin and asks
+the **portal** for them, so both pages load blank - which looks like an airgap problem
+and is not one. Every API mounted on the edge has this, not just this one, so the fix
+belongs in the shared package: build those URLs from `request.scope["root_path"]`, the
+way FastAPI's own docs route already does. Until that lands, `api/main.py._mount_docs`
+registers the two pages ahead of the shared call and prefixes them itself. Delete it
+when the package is fixed.
 
 Two things that are **not** affected, worth stating so nobody "fixes" them:
 
@@ -389,15 +409,17 @@ requirement, not a per-team choice.
 The old host keeps serving throughout; nothing is cut over by a deploy.
 
 1. **Claim the slug `serverless`** in the registry, on `portal.{base_domain}`.
-2. **Land `external_base_path` and the four fixes** with the default `""`, so a bare
-   deployment is byte-identical. Add the test that runs the app under a non-empty
-   prefix - it is the only thing that catches the ticket bug.
-3. **Move the base path to `/v1`** and set the existing host's deployment to
-   `external_base_path=/api`. Nothing observable changes: its clients still see
-   `/api/v1/...`. This is the step that would break them if it travelled alone, and
-   the setting from step 2 is exactly what stops it.
+2. ~~**Land `external_base_path` and the four fixes**~~ - **done.** The setting defaults
+   to `""`, so a deployment that sets nothing is unchanged. `tests/test_mount_prefix.py`
+   runs the app under a prefix, which is the only thing that catches the ticket bug.
+3. ~~**Move the base path to `/v1`**~~ - **done in the app**, and the deployment half is
+   the next thing to do: set the existing host's `externalBasePath: /api` in the values
+   the GitOps repo renders. Nothing observable changes for its clients - they keep
+   seeing `/api/v1/...` - but until that value is set, the running deployment serves
+   `/v1/...` and every current caller breaks. **This is the step that must not be
+   skipped**, and it is the one that lives outside this repo.
 4. **Add the path Route** to the chart, alongside the existing host Route. Both serve,
-   the new one with `external_base_path=/api/serverless`.
+   the new one with `externalBasePath: /api/serverless`.
 5. **Register the SSO redirect URIs** for the new prefix (additive; the old ones stay).
 6. **Point the portal** at `/api/serverless` and verify the four: a 202's `statusUrl`,
    Swagger, the SSO login, and a browser SSE stream through a ticket.

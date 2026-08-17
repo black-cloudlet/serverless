@@ -9,8 +9,10 @@ from cloudlet_apis.auth import wire_sso_login
 from cloudlet_apis.logging import configure_logging, get_logger
 from cloudlet_apis.requestid import RequestIDMiddleware
 from cloudlet_apis.web import health_router, mount_offline_docs, register_exception_handlers
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 
 from api import __version__
 from api.auth.deps import get_auth
@@ -20,6 +22,11 @@ from api.routers import containers, functions, info, streams
 from api.services.regions.deployer import Deployer
 
 logger = get_logger(__name__)
+
+# Where the vendored Swagger/ReDoc assets are mounted. The shared package's
+# default, named here because both the mount and the pages' asset URLs are
+# built from it (see _mount_docs).
+_DOCS_STATIC = "/static"
 
 
 async def _warm(label: str, fn, timeout: float) -> None:
@@ -74,6 +81,62 @@ async def lifespan(app: FastAPI):
     service.deployer.close()  # release per-region cluster HTTP clients
 
 
+def _mount_docs(app: FastAPI) -> None:
+    """Serve the offline Swagger/ReDoc pages, correctly under a mount prefix.
+
+    ``cloudlet_apis.web.mount_offline_docs`` writes the OpenAPI and asset URLs
+    into the pages root-relative (``/openapi.json``, ``/static/...``), which is
+    right for an API at the root of its own host and wrong behind the portal's
+    edge: the browser is on ``{prefix}/docs``, resolves those against the origin,
+    and asks the *portal* for them. The pages then load blank, which looks like
+    an airgap problem and is not one.
+
+    So the two HTML routes are registered here first - Starlette serves the
+    first match, so these win - prefixing both with ``root_path``. The shared
+    call still runs, for the static mount that actually serves the assets; the
+    ``/docs`` and ``/redoc`` it adds are shadowed by these.
+
+    **This is a stopgap.** The fix belongs in ``cloudlet_apis``, which should
+    build those URLs from ``request.scope["root_path"]`` the way FastAPI's own
+    docs route does - every API mounted on the edge has this bug, not just this
+    one. Delete this function when that lands (docs/PORTAL-INTEGRATION.md - The
+    contract every API on the edge honors).
+
+    Args:
+        app: The application, built with ``docs_url``/``redoc_url`` of None.
+    """
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_ui_html(request: Request) -> HTMLResponse:
+        root = request.scope.get("root_path", "").rstrip("/")
+        # An app can be built without the OAuth2 redirect route, and the shared
+        # call skips registering one when so. Interpolating None would publish
+        # the literal "None" as a URL.
+        redirect = app.swagger_ui_oauth2_redirect_url
+        return get_swagger_ui_html(
+            openapi_url=f"{root}{app.openapi_url}",
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=f"{root}{redirect}" if redirect else None,
+            init_oauth=app.swagger_ui_init_oauth,
+            swagger_js_url=f"{root}{_DOCS_STATIC}/swagger-ui-bundle.js",
+            swagger_css_url=f"{root}{_DOCS_STATIC}/swagger-ui.css",
+            swagger_favicon_url=f"{root}{_DOCS_STATIC}/favicon-32x32.png",
+        )
+
+    @app.get("/redoc", include_in_schema=False)
+    async def redoc_html(request: Request) -> HTMLResponse:
+        root = request.scope.get("root_path", "").rstrip("/")
+        return get_redoc_html(
+            openapi_url=f"{root}{app.openapi_url}",
+            title=f"{app.title} - ReDoc",
+            redoc_js_url=f"{root}{_DOCS_STATIC}/redoc.standalone.js",
+            redoc_favicon_url=f"{root}{_DOCS_STATIC}/favicon-32x32.png",
+            with_google_fonts=False,
+        )
+
+    mount_offline_docs(app, mount_path=_DOCS_STATIC)
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application.
 
@@ -90,8 +153,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
+        # Where the edge serves this API, when that is not the root of a host of
+        # its own (docs/PORTAL-INTEGRATION.md). Empty is the root mount and
+        # changes nothing. FastAPI puts it on the OpenAPI `servers` entry, so
+        # Swagger's "Try it out" addresses the prefix, and cloudlet_apis reads
+        # it when publishing the SSO token URL.
+        root_path=settings.external_base_path,
     )
-    mount_offline_docs(app)
+    _mount_docs(app)
     if settings.auth_enabled:
         # With sso.swagger_client_secret set this also mounts the token proxy,
         # so the Swagger client can be a confidential one.

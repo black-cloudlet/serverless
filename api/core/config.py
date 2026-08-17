@@ -13,7 +13,7 @@ from functools import lru_cache
 # The SSO model is shared - every API on the platform validates tokens the same
 # way - so it lives in cloudlet_apis and is re-exported here for existing importers.
 from cloudlet_apis.auth import SSOConfig  # noqa: F401
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Shared connection settings + sub-configs; re-exported for existing importers.
 from common.config import (  # noqa: F401
@@ -114,6 +114,16 @@ class Settings(CommonSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
+    # Where this API is mounted on the outside, when that is not the root of its
+    # own host: the portal's edge serves it at /api/serverless and strips that
+    # before the request arrives (docs/PORTAL-INTEGRATION.md). The app always
+    # routes on /v1/...; this is only what has to be put back in front of a path
+    # the app hands to a client (statusUrl, the OpenAPI servers entry, the SSO
+    # redirect) and taken off one a client hands us (a stream ticket's path).
+    # Empty (the default) means mounted at the root, and every path below is
+    # what it has always been. env: SERVERLESS_EXTERNAL_BASE_PATH.
+    external_base_path: str = ""
+
     # Browser origins allowed to call the API (e.g. the ServiceNow portal).
     # Empty disables CORS. env: SERVERLESS_CORS_ALLOW_ORIGINS (JSON list).
     cors_allow_origins: list[str] = Field(default_factory=list)
@@ -139,6 +149,33 @@ class Settings(CommonSettings):
     # follow works with no extra configuration and only the browser path - which
     # cannot set that header - needs this set.
     stream_ticket_key: str = ""
+
+    @field_validator("external_base_path")
+    @classmethod
+    def _normalize_base_path(cls, value: str) -> str:
+        """Accept the prefix in the one shape the rest of the code may assume.
+
+        Concatenation is how this value is used - ``f"{base}{path}"`` in both
+        directions - so "/api/serverless/" and "/api/serverless" would produce
+        different URLs from the same deployment. Normalize here, once, rather
+        than defending against it at every use.
+
+        Args:
+            value: The configured prefix.
+
+        Returns:
+            Either empty, or a prefix with a leading and no trailing slash.
+
+        Raises:
+            ValueError: If a non-empty prefix has no leading slash, or is "/" -
+                a root mount, which is what empty already means.
+        """
+        value = value.rstrip("/")
+        if not value:
+            return ""
+        if not value.startswith("/"):
+            raise ValueError(f"external_base_path must start with '/' (got {value!r})")
+        return value
 
 
 @lru_cache

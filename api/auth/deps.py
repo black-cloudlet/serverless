@@ -21,6 +21,7 @@ from cloudlet_apis.errors import UnauthenticatedError
 from fastapi import Depends, Query, Request
 
 from api.core.config import get_settings
+from api.core.paths import to_internal
 
 
 @lru_cache
@@ -102,7 +103,7 @@ def require_stream_auth(
         str | None,
         Query(
             description=(
-                "A ticket from POST /api/v1/stream-tickets, for browsers: EventSource "
+                "A ticket from POST /v1/stream-tickets, for browsers: EventSource "
                 "cannot send an Authorization header. Clients that can send one should, "
                 "and omit this."
             )
@@ -136,11 +137,16 @@ def require_stream_auth(
     if ticket is not None:
         # Verified against the path alone. The query string holds the ticket
         # itself, so signing over it would mean signing over the signature.
-        return tickets.verify(ticket, request.url.path)
+        #
+        # Normalized first, and this is the whole reason api.core.paths exists:
+        # the ticket was minted over the internal path, while what arrives here
+        # is whatever survived the edge. Compare the two raw and every browser
+        # stream 401s the moment this API is served under a prefix.
+        return tickets.verify(ticket, to_internal(request.url.path))
     if header_user is None:
         raise UnauthenticatedError(
             "Missing or malformed Authorization header. A browser should open this "
-            "stream with a ticket from POST /api/v1/stream-tickets instead."
+            "stream with a ticket from POST /v1/stream-tickets instead."
         )
     return header_user
 

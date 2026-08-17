@@ -177,6 +177,6 @@ def test_info_advertises_the_versions_a_create_will_now_accept():
 
     from api.main import create_app
 
-    body = TestClient(create_app()).get("/api/v1/functions/info").json()
+    body = TestClient(create_app()).get("/v1/functions/info").json()
     go = next(r for r in body["runtimes"] if r["name"] == "go")
     assert go["versions"] and go["defaultVersion"] in go["versions"]

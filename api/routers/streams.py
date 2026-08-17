@@ -9,10 +9,11 @@ from cloudlet_apis.auth import StreamTickets
 from fastapi import APIRouter, Depends
 
 from api.auth.deps import CurrentUser, get_tickets
+from api.core.paths import to_external
 from api.models.stream import StreamTicketRequest, StreamTicketResponse
 from api.services.state.ksvc_state import ISRAEL_TZ
 
-router = APIRouter(prefix="/api/v1", tags=["streams"])
+router = APIRouter(prefix="/v1", tags=["streams"])
 
 
 @router.post("/stream-tickets", response_model=StreamTicketResponse)
@@ -44,9 +45,12 @@ async def create_stream_ticket(
         ServiceUnavailableError: If this deployment has no signing key
             configured, in which case streams take the Authorization header only.
     """
+    # Signed over the internal path (the model normalized it there), echoed back
+    # as the external one - the caller is about to open that URL, and behind the
+    # edge it is not the path this API routed on (api.core.paths).
     ticket = tickets.mint(user, body.path)
     return StreamTicketResponse(
         ticket=ticket.value,
         expiresAt=datetime.fromtimestamp(ticket.expires_at, tz=ISRAEL_TZ),
-        path=body.path,
+        path=to_external(body.path),
     )

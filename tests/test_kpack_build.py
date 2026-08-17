@@ -1753,7 +1753,7 @@ async def test_build_is_accepted_as_pending_with_a_status_url():
     body = await svc.accept_build("payments", "hello", _principal(), BackgroundTasks())
 
     assert body.status == "Pending"
-    assert body.statusUrl == "/api/v1/groups/payments/functions/hello"
+    assert body.statusUrl == "/v1/groups/payments/functions/hello"
     # the inputs it will build, echoed back - the request sent none of its own
     assert (body.runtime, body.branch, body.path, body.version) == (
         "python",

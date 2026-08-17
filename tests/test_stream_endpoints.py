@@ -21,9 +21,9 @@ from api.models.common import (
 from api.services.streams.sse import StreamEvent
 
 KEY = "endpoint-test-signing-key-0123456"  # noqa: S105 - a fixture, not a credential
-PODS = "/api/v1/groups/team/functions/foo/pods"
-LOGS = "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
-STATS = "/api/v1/groups/team/functions/foo/stats/stream"
+PODS = "/v1/groups/team/functions/foo/pods"
+LOGS = "/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
+STATS = "/v1/groups/team/functions/foo/stats/stream"
 CALLER = Principal(subject="u", username="alice", groups=["team"], is_admin=False)
 
 
@@ -281,15 +281,15 @@ def test_a_pod_name_that_is_not_a_pod_name_never_reaches_the_service(pod):
     Kubernetes itself would not accept as a pod name.
     """
     svc = FakeStreams(events=[])
-    response = build(svc).get(f"/api/v1/groups/team/functions/foo/logs/pods/{pod}")
+    response = build(svc).get(f"/v1/groups/team/functions/foo/logs/pods/{pod}")
     assert response.status_code in (400, 404), pod
     assert svc.seen == {}, f"{pod} reached the service"
 
 
 def test_both_offerings_stream():
     for base in (
-        "/api/v1/groups/team/functions/foo",
-        "/api/v1/groups/team/containers/foo",
+        "/v1/groups/team/functions/foo",
+        "/v1/groups/team/containers/foo",
     ):
         for suffix in ("pods", "stats/stream", "logs/pods/foo-team-00001-abcde"):
             svc = FakeStreams(events=[])
@@ -299,7 +299,7 @@ def test_both_offerings_stream():
 
 def test_the_snapshot_logs_endpoint_is_gone():
     """Replaced by the per-pod stream; a stale client must not get a silent 200."""
-    response = build(FakeStreams(events=[])).get("/api/v1/groups/team/functions/foo/logs")
+    response = build(FakeStreams(events=[])).get("/v1/groups/team/functions/foo/logs")
     assert response.status_code == 404
 
 
@@ -357,7 +357,7 @@ def test_the_header_still_works_so_a_cli_follow_needs_no_ticket():
 
 def test_minting_returns_a_ticket_bound_to_the_requested_path():
     client = build(FakeStreams(events=[]))
-    body = client.post("/api/v1/stream-tickets", json={"path": LOGS}).json()
+    body = client.post("/v1/stream-tickets", json={"path": LOGS}).json()
 
     assert body["path"] == LOGS
     assert body["ticket"]
@@ -368,14 +368,12 @@ def test_minting_returns_a_ticket_bound_to_the_requested_path():
 
 def test_minting_requires_authentication():
     client = build(FakeStreams(events=[]), authenticated=False)
-    assert client.post("/api/v1/stream-tickets", json={"path": LOGS}).status_code == 401
+    assert client.post("/v1/stream-tickets", json={"path": LOGS}).status_code == 401
 
 
 def test_minting_rejects_a_path_that_is_not_a_stream():
     client = build(FakeStreams(events=[]))
-    response = client.post(
-        "/api/v1/stream-tickets", json={"path": "/api/v1/groups/team/functions/foo"}
-    )
+    response = client.post("/v1/stream-tickets", json={"path": "/v1/groups/team/functions/foo"})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
@@ -384,7 +382,7 @@ def test_minting_is_unavailable_when_no_signing_key_is_configured():
     """The deployment opted out of the browser path; header auth still works."""
     client = build(FakeStreams(events=[]), key="")
 
-    response = client.post("/api/v1/stream-tickets", json={"path": LOGS})
+    response = client.post("/v1/stream-tickets", json={"path": LOGS})
     assert response.status_code == 503
     assert "Authorization header" in response.json()["error"]["message"]
 
@@ -404,7 +402,7 @@ def test_the_streams_document_themselves_as_event_streams():
     schema = create_app().openapi()
     for offering in ("functions", "containers"):
         for suffix in ("pods", "stats/stream", "logs/pods/{pod}"):
-            path = f"/api/v1/groups/{{group}}/{offering}/{{name}}/{suffix}"
+            path = f"/v1/groups/{{group}}/{offering}/{{name}}/{suffix}"
             content = schema["paths"][path]["get"]["responses"]["200"]["content"]
             assert "text/event-stream" in content, path
 
@@ -412,7 +410,7 @@ def test_the_streams_document_themselves_as_event_streams():
 def test_the_stats_snapshot_keeps_its_own_contract():
     """Streaming must not change what the one remaining JSON read returns."""
     schema = create_app().openapi()
-    path = "/api/v1/groups/{group}/functions/{name}/stats"
+    path = "/v1/groups/{group}/functions/{name}/stats"
     content = schema["paths"][path]["get"]["responses"]["200"]["content"]
     assert list(content) == ["application/json"]
 
@@ -420,8 +418,8 @@ def test_the_stats_snapshot_keeps_its_own_contract():
 def test_the_removed_log_paths_are_not_published():
     schema = create_app().openapi()
     for path in (
-        "/api/v1/groups/{group}/functions/{name}/logs",
-        "/api/v1/groups/{group}/functions/{name}/logs/stream",
+        "/v1/groups/{group}/functions/{name}/logs",
+        "/v1/groups/{group}/functions/{name}/logs/stream",
     ):
         assert path not in schema["paths"], path
 
@@ -521,7 +519,7 @@ def test_both_forms_are_published_on_one_operation():
     schema = create_app().openapi()
     for offering in ("functions", "containers"):
         for suffix in ("pods", "logs/pods/{pod}"):
-            path = f"/api/v1/groups/{{group}}/{offering}/{{name}}/{suffix}"
+            path = f"/v1/groups/{{group}}/{offering}/{{name}}/{suffix}"
             content = schema["paths"][path]["get"]["responses"]["200"]["content"]
             assert set(content) == {"application/json", "text/event-stream"}, path
             params = {p["name"] for p in schema["paths"][path]["get"]["parameters"]}
