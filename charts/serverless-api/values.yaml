@@ -142,6 +142,11 @@ routeDomain: serverless.example.com
 #   /api              this API on its own host, unchanged from before  (default)
 #   /api/serverless   mounted on a shared edge under its own slug
 #   ""                the bare /v1/... surface; no client speaks this today
+#
+# Whatever fronts the API must forward the path WHOLE - a plain Route with
+# `spec.path`, no haproxy.router.openshift.io/rewrite-target. Endpoints tolerate
+# a stripped prefix, but the Swagger asset mount answers on the full path only,
+# so a rewriting router leaves /docs and /redoc loading blank.
 externalBasePath: /api
 
 # Each entry is rendered with tpl, so an origin can be derived from other

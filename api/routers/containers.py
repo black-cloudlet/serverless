@@ -21,7 +21,7 @@ from api.models.common import (
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.routers import sse
 
-router = APIRouter(prefix="/v1/groups/{group}/containers", tags=["containers"])
+router = APIRouter(prefix="/groups/{group}/containers", tags=["containers"])
 
 
 @router.post("", response_model=ContainerResponse, status_code=202)

@@ -143,6 +143,21 @@ def test_the_offline_docs_reference_the_prefix(prefixed, page):
     assert '"/static/' not in html
 
 
+def test_the_urls_the_docs_publish_are_the_ones_that_answer(prefixed):
+    """Asserting the HTML alone would pass while the assets 404.
+
+    A ``Mount`` under ``root_path`` answers on the full path only, unlike a
+    route, which answers either way - so the edge has to forward the prefix
+    rather than strip it.
+    """
+    client = TestClient(create_app())
+
+    assert client.get(f"{PREFIX}/static/swagger-ui.css").status_code == 200
+    assert client.get(f"{PREFIX}/openapi.json").status_code == 200
+    # What a rewriting edge would deliver instead. The mount does not answer.
+    assert client.get("/static/swagger-ui.css").status_code == 404
+
+
 # --- the stream tickets -----------------------------------------------------
 
 

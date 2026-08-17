@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from api.core.config import get_settings
 
+# The API's own version segment. Applied once, where the routers are included,
+# so a v2 is a second include rather than an edit to every router module.
+V1 = "/v1"
+
 
 def to_external(path: str) -> str:
     """The path a client outside the mount must call to reach ``path``.

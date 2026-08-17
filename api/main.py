@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from api import __version__
 from api.auth.deps import get_auth
 from api.core.config import Settings, get_settings
+from api.core.paths import V1
 from api.dependencies import get_runtimes, get_stream_capacity, get_workload_service
 from api.routers import containers, functions, info, streams
 from api.services.regions.deployer import Deployer
@@ -163,11 +164,9 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
 
     register_exception_handlers(app)
-    app.include_router(health_router)
-    app.include_router(info.router)
-    app.include_router(streams.router)
-    app.include_router(functions.router)
-    app.include_router(containers.router)
+    app.include_router(health_router)  # unversioned: probes, not the API surface
+    for router in (info.router, streams.router, functions.router, containers.router):
+        app.include_router(router, prefix=V1)
 
     return app
 

@@ -21,7 +21,7 @@ from api.models.common import (
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.routers import sse
 
-router = APIRouter(prefix="/v1/groups/{group}/functions", tags=["functions"])
+router = APIRouter(prefix="/groups/{group}/functions", tags=["functions"])
 
 
 @router.post("", response_model=FunctionResponse, status_code=202)

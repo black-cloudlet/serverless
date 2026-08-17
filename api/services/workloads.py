@@ -31,7 +31,7 @@ from cloudlet_apis.auth import Principal
 from cloudlet_apis.logging import get_logger
 
 from api.core.config import Settings
-from api.core.paths import to_external
+from api.core.paths import V1, to_external
 from api.models.common import (
     ANNOTATION_HOST,
     ANNOTATION_PULL_STAMP,
@@ -379,7 +379,7 @@ class WorkloadService:
             regions=[],
             # External: the client calls this back, so it carries the mount
             # prefix rather than the path this app routed on.
-            statusUrl=to_external(f"/v1/groups/{group}/{offering.name}s/{name}"),
+            statusUrl=to_external(f"{V1}/groups/{group}/{offering.name}s/{name}"),
             **extra,
         )
 
