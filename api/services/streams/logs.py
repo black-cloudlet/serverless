@@ -88,11 +88,10 @@ def split_timestamp(line: str) -> tuple[datetime | None, str]:
 def _frame_bytes(frame: str) -> int:
     """How much memory a rendered frame costs, in bytes.
 
-    ``len`` counts characters, and the budget this feeds is a memory bound: a
-    workload logging anything outside ASCII (Hebrew, CJK, an emoji) spends up to
-    four bytes per character, so counting characters would let the buffer hold
-    several times the configured budget. ``isascii`` is a flag check on CPython,
-    so the ordinary all-ASCII frame pays nothing for the distinction.
+    ``len`` counts characters, and the budget this feeds is a memory bound:
+    outside ASCII a character is up to four bytes, which would let the buffer
+    hold several times what was configured. ``isascii`` is a flag check on
+    CPython, so the ordinary frame pays nothing for the distinction.
 
     Args:
         frame: The rendered SSE frame.
@@ -125,12 +124,9 @@ class _Buffer:
     an OOM kill wearing a log stream's clothes. Either bound overrun costs a
     *reported* drop, exactly as the count bound always did.
 
-    The byte budget is a bound on the buffer, not a target: a single frame too
-    big to fit in an empty buffer is dropped rather than admitted. One frame is
-    *not* bounded by MAX_LINE_BYTES - that bounds the raw line, and JSON
-    escaping expands it (a megabyte of control bytes renders as six), so
-    admitting one unconditionally would leave the pathological case unbounded
-    in exactly the way this exists to prevent.
+    A frame too big for even an empty buffer is dropped, not waved through:
+    MAX_LINE_BYTES bounds the raw line, and JSON escaping expands it (a megabyte
+    of control bytes renders as six), so one frame is no bound at all.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop, maxsize: int, max_bytes: int):

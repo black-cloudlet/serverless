@@ -34,10 +34,8 @@ def _keepalive_socket_options() -> list[tuple]:
     probes an idle connection after 30s and gives up within ~a minute more, so
     a wedged watch costs minutes, not a reconcile loop until restart.
 
-    Added to urllib3's own defaults rather than replacing them: those carry
-    TCP_NODELAY, and a pool that drops it re-enables Nagle on every cluster
-    connection - a delayed-ACK stall on each small request, and again on each
-    chunk of a stream.
+    Added to urllib3's defaults, not substituted for them: those carry
+    TCP_NODELAY, and dropping it re-enables Nagle on every cluster connection.
 
     The TCP_* constants are Linux; anything the platform lacks is skipped, and
     SO_KEEPALIVE alone still buys the kernel-default probing.
@@ -54,15 +52,13 @@ def _default_connect_timeout(api_client: client.ApiClient, connect: float) -> No
     """Give every request through ``api_client`` a connect timeout of its own.
 
     Not ``connection_pool_kw["timeout"]``, which looks like the place for it and
-    is not: urllib3 consults the pool's default only for its own
-    ``_DEFAULT_TIMEOUT`` sentinel, and ``kubernetes.client.rest`` always passes
-    ``timeout=`` explicitly - ``None`` for any call made without
-    ``_request_timeout``, and an explicit ``None`` resolves to *no* timeout at
-    all. The calls that pass no override are exactly the ones that must not hang
-    forever on a cluster that blackholes connections: the dynamic client's
-    discovery, and the controller's watch. So the default is injected at the one
-    point every request of this client passes through, and a caller that named
-    its own timeout still keeps it.
+    is not: urllib3 consults the pool default only for its own
+    ``_DEFAULT_TIMEOUT`` sentinel, while ``kubernetes.client.rest`` always
+    passes ``timeout=`` explicitly - ``None`` for a call with no
+    ``_request_timeout``, which resolves to *no* timeout. Those calls are
+    exactly the ones that must not hang against a cluster that blackholes
+    connections: discovery, and the controller's watch. Injected here instead,
+    where every request passes; a caller that named its own timeout keeps it.
 
     Connect only, not read: the long-lived streams (a log follow, the watch) are
     idle between bytes by design.
@@ -184,14 +180,9 @@ class Cluster:
         with self._client_lock:
             if self._api_client_obj is None:
                 api_client = client.ApiClient(self._configuration)
-                # Default CONNECT timeout on every request this client makes, so
-                # no call to this cluster can hang on an unanswered SYN -
-                # including the dynamic client's discovery and the controller's
-                # watch, which take no per-request timeout and would otherwise
-                # wedge their thread forever against a cluster that blackholes
-                # connections. Ordinary calls carry their own read timeout via
-                # ``self._opts``; see _default_connect_timeout for why this is
-                # not a pool default.
+                # So no call can hang on an unanswered SYN - discovery and the
+                # watch included, which pass no timeout of their own. Ordinary
+                # calls carry their read timeout via `self._opts`.
                 _default_connect_timeout(api_client, self._connect_timeout)
                 # Keepalive is what bounds the streams that read timeout
                 # deliberately does not - see _keepalive_socket_options.

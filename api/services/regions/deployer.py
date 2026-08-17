@@ -57,11 +57,10 @@ class ReadPool:
     the pool with zombie reads while the accounting reported it empty, and the
     503 shedding this class exists for would never fire.
 
-    Admission is taken for a whole fan-out at once (:meth:`reserve`), not one
-    region at a time. Taken per region, a fan-out refused part-way through
-    would leave the regions it had already started burning the pool for results
-    the 503 throws away - ``gather`` does not cancel their siblings - which is
-    how shedding feeds itself instead of relieving the pool.
+    Admission is taken for a whole fan-out at once (:meth:`reserve`). Taken per
+    region, a fan-out refused part-way through would leave the regions it had
+    already started burning the pool for results the 503 throws away - and
+    ``gather`` cancels no siblings - which is how shedding feeds itself.
     """
 
     def __init__(self, workers: int, max_queued: int):
@@ -124,9 +123,7 @@ class ReadPool:
         try:
             concurrent_future = self._executor.submit(ctx.run, fn, *args)
         except RuntimeError:
-            # The pool was shut down under us: no thread will ever run, so no
-            # done callback will ever give this admission back either.
-            self._release()
+            self._release()  # shut down under us: no thread, so no done callback
             raise
 
         def release(_cf) -> None:
@@ -151,11 +148,11 @@ class ReadPool:
 class ReadReservation:
     """Read-pool admissions taken up front, spent one read at a time.
 
-    Held by a fan-out for as long as it runs, so the pool is either big enough
-    for the whole fan-out or refuses it before any region starts. Whatever is
-    never spent - a fan-out cancelled before its last region began - is given
-    back by :meth:`release_unspent`; a read that did start gives its own slot
-    back when its thread finishes, not when the caller stops waiting.
+    Held by a fan-out while it runs, so the pool either takes the whole fan-out
+    or refuses it before any region starts. What is never spent - a fan-out
+    cancelled before its last region began - goes back via
+    :meth:`release_unspent`; a read that did start releases its own slot when
+    its thread finishes, not when the caller stops waiting.
     """
 
     def __init__(self, pool: ReadPool, count: int):
@@ -215,10 +212,9 @@ class Deployer:
         representative region), so they share the fan-out's pool and admission
         instead of the process-wide default executor.
 
-        Bounded by ``cluster_read_op_timeout``, exactly as the read fan-outs
-        are. Without a bound the caller waits for as long as the cluster call
-        does, and since a slot is only released when the *thread* finishes, one
-        wedged read would hold its worker for the whole request - enough of them
+        Bounded by ``cluster_read_op_timeout``, as the read fan-outs are: a slot
+        is only released when the *thread* finishes, so an unbounded caller
+        holds its worker for as long as the cluster call takes - enough of those
         and every cluster read in the process is shed until restart.
 
         Raises:
@@ -313,9 +309,8 @@ class Deployer:
                 the whole fan-out.
         """
         timeout = self._read_timeout if read else self._op_timeout
-        # Reserved for every target before any of them starts: admitted region
-        # by region, a fan-out shed half way through would leave the regions
-        # already running to burn the pool for a result the 503 discards.
+        # For every target before any starts: shed half way through, the regions
+        # already running would burn the pool for a result the 503 discards.
         reservation = self._read_pool.reserve(len(targets)) if read and executor is None else None
 
         async def run(cluster: Cluster) -> RegionStatus:
