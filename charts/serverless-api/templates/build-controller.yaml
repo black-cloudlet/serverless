@@ -50,7 +50,7 @@ spec:
             - name: SERVERLESS_WORKLOADS_NAMESPACE
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
-              value: {{ .Values.buildController.resyncSeconds | quote }}
+              value: {{ .Values.buildController.resyncSeconds | int64 | quote }}
             # Tag GC: prune kpack's per-build tags in THIS region's registry
             # (docs/BUILDING.md - Registry tag GC). This region's registry comes
             # from the regions ConfigMap below and its token from the tokens
@@ -61,9 +61,9 @@ spec:
             - name: SERVERLESS_GC_ENABLED
               value: {{ .Values.buildController.gc.enabled | quote }}
             - name: SERVERLESS_GC_INTERVAL_SECONDS
-              value: {{ .Values.buildController.gc.intervalSeconds | quote }}
+              value: {{ .Values.buildController.gc.intervalSeconds | int64 | quote }}
             - name: SERVERLESS_GC_KEEP_BUILDS
-              value: {{ .Values.buildController.gc.keepBuilds | quote }}
+              value: {{ .Values.buildController.gc.keepBuilds | int64 | quote }}
             - name: SERVERLESS_REGISTRY__URL
               value: {{ .Values.registry.url | quote }}
             - name: SERVERLESS_REGISTRY__DELETE_ON_FUNCTION_DELETE

@@ -116,8 +116,9 @@ buildController:
     # Hours-scale: garbage accrues one tag per build, and every sweep
     # re-derives everything, so nothing is lost by waiting.
     intervalSeconds: 21600
-    # Newest per-build tags kept beyond the protected ones; matches
-    # build.history.success's default, so images track the Build history.
+    # Newest per-build tags kept beyond the protected ones. 0 is fine here and
+    # is not the same choice as build.history.success: this prunes registry
+    # TAGS, and the tag on the digest still serving is protected either way.
     keepBuilds: 0
 
 namespaces:
@@ -382,8 +383,14 @@ build:
   # thousand pods across a few hundred functions. Failed builds are worth
   # keeping a couple of: their pods hold the per-phase logs.
   # docs/BUILDING.md - Build history.
+  # Minimum 1, not 0, because kpack itself refuses less than 1 - its Image
+  # webhook answers "build history limit must be greater than 0", and its
+  # defaulting only fills an ABSENT limit, so an explicit 0 reaches that check.
+  # An Image with 0 therefore cannot be created at all: every function create
+  # and update would fail admission. The API mirrors the floor, which is why a
+  # release that shipped `success: 0` crash-looped instead of starting.
   history:
-    success: 0
+    success: 1
     failed: 1
 
   # Build pod requests/limits. A build is far heavier than the function it
