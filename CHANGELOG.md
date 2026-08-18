@@ -89,7 +89,124 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   repeated per environment. Each entry is templated before being JSON-encoded,
   so rendered text cannot break the encoding.
 
+### Changed (rename)
+
+- **`SERVERLESS_REGION_OP_TIMEOUT` is now `SERVERLESS_CLUSTER_OP_TIMEOUT`**
+  (setting `cluster_op_timeout`). It bounds one *cluster's* operation inside a
+  fan-out, which is also how its siblings were already named
+  (`cluster_connect_timeout`, `cluster_read_timeout`) - "region" was the odd one
+  out. Deployments overriding the old env var must rename it; the chart never
+  set it, so a default install is unaffected.
+
 ### Fixed
+
+- **The API crash-looped on `stream.snapshotMaxBytes`.** Helm parses values.yaml
+  through JSON, so every number reaches a template as a float64 - and Go prints
+  a float64 of 1e6 or more in scientific notation. `2097152` therefore arrived
+  as `SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES="2.097152e+06"`, which `int` refuses,
+  so the pod died at import with a pydantic `int_parsing` error. Every
+  integer-typed value the two Deployments render now goes through `| int64`.
+  The four float-typed stream bounds deliberately do **not** - `int64` would
+  truncate a fractional `heartbeatSeconds` to 0.
+
+  `stream.queueMaxBytes` (2097152, added alongside the byte-bounded log buffer)
+  reached the pod the same way and is covered by the same change. Anything
+  int-typed and >= 1e6 hits this, which is why the fix is the rule rather than
+  the two values that happen to trip it today.
+
+- **`build.history.success: 0` could not be loaded.** The values file has
+  shipped 0 since the SSE-streaming change, but the field it fills has a
+  deliberate floor of 1, mirroring kpack: kpack's `Image` webhook refuses a
+  limit below 1 ("build history limit must be greater than 0") and defaults
+  only an *absent* one, so an explicit 0 cannot produce an `Image` at all. The
+  chart was the side that was wrong; it now ships `success: 1`.
+  `gc.keepBuilds: 0` is unaffected - that prunes registry tags, not `Build`s.
+
+  `tests/test_chart_values.py` is new and covers the seam both bugs came
+  through: it reads the templates, renders each value the way Helm does
+  (float64 formatting included), and loads the result through `Settings`.
+
+- **A log stream's buffer is bounded by bytes as well as lines**
+  (`stream.queueMaxBytes`, default 2MiB). The line bound alone was no bound for
+  a pod writing without newlines: each "line" then arrives as a ~1MB piece, and
+  `queueSize` of those was a potential gigabyte per stream against the pod's
+  memory limit - an OOM kill wearing a log stream's clothes. Either bound
+  overrun costs a *reported* drop, as the line bound always did - including a
+  single frame too large to fit the budget on its own, since JSON escaping can
+  expand one raw line several times over. Bytes are counted as bytes, not
+  characters, so a workload logging outside ASCII gets the budget it was
+  configured with. The rollover at `stream.maxSeconds` now reports lines
+  dropped since the last tick instead of presenting the log as gapless across
+  the reconnect.
+
+- **Read-pool admission counts threads, not awaits.** A read the caller timed
+  out on is still occupying its worker - the executor cannot interrupt a
+  thread - but the slot was released when the await ended, so a stalling
+  region could fill the pool with zombie reads while the accounting reported
+  it empty and the 503 shedding never fired. The slot is now released when the
+  thread actually finishes, and a fan-out is admitted for all of its regions at
+  once - refused part way through, it would leave the regions already running
+  to burn the pool for a result the 503 discards. Every read is bounded by
+  `cluster_read_op_timeout`, the single-cluster ones included, so no caller
+  waits on a wedged worker indefinitely. The `follow=false` pods roster and log
+  snapshot also moved onto the read pool: the console's non-streaming fallback
+  polls exactly these, and they were still renting from the unbounded default
+  executor.
+
+- **The cluster connection pools enable TCP keepalive.** The streams that
+  deliberately carry no read timeout (the controller's watch, a log follow)
+  had no defence against a connection dying *silently* - a NAT/conntrack entry
+  or LB dropping it without RST leaves the server-side timeout undeliverable
+  and the thread blocked in recv for hours. For the build controller that
+  thread is the whole reconcile loop. The kernel now probes an idle connection
+  after 30s and gives up within about a minute more.
+
+- **A slow or unreachable peer region no longer slows every page.** The read
+  fan-outs (`list`, `get`, `stats`) waited on the slowest region under the same
+  minute-scale backstop the writes need (`cluster_op_timeout`) - so one slow
+  cluster held every response, and one *blackholed* cluster was worse: the
+  dynamic client's discovery carries no timeout at all, and each attempt wedged
+  a thread from the small process-wide executor forever. Three bounds close
+  this, one per layer:
+  - reads get their own backstop, **`cluster_read_op_timeout`** (default 5s):
+    a region that misses it becomes its own degraded column in the response -
+    which the merge already renders - instead of the whole page's latency;
+  - reads run on a **bounded pool of their own** (`cluster_read_workers` /
+    `cluster_read_max_queued`), so a burst of page reads queues predictably and
+    is refused with 503 past the bound, rather than silently inflating every
+    other request's latency through the shared default executor;
+  - every request the Kubernetes client makes carries a **default connect
+    timeout**, so no call - discovery and the watch included - can hang on an
+    unanswered SYN. Connect only: the long-lived streams (log follows, the
+    controller's watch) are idle between bytes by design, and stay exempt. Not
+    the connection pool's `timeout`, which cannot serve as a default here:
+    urllib3 falls back to it only for its own sentinel, and the generated client
+    always passes `timeout=` explicitly.
+
+- **A fire-hosing pod's log stream no longer starves the health probes.** A
+  followed log rendered every line into its SSE frame *on the event loop* - the
+  same loop `/healthz` and `/readyz` answer from. A pod logging fast enough
+  (with the streams' clients keeping up, so nothing was dropped) kept the loop
+  busy past the kubelet's 5s probe timeout; the pod went unready and was then
+  liveness-killed, and every cut stream reconnected within seconds onto the
+  surviving replica - same load, fewer pods - which is how one replica's
+  restart cascaded into the other's. Lines are now rendered on the follower
+  thread (which was already doing the per-line parsing) and cross to the loop
+  as pre-rendered frames, a buffer-drain at a time, so the loop only forwards
+  bytes: one yield per burst, not per line. The wire format is unchanged -
+  concatenated SSE frames are the same stream.
+
+- **A busy pod is no longer restarted for being busy.** The liveness threshold
+  moves from 6 misses to 18 (~3 minutes): readiness already sheds traffic at
+  ~30s, which is the correct remedy for a saturated event loop, and a restart
+  is what turned one slow replica into a platform-wide cascade (see above). A
+  `startupProbe` (60s budget) now covers the window before the socket opens -
+  startup blocks on OIDC discovery and per-region connects, each of which
+  times out slowly when a dependency is down, and every probe in that window
+  used to count "connection refused" toward the liveness kill. The CPU limit
+  rises to `2` (requests unchanged): limits are enforced as throttling, and at
+  `1` the loop's probe answers stretched past their timeout exactly when the
+  stream threads were busiest.
 
 - **The chart sent the wrong Swagger client id.** `sso.swaggerClientId`
   defaulted to `serverless-api` - the release name, not a registered Keycloak

@@ -149,3 +149,108 @@ def test_watch_does_not_impose_the_per_request_read_timeout():
     list(_cluster_calling(api).watch(ResourceKind.KPACK_IMAGE))
 
     assert "_request_timeout" not in api.watch_kwargs
+
+
+def _requests_through(cluster) -> list:
+    """Capture the timeout urllib3 actually receives for a request on ``cluster``.
+
+    Asserted at ``urlopen``, below everything the kubernetes client does to a
+    ``_request_timeout``, because the bug this guards against lives exactly
+    there: ``connection_pool_kw["timeout"]`` looks like it sets a default and
+    does not, since urllib3 honours the pool default only for its own sentinel
+    and ``rest.py`` always passes ``timeout=`` explicitly.
+    """
+    seen = []
+    pool_manager = cluster._api_client.rest_client.pool_manager
+
+    class _Response:
+        status = 200
+        reason = "OK"
+        data = b"{}"
+
+    def urlopen(method, url, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return _Response()
+
+    pool_manager.urlopen = urlopen
+    return seen
+
+
+def test_a_call_with_no_per_request_timeout_still_carries_a_connect_timeout():
+    """Discovery and the watch pass no per-request timeout, and are exactly the
+    calls that must not wedge their thread forever against a cluster that
+    blackholes connections. Connect only - a read bound would tear down an idle
+    watch or log follow between bytes."""
+    from common.cluster import Cluster
+    from common.config import CommonSettings, RegionConfig
+
+    settings = CommonSettings(
+        regions=[RegionConfig(name="central", cluster="central-0")],
+        cluster_connect_timeout=1.5,
+    )
+    cluster = Cluster(settings.regions[0], settings)
+    seen = _requests_through(cluster)
+
+    cluster._api_client.rest_client.request("GET", "https://api.central-0.example.com:6443/api")
+
+    assert [(t.connect_timeout, t.read_timeout) for t in seen] == [(1.5, None)]
+    cluster.close()
+
+
+def test_a_call_that_names_its_own_timeout_keeps_it():
+    """The default fills a gap; it must not override the per-request read
+    timeout ordinary calls carry, nor the log follow's connect-only pair."""
+    from common.cluster import Cluster
+    from common.config import CommonSettings, RegionConfig
+
+    settings = CommonSettings(
+        regions=[RegionConfig(name="central", cluster="central-0")],
+        cluster_connect_timeout=1.5,
+        cluster_read_timeout=7.0,
+    )
+    cluster = Cluster(settings.regions[0], settings)
+    seen = _requests_through(cluster)
+
+    cluster._api_client.rest_client.request(
+        "GET",
+        "https://api.central-0.example.com:6443/api",
+        _request_timeout=(0.5, 7.0),
+    )
+
+    assert [(t.connect_timeout, t.read_timeout) for t in seen] == [(0.5, 7.0)]
+    cluster.close()
+
+
+def test_the_connection_pool_keeps_urllib3s_own_socket_options():
+    """Replacing the defaults instead of adding to them drops TCP_NODELAY, which
+    re-enables Nagle on every cluster connection - a delayed-ACK stall per call
+    and per streamed chunk."""
+    from urllib3.connection import HTTPConnection
+
+    from common.cluster import Cluster
+    from common.config import CommonSettings, RegionConfig
+
+    settings = CommonSettings(regions=[RegionConfig(name="central", cluster="central-0")])
+    cluster = Cluster(settings.regions[0], settings)
+    options = cluster._api_client.rest_client.pool_manager.connection_pool_kw["socket_options"]
+
+    assert set(HTTPConnection.default_socket_options) <= set(options)
+    cluster.close()
+
+
+def test_the_connection_pool_enables_tcp_keepalive():
+    """The streams that deliberately carry no read timeout (watch, log follow)
+    have no other defence against a silently dead connection: the server-side
+    timeout cannot arrive over dead TCP, and the blocked thread is the build
+    controller's whole reconcile loop."""
+    import socket as socket_mod
+
+    from common.cluster import Cluster
+    from common.config import CommonSettings, RegionConfig
+
+    settings = CommonSettings(regions=[RegionConfig(name="central", cluster="central-0")])
+    cluster = Cluster(settings.regions[0], settings)
+    options = cluster._api_client.rest_client.pool_manager.connection_pool_kw["socket_options"]
+
+    assert (socket_mod.SOL_SOCKET, socket_mod.SO_KEEPALIVE, 1) in options
+    cluster.close()

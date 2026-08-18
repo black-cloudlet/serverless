@@ -62,7 +62,22 @@ async def collect(stream, count, timeout=5.0):
 
 
 def names(events):
-    return [e.name for e in events]
+    # A str item is a pre-rendered batch of `log` frames - the hot path is
+    # rendered on the follower thread so the event loop only forwards bytes.
+    return [("log" if isinstance(e, str) else e.name) for e in events]
+
+
+def log_lines(events):
+    """The JSON payloads of the pre-rendered ``log`` frames, in order."""
+    payloads = []
+    for e in events:
+        if not isinstance(e, str):
+            continue
+        assert e.startswith("event: log\n"), "only log frames cross the stream pre-rendered"
+        for line in e.splitlines():
+            if line.startswith("data: "):
+                payloads.append(json.loads(line[len("data: ") :]))
+    return payloads
 
 
 # --- framing ---------------------------------------------------------------
@@ -139,6 +154,36 @@ def test_a_message_that_looks_like_a_timestamp_is_not_split_twice():
     stamp, text = logs_stream.split_timestamp("2024-03-01T10:00:00Z 2024-03-01T11:00:00Z later")
     assert stamp is not None
     assert text == "2024-03-01T11:00:00Z later"
+
+
+def test_a_drain_of_rendered_frames_coalesces_into_one_yield():
+    """The loop pays one yield per burst, not per line - the fix for a chatty
+    pod starving the health probes off the shared event loop."""
+    beat = sse.heartbeat()
+    items = ["event: log\ndata: 1\n\n", "event: log\ndata: 2\n\n", beat, "event: log\ndata: 3\n\n"]
+
+    out = list(logs_stream._coalesced(items))
+
+    assert out == [
+        "event: log\ndata: 1\n\nevent: log\ndata: 2\n\n",  # wire-identical: frames concatenate
+        beat,
+        "event: log\ndata: 3\n\n",
+    ]
+
+
+async def test_the_response_passes_pre_rendered_frames_through_untouched():
+    from api.routers import sse as sse_router
+
+    async def gen():
+        yield "event: log\ndata: {}\n\n"
+        yield sse.heartbeat()
+
+    resp = sse_router.stream(gen())
+    chunks = [c async for c in resp.body_iterator]
+
+    assert chunks[0] == sse.preamble()
+    assert chunks[1] == "event: log\ndata: {}\n\n"
+    assert chunks[2] == ": heartbeat\n\n"
 
 
 # --- line assembly ---------------------------------------------------------
@@ -293,7 +338,7 @@ def test_the_interval_bounds_have_to_be_coherent():
 
 async def test_the_buffer_drops_and_counts_rather_than_growing():
     """A workload outrunning its reader must cost a reported gap, not memory."""
-    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=3)
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=3, max_bytes=1 << 20)
     for i in range(10):
         buf.put(sse.StreamEvent("log", StreamError(code="c", message=str(i))))
 
@@ -306,7 +351,7 @@ async def test_the_buffer_drops_and_counts_rather_than_growing():
 
 
 async def test_the_buffer_wakes_the_loop_from_a_thread():
-    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10)
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10, max_bytes=1 << 20)
 
     def producer():
         time.sleep(0.05)
@@ -319,7 +364,7 @@ async def test_the_buffer_wakes_the_loop_from_a_thread():
 
 async def test_a_wakeup_is_not_lost_when_a_put_races_a_drain():
     """The edge-triggered wakeup is only safe because drain empties under the lock."""
-    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10)
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=10, max_bytes=1 << 20)
     buf.put(sse.StreamEvent("log", StreamError(code="c", message="first")))
     assert len(buf.drain()) == 1
     # Deque is empty again, so this put must wake the loop rather than assume
@@ -437,30 +482,31 @@ async def test_the_stream_opens_by_saying_which_pod_it_is_following(capacity):
     assert cluster.followed == ["p1"]
 
 
-async def test_log_lines_arrive_as_events_carrying_their_pod_and_revision(capacity):
+async def test_log_lines_arrive_as_rendered_frames_carrying_their_pod_and_revision(capacity):
+    """Lines cross pre-rendered (str), so the loop only forwards bytes."""
     cluster = FakeCluster(
         {"p1": "foo-team-00007"},
         {"p1": [b"2024-03-01T10:00:00Z first\n2024-03-01T10:00:01Z second\n"]},
     )
-    events = await collect(
-        _follow(cluster, capacity, opening=_opening(revision="foo-team-00007")), 3
-    )
+    events = [
+        e async for e in _follow(cluster, capacity, opening=_opening(revision="foo-team-00007"))
+    ]
 
-    logs = [e for e in events if e.name == "log"]
-    assert [line.data.message for line in logs] == ["first", "second"]
-    assert logs[0].data.pod == "p1"
-    assert logs[0].data.revision == "foo-team-00007"
-    assert logs[0].data.container == "user-container"
-    assert logs[0].data.time is not None
+    lines = log_lines(events)
+    assert [line["message"] for line in lines] == ["first", "second"]
+    assert lines[0]["pod"] == "p1"
+    assert lines[0]["revision"] == "foo-team-00007"
+    assert lines[0]["container"] == "user-container"
+    assert lines[0]["time"] is not None
 
 
 async def test_only_the_named_pod_is_followed(capacity):
     """The whole point of the per-pod shape: one stream, one pod, one thread."""
     cluster = FakeCluster({"p1": "r1", "p2": "r1"}, {"p1": [b"mine\n"], "p2": [b"not mine\n"]})
-    events = await collect(_follow(cluster, capacity), 2)
+    events = [e async for e in _follow(cluster, capacity)]
 
     assert cluster.followed == ["p1"]
-    assert [e.data.message for e in events if e.name == "log"] == ["mine"]
+    assert [line["message"] for line in log_lines(events)] == ["mine"]
 
 
 async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
@@ -472,7 +518,7 @@ async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
     assert names(events)[-1] == "end"
     assert "replaced" in events[-1].data.reason
     # ...and the final lines are delivered before it closes.
-    assert [e.data.message for e in events if e.name == "log"] == ["last words"]
+    assert [line["message"] for line in log_lines(events)] == ["last words"]
 
 
 async def test_a_pod_that_cannot_be_read_warns_and_ends_rather_than_hanging(capacity):
@@ -497,9 +543,9 @@ async def test_teardown_closes_the_follow(capacity):
 
 async def test_the_slow_client_warning_reports_how_much_was_lost(capacity):
     cluster = FakeCluster({"p1": "r1"}, {"p1": [b"x\n" * 50]})
-    events = await collect(_follow(cluster, capacity), 12, timeout=5.0)
+    events = [e async for e in _follow(cluster, capacity)]
 
-    warnings = [e for e in events if e.name == "warning"]
+    warnings = [e for e in events if not isinstance(e, str) and e.name == "warning"]
     assert warnings, "a queue overflow has to be reported"
     assert warnings[0].data.droppedLines > 0
 
@@ -1273,3 +1319,69 @@ async def test_the_pods_snapshot_hides_another_group_s_workload_as_a_404(capacit
 
     with pytest.raises(NotFoundError):
         await engine.pods(_offering(), "foo", _caller(), "team")
+
+
+async def test_the_buffer_is_bounded_by_bytes_as_well_as_lines():
+    """queue_size alone is no bound for a pod writing without newlines: each
+    "line" arrives as a ~1MB piece, and a thousand of those is a gigabyte."""
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=1000, max_bytes=100)
+
+    buf.put("x" * 80)  # fits
+    buf.put("y" * 80)  # would blow the byte budget -> dropped and counted
+    buf.put("z" * 30)  # 80+30 still over budget -> dropped too
+    assert buf.take_dropped() == 2
+    assert [len(i) for i in buf.drain()] == [80]
+
+    # A frame too big for an EMPTY buffer is refused too, not waved through: one
+    # frame is NOT bounded by MAX_LINE_BYTES (JSON escaping expands the raw line
+    # several times over), so admitting it would leave the budget advisory.
+    buf.put("w" * 500)
+    assert buf.drain() == []
+    assert buf.take_dropped() == 1
+
+    # Draining resets the byte budget along with the items.
+    buf.put("a" * 80)
+    assert buf.take_dropped() == 0
+
+
+async def test_the_byte_budget_counts_bytes_not_characters():
+    """The budget is a memory bound, and a workload logging outside ASCII spends
+    up to four bytes a character - counted as one, the buffer holds four times
+    what was configured."""
+    buf = logs_stream._Buffer(asyncio.get_running_loop(), maxsize=1000, max_bytes=100)
+
+    buf.put("א" * 40)  # 40 characters, 80 bytes: fits
+    buf.put("א" * 40)  # another 80 bytes would not
+    assert buf.take_dropped() == 1
+    assert len(buf.drain()) == 1
+
+
+async def test_the_rollover_reports_lines_dropped_since_the_last_tick(capacity):
+    """The deadline path must not present the log as gapless when it wasn't:
+    drops accumulated since the last tick are reported before the `end`."""
+
+    class Endless:
+        def __init__(self):
+            self._open = True
+
+        def lines(self):
+            i = 0
+            while self._open:
+                i += 1
+                yield f"line {i}"
+
+        def close(self):
+            self._open = False
+
+    class FirehoseCluster(FakeCluster):
+        def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
+            return Endless()
+
+    config = FAST.model_copy(update={"max_seconds": 1, "queue_size": 2, "heartbeat_seconds": 0.02})
+    events = [e async for e in _follow(FirehoseCluster({"p1": "r1"}), capacity, config=config)]
+
+    assert names(events)[-1] == "end"
+    assert "time limit" in events[-1].data.reason
+    warnings = [e for e in events if not isinstance(e, str) and e.name == "warning"]
+    assert warnings, "an endless producer against queue_size=2 must have dropped lines"
+    assert all(w.data.droppedLines > 0 for w in warnings)

@@ -50,6 +50,10 @@ class StreamConfig(BaseModel):
         queue_size: Lines buffered between the follower threads and the client.
             Bounded on purpose: a workload logging faster than the client reads
             must cost a reported gap, not the process's memory.
+        queue_max_bytes: Frame bytes that buffer may hold, whatever the line
+            count still allows. The line bound alone is no bound at all for a
+            pod writing without newlines - each "line" then arrives as a ~1MB
+            piece, and queue_size of those is a gigabyte per stream.
         max_seconds: Hard lifetime of one stream. Reconnecting is cheap (SSE
             does it on its own), and an immortal stream is how a leak survives
             a client that never closes its side.
@@ -72,6 +76,7 @@ class StreamConfig(BaseModel):
     max_interval_seconds: float = Field(60.0, gt=0)
     heartbeat_seconds: float = Field(15.0, gt=0)
     queue_size: int = Field(1000, ge=1)
+    queue_max_bytes: int = Field(2 * 1024 * 1024, ge=1)
     max_seconds: int = Field(3600, ge=1)
     ticket_ttl_seconds: int = Field(60, ge=1)
     snapshot_tail_lines: int = Field(2000, ge=1)

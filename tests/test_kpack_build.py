@@ -2079,11 +2079,19 @@ async def test_a_second_rebuild_annotates_whatever_build_is_latest_by_then():
     ]
 
 
-def test_the_history_limit_never_prunes_the_build_the_trigger_needs():
-    """The two features interact: a rebuild annotates the latest retained Build.
+def test_the_history_limit_mirrors_the_floor_kpack_itself_enforces():
+    """kpack refuses a build history limit below 1, so this must too.
 
-    A limit of zero would leave nothing to annotate and make every rebuild a
-    silent no-op, so the floor is one rather than a free-form integer.
+    Its Image webhook validates ``*SuccessBuildHistoryLimit < 1`` and answers
+    "build history limit must be greater than 0", and its defaulting fills only
+    an ABSENT limit - an explicit 0 is not replaced by the default of 10, it
+    reaches that check and fails. So a 0 here would not mean "keep none": it
+    would mean no Image can be created, and every function create and update
+    fails at admission.
+
+    Held here rather than left to kpack so the refusal lands once at startup,
+    against the whole deployment, instead of per function against whoever
+    pushes next.
     """
     import pydantic
 

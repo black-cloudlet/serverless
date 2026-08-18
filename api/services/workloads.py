@@ -100,7 +100,7 @@ class _SlotGuardedStream:
     several owners cannot double-free.
     """
 
-    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent, None]):
+    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]):
         self._slot = slot
         self._inner = inner
         # Bound to the slot only - a reference to `self` here would keep this
@@ -110,7 +110,7 @@ class _SlotGuardedStream:
     def __aiter__(self) -> _SlotGuardedStream:
         return self
 
-    async def __anext__(self) -> StreamEvent:
+    async def __anext__(self) -> StreamEvent | str:
         try:
             return await self._inner.__anext__()
         except BaseException:
@@ -126,7 +126,9 @@ class _SlotGuardedStream:
             self._slot.release()
 
 
-def _slot_guarded(slot: StreamSlot, inner: AsyncGenerator[StreamEvent, None]) -> _SlotGuardedStream:
+def _slot_guarded(
+    slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]
+) -> _SlotGuardedStream:
     """Wrap ``inner`` so ``slot`` is released however the stream ends."""
     return _SlotGuardedStream(slot, inner)
 
@@ -915,7 +917,7 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.fanout(targets, fetch)
+        results = await self.deployer.fanout(targets, fetch, read=True)
         statuses = [s for s in results if s is not None]  # drop regions without it
 
         if not reps:
@@ -953,7 +955,7 @@ class WorkloadService:
             status_reason = "BuildFailed"
         else:
             status_reason = next((s.reason for s in statuses if s.reason), None)
-        spec = await asyncio.to_thread(region_read.describe_spec, cluster, obj)
+        spec = await self.deployer.run_read(region_read.describe_spec, cluster, obj)
         # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
         # (guarded above) and every entry holds an object, and describe_spec
         # always returns a WorkloadSpec. Guarding them would advertise a nullable
@@ -1043,7 +1045,7 @@ class WorkloadService:
             )
 
         targets = self.deployer.resolve_targets(None)
-        results = await self.deployer.fanout(targets, fetch, executor=executor)
+        results = await self.deployer.fanout(targets, fetch, executor=executor, read=True)
         statuses = [s for s in results if s is not None]  # drop regions without it
 
         if not reps:
@@ -1330,7 +1332,9 @@ class WorkloadService:
             group=group,
             type=kind,  # type: ignore[arg-type]
             region=self.deployer.local_region(),
-            pods=await asyncio.to_thread(read),
+            # The read pool, like every page read: the console's non-streaming
+            # fallback polls this, and the default executor has no admission.
+            pods=await self.deployer.run_read(read),
         )
 
     async def pod_logs(
@@ -1419,7 +1423,9 @@ class WorkloadService:
                 )
             ]
 
-        revision, lines = await asyncio.to_thread(read)
+        # The read pool, like every page read: the console's non-streaming
+        # fallback polls this, and the default executor has no admission.
+        revision, lines = await self.deployer.run_read(read)
         return PodLogSnapshot(
             name=name,
             group=group,
@@ -1442,7 +1448,7 @@ class WorkloadService:
         container: str,
         since_seconds: int | None,
         tail_lines: int | None = None,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncIterator[StreamEvent | str]:
         """Follow one of the workload's pods' logs, on the local region.
 
         Local region only: Kubernetes keeps no log buffer beyond the node that

@@ -286,7 +286,7 @@ absence).
   **operation timeout backstop**, so a down/slow region fails fast and is reported as
   `Timeout`/`Failed` (it doesn't block the healthy region or other requests). Health probes
   never touch clusters. (See `cluster_connect_timeout` / `cluster_read_timeout` /
-  `region_op_timeout`.)
+  `cluster_op_timeout` / `cluster_read_op_timeout`.)
 - Operations are **idempotent** (Kubernetes **server-side apply** by object name), so a
   client can safely retry to heal a degraded deployment.
 - **Every region builds what it runs**, into its own registry, and publishes only to itself
@@ -972,7 +972,8 @@ render** if it does not exceed `stream.maxSeconds` - the two live in different s
 `values.yaml`, so the relationship is asserted rather than left to whoever edits one. A quiet
 stream also sends a `:` comment every `stream.heartbeatSeconds`, so nothing in the path reaps it
 between events. The timeout applies to the whole Route (OpenShift has no per-path timeout); the
-API bounds its own cluster work with `regionOpTimeout` regardless.
+API bounds its own cluster work with `cluster_op_timeout` (and the shorter
+`cluster_read_op_timeout` for reads) regardless.
 
 ### Browsers cannot send an `Authorization` header
 
