@@ -82,6 +82,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   The four float-typed stream bounds deliberately do **not** - `int64` would
   truncate a fractional `heartbeatSeconds` to 0.
 
+  `stream.queueMaxBytes` (2097152, added alongside the byte-bounded log buffer)
+  reached the pod the same way and is covered by the same change. Anything
+  int-typed and >= 1e6 hits this, which is why the fix is the rule rather than
+  the two values that happen to trip it today.
+
 - **`build.history.success: 0` could not be loaded.** The values file has
   shipped 0 since the SSE-streaming change, but the field it fills has a
   deliberate floor of 1, mirroring kpack: kpack's `Image` webhook refuses a
