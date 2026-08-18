@@ -48,7 +48,7 @@ spec:
             - name: SERVERLESS_ROUTE_DOMAIN
               value: {{ tpl .Values.routeDomain . | quote }}
             - name: SERVERLESS_BASE_PATH
-              value: {{ tpl .Values.basePath . | quote }}
+              value: {{ .Values.basePath | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE
               value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
