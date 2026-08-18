@@ -1066,7 +1066,8 @@ Serverless/
 │   │   │   ├── env.py / files.py    # env & file resolution (+ their Secret/ConfigMap)
 │   │   │   └── resources.py / secrets.py  # t-shirt sizes + imagePullSecret/git-token builders
 │   │   ├── regions/                   # talking to the clusters
-│   │   │   ├── deployer.py          # multi-region fan-out + status rollup
+│   │   │   ├── deployer.py          # multi-region fan-out (read pool + admission)
+│   │   │   ├── rollup.py            # per-region results -> one status -> HTTP code
 │   │   │   ├── preflight.py         # guards that run before any write (host/name conflicts)
 │   │   │   ├── region_apply.py        # write one workload into one region (ordering + rollback)
 │   │   │   └── region_read.py         # read one workload's state back out of a region

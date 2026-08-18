@@ -1,8 +1,8 @@
-"""Multi-region fan-out and status aggregation (docs/ARCHITECTURE.md - Multi-Region).
+"""Multi-region fan-out (docs/ARCHITECTURE.md - Multi-Region).
 
-Every deploy is applied to all target regions concurrently; results are aggregated
-into a single response. Partial failure -> Failed (HTTP 207); total failure ->
-HTTP 502. The Kubernetes client is synchronous, so per-region work runs in threads.
+Every deploy is applied to all target regions concurrently; the per-region
+results are rolled up by :mod:`api.services.regions.rollup`. The Kubernetes
+client is synchronous, so per-region work runs in threads.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from api.core.config import Settings
 from api.models.common import RegionStatus
 from api.services.streams.capacity import run_on
 from common.cluster import Cluster, clusters_for, select_local
-from common.errors import RegionTotalFailure, ValidationError
+from common.errors import ValidationError
 
 logger = get_logger(__name__)
 
@@ -343,85 +343,3 @@ class Deployer:
         # For all of them, or none - see fanout.
         with self._read_pool.reserve(len(targets)) as run_read:
             return await asyncio.gather(*(run(c, run_read) for c in targets))
-
-
-def aggregate(statuses: list[RegionStatus]) -> str:
-    """Overall status for the create/update path.
-
-    Raises RegionTotalFailure when every region failed; otherwise delegates the rollup
-    to overall_status, mapping an unreachable region to ``Failed``. One definition of
-    the rollup, shared with the read paths, so the two cannot drift.
-
-    Args:
-        statuses: The per-region results of the apply fan-out.
-
-    Returns:
-        The overall status (Ready/Deploying/Failed).
-
-    Raises:
-        RegionTotalFailure: If every region failed.
-    """
-    if all(s.message is not None for s in statuses):
-        raise RegionTotalFailure(
-            "Deployment failed in all regions.",
-            details=[{"region": s.region, "message": s.message} for s in statuses],
-        )
-    return overall_status_for_regions(statuses)
-
-
-def overall_status_for_regions(statuses: list[RegionStatus]) -> str:
-    """Roll up RegionStatus objects, mapping an unreachable region to ``Failed``.
-
-    Single projection shared by the create path (aggregate) and the GET read path
-    so the two can't drift.
-
-    Args:
-        statuses: The per-region statuses.
-
-    Returns:
-        The overall status (Ready/Deploying/Failed).
-    """
-    return overall_status([s.status if s.message is None else "Failed" for s in statuses])
-
-
-def overall_status(statuses: list[str]) -> str:
-    """Collapse per-region KSVC statuses into one overall status (GET / list).
-
-    A ``Failed`` region makes the whole deployment ``Failed`` - one vocabulary for
-    the region rows and the rollup; a ``Terminating`` one makes
-    it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
-    ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
-    region ahead, NOT a failure. That is what stops a false ``Failed`` while coming up.
-
-    Args:
-        statuses: The per-region status strings.
-
-    Returns:
-        The overall status (Ready/Deploying/Failed/Terminating).
-    """
-    if not statuses:
-        return "Failed"
-    if any(s == "Failed" for s in statuses):
-        return "Failed"
-    if any(s == "Terminating" for s in statuses):
-        return "Terminating"
-    if all(s == "Ready" for s in statuses):
-        return "Ready"
-    return "Deploying"
-
-
-def status_code_for(overall: str, created: bool) -> int:
-    """Map an overall status to an HTTP status code.
-
-    Args:
-        overall: The rolled-up status (Ready/Deploying/Failed).
-        created: Whether the call created a new workload (vs updated one).
-
-    Returns:
-        207 for Failed, 202 for Deploying/Building, 201 for a create, else 200.
-    """
-    if overall == "Failed":
-        return 207
-    if overall in ("Deploying", "Building"):
-        return 202  # accepted, still in flight - a non-terminal poll state
-    return 201 if created else 200

@@ -5,7 +5,8 @@ import pytest
 from api.core.config import RegionConfig, Settings, SSOConfig
 from api.models.common import RegionStatus
 from api.services.offering import CONTAINER, FUNCTION
-from api.services.regions.deployer import Deployer, aggregate, status_code_for
+from api.services.regions.deployer import Deployer
+from api.services.regions.rollup import aggregate, status_code_for
 from common.errors import RegionTotalFailure, ValidationError
 from tests.conftest import plan_for, runtime_registry
 
@@ -111,7 +112,7 @@ def test_aggregate_total_failure():
 
 
 def test_overall_status_rollup():
-    from api.services.regions.deployer import overall_status
+    from api.services.regions.rollup import overall_status
 
     assert overall_status(["Ready", "Ready"]) == "Ready"
     assert overall_status(["Deploying", "Deploying"]) == "Deploying"
@@ -2817,7 +2818,7 @@ async def test_get_reports_terminating_during_delete():
 
 
 def test_overall_status_terminating_precedence():
-    from api.services.regions.deployer import overall_status
+    from api.services.regions.rollup import overall_status
 
     assert overall_status(["Terminating", "Ready"]) == "Terminating"
     assert overall_status(["Terminating", "Deploying"]) == "Terminating"

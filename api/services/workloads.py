@@ -56,12 +56,8 @@ from api.services.manifests.env import env_secret_name, resolve_env
 from api.services.manifests.files import files_name, resolve_files
 from api.services.offering import DeleteContext, Offering
 from api.services.regions import preflight, region_apply, region_read
-from api.services.regions.deployer import (
-    Deployer,
-    aggregate,
-    overall_status_for_regions,
-    status_code_for,
-)
+from api.services.regions.deployer import Deployer
+from api.services.regions.rollup import aggregate, overall_status_for_regions, status_code_for
 from api.services.state import describe as describe_svc
 from api.services.state import ksvc_state, ownership
 from api.services.state import metrics as metrics_svc

@@ -563,7 +563,7 @@ def test_a_failed_build_renames_its_failing_region_and_carries_the_cause():
 
 
 def test_building_is_a_non_terminal_poll_state():
-    from api.services.regions.deployer import status_code_for
+    from api.services.regions.rollup import status_code_for
 
     assert status_code_for("Building", created=False) == 202
     assert status_code_for("Building", created=True) == 202

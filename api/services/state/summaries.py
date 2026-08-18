@@ -21,7 +21,7 @@ from api.models.common import (
     WorkloadSummary,
 )
 from api.services.manifests import route as route_svc
-from api.services.regions.deployer import overall_status
+from api.services.regions.rollup import overall_status
 from api.services.state import ksvc_state
 
 # createdAt is optional, so sort Nones last rather than letting a comparison fail.
