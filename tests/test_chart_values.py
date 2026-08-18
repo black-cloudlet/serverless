@@ -9,8 +9,8 @@ test passed because no test crossed the boundary:
   prints a float64 of 1e6 or more in scientific notation - which
   ``int`` refuses.
 * ``build.history.success: 0`` was rejected by the ``ge=1`` floor on the field
-  it fills, so a default install could not start. That floor is right - zero
-  makes every rebuild a silent no-op - so the chart was the side that was
+  it fills, so a default install could not start. That floor mirrors kpack,
+  which refuses a limit below 1 outright - so the chart was the side that was
   wrong, which is exactly the kind of mismatch only a test across the two can
   see.
 
@@ -147,10 +147,10 @@ def test_an_integer_over_a_million_survives_the_render():
 def test_the_build_history_the_chart_ships_can_actually_be_loaded():
     """A release shipped `history.success: 0`, and the pod refused to start.
 
-    Correctly: a rebuild annotates the newest retained Build, so a limit of zero
-    makes every rebuild a silent no-op - the floor is deliberate
-    (tests/test_kpack_build.py - the history limit never prunes the build the
-    trigger needs). The chart is what had to change.
+    Correctly: kpack refuses a limit below 1 ("build history limit must be
+    greater than 0"), and its defaulting only fills an absent one - so an
+    explicit 0 reaches that check and no Image can be created at all. The floor
+    mirrors kpack; the chart is what had to change.
     """
     values = _values()
     for field in ("success", "failed"):

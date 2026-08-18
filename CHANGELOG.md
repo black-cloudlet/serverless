@@ -84,10 +84,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - **`build.history.success: 0` could not be loaded.** The values file has
   shipped 0 since the SSE-streaming change, but the field it fills has a
-  deliberate floor of 1: a rebuild annotates the newest retained `Build`, so
-  pruning to zero makes every rebuild a silent no-op. The chart was the side
-  that was wrong; it now ships `success: 1`. `gc.keepBuilds: 0` is unaffected -
-  that prunes registry tags, not `Build`s.
+  deliberate floor of 1, mirroring kpack: kpack's `Image` webhook refuses a
+  limit below 1 ("build history limit must be greater than 0") and defaults
+  only an *absent* one, so an explicit 0 cannot produce an `Image` at all. The
+  chart was the side that was wrong; it now ships `success: 1`.
+  `gc.keepBuilds: 0` is unaffected - that prunes registry tags, not `Build`s.
 
   `tests/test_chart_values.py` is new and covers the seam both bugs came
   through: it reads the templates, renders each value the way Helm does

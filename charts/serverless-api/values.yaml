@@ -383,9 +383,11 @@ build:
   # thousand pods across a few hundred functions. Failed builds are worth
   # keeping a couple of: their pods hold the per-phase logs.
   # docs/BUILDING.md - Build history.
-  # Minimum 1, not 0: a rebuild works by annotating the newest retained Build,
-  # so pruning to zero leaves nothing to annotate and makes every rebuild a
-  # silent no-op. The API refuses 0 rather than accept that, which is why a
+  # Minimum 1, not 0, because kpack itself refuses less than 1 - its Image
+  # webhook answers "build history limit must be greater than 0", and its
+  # defaulting only fills an ABSENT limit, so an explicit 0 reaches that check.
+  # An Image with 0 therefore cannot be created at all: every function create
+  # and update would fail admission. The API mirrors the floor, which is why a
   # release that shipped `success: 0` crash-looped instead of starting.
   history:
     success: 1

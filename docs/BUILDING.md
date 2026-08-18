@@ -872,10 +872,14 @@ Every `Image` carries an explicit `spec.successBuildHistoryLimit` /
 older `Build` objects, and a `Build` owns its pod, so collecting one takes its completed
 pod with it.
 
-**Neither may be 0.** A rebuild works by annotating the newest retained `Build`, so
-pruning to zero leaves nothing to annotate and turns every rebuild into a silent no-op.
-The API refuses it (`ge=1`) rather than accept a chart that would do that, which means a
-values file setting 0 crash-loops the pod instead of quietly breaking rebuilds.
+**Neither may be 0** - kpack rejects it. Its `Image` webhook validates
+`*SuccessBuildHistoryLimit < 1` and answers *"build history limit must be greater than
+0"*, and its defaulting fills only an **absent** limit, so an explicit 0 is not replaced
+by the default of 10 - it reaches that check and fails. An `Image` with 0 cannot be
+created, so every function create and update would be refused at admission.
+
+The API mirrors the floor (`ge=1`) so the refusal happens at startup, against the whole
+deployment, rather than per function against whoever pushes next.
 
 They are set rather than left out, because "left out" is not "unbounded" - it is kpack's
 own default of **10 and 10**, so **20 `Build`s and 20 completed pods per function**. That is
