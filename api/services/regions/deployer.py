@@ -58,10 +58,9 @@ class ReadPool:
     the pool with zombie reads while the accounting reported it empty, and the
     503 shedding this class exists for would never fire.
 
-    Admission is taken for a whole fan-out at once (:meth:`reserve`). Taken per
-    region, a fan-out refused part-way through would leave the regions it had
-    already started burning the pool for results the 503 throws away - and
-    ``gather`` cancels no siblings - which is how shedding feeds itself.
+    Admission is taken for a whole fan-out at once (:meth:`reserve`): refused
+    part-way through, a fan-out would leave the regions it had already started
+    burning the pool for results the 503 throws away.
     """
 
     def __init__(self, workers: int, max_queued: int):
@@ -83,15 +82,13 @@ class ReadPool:
             count: How many reads the caller is about to run.
 
         Yields:
-            The coroutine function to run each of them with. Whatever it is not
-            called for - a fan-out cancelled before its last region began - is
-            given back on exit; a read that did start releases its own slot when
-            its thread finishes, not when the caller stops waiting.
+            The coroutine function to run each read with. What it is not called
+            for is given back on exit; what it started releases on its own, when
+            the thread finishes.
 
         Raises:
             ServiceUnavailableError: If the group does not fit under
-                ``workers + max_queued`` reads in flight -
-                abandoned-but-still-running ones included.
+                ``workers + max_queued`` reads in flight.
         """
         if self._inflight + count > self._limit:
             logger.warning(
@@ -182,18 +179,14 @@ class Deployer:
     async def run_read(self, fn, *args):
         """Run one blocking cluster read on the bounded read pool.
 
-        For the single-cluster reads that serve GETs (a spec read on the
-        representative region), so they share the fan-out's pool and admission
-        instead of the process-wide default executor.
-
-        Bounded by ``cluster_read_op_timeout``, as the read fan-outs are: a slot
-        is only released when the *thread* finishes, so an unbounded caller
-        holds its worker for as long as the cluster call takes - enough of those
-        and every cluster read in the process is shed until restart.
+        For the single-cluster reads that serve GETs, so they share the
+        fan-out's pool and admission rather than the default executor. Bounded
+        by ``cluster_read_op_timeout`` like every read: a slot is released when
+        the *thread* finishes, so an unbounded caller holds its worker.
 
         Raises:
-            ServiceUnavailableError: If the read pool is saturated, or the read
-                did not finish within ``cluster_read_op_timeout``.
+            ServiceUnavailableError: If the pool is saturated, or the read did
+                not finish in time.
         """
         try:
             return await asyncio.wait_for(

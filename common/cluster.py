@@ -51,17 +51,12 @@ def _keepalive_socket_options() -> list[tuple]:
 def _default_connect_timeout(api_client: client.ApiClient, connect: float) -> None:
     """Give every request through ``api_client`` a connect timeout of its own.
 
-    Not ``connection_pool_kw["timeout"]``, which looks like the place for it and
-    is not: urllib3 consults the pool default only for its own
-    ``_DEFAULT_TIMEOUT`` sentinel, while ``kubernetes.client.rest`` always
-    passes ``timeout=`` explicitly - ``None`` for a call with no
-    ``_request_timeout``, which resolves to *no* timeout. Those calls are
-    exactly the ones that must not hang against a cluster that blackholes
-    connections: discovery, and the controller's watch. Injected here instead,
-    where every request passes; a caller that named its own timeout keeps it.
+    Not ``connection_pool_kw["timeout"]``: urllib3 consults the pool default
+    only for its own sentinel, and ``kubernetes.client.rest`` always passes
+    ``timeout=`` explicitly - ``None`` for a call with no ``_request_timeout``,
+    which resolves to *no* timeout. Discovery and the watch are those calls.
 
-    Connect only, not read: the long-lived streams (a log follow, the watch) are
-    idle between bytes by design.
+    Connect only: the long-lived streams are idle between bytes by design.
 
     Args:
         api_client: The client whose requests should carry the default.
