@@ -48,7 +48,7 @@ def _accepted(kind, name, group, **extra):
         hostname=f"{name}.serverless.example.com",
         status="Pending",
         regions=[],
-        statusUrl=f"/api/v1/groups/{group}/{kind}s/{name}",
+        statusUrl=f"/v1/groups/{group}/{kind}s/{name}",
         **extra,
     )
 
@@ -159,7 +159,7 @@ def test_info_is_public_and_static():
     c = TestClient(create_app())
 
     # Shared platform fields appear on both offerings' documents.
-    for path in ("/api/v1/containers/info", "/api/v1/functions/info"):
+    for path in ("/v1/containers/info", "/v1/functions/info"):
         body = c.get(path).json()
         assert body["version"]
         assert isinstance(body["regions"], list)
@@ -169,8 +169,8 @@ def test_info_is_public_and_static():
 
     # the port rules are identical for both offerings, and both publish them
     rules = {"required": False, "default": 8080, "min": 1, "max": 65535}
-    cont = c.get("/api/v1/containers/info").json()
-    fn = c.get("/api/v1/functions/info").json()
+    cont = c.get("/v1/containers/info").json()
+    fn = c.get("/v1/functions/info").json()
     assert cont["port"] == rules
     assert fn["port"] == rules
 
@@ -235,7 +235,7 @@ def test_cors_allows_configured_origin(monkeypatch):
 
 def test_create_container_accepted(client):
     r = client.post(
-        "/api/v1/groups/team/containers",
+        "/v1/groups/team/containers",
         json={
             "name": "orders-api",
             "image": "registry.internal/team/orders:1",
@@ -248,52 +248,52 @@ def test_create_container_accepted(client):
     body = r.json()
     assert body["type"] == "container"
     assert body["status"] == "Pending"
-    assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
+    assert body["statusUrl"] == "/v1/groups/team/containers/orders-api"
 
 
 def test_build_function_accepted_without_a_body(client):
     """A rebuild carries no inputs: the ones to build with are already stored."""
-    r = client.post("/api/v1/groups/team/functions/orders/build")
+    r = client.post("/v1/groups/team/functions/orders/build")
 
     assert r.status_code == 202
     body = r.json()
     assert body["status"] == "Pending"
     # the same poll target as create/update, so a client needs no second flow
-    assert body["statusUrl"] == "/api/v1/groups/team/functions/orders"
+    assert body["statusUrl"] == "/v1/groups/team/functions/orders"
     # the build inputs it will use, echoed back from what is stored
     assert body["runtime"] == "python" and body["branch"] == "main"
 
 
 def test_only_functions_can_be_built(client):
     """A container is deployed from an image the caller built; there is nothing to build."""
-    assert client.post("/api/v1/groups/team/containers/orders/build").status_code == 404
+    assert client.post("/v1/groups/team/containers/orders/build").status_code == 404
 
 
 def test_build_path_name_validated_at_the_edge(client):
-    assert client.post("/api/v1/groups/team/functions/Bad_Name/build").status_code == 400
+    assert client.post("/v1/groups/team/functions/Bad_Name/build").status_code == 400
 
 
 def test_pull_container_accepted_without_a_body(client):
     """Nothing to send: the image to re-resolve is the one already deployed."""
-    r = client.post("/api/v1/groups/team/containers/orders-api/pull")
+    r = client.post("/v1/groups/team/containers/orders-api/pull")
 
     assert r.status_code == 202
     body = r.json()
     assert body["status"] == "Pending"
-    assert body["statusUrl"] == "/api/v1/groups/team/containers/orders-api"
+    assert body["statusUrl"] == "/v1/groups/team/containers/orders-api"
 
 
 def test_only_containers_can_be_pulled(client):
     """A function's digest is the build controller's to roll out, not a re-pull."""
-    assert client.post("/api/v1/groups/team/functions/orders/pull").status_code == 404
+    assert client.post("/v1/groups/team/functions/orders/pull").status_code == 404
 
 
 def test_pull_path_name_validated_at_the_edge(client):
-    assert client.post("/api/v1/groups/team/containers/Bad_Name/pull").status_code == 400
+    assert client.post("/v1/groups/team/containers/Bad_Name/pull").status_code == 400
 
 
 def test_create_container_validation_error(client):
-    r = client.post("/api/v1/groups/team/containers", json={"name": "BAD NAME"})
+    r = client.post("/v1/groups/team/containers", json={"name": "BAD NAME"})
     assert r.status_code == 400
     err = r.json()["error"]
     assert err["code"] == "VALIDATION_ERROR"
@@ -307,7 +307,7 @@ def test_info_publishes_each_runtime_with_the_versions_a_build_accepts():
     advertised is what a build will accept.
     """
     c = TestClient(create_app())
-    runtimes = {r["name"]: r for r in c.get("/api/v1/functions/info").json()["runtimes"]}
+    runtimes = {r["name"]: r for r in c.get("/v1/functions/info").json()["runtimes"]}
 
     assert runtimes["python"]["versions"] == ["3.11", "3.12"]
     assert runtimes["python"]["defaultVersion"] == "3.12"
@@ -321,7 +321,7 @@ def test_info_publishes_the_status_and_error_vocabularies():
     from api.models.common import REGION_STATUSES, WorkloadStatus
     from common.errors import ValidationError, error_catalog
 
-    body = TestClient(create_app()).get("/api/v1/containers/info").json()
+    body = TestClient(create_app()).get("/v1/containers/info").json()
 
     # derived from the Literal the responses are typed with, not a second list
     assert body["statuses"]["workload"] == list(get_args(WorkloadStatus))
@@ -344,7 +344,7 @@ def test_info_publishes_the_combined_name_and_group_limit():
     """
     from common.names import MAX_OBJECT_NAME, object_name
 
-    naming = TestClient(create_app()).get("/api/v1/containers/info").json()["naming"]
+    naming = TestClient(create_app()).get("/v1/containers/info").json()["naming"]
 
     # composed by the same function the platform names objects with
     assert naming["template"] == object_name("{name}", "{group}")
@@ -367,27 +367,27 @@ def test_our_own_error_is_published_in_the_catalog():
     codes = dict(error_catalog())
     assert codes[RegionTotalFailure.code] == RegionTotalFailure.status_code
 
-    body = TestClient(create_app()).get("/api/v1/containers/info").json()
+    body = TestClient(create_app()).get("/v1/containers/info").json()
     assert {"code": "REGION_TOTAL_FAILURE", "status": 502} in body["errorCodes"]
 
 
 def test_framework_http_errors_get_a_meaningful_code_and_status(client):
     # Unknown route / wrong method are framework HTTP errors (not domain errors);
     # the code is derived from the status, not a flat "HTTP_ERROR".
-    r = client.get("/api/v1/does-not-exist")
+    r = client.get("/v1/does-not-exist")
     assert r.status_code == 404
     err = r.json()["error"]
     assert err["status"] == 404 and err["code"] == "NOT_FOUND"
 
     # POST to a path that only serves GET/PUT/DELETE -> 405
-    r = client.post("/api/v1/groups/team/functions/foo")
+    r = client.post("/v1/groups/team/functions/foo")
     assert r.status_code == 405
     err = r.json()["error"]
     assert err["status"] == 405 and err["code"] == "METHOD_NOT_ALLOWED"
 
 
 def test_get_function(client):
-    r = client.get("/api/v1/groups/team/functions/foo")
+    r = client.get("/v1/groups/team/functions/foo")
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "foo" and body["group"] == "team"
@@ -400,7 +400,7 @@ def test_get_function(client):
 
 
 def test_get_container_shape(client):
-    r = client.get("/api/v1/groups/team/containers/foo")
+    r = client.get("/v1/groups/team/containers/foo")
     assert r.status_code == 200
     body = r.json()
     # ContainerResponse mirrors the create body: image + registryUsername present,
@@ -410,7 +410,7 @@ def test_get_container_shape(client):
 
 
 def test_get_container_stats_is_live_state_only(client):
-    r = client.get("/api/v1/groups/team/containers/foo/stats")
+    r = client.get("/v1/groups/team/containers/foo/stats")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "Ready"
@@ -430,24 +430,24 @@ def test_get_container_stats_is_live_state_only(client):
 
 def test_get_function_stats_reports_a_running_build(client):
     # Building comes from the build read, which stays even though it is not a field
-    body = client.get("/api/v1/groups/team/functions/foo/stats").json()
+    body = client.get("/v1/groups/team/functions/foo/stats").json()
     assert body["status"] == "Building"
     assert body["regions"][0]["status"] == "Building"
 
 
 def test_stats_path_name_validated_at_the_edge(client):
-    assert client.get("/api/v1/groups/team/functions/Bad_Name/stats").status_code == 400
+    assert client.get("/v1/groups/team/functions/Bad_Name/stats").status_code == 400
 
 
 def test_path_name_validated_at_the_edge(client):
     """A path {name} that isn't a DNS-1123 label is rejected at the boundary (400),
     like the request-body name - not passed through to a cluster lookup."""
-    assert client.get("/api/v1/groups/team/functions/Bad_Name").status_code == 400
-    assert client.delete("/api/v1/groups/team/containers/UPPER").status_code == 400
+    assert client.get("/v1/groups/team/functions/Bad_Name").status_code == 400
+    assert client.delete("/v1/groups/team/containers/UPPER").status_code == 400
 
 
 def test_list_functions(client):
-    r = client.get("/api/v1/groups/team/functions")
+    r = client.get("/v1/groups/team/functions")
     assert r.status_code == 200
     body = r.json()
     assert [w["name"] for w in body] == ["fn-a"]
@@ -456,7 +456,7 @@ def test_list_functions(client):
 
 
 def test_list_containers(client):
-    r = client.get("/api/v1/groups/team/containers")
+    r = client.get("/v1/groups/team/containers")
     assert r.status_code == 200
     body = r.json()
     assert body[0]["name"] == "ctr-a"
@@ -464,9 +464,9 @@ def test_list_containers(client):
 
 
 def test_list_accepts_sort_and_rejects_unknown(client):
-    assert client.get("/api/v1/groups/team/functions?sort=createdAt").status_code == 200
-    assert client.get("/api/v1/groups/team/functions?sort=name").status_code == 200
-    assert client.get("/api/v1/groups/team/functions?sort=bogus").status_code == 400
+    assert client.get("/v1/groups/team/functions?sort=createdAt").status_code == 200
+    assert client.get("/v1/groups/team/functions?sort=name").status_code == 200
+    assert client.get("/v1/groups/team/functions?sort=bogus").status_code == 400
 
 
 def test_path_group_is_normalized_at_the_edge():
@@ -487,7 +487,7 @@ def test_path_group_is_normalized_at_the_edge():
     app.dependency_overrides[get_function_service] = lambda: _Capture()
     c = TestClient(app)
 
-    r = c.get("/api/v1/groups/ggd-1234-platforms/functions/foo")
+    r = c.get("/v1/groups/ggd-1234-platforms/functions/foo")
     assert r.status_code == 200
     assert seen["group"] == "platforms"  # normalized at the router boundary
 
@@ -511,14 +511,14 @@ def test_path_group_accepts_underscores_and_case_and_folds_them():
     c = TestClient(app)
 
     for path_group in ("my_team", "my-team", "My_Team", "MY-TEAM"):
-        r = c.get(f"/api/v1/groups/{path_group}/functions/foo")
+        r = c.get(f"/v1/groups/{path_group}/functions/foo")
         assert r.status_code == 200
     assert seen == ["my-team"] * 4
 
 
 def test_update_container_accepted(client):
     r = client.put(
-        "/api/v1/groups/team/containers/orders-api",
+        "/v1/groups/team/containers/orders-api",
         json={
             "image": "registry.internal/team/orders:2",
             "port": 8080,
@@ -532,7 +532,7 @@ def test_update_container_accepted(client):
 
 def test_update_function_accepted(client):
     r = client.put(
-        "/api/v1/groups/team/functions/foo",
+        "/v1/groups/team/functions/foo",
         json={
             "gitRepo": "https://git/x.git",
             "runtime": "python",
@@ -547,7 +547,7 @@ def test_update_container_username_only_kept(client):
     # Echoing the redacted read (username shown, no token) keeps the existing
     # credential - accepted, not a 400.
     r = client.put(
-        "/api/v1/groups/team/containers/orders-api",
+        "/v1/groups/team/containers/orders-api",
         json={
             "image": "registry.internal/team/orders:2",
             "port": 8080,
@@ -559,7 +559,7 @@ def test_update_container_username_only_kept(client):
 
 def test_update_container_token_without_username_rejected(client):
     r = client.put(
-        "/api/v1/groups/team/containers/orders-api",
+        "/v1/groups/team/containers/orders-api",
         json={
             "image": "registry.internal/team/orders:2",
             "port": 8080,
@@ -573,7 +573,7 @@ def test_update_function_build_change_accepted_without_token(client):
     # The token is stored, so changing a build input does not need it re-sent:
     # the request is accepted and the rebuild uses the stored one.
     r = client.put(
-        "/api/v1/groups/team/functions/foo",
+        "/v1/groups/team/functions/foo",
         json={
             "gitRepo": "https://git/x.git",
             "runtime": "python",
@@ -680,6 +680,6 @@ def test_info_publishes_the_internal_code_the_catch_all_can_return():
     """
     codes = dict(
         c["code"] and (c["code"], c["status"])
-        for c in TestClient(create_app()).get("/api/v1/containers/info").json()["errorCodes"]
+        for c in TestClient(create_app()).get("/v1/containers/info").json()["errorCodes"]
     )
     assert codes["INTERNAL"] == 500

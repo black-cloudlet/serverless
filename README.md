@@ -6,7 +6,7 @@ exposed through a **Python / FastAPI** REST API.
 
 - **FaaS** - clients provide a Git repo (URL, branch, token) and source code; runtimes are
   **configurable** (the chart ships **Python, Go, Node**; listed on
-  `GET /api/v1/functions/info`). Built in-cluster by **kpack** with Cloud Native Buildpacks.
+  `GET /api/serverless/v1/functions/info`). Built in-cluster by **kpack** with Cloud Native Buildpacks.
 - **CaaS** - clients provide a container image plus registry credentials.
 - Both support **env vars**, **mounted secrets/config files**, and **scaling options**, and
   are exposed externally via **OpenShift Routes**.
@@ -39,7 +39,7 @@ never get promoted into it: a failure names its cause on the machine-readable
 `reason` (`BuildFailed`, `ImagePullFailed`, `CrashLooping`, `ConfigError`,
 `ProgressDeadlineExceeded`; null when unrecognized) with the human detail on
 the full GET's per-region `message`. All of it is published on
-`GET /api/v1/{type}/info` (`statuses`) so no client hardcodes a vocabulary.
+`GET /api/serverless/v1/{type}/info` (`statuses`) so no client hardcodes a vocabulary.
 The lightweight poll target, `GET .../{name}/stats` (also pushed as SSE on
 `/stats/stream`), reads:
 

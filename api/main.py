@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import __version__
 from api.auth.deps import get_auth
 from api.core.config import Settings, get_settings
+from api.core.paths import api_base
 from api.dependencies import get_runtimes, get_stream_capacity, get_workload_service
 from api.routers import containers, functions, info, streams
 from api.services.regions.deployer import Deployer
@@ -82,6 +83,8 @@ def create_app() -> FastAPI:
     """
     configure_logging()
     settings = get_settings()
+    # Everything the API serves hangs off this, and nothing answers beside it.
+    base_path = settings.base_path
 
     app = FastAPI(
         title="Serverless API",
@@ -90,12 +93,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
+        openapi_url=f"{base_path}/openapi.json",
     )
-    mount_offline_docs(app)
+    mount_offline_docs(app, base_path=base_path)
     if settings.auth_enabled:
         # With sso.swagger_client_secret set this also mounts the token proxy,
         # so the Swagger client can be a confidential one.
-        wire_sso_login(app, settings.sso)
+        wire_sso_login(app, settings.sso, base_path=base_path)
 
     if settings.cors_allow_origins:
         app.add_middleware(
@@ -111,11 +115,11 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
 
     register_exception_handlers(app)
+    # Off the base path: the probes are the kubelet's, which reaches the pod
+    # directly and never goes through whatever serves the API to everyone else.
     app.include_router(health_router)
-    app.include_router(info.router)
-    app.include_router(streams.router)
-    app.include_router(functions.router)
-    app.include_router(containers.router)
+    for router in (info.router, streams.router, functions.router, containers.router):
+        app.include_router(router, prefix=api_base(settings))
 
     return app
 

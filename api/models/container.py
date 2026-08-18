@@ -24,7 +24,7 @@ from api.models.common import (
 class ContainerCreate(BaseModel):
     """Request body to deploy a pre-built container image.
 
-    The owning group comes from the request path (``/api/v1/groups/{group}/...``),
+    The owning group comes from the request path (``/api/serverless/v1/groups/{group}/...``),
     not the body.
     """
 

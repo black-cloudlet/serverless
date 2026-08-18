@@ -31,6 +31,7 @@ from cloudlet_apis.auth import Principal
 from cloudlet_apis.logging import get_logger
 
 from api.core.config import Settings
+from api.core.paths import api_base
 from api.models.common import (
     ANNOTATION_HOST,
     ANNOTATION_PULL_STAMP,
@@ -378,7 +379,7 @@ class WorkloadService:
             hostname=host,
             status="Pending",
             regions=[],
-            statusUrl=f"/api/v1/groups/{group}/{offering.name}s/{name}",
+            statusUrl=f"{api_base(self.settings)}/groups/{group}/{offering.name}s/{name}",
             **extra,
         )
 

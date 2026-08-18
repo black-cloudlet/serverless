@@ -382,7 +382,7 @@ rules:
     resources: ["pods", "events"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
-    resources: ["pods/log"]              # for GET /api/v1/groups/{group}/{type}/{name}/logs
+    resources: ["pods/log"]              # for GET /api/serverless/v1/groups/{group}/{type}/{name}/logs
     verbs: ["get"]
   - apiGroups: ["metrics.k8s.io"]        # live per-region usage on /stats
     resources: ["pods"]

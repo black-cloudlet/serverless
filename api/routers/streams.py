@@ -12,7 +12,7 @@ from api.auth.deps import CurrentUser, get_tickets
 from api.models.stream import StreamTicketRequest, StreamTicketResponse
 from api.services.state.ksvc_state import ISRAEL_TZ
 
-router = APIRouter(prefix="/api/v1", tags=["streams"])
+router = APIRouter(tags=["streams"])
 
 
 @router.post("/stream-tickets", response_model=StreamTicketResponse)

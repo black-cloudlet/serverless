@@ -21,7 +21,7 @@ from api.models.common import (
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.routers import sse
 
-router = APIRouter(prefix="/api/v1/groups/{group}/functions", tags=["functions"])
+router = APIRouter(prefix="/groups/{group}/functions", tags=["functions"])
 
 
 @router.post("", response_model=FunctionResponse, status_code=202)
@@ -188,7 +188,7 @@ async def stream_function_pods(
     empty roster is normal - the workload is deployed here and scaled to zero.
 
     Browsers authenticate a stream with ``?ticket=`` from
-    ``POST /api/v1/stream-tickets``; everything else sends the usual
+    ``POST /api/serverless/v1/stream-tickets``; everything else sends the usual
     ``Authorization`` header.
 
     Args:

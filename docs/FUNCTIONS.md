@@ -20,11 +20,11 @@ what functions share with containers is ARCHITECTURE.md.
 | `branch` | no | Branch / ref to build. Defaults to **`main`**, and is *replaced* on `PUT` - omitting it returns the function to `main` and rebuilds. |
 | `path` | no | Directory inside the repository holding the application, for a monorepo (e.g. `services/api`). Defaults to the repository root. Surrounding `/` are stripped; `..` is rejected. Changing it rebuilds. |
 | `gitToken` | yes on create | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see ARCHITECTURE.md: Secrets Management). The one keep-on-omit field on `PUT`: omitting it reuses the stored token, sending it rotates it (and rebuilds). |
-| `runtime` | yes | One of the platform's configured runtimes (the chart ships `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`api/services/builder/runtimes.py`), validated against the live registry in the service layer and advertised on `GET /api/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
+| `runtime` | yes | One of the platform's configured runtimes (the chart ships `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`api/services/builder/runtimes.py`), validated against the live registry in the service layer and advertised on `GET /api/serverless/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
 | `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `branch`, and changing it rebuilds. |
-| `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/v1/functions/info`. |
+| `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/serverless/v1/functions/info`. |
 | `regions` | no | Which regions to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a region builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
-| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
+| `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/serverless/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
 | `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
 
 **Build flow (kpack / Cloud Native Buildpacks):**
@@ -61,7 +61,7 @@ sequenceDiagram
     participant ZA as Region A (kpack + Knative + registry)
     participant ZB as Region B (kpack + Knative + registry)
 
-    U->>API: POST /api/v1/groups/{group}/functions (git, runtime, ...)
+    U->>API: POST /api/serverless/v1/groups/{group}/functions (git, runtime, ...)
     API->>API: AuthN (JWT) + AuthZ (group) + pre-flight
     API-->>U: 202 Accepted { status: "Pending", statusUrl }
     par Deploy to all target regions, each at its OWN registry's tag
@@ -102,11 +102,11 @@ Response `202 Accepted` (deploy runs in the background; poll `statusUrl`):
   "hostname": "image-resizer-team.serverless.example.com",
   "status": "Pending",
   "regions": [],
-  "statusUrl": "/api/v1/groups/team/functions/image-resizer"
+  "statusUrl": "/api/serverless/v1/groups/team/functions/image-resizer"
 }
 ```
 
-Then `GET /api/v1/groups/team/functions/image-resizer` once Ready:
+Then `GET /api/serverless/v1/groups/team/functions/image-resizer` once Ready:
 
 The response is a **`FunctionResponse`** - flat, mirroring the `FunctionCreate`
 body (secrets redacted) with the live status alongside:
@@ -242,7 +242,7 @@ source, not images.)
 > ```bash
 > # 1. the roster (also a stream; pods come and go on every revision)
 > curl -N -H "Authorization: Bearer $TOKEN" \
->   "$API/api/v1/groups/$GROUP/functions/$NAME/pods"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods"
 > #   event: pods
 > #   data: {"name":"orders","region":"central","pods":[
 > #           {"pod":"orders-team-00003-deployment-6b9f4c5d7-x2wql","revision":"orders-team-00003",
@@ -251,7 +251,7 @@ source, not images.)
 >
 > # 2. follow one of them
 > curl -N -H "Authorization: Bearer $TOKEN" \
->   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
 > ```
 >
 > **`?follow=false` on either** answers once, in JSON, and ends - for a caller that
@@ -261,9 +261,9 @@ source, not images.)
 >
 > ```bash
 > curl -H "Authorization: Bearer $TOKEN" \
->   "$API/api/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
 > curl -H "Authorization: Bearer $TOKEN" \
->   "$API/api/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
+>   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
 > ```
 >
 > The snapshot returns the same `lines` a follow would have delivered, so a client
@@ -275,7 +275,7 @@ source, not images.)
 >
 > ```js
 > const open = async (path) => {
->   const { ticket } = await (await fetch("/api/v1/stream-tickets", {
+>   const { ticket } = await (await fetch("/api/serverless/v1/stream-tickets", {
 >     method: "POST",
 >     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
 >     body: JSON.stringify({ path }),
@@ -283,7 +283,7 @@ source, not images.)
 >   return new EventSource(`${path}?ticket=${ticket}`);
 > };
 >
-> const base = `/api/v1/groups/${group}/functions/${name}`;
+> const base = `/api/serverless/v1/groups/${group}/functions/${name}`;
 > const pods = await open(`${base}/pods`);
 > pods.addEventListener("pods", (e) => renderPodPicker(JSON.parse(e.data).pods));
 >
@@ -307,7 +307,7 @@ source, not images.)
 All `PUT`s are a **full replace** of the mutable spec: whatever you send is the new
 desired state, with the keep-on-write rules above for secrets. The list of `env`/`files`
 entries you send is the complete set (drop one to remove it). Each example is a body for
-`PUT /api/v1/groups/{group}/{containers|functions}/{name}`.
+`PUT /api/serverless/v1/groups/{group}/{containers|functions}/{name}`.
 
 **Config-only edit - keep every secret (echo the redacted GET straight back).** The
 secret env value and the registry token were `null` in the GET; sending them back unchanged
@@ -398,7 +398,7 @@ opposite need unserved: build the *same* definition again, against today's base 
 dependencies. That is a `POST`, and it takes **no body**:
 
 ```
-POST /api/v1/groups/{group}/functions/{name}/build   ->   202 Accepted
+POST /api/serverless/v1/groups/{group}/functions/{name}/build   ->   202 Accepted
 ```
 
 Every input comes back off the workload itself - `gitRepo`, `branch`, `path`, `runtime`
@@ -431,7 +431,7 @@ What it deliberately does **not** do:
 stored git token (send one with a `PUT`), or a `runtime` that has since been removed from
 the runtimes ConfigMap. Both are decided synchronously, before the `202`.
 
-And `GET /api/v1/groups/team/functions` to list the group's functions - general
+And `GET /api/serverless/v1/groups/team/functions` to list the group's functions - general
 info only (no live usage/replicas; use the single-workload GET for those):
 
 ```json
@@ -531,7 +531,7 @@ used to escape it, and both showed a red failure for a perfectly normal build:
   read kpack falls back to the ksvc statuses, exactly as a single GET does.
 
 `Building` is therefore a *region* status as well as a workload one, and
-`GET /api/v1/functions/info` publishes it in both vocabularies (`statuses.workload` and
+`GET /api/serverless/v1/functions/info` publishes it in both vocabularies (`statuses.workload` and
 `statuses.region`) so a client hardcodes neither.
 
 ---

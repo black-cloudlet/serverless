@@ -138,6 +138,22 @@ namespaces:
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com
 
+# The path the API is served under. Everything hangs off it - the endpoints at
+# {basePath}/v1/..., the docs and their assets, the OpenAPI document, the SSO
+# token proxy - so a client's whole URL reads:
+#
+#   https://{host}/api/serverless/v1/groups/{group}/functions
+#
+# Naming it for the API is what lets it share a host with the platform's others.
+# Only /healthz and /readyz sit outside it, since the kubelet reaches the pod
+# directly rather than through whatever serves the API to everyone else.
+#
+# Whatever does that serving must forward the path WHOLE - a plain Route with
+# `spec.path`, no haproxy.router.openshift.io/rewrite-target. There is one path
+# per endpoint and it is the complete one, so a router that strips the leading
+# segments leaves nothing that matches.
+basePath: /api/serverless
+
 # Each entry is rendered with tpl, so an origin can be derived from other
 # values instead of repeated per environment. Origins must be the exact form
 # the browser sends: scheme + host (+ port), no trailing slash - the API

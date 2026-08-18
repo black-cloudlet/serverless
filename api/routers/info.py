@@ -32,7 +32,7 @@ from api.services.manifests.ksvc import workload_sizes
 from common.errors import error_catalog
 from common.names import MAX_OBJECT_NAME, object_name
 
-router = APIRouter(prefix="/api/v1", tags=["info"])
+router = APIRouter(tags=["info"])
 
 # A poll ends here; every other workload status is still in flight. Derived from
 # the same Literal, so a new status cannot be added without landing on one side.

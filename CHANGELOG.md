@@ -7,6 +7,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (paths)
+
+- **`SERVERLESS_BASE_PATH` (chart `basePath`) is the path the whole API is
+  served under**, so it can share a host with other platform APIs at
+  `/api/{slug}/v1/...` - the grammar Kubernetes uses for
+  `/apis/{group}/{version}/...`. Endpoints, the docs and their assets, the
+  OpenAPI document and the SSO token proxy all sit beneath it, and **nothing
+  answers beside it**: there is one path per endpoint and it is the complete
+  one. Only `/healthz` and `/readyz` sit outside it, where the kubelet reaches
+  the pod directly.
+- **BREAKING: the chart ships `basePath: /api/serverless`**, so the address is
+  `/api/serverless/v1/groups/{group}/functions` where it was
+  `/api/v1/groups/{group}/functions`. Every client moves. A deployment that
+  needs the old surface can set `basePath: /api`, and rendering the chart twice
+  serves both while callers migrate.
+- **Whatever fronts the API must forward the path whole** - a plain Route with
+  `spec.path`, no `haproxy.router.openshift.io/rewrite-target`. A router that
+  strips the leading segments leaves nothing that matches.
+- Internally the version segment stopped being repeated in four router modules:
+  `api.core.paths.api_base()` is the one definition of where endpoints live, and
+  `include_router` applies it. `tests/test_base_path.py` runs the app under a
+  base path and asserts what it publishes is what answers.
+- Requires **cloudlet-apis >=0.5**, whose `mount_offline_docs` and
+  `wire_sso_login` take a `base_path`. Under 0.4 those took no such argument and
+  wrote root-relative URLs, so the docs pages loaded blank under a base path and
+  the token proxy sat at the host root, where every API's would collide.
+
 ### Changed (rename)
 
 - **BREAKING: "site" is now "region" on every surface.** The API's JSON

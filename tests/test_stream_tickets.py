@@ -19,12 +19,12 @@ from api.models.stream import StreamTicketRequest
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/v1/groups/team/functions/foo/pods",
-        "/api/v1/groups/team/functions/foo/stats/stream",
-        "/api/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde",
-        "/api/v1/groups/team/containers/foo/pods",
-        "/api/v1/groups/team/containers/foo/stats/stream",
-        "/api/v1/groups/team/containers/foo/logs/pods/foo-team-00001-abcde",
+        "/v1/groups/team/functions/foo/pods",
+        "/v1/groups/team/functions/foo/stats/stream",
+        "/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde",
+        "/v1/groups/team/containers/foo/pods",
+        "/v1/groups/team/containers/foo/stats/stream",
+        "/v1/groups/team/containers/foo/logs/pods/foo-team-00001-abcde",
     ],
 )
 def test_the_streaming_paths_are_accepted(path):
@@ -34,15 +34,15 @@ def test_the_streaming_paths_are_accepted(path):
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/v1/groups/team/functions/foo",  # not a stream
-        "/api/v1/groups/team/functions/foo/logs",  # no such endpoint any more
-        "/api/v1/groups/team/functions/foo/logs/stream",  # the removed shape
-        "/api/v1/groups/team/functions/foo/logs/pods",  # a pod is required
-        "/api/v1/groups/team/functions/foo/pods?ticket=x",  # query included
-        "/api/v1/groups/team/widgets/foo/pods",  # not an offering
+        "/v1/groups/team/functions/foo",  # not a stream
+        "/v1/groups/team/functions/foo/logs",  # no such endpoint any more
+        "/v1/groups/team/functions/foo/logs/stream",  # the removed shape
+        "/v1/groups/team/functions/foo/logs/pods",  # a pod is required
+        "/v1/groups/team/functions/foo/pods?ticket=x",  # query included
+        "/v1/groups/team/widgets/foo/pods",  # not an offering
         "api/v1/groups/team/functions/foo/pods",  # not anchored
-        "/api/v1/groups/team/functions/foo/pods/../../delete",  # traversal
-        "/api/v1/groups/team/functions/foo/logs/pods/a/b",  # two segments
+        "/v1/groups/team/functions/foo/pods/../../delete",  # traversal
+        "/v1/groups/team/functions/foo/logs/pods/a/b",  # two segments
         "",
     ],
 )

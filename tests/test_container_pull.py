@@ -139,7 +139,7 @@ async def test_pull_is_accepted_with_no_body_and_scheduled():
     body = await svc.accept_pull("team", "app", USER, background)
 
     assert body.status == "Pending"
-    assert body.statusUrl == "/api/v1/groups/team/containers/app"
+    assert body.statusUrl == "/v1/groups/team/containers/app"
     assert len(background.tasks) == 1
 
 

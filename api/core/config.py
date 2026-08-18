@@ -13,7 +13,7 @@ from functools import lru_cache
 # The SSO model is shared - every API on the platform validates tokens the same
 # way - so it lives in cloudlet_apis and is re-exported here for existing importers.
 from cloudlet_apis.auth import SSOConfig  # noqa: F401
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Shared connection settings + sub-configs; re-exported for existing importers.
 from common.config import (  # noqa: F401
@@ -119,6 +119,12 @@ class Settings(CommonSettings):
     # Single platform wildcard domain; host = {name}-{group}.{route_domain}
     route_domain: str = "serverless.example.com"
 
+    # The path the whole API is served under - endpoints, docs, OpenAPI, the
+    # SSO token proxy. The chart ships /api/serverless; empty (this default)
+    # serves /v1/... bare, which is what a local run wants.
+    # env: SERVERLESS_BASE_PATH.
+    base_path: str = ""
+
     # Browser origins allowed to call the API (e.g. the ServiceNow portal).
     # Empty disables CORS. env: SERVERLESS_CORS_ALLOW_ORIGINS (JSON list).
     cors_allow_origins: list[str] = Field(default_factory=list)
@@ -144,6 +150,30 @@ class Settings(CommonSettings):
     # follow works with no extra configuration and only the browser path - which
     # cannot set that header - needs this set.
     stream_ticket_key: str = ""
+
+    @field_validator("base_path")
+    @classmethod
+    def _normalize_base_path(cls, value: str) -> str:
+        """Accept the base path in the one shape the rest of the code assumes.
+
+        Everything is concatenated onto it, so two spellings of the same base
+        path would produce two different sets of URLs.
+
+        Args:
+            value: The configured base path.
+
+        Returns:
+            Either empty, or a path with a leading and no trailing slash.
+
+        Raises:
+            ValueError: If a non-empty base path has no leading slash.
+        """
+        value = value.rstrip("/")
+        if not value:
+            return ""
+        if not value.startswith("/"):
+            raise ValueError(f"base_path must start with '/' (got {value!r})")
+        return value
 
 
 @lru_cache

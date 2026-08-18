@@ -48,7 +48,7 @@ want two consumption models:
 - **FaaS** - "give us your source code, we build and run it." The client provides a Git
   repository URL, branch, an access token, and the source lives in that repo. Supported
   runtimes are **configurable** (the chart ships **Python, Go, Node**; see FUNCTIONS.md: Overview) and listed on
-  `GET /api/v1/functions/info`.
+  `GET /api/serverless/v1/functions/info`.
 - **CaaS** - "give us your image, we run it." The client provides a container image
   reference plus registry credentials (username + token).
 
@@ -181,7 +181,7 @@ Applied identically to both offerings; modeled on the KSVC pod spec.
 |------------|------------------------|
 | **Environment variables** | Each `env` entry is `name` + `value`. A plain entry is set inline on the container; an entry with **`secret: true`** has its value moved into an API-created Kubernetes **Secret** (`{workload}-env`) and the container reads it via a `secretKeyRef` (the value is never inline). The API does **not** expose `valueFrom` - users cannot reference arbitrary existing cluster Secrets/ConfigMaps. **CA-trust defaults** (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`) are injected automatically, pointed at the mounted trusted-CA bundle, so cross-language tooling trusts internal TLS with no user action. They are **transparent**: a var the user sets themselves is left as-is (their value wins), and the injected defaults are recorded in a `serverless.platform/injected-env` annotation so they're hidden from the workload's GET. |
 | **Files (config & secret mounts)** | Via the `files` field, a user **uploads inline file content** (`content`/`contentBase64`), its `mountPath`, and an optional `readOnly` flag (default true). The API aggregates all non-secret files into **one `{workload}-files` ConfigMap** and all secret files (`secret: true`) into **one `{workload}-files` Secret** - one ConfigMap and one Secret per workload, a key per file - and mounts each at its path via `subPath`. (No referencing of pre-existing cluster objects.) |
-| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on the per-offering `GET /api/v1/{containers,functions}/info`** (per-metric `minScaleFloor`, target default/min/max/unit) - derived from the same model that validates a create, so a client UI can render the form without drift. |
+| **Scaling options** | Knative autoscaling annotations: `autoscaling.knative.dev/min-scale`, `max-scale`, `metric`, `target`, and `scale-down-delay`. `metric` selects the scaling signal - `concurrency` or `rps` (default **KPA** autoscaler, scale-to-zero capable) or `cpu`/`memory` (**HPA** class, no scale-to-zero); `target` is the target value for the chosen metric. When `target` is **omitted** the default is **metric-aware**: `100` for `concurrency`/`rps`, but `70` for `cpu`/`memory` (these are a utilization **percentage**, so we scale before saturation; values >100 are rejected). Scale-to-zero is the default when `min-scale=0` (KPA metrics only). `scaleDownDelay` is an optional Go duration (`30s`/`5m`/`1h`, capped by Knative at 1h) that holds a revision up before scaling it down, smoothing bursty traffic. **These rules are surfaced verbatim on the per-offering `GET /api/serverless/v1/{containers,functions}/info`** (per-metric `minScaleFloor`, target default/min/max/unit) - derived from the same model that validates a create, so a client UI can render the form without drift. |
 | **Resource size** | `size: small\|medium\|large` (default `small`) - a t-shirt size, so clients pick capacity without Kubernetes units. Maps to container resources: **memory** is set `request==limit` (a hard, predictable OOM boundary - exceeding it restarts that replica), **CPU** is **request-only** (no limit, so workloads are never CPU-throttled). `small`=100m/256Mi, `medium`=250m/512Mi, `large`=500m/1Gi. The CPU/memory request is also what lets the `cpu`/`memory` autoscaling metrics compute utilization. |
 
 A canonical scaling sub-object in the API:
@@ -371,6 +371,10 @@ The Route that exposes the **API itself** is values-driven: `route.host` (defaul
 HAProxy router timeouts or rate-limit annotations). This is distinct from the per-**workload**
 host convention above.
 
+The API need not be at the root of that host: `basePath` is the path the whole of it
+is served under, so it can share a host with other platform APIs (REST API
+Specification, below).
+
 ---
 
 ## Authentication & Authorization
@@ -420,7 +424,7 @@ secret - which is precisely what makes it a **public** client.
 
 Where the SSO realm forbids public clients, set `SERVERLESS_SSO__SWAGGER_CLIENT_SECRET`
 (Vault -> ESO, `swagger-client-secret`). The browser still runs the authorization leg
-against SSO with PKCE, but posts the code to **`POST /auth/token`** on the API, which adds
+against SSO with PKCE, but posts the code to **`POST /api/serverless/auth/token`** on the API, which adds
 the secret and completes the exchange **server-side** - so the client can be registered
 **confidential** and the secret never reaches a browser. Unset, the public-client flow is
 used unchanged.
@@ -430,6 +434,12 @@ That endpoint is unauthenticated by necessity, so it only ever completes a login
 and secret come from configuration rather than the request. Register the client with
 Standard Flow on, PKCE required (`S256`), and **Service Accounts and Direct Access Grants
 off**.
+
+**The redirect URI carries the base path.** Swagger's callback is
+`https://{host}{basePath}/docs/oauth2-redirect`, so the Keycloak client's valid redirect
+URIs must list that exact path - changing `basePath` moves it. Registering the old one, or
+only the host, fails the login with `invalid_redirect_uri` after the user has already
+authenticated, which reads as an SSO outage rather than a configuration gap.
 
 Note what this does *not* do: the user's own tokens still reach the browser, since Swagger
 UI calls the API with them. It keeps the **client secret** server-side, which is what the
@@ -493,7 +503,7 @@ so the value deciding whose signatures we trust is always a deliberate choice he
   and the workload-name label, so it is unambiguously attributable and selectable.
 
 - The caller **explicitly chooses the group** to act as on every request - it is a **path
-  segment** (`/api/v1/groups/{group}/...`) on every endpoint, so the same group scopes reads,
+  segment** (`/api/serverless/v1/groups/{group}/...`) on every endpoint, so the same group scopes reads,
   writes, and deletes uniformly and never appears in a request body. The API
   **asserts the caller is a member** of that group (from the **`groups` claim**); otherwise
   `403`. This makes the acting group unambiguous for users in multiple groups. Authorization
@@ -658,8 +668,21 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 
 ## REST API Specification
 
-Base path: `/api/v1`. All endpoints require a valid SSO bearer token (ARCHITECTURE.md: Authentication & Authorization) **except the public
-discovery endpoints `GET /api/v1/{containers,functions}/info` and the health probes**. All responses are JSON. Times
+Base path: **`/api/serverless/v1`** - the chart's `basePath` followed by the version.
+Naming the base path for the API is what lets it share a host with the platform's
+others. Every path below is written in full, because that is the whole of it: there is
+one path per endpoint and nothing answers beside it. The docs, the OpenAPI document and the SSO token proxy sit under the
+same base path; only `/healthz` and `/readyz` sit outside it, since the kubelet reaches
+the pod directly.
+
+Two consequences, stated once. **Whatever fronts the API must forward the path whole** -
+a plain Route with `spec.path`, no `rewrite-target` - because a router that strips the
+leading segments leaves nothing that matches. And a deployment that sets a different
+`basePath` moves every path below with it: a local run leaves it empty and calls
+`/v1/...`.
+
+All endpoints require a valid SSO bearer token (ARCHITECTURE.md: Authentication & Authorization) **except the public
+discovery endpoints `GET /api/serverless/v1/{containers,functions}/info` and the health probes**. All responses are JSON. Times
 are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rendered in
 **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving aware).
 
@@ -667,27 +690,27 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/v1/groups/{group}/functions` | Create a FaaS workload (build from Git). **202 Accepted** - deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/groups/{group}/functions` | List the group's functions - general info per workload (name, hostname, status, size, createdAt). Fans out to **all regions** and merges by workload (each item lists the regions it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
-| `GET` | `/api/v1/groups/{group}/functions/{name}` | Get one function (spec + per-region status). |
-| `PUT` | `/api/v1/groups/{group}/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). Changing `gitRepo`/`branch`/`runtime` **rebuilds from source** reusing the stored `gitToken` (no need to re-send it); sending `gitToken` rotates it (and rebuilds); otherwise config-only and the current image is kept. Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
-| `POST` | `/api/v1/groups/{group}/functions/{name}/build` | Build the function's **current** source again - no request body. The inputs are the stored ones (`gitRepo`/`branch`/`path`/`runtime`/`version` and the saved `gitToken`), so this picks up a base-image or dependency change, retries a failed build, or gets a pushed commit built now instead of when kpack next polls. The workload's spec is untouched and the running revision keeps serving. **202 Accepted** - poll the same `statusUrl`. |
-| `DELETE` | `/api/v1/groups/{group}/functions/{name}` | Delete the function in both regions. |
-| `POST` | `/api/v1/groups/{group}/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
-| `GET` | `/api/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, status, size, createdAt). Fans out to **all regions** and merges by workload (each item lists the regions it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
-| `GET` | `/api/v1/groups/{group}/containers/{name}` | Get one container (spec + per-region status). |
-| `PUT` | `/api/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; the **stored** `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); a **different** username with no token is a `400`; **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
-| `POST` | `/api/v1/groups/{group}/containers/{name}/pull` | Pull the image **tag** again - no request body. Knative resolves a tag to a digest once, when the revision is created, so an image pushed over the same tag is never picked up; this cuts a new revision in every region, which resolves it again. Nothing else about the workload changes. A digest-pinned container is a `400` (nothing newer to pull). **202 Accepted** - poll the same `statusUrl`. |
-| `DELETE` | `/api/v1/groups/{group}/containers/{name}` | Delete the container in both regions. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/stats` | **The lightweight endpoint to poll.** Live state only: `status` (plus its machine-readable `reason`), workload-wide `replicas` and `usage`, and the same per region. No desired-state config, so a two-second refresh never re-reads the workload's backing Secret. Fans out to all regions; a function's build is still read, so `Building` is reported here as on the GET. Totals are summed before rounding (they need not equal the sum of the printed per-region figures) and are `null` if any region could not be measured. Scaled-to-zero -> `replicas: 0`, `usage: null`. Same `404`/`503` rules as the full GET. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/pods` | The workload's pods on the **current region**: name, revision, phase, ready, restarts, startedAt and per-pod usage. This is where the `{pod}` below comes from - nothing else in the API returns a pod name. **Streams by default** (`text/event-stream`, a `pods` event every `interval` seconds), because the answer expires: Knative replaces pods on every revision and removes them all on scale-to-zero. **`?follow=false`** returns one JSON roster instead, for a caller that cannot hold a connection. Events: `pods`, `error`. An empty roster is normal (scaled to zero), not a `404`. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | One pod's log, from the current region - Kubernetes keeps no buffer beyond the node, so there is nowhere else to read and no history behind what it holds. **Follows by default**; **`?follow=false`** returns a JSON snapshot of what the node holds right now, which is the only form a caller that cannot hold a connection can use. Optional `container` (default `user-container`), `sinceSeconds`, `tailLines` (start at the newest this-many lines, however old - the right opening for a pod quiet longer than any time window; clamped to `stream.snapshotTailLines`), `ticket`, and `limitBytes` (snapshot only, clamped to `stream.snapshotMaxBytes`). The snapshot returns the newest `stream.snapshotTailLines` lines at most, whatever the caller asks. A follow ends with an `end` event when the pod's log does (a scale-down or a new revision - routine, so not an `error`). A pod that is not this workload's is a `404`, and so is one that does not exist. Events: `open`, `log`, `warning`, `end`, `error`. |
-| `GET` | `/api/v1/groups/{group}/{type}/{name}/stats/stream` | **Follow** the live state as Server-Sent Events - the same body as `/stats`, pushed every `interval` seconds instead of on request, so one connection replaces a client's poll loop. Events: `stats` (the first sent immediately) and `error`. Optional `interval`, `ticket`. Same `404`/`503` rules as `/stats`, plus `503` when the stream pool is full. |
-| `POST` | `/api/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
-| `GET` | `/api/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `regions`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
-| `GET` | `/api/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
-| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth). Constant responses - they never touch a cluster, so a down region cannot fail a probe. |
-| `GET` | `/docs`, `/redoc`, `/openapi.json` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). |
+| `POST` | `/api/serverless/v1/groups/{group}/functions` | Create a FaaS workload (build from Git). **202 Accepted** - deploys in the background; poll `statusUrl`. |
+| `GET` | `/api/serverless/v1/groups/{group}/functions` | List the group's functions - general info per workload (name, hostname, status, size, createdAt). Fans out to **all regions** and merges by workload (each item lists the regions it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/serverless/v1/groups/{group}/functions/{name}` | Get one function (spec + per-region status). |
+| `PUT` | `/api/serverless/v1/groups/{group}/functions/{name}` | Replace the function's mutable spec (env/files/scaling/hostname). Changing `gitRepo`/`branch`/`runtime` **rebuilds from source** reusing the stored `gitToken` (no need to re-send it); sending `gitToken` rotates it (and rebuilds); otherwise config-only and the current image is kept. Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
+| `POST` | `/api/serverless/v1/groups/{group}/functions/{name}/build` | Build the function's **current** source again - no request body. The inputs are the stored ones (`gitRepo`/`branch`/`path`/`runtime`/`version` and the saved `gitToken`), so this picks up a base-image or dependency change, retries a failed build, or gets a pushed commit built now instead of when kpack next polls. The workload's spec is untouched and the running revision keeps serving. **202 Accepted** - poll the same `statusUrl`. |
+| `DELETE` | `/api/serverless/v1/groups/{group}/functions/{name}` | Delete the function in both regions. |
+| `POST` | `/api/serverless/v1/groups/{group}/containers` | Create a CaaS workload. **202 Accepted** - deploys in the background; poll `statusUrl`. |
+| `GET` | `/api/serverless/v1/groups/{group}/containers` | List the group's containers - general info per workload (name, hostname, status, size, createdAt). Fans out to **all regions** and merges by workload (each item lists the regions it's on; status rolled up across them). Optional `?sort=name\|createdAt` (default `name`). |
+| `GET` | `/api/serverless/v1/groups/{group}/containers/{name}` | Get one container (spec + per-region status). |
+| `PUT` | `/api/serverless/v1/groups/{group}/containers/{name}` | Replace the container's mutable spec (image/env/files/scaling/hostname). Registry creds: `registryUsername`+`registryToken` rotates the pull secret; the **stored** `registryUsername` alone (token null) keeps it (re-keyed to the current image's registry); a **different** username with no token is a `400`; **neither** removes it (image becomes public). Secret `env`/`files` sent without a value keep their stored value. **202 Accepted**. |
+| `POST` | `/api/serverless/v1/groups/{group}/containers/{name}/pull` | Pull the image **tag** again - no request body. Knative resolves a tag to a digest once, when the revision is created, so an image pushed over the same tag is never picked up; this cuts a new revision in every region, which resolves it again. Nothing else about the workload changes. A digest-pinned container is a `400` (nothing newer to pull). **202 Accepted** - poll the same `statusUrl`. |
+| `DELETE` | `/api/serverless/v1/groups/{group}/containers/{name}` | Delete the container in both regions. |
+| `GET` | `/api/serverless/v1/groups/{group}/{type}/{name}/stats` | **The lightweight endpoint to poll.** Live state only: `status` (plus its machine-readable `reason`), workload-wide `replicas` and `usage`, and the same per region. No desired-state config, so a two-second refresh never re-reads the workload's backing Secret. Fans out to all regions; a function's build is still read, so `Building` is reported here as on the GET. Totals are summed before rounding (they need not equal the sum of the printed per-region figures) and are `null` if any region could not be measured. Scaled-to-zero -> `replicas: 0`, `usage: null`. Same `404`/`503` rules as the full GET. |
+| `GET` | `/api/serverless/v1/groups/{group}/{type}/{name}/pods` | The workload's pods on the **current region**: name, revision, phase, ready, restarts, startedAt and per-pod usage. This is where the `{pod}` below comes from - nothing else in the API returns a pod name. **Streams by default** (`text/event-stream`, a `pods` event every `interval` seconds), because the answer expires: Knative replaces pods on every revision and removes them all on scale-to-zero. **`?follow=false`** returns one JSON roster instead, for a caller that cannot hold a connection. Events: `pods`, `error`. An empty roster is normal (scaled to zero), not a `404`. |
+| `GET` | `/api/serverless/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | One pod's log, from the current region - Kubernetes keeps no buffer beyond the node, so there is nowhere else to read and no history behind what it holds. **Follows by default**; **`?follow=false`** returns a JSON snapshot of what the node holds right now, which is the only form a caller that cannot hold a connection can use. Optional `container` (default `user-container`), `sinceSeconds`, `tailLines` (start at the newest this-many lines, however old - the right opening for a pod quiet longer than any time window; clamped to `stream.snapshotTailLines`), `ticket`, and `limitBytes` (snapshot only, clamped to `stream.snapshotMaxBytes`). The snapshot returns the newest `stream.snapshotTailLines` lines at most, whatever the caller asks. A follow ends with an `end` event when the pod's log does (a scale-down or a new revision - routine, so not an `error`). A pod that is not this workload's is a `404`, and so is one that does not exist. Events: `open`, `log`, `warning`, `end`, `error`. |
+| `GET` | `/api/serverless/v1/groups/{group}/{type}/{name}/stats/stream` | **Follow** the live state as Server-Sent Events - the same body as `/stats`, pushed every `interval` seconds instead of on request, so one connection replaces a client's poll loop. Events: `stats` (the first sent immediately) and `error`. Optional `interval`, `ticket`. Same `404`/`503` rules as `/stats`, plus `503` when the stream pool is full. |
+| `POST` | `/api/serverless/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
+| `GET` | `/api/serverless/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `regions`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
+| `GET` | `/api/serverless/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
+| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth), and the only paths outside the base path - the kubelet reaches the pod directly. Constant responses; they never touch a cluster, so a down region cannot fail a probe. |
+| `GET` | `/api/serverless/{docs,redoc,openapi.json}` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). Under the base path like everything else, so several APIs on one host each keep their own. |
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
 `status` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
@@ -711,7 +734,7 @@ body field. The per-field rules themselves (pattern, maxLength, description, exa
 > **Async (submit + poll).** `POST`/`PUT` validate synchronously (so the caller gets
 > immediate `400`/`404`/`409`), then **return `202 Accepted`** with `status: "Pending"`
 > and a `statusUrl`; the build/deploy runs in the background. Clients poll
-> `GET {statusUrl}` (the resource itself, `/api/v1/groups/{group}/{type}/{name}`) until
+> `GET {statusUrl}` (the resource itself, `/api/serverless/v1/groups/{group}/{type}/{name}`) until
 > `status` is `Ready` (or `Failed`). This suits slow FaaS builds and ServiceNow
 > workflow patterns (ARCHITECTURE.md: REST API Specification).
 >
@@ -740,7 +763,7 @@ body field. The per-field rules themselves (pattern, maxLength, description, exa
 ```jsonc
 // Workload shared fields (used by both functions and containers)
 // The acting group is NOT a body field - it is the {group} path segment on every
-// endpoint (/api/v1/groups/{group}/...). The caller must be a member (else 403).
+// endpoint (/api/serverless/v1/groups/{group}/...). The caller must be a member (else 403).
 {
   "name": "orders-api",                 // DNS-1123, required. OpenShift object name is {name}-{group}.
   "hostname": "orders",                 // optional custom host; default {name}-{group}.{route_domain}.
@@ -780,7 +803,9 @@ The API is the backend for a **ServiceNow** frontend; the design accommodates th
 - **CORS.** When a ServiceNow Service Portal widget calls the API **from the browser**, set
   `SERVERLESS_CORS_ALLOW_ORIGINS` (Helm `corsAllowOrigins`) to the ServiceNow instance
   origin(s); the API enables CORS (preflight + `Authorization` header) only then. Server-side
-  ServiceNow calls (IntegrationHub / Scripted REST) need no CORS.
+  ServiceNow calls (IntegrationHub / Scripted REST) need no CORS. CORS is a consequence of
+  the API having an origin of its own: serving it from the portal's host under a path
+  base path (`basePath`) makes it same-origin and removes the need entirely.
 - **Async submit + poll.** `POST`/`PUT` return **202** immediately with a `statusUrl`;
   the ServiceNow workflow polls `GET {statusUrl}` until `Ready`/`Failed`. This avoids
   ServiceNow REST timeouts on slow FaaS builds and matches its long-running-task patterns.
@@ -824,7 +849,7 @@ every response (success and error) and bound into the server logs, so a
 `requestId` from an error body greps straight to the request's log lines.
 
 This table is the authoritative prose, but a client should read `errorCodes` off
-`/api/v1/{containers,functions}/info` rather than embed it: that document is walked off the
+`/api/serverless/v1/{containers,functions}/info` rather than embed it: that document is walked off the
 `APIError` subclasses in code, so it cannot go stale the way this can.
 
 | HTTP | Code | When |
@@ -957,7 +982,7 @@ leaves the credential in the URL, and the SSO token is the wrong thing to put th
 against every endpoint, it outlives the request, and a URL reaches the router's access log, this
 API's own log line and the user's history.
 
-So the token buys a **ticket** instead. `POST /api/v1/stream-tickets` takes the bearer token on a
+So the token buys a **ticket** instead. `POST /api/serverless/v1/stream-tickets` takes the bearer token on a
 request that can carry one and returns an opaque credential worth almost nothing: **one** stream
 path, for ~60s, carrying an identity the caller already had. It is HMAC-signed rather than stored,
 because two replicas serve behind one Route and either may take the stream - a ticket held in the
@@ -971,9 +996,9 @@ bearer credential in a URL should open a listed thing rather than an inferred on
 are this API's to know.
 
 ```
-POST /api/v1/stream-tickets            EventSource(url + "?ticket=…")
+POST /api/serverless/v1/stream-tickets            EventSource(url + "?ticket=…")
   Authorization: Bearer <SSO token>  →   GET …/logs/pods/{pod}?ticket=…
-  {"path": "/api/v1/…/logs/pods/…"}      (no header; none is possible)
+  {"path": "/api/serverless/v1/…/logs/pods/…"}      (no header; none is possible)
 ```
 
 The path is inside the signature, so a ticket for one pod's logs cannot be replayed against
