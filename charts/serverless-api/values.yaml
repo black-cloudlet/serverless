@@ -39,7 +39,13 @@ api:
       cpu: 250m
       memory: 512Mi
     limits:
-      cpu: "1"
+      # The health probes share the process's one event loop with everything
+      # else it serves, and a CPU limit is enforced as throttling - at "1" a
+      # streaming burst stretched into multi-second stalls that missed the 5s
+      # probe timeout and restarted the pod. "2" gives the loop headroom to
+      # answer while the stream threads work; the request stays low, so the
+      # slack is only used when the node has it.
+      cpu: "2"
       memory: 512Mi
 
   service:
@@ -62,7 +68,7 @@ api:
     # The cost is that it applies to the whole Route, not just the streams:
     # OpenShift has no per-path timeout. An ordinary request cannot actually sit
     # here that long - the API bounds its own cluster work with
-    # `regionOpTimeout` - but a client that stops reading a response does hold a
+    # `SERVERLESS_CLUSTER_OP_TIMEOUT` - but a client that stops reading a response does hold a
     # connection until this expires.
     timeout: 65m
     # annotations:
@@ -163,6 +169,10 @@ stream:
   # Log lines held for a client that reads slower than the workload writes.
   # Past this, lines are dropped and the gap is reported - never grown into.
   queueSize: 1000
+  # Bytes that buffer may hold, whatever queueSize still allows. The line bound
+  # alone is no bound for a pod writing without newlines - each "line" then
+  # arrives as a ~1MB piece, and queueSize of those is a gigabyte per stream.
+  queueMaxBytes: 2097152
   # How long one stream lives before ending itself; the client reconnects on its
   # own. MUST stay under api.route.timeout, so a stream is never cut mid-event.
   maxSeconds: 3600

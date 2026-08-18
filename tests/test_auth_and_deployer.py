@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from api.core.config import RegionConfig, Settings, SSOConfig
@@ -217,6 +219,145 @@ async def test_fanout_times_out_unreachable_region():
     assert by_region["region-a"].status == "Ready"
     assert by_region["region-b"].status == "Timeout"
     assert by_region["region-b"].message is not None
+
+
+async def test_a_read_fanout_gives_up_on_a_slow_region_quickly():
+    """A page read is bounded by cluster_read_op_timeout, not the minute-scale
+    write backstop: a slow cluster costs its own column, never the page."""
+    import time
+
+    d = Deployer(_settings_with_regions())
+    d._read_timeout = 0.05
+    d._op_timeout = 30.0  # the write backstop stays long; the read must not use it
+
+    def fn(cluster):
+        if cluster.region == "region-b":
+            time.sleep(0.5)
+        return RegionStatus(region=cluster.region, status="Ready")
+
+    start = time.monotonic()
+    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
+    assert time.monotonic() - start < 0.4  # gave up at the read timeout, not the op one
+    by_region = {s.region: s for s in statuses}
+    assert by_region["region-a"].status == "Ready"
+    assert by_region["region-b"].status == "Timeout"
+
+
+async def test_gather_each_is_bounded_by_the_read_timeout():
+    import time
+
+    d = Deployer(_settings_with_regions())
+    d._read_timeout = 0.05
+
+    def fn(cluster):
+        if cluster.region == "region-b":
+            time.sleep(0.5)
+        return ["item"]
+
+    start = time.monotonic()
+    results = dict(await d.gather_each(d.resolve_targets(None), fn))
+    assert time.monotonic() - start < 0.4
+    assert results["region-a"] == ["item"]
+    assert results["region-b"] is None  # skipped, not fatal
+
+
+async def test_a_saturated_read_pool_refuses_with_503_not_failed_regions():
+    """Pool saturation is the API's condition: the request 503s; it must not be
+    dressed up as every region having failed (which would read as a 502)."""
+    import threading
+
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    from api.services.regions.deployer import ReadPool, ReadPoolSaturated
+
+    pool = ReadPool(workers=1, max_queued=0)
+    release = threading.Event()
+    try:
+        blocker = asyncio.ensure_future(pool.run(release.wait))
+        await asyncio.sleep(0.05)  # the one worker is now occupied
+        with pytest.raises(ServiceUnavailableError):
+            await pool.run(lambda: "refused")
+        assert issubclass(ReadPoolSaturated, ServiceUnavailableError)
+    finally:
+        release.set()
+        await blocker
+        pool.shutdown()
+
+
+async def test_a_region_function_raising_503_stays_a_region_failure():
+    """Only the pool's own saturation escapes the fan-out; a region whose work
+    raised ServiceUnavailableError is that region's failure row."""
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    d = Deployer(_settings_with_regions())
+
+    def fn(cluster):
+        if cluster.region == "region-b":
+            raise ServiceUnavailableError("registry down")
+        return RegionStatus(region=cluster.region, status="Ready")
+
+    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
+    by_region = {s.region: s for s in statuses}
+    assert by_region["region-a"].status == "Ready"
+    assert by_region["region-b"].status == "Failed"
+    assert "registry down" in by_region["region-b"].message
+
+
+async def test_a_read_fanout_is_admitted_whole_or_not_at_all():
+    """Admitted region by region, a fan-out refused half way through would leave
+    the regions it had already started burning the pool for a result the 503
+    throws away - gather cancels no siblings - which is how shedding feeds itself."""
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    from api.services.regions.deployer import ReadPool
+
+    d = Deployer(_settings_with_regions())
+    d._read_pool.shutdown()
+    d._read_pool = ReadPool(workers=1, max_queued=0)  # one slot; the fan-out needs two
+    started = []
+
+    def fn(cluster):
+        started.append(cluster.region)
+        return RegionStatus(region=cluster.region, status="Ready")
+
+    try:
+        with pytest.raises(ServiceUnavailableError):
+            await d.fanout(d.resolve_targets(None), fn, read=True)
+        assert started == []
+        # ...and the refusal left nothing behind: the whole reservation is back.
+        assert d._read_pool._inflight == 0
+    finally:
+        d._read_pool.shutdown()
+
+
+async def test_a_single_read_is_bounded_by_the_read_timeout():
+    """run_read is on the same bounded pool as the fan-outs, and a slot is only
+    released when the THREAD finishes: a caller that waits forever turns one
+    wedged cluster call into a permanently occupied worker."""
+    import time
+
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    d = Deployer(_settings_with_regions())
+    d._read_timeout = 0.05
+
+    start = time.monotonic()
+    with pytest.raises(ServiceUnavailableError):
+        await d.run_read(lambda: time.sleep(0.5))
+    assert time.monotonic() - start < 0.4
+
+
+async def test_an_admission_is_given_back_when_the_pool_refuses_the_submit():
+    """A read that never reaches a thread gets no done callback either, so the
+    slot it took would be held for the life of the process."""
+    from api.services.regions.deployer import ReadPool
+
+    pool = ReadPool(workers=1, max_queued=0)
+    pool.shutdown()
+
+    with pytest.raises(RuntimeError):
+        await pool.run(lambda: "never runs")
+    assert pool._inflight == 0
 
 
 class _FakeCluster:
@@ -3006,3 +3147,28 @@ async def test_get_reads_every_regions_build_concurrently():
 
     (a_start, a_end), (b_start, b_end) = spans["region-a"], spans["region-b"]
     assert a_start < b_end and b_start < a_end, "the per-region build reads did not overlap"
+
+
+async def test_admission_counts_the_thread_not_the_await():
+    """A read the caller timed out on is still occupying its worker; the pool
+    must refuse new work while zombies hold it, or shedding never fires."""
+    import threading
+
+    from cloudlet_apis.errors import ServiceUnavailableError
+
+    from api.services.regions.deployer import ReadPool
+
+    pool = ReadPool(workers=1, max_queued=0)
+    release = threading.Event()
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(pool.run(release.wait), timeout=0.05)
+        # The await is gone; the THREAD is not. The slot must still be held.
+        with pytest.raises(ServiceUnavailableError):
+            await pool.run(lambda: "must be refused")
+        release.set()
+        await asyncio.sleep(0.1)  # let the zombie finish and release via its callback
+        assert await pool.run(lambda: "ok") == "ok"
+    finally:
+        release.set()
+        pool.shutdown()
