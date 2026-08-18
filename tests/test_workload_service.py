@@ -1,411 +1,20 @@
-import asyncio
+"""The workload engine end to end: apply, read, delete, and their guards."""
 
 import pytest
 
-from api.core.config import RegionConfig, Settings, SSOConfig
-from api.models.common import RegionStatus
 from api.services.offering import CONTAINER, FUNCTION
-from api.services.regions.deployer import Deployer
-from api.services.regions.rollup import aggregate, status_code_for
 from common.errors import RegionTotalFailure, ValidationError
 from tests.conftest import plan_for, runtime_registry
-
-
-def _auth_with_admin_key(monkeypatch, raw_key, admin_groups=("platform-admins",)):
-    """Point api.auth.deps at settings carrying ``raw_key``, as production does.
-
-    Goes through ``get_auth`` rather than building an ``SSOAuth`` here, so what
-    is under test is this API's wiring - which settings the shared component is
-    built from - and not a second copy of it that could quietly drift.
-    """
-    from api.auth.deps import get_auth
-
-    settings = Settings(
-        auth_enabled=True,
-        admin_api_key=raw_key,
-        sso=SSOConfig(admin_groups=list(admin_groups)),
-    )
-    monkeypatch.setattr("api.auth.deps.get_settings", lambda: settings)
-    get_auth.cache_clear()
-
-
-def test_require_auth_via_bearer_admin_key(monkeypatch):
-    from types import SimpleNamespace
-
-    from api.auth.deps import require_auth
-    from common.errors import UnauthenticatedError
-
-    _auth_with_admin_key(monkeypatch, "opaque-s3cret")
-    # Opaque admin key in the standard Authorization: Bearer header.
-    req = SimpleNamespace(headers={"Authorization": "Bearer opaque-s3cret"})
-    p = require_auth(req)
-    assert p.username == "admin" and p.is_admin is True
-    # The configured admin groups, paired the same way a token's claim is: the
-    # normalized name, and the spelling config used alongside it.
-    assert [(g.name, g.sso_name) for g in p.groups] == [("platform-admins", "platform-admins")]
-    assert p.can_access_group("platform-admins") is True
-
-    # An unrecognised, non-JWT token must be rejected, not silently allowed.
-    bad = SimpleNamespace(headers={"Authorization": "Bearer nope"})
-    with pytest.raises(UnauthenticatedError):
-        require_auth(bad)
-
-
-def test_admin_key_header_carries_raw_token_not_a_hash(monkeypatch):
-    """The header must carry the RAW token, matched directly against the configured
-    key. A sha256 hash of the key is not the key, so it must not authenticate."""
-    import hashlib
-    from types import SimpleNamespace
-
-    from api.auth.deps import require_auth
-    from common.errors import UnauthenticatedError
-
-    _auth_with_admin_key(monkeypatch, "opaque-s3cret")
-    hashed = hashlib.sha256(b"opaque-s3cret").hexdigest()
-    req = SimpleNamespace(headers={"Authorization": f"Bearer {hashed}"})
-    with pytest.raises(UnauthenticatedError):
-        require_auth(req)
-
-
-def test_empty_admin_key_disables_key_auth(monkeypatch):
-    """Setting the admin key empty disables API-key auth entirely; no opaque token
-    (including the empty string) is accepted."""
-    from types import SimpleNamespace
-
-    from api.auth.deps import require_auth
-    from common.errors import UnauthenticatedError
-
-    _auth_with_admin_key(monkeypatch, "")
-    req = SimpleNamespace(headers={"Authorization": "Bearer anything"})
-    with pytest.raises(UnauthenticatedError):
-        require_auth(req)
-
-
-def test_aggregate_all_ok():
-    statuses = [RegionStatus(region="a", status="Ready"), RegionStatus(region="b", status="Ready")]
-    assert aggregate(statuses) == "Ready"
-    assert status_code_for("Ready", created=True) == 201
-
-
-def test_aggregate_still_rolling_out():
-    # a just-applied workload (regions not Ready yet) reports Deploying, not Ready
-    statuses = [
-        RegionStatus(region="a", status="Ready"),
-        RegionStatus(region="b", status="Deploying"),
-    ]
-    assert aggregate(statuses) == "Deploying"
-
-
-def test_aggregate_partial():
-    statuses = [
-        RegionStatus(region="a", status="Ready"),
-        RegionStatus(region="b", status="Failed", message="boom"),  # unreachable -> Failed
-    ]
-    assert aggregate(statuses) == "Failed"
-    assert status_code_for("Failed", created=True) == 207
-
-
-def test_aggregate_total_failure():
-    statuses = [RegionStatus(region="a", status="Failed", message="x")]
-    with pytest.raises(RegionTotalFailure):
-        aggregate(statuses)
-
-
-def test_overall_status_rollup():
-    from api.services.regions.rollup import overall_status
-
-    assert overall_status(["Ready", "Ready"]) == "Ready"
-    assert overall_status(["Deploying", "Deploying"]) == "Deploying"
-    # a normal rollout where one region is ahead is still in-progress, not Failed
-    assert overall_status(["Ready", "Deploying"]) == "Deploying"
-    # any failed (or unreachable, mapped to Failed) region -> Failed
-    assert overall_status(["Ready", "Failed"]) == "Failed"
-    assert overall_status(["Deploying", "Failed"]) == "Failed"
-    assert overall_status([]) == "Failed"
-
-
-def test_stats_code_for_deploying_is_non_terminal():
-    # Deploying is an accepted, still-rolling-out state, not a partial failure
-    assert status_code_for("Deploying", created=True) == 202
-    assert status_code_for("Deploying", created=False) == 202
-    assert status_code_for("Ready", created=False) == 200
-
-
-def test_ksvc_status_distinguishes_failed_from_deploying():
-    from api.services.state.ksvc_state import ksvc_status
-
-    def _obj(ready_status):
-        conditions = [{"type": "Ready", "status": ready_status}] if ready_status else []
-        return {"status": {"conditions": conditions, "latestCreatedRevisionName": "rev-1"}}
-
-    assert ksvc_status(_obj("True")) == ("Ready", "rev-1")
-    assert ksvc_status(_obj("False")) == ("Failed", "rev-1")  # terminal failure
-    assert ksvc_status(_obj("Unknown")) == ("Deploying", "rev-1")  # still progressing
-    assert ksvc_status(_obj(None)) == ("Deploying", "rev-1")  # no condition yet
-    assert ksvc_status({}) == ("Deploying", None)  # brand-new, no status block
-
-
-def _settings_with_regions():
-    return Settings(
-        regions=[
-            RegionConfig(name="region-a", cluster="region-a-0"),
-            RegionConfig(name="region-b", cluster="region-b-0"),
-        ]
-    )
-
-
-def test_global_cert_and_ca_paths():
-    s = Settings(client_cert_dir="/etc/serverless/client")
-    assert s.client_cert_file == "/etc/serverless/client/tls.crt"
-    assert s.client_key_file == "/etc/serverless/client/tls.key"
-    assert s.ca_bundle.file == "/etc/ssl/certs/ca-bundle.crt"
-
-
-def test_resolve_targets_default_all():
-    d = Deployer(_settings_with_regions())
-    assert [z.region for z in d.resolve_targets(None)] == ["region-a", "region-b"]
-
-
-def test_resolve_targets_unknown_region():
-    d = Deployer(_settings_with_regions())
-    with pytest.raises(ValidationError):
-        d.resolve_targets(["region-c"])
-
-
-def test_local_cluster_selection():
-    d = Deployer(_settings_with_regions())
-    # unset -> first configured region
-    assert d.local_cluster().region == "region-a"
-    # match by region name
-    d._local_region = "region-b"
-    assert d.local_cluster().region == "region-b"
-    # match by cluster name (Cluster.name), not just region name
-    d._local_region = "region-b-0"
-    assert d.local_cluster().region == "region-b"
-    # unknown value -> an error, not a silent adoption of the first region: a
-    # process serving as a region it is not would build and reconcile wrongly.
-    d._local_region = "nope"
-    with pytest.raises(ValidationError):
-        d.local_cluster()
-
-
-async def test_fanout_captures_per_region_errors():
-    d = Deployer(_settings_with_regions())
-
-    def fn(cluster):
-        if cluster.region == "region-b":
-            raise RuntimeError("kaboom")
-        return RegionStatus(region=cluster.region, status="Ready")
-
-    statuses = await d.fanout(d.resolve_targets(None), fn)
-    by_region = {s.region: s for s in statuses}
-    assert by_region["region-a"].status == "Ready"
-    assert by_region["region-b"].message == "kaboom"
-
-
-async def test_fanout_times_out_unreachable_region():
-    import time
-
-    d = Deployer(_settings_with_regions())
-    d._op_timeout = 0.05  # tighten for the test
-
-    def fn(cluster):
-        if cluster.region == "region-b":
-            time.sleep(0.5)  # simulate an unreachable/slow cluster
-        return RegionStatus(region=cluster.region, status="Ready")
-
-    statuses = await d.fanout(d.resolve_targets(None), fn)
-    by_region = {s.region: s for s in statuses}
-    # the healthy region still returns; the slow one is reported, not blocking
-    assert by_region["region-a"].status == "Ready"
-    assert by_region["region-b"].status == "Timeout"
-    assert by_region["region-b"].message is not None
-
-
-async def test_a_read_fanout_gives_up_on_a_slow_region_quickly():
-    """A page read is bounded by cluster_read_op_timeout, not the minute-scale
-    write backstop: a slow cluster costs its own column, never the page."""
-    import time
-
-    d = Deployer(_settings_with_regions())
-    d._read_timeout = 0.05
-    d._op_timeout = 30.0  # the write backstop stays long; the read must not use it
-
-    def fn(cluster):
-        if cluster.region == "region-b":
-            time.sleep(0.5)
-        return RegionStatus(region=cluster.region, status="Ready")
-
-    start = time.monotonic()
-    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
-    assert time.monotonic() - start < 0.4  # gave up at the read timeout, not the op one
-    by_region = {s.region: s for s in statuses}
-    assert by_region["region-a"].status == "Ready"
-    assert by_region["region-b"].status == "Timeout"
-
-
-async def test_gather_each_is_bounded_by_the_read_timeout():
-    import time
-
-    d = Deployer(_settings_with_regions())
-    d._read_timeout = 0.05
-
-    def fn(cluster):
-        if cluster.region == "region-b":
-            time.sleep(0.5)
-        return ["item"]
-
-    start = time.monotonic()
-    results = dict(await d.gather_each(d.resolve_targets(None), fn))
-    assert time.monotonic() - start < 0.4
-    assert results["region-a"] == ["item"]
-    assert results["region-b"] is None  # skipped, not fatal
-
-
-async def test_a_saturated_read_pool_refuses_with_503_not_failed_regions():
-    """Pool saturation is the API's condition: the request 503s; it must not be
-    dressed up as every region having failed (which would read as a 502)."""
-    import threading
-
-    from cloudlet_apis.errors import ServiceUnavailableError
-
-    from api.services.regions.deployer import ReadPool, ReadPoolSaturated
-
-    pool = ReadPool(workers=1, max_queued=0)
-    release = threading.Event()
-    try:
-        blocker = asyncio.ensure_future(pool.run(release.wait))
-        await asyncio.sleep(0.05)  # the one worker is now occupied
-        with pytest.raises(ServiceUnavailableError):
-            await pool.run(lambda: "refused")
-        assert issubclass(ReadPoolSaturated, ServiceUnavailableError)
-    finally:
-        release.set()
-        await blocker
-        pool.shutdown()
-
-
-async def test_a_region_function_raising_503_stays_a_region_failure():
-    """Only the pool's own saturation escapes the fan-out; a region whose work
-    raised ServiceUnavailableError is that region's failure row."""
-    from cloudlet_apis.errors import ServiceUnavailableError
-
-    d = Deployer(_settings_with_regions())
-
-    def fn(cluster):
-        if cluster.region == "region-b":
-            raise ServiceUnavailableError("registry down")
-        return RegionStatus(region=cluster.region, status="Ready")
-
-    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
-    by_region = {s.region: s for s in statuses}
-    assert by_region["region-a"].status == "Ready"
-    assert by_region["region-b"].status == "Failed"
-    assert "registry down" in by_region["region-b"].message
-
-
-async def test_a_read_fanout_is_admitted_whole_or_not_at_all():
-    """Admitted region by region, a fan-out refused half way through would leave
-    the regions it had already started burning the pool for a result the 503
-    throws away - gather cancels no siblings - which is how shedding feeds itself."""
-    from cloudlet_apis.errors import ServiceUnavailableError
-
-    from api.services.regions.deployer import ReadPool
-
-    d = Deployer(_settings_with_regions())
-    d._read_pool.shutdown()
-    d._read_pool = ReadPool(workers=1, max_queued=0)  # one slot; the fan-out needs two
-    started = []
-
-    def fn(cluster):
-        started.append(cluster.region)
-        return RegionStatus(region=cluster.region, status="Ready")
-
-    try:
-        with pytest.raises(ServiceUnavailableError):
-            await d.fanout(d.resolve_targets(None), fn, read=True)
-        assert started == []
-        # ...and the refusal left nothing behind: the whole reservation is back.
-        assert d._read_pool._inflight == 0
-    finally:
-        d._read_pool.shutdown()
-
-
-async def test_a_single_read_is_bounded_by_the_read_timeout():
-    """run_read is on the same bounded pool as the fan-outs, and a slot is only
-    released when the THREAD finishes: a caller that waits forever turns one
-    wedged cluster call into a permanently occupied worker."""
-    import time
-
-    from cloudlet_apis.errors import ServiceUnavailableError
-
-    d = Deployer(_settings_with_regions())
-    d._read_timeout = 0.05
-
-    start = time.monotonic()
-    with pytest.raises(ServiceUnavailableError):
-        await d.run_read(lambda: time.sleep(0.5))
-    assert time.monotonic() - start < 0.4
-
-
-async def test_an_admission_is_given_back_when_the_pool_refuses_the_submit():
-    """A read that never reaches a thread gets no done callback either, so the
-    slot it took would be held for the life of the process."""
-    from api.services.regions.deployer import ReadPool
-
-    pool = ReadPool(workers=1, max_queued=0)
-    pool.shutdown()
-
-    with pytest.raises(RuntimeError):
-        await pool.run(lambda: "never runs")
-    assert pool._inflight == 0
-
-
-class _FakeCluster:
-    def __init__(self, name, existing=None):
-        self.name = name
-        self.region = name
-        self._existing = existing or {}
-
-    def get(self, kind, name, namespace=None):
-        from common.errors import NotFoundError as _NF
-
-        if name in self._existing:
-            return self._existing[name]
-        raise _NF(f"{name} not found")
-
-
-class _NullBuilder:
-    """Builder that declares nothing; for the non-function paths."""
-
-    pull_secret = "reg-creds"
-
-    def image_ref(self, req, registry=None):
-        return "reg/built:1"
-
-    def plan(self, req, labels, registries):
-
-        return plan_for(registries, self.image_ref(req))
-
-    def status(self, cluster, name, group):
-        return None
-
-    def statuses(self, cluster, group):
-        return {}
-
-
-def _workload_service(clusters, builder=None, local_region=None):
-    from api.services.workloads import WorkloadService
-
-    settings = _settings_with_regions()
-    d = Deployer(settings)
-    d._clusters = clusters  # inject fakes (name -> _FakeCluster)
-    d._local_region = local_region
-    return WorkloadService(settings, d, builder or _NullBuilder())
+from tests.factories import (
+    _applied_kind,
+    _ApplyCluster,
+    _FakeCluster,
+    _NullBuilder,
+    _workload_service,
+)
 
 
 def test_host_for_resolution_and_validation():
-    from common.errors import ValidationError
 
     svc = _workload_service({})  # host_for doesn't touch clusters
 
@@ -432,7 +41,6 @@ def test_a_name_and_group_each_legal_alone_are_rejected_when_too_long_together()
     accepted (202) and the API server rejects the KSVC later, in the background
     deploy - after the config Secrets for it have already been written.
     """
-    from common.errors import ValidationError
 
     svc = _workload_service({})
     name, group = "n" * 40, "g" * 40
@@ -1306,53 +914,6 @@ async def test_list_of_containers_reads_no_build():
     assert [s.name for s in summaries] == ["app"]
 
 
-class _ApplyCluster:
-    """Records applied manifests; serves a preset existing KSVC (and Secrets)."""
-
-    def __init__(self, name, existing, secrets=None, images=None, registry=None):
-        from common.config import RegistryConfig
-
-        self.region = name
-        self.name = name
-        # A real Cluster resolves its region's registry at construction; a fake
-        # that stands in for one has to carry it too.
-        self.registry = registry or RegistryConfig()
-        self._existing = existing  # oname -> ksvc dict
-        self._secrets = secrets or {}  # secret name -> secret dict (preset)
-        self._images = images or {}  # kpack Image name -> object (preset)
-        self.applied = []
-        self.deleted = []  # [(ResourceKind, name)] from prune / re-tag
-
-    def get(self, kind, name=None, label_selector=None, namespace=None):
-        from common.cluster import ResourceKind
-        from common.errors import NotFoundError as _NF
-
-        if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
-            return self._existing[name]
-        if kind == ResourceKind.SECRET and name in self._secrets:
-            return self._secrets[name]
-        if kind == ResourceKind.KPACK_IMAGE and name in self._images:
-            return self._images[name]
-        raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret/image
-
-    def apply(self, manifest):
-        self.applied.append(manifest)
-        # Mirror the real client: return the applied object(s), with a uid the
-        # server would assign (used to build ownerReferences for derived objects).
-        meta = manifest.get("metadata", {}) or {}
-        applied = {**manifest, "metadata": {**meta, "uid": f"uid-{meta.get('name')}"}}
-        if manifest.get("kind") == "Service":  # now readable back by get()
-            self._existing[meta.get("name")] = applied
-        return [applied]
-
-    def delete(self, kind, name):
-        self.deleted.append((kind, name))
-
-
-def _applied_kind(cluster, kind):
-    return [m for m in cluster.applied if m.get("kind") == kind]
-
-
 async def test_update_prunes_backing_no_longer_referenced():
     """Dropping the last secret env var / secret file on update must remove the
     now-stale {workload}-env / {workload}-files objects, while a still-referenced
@@ -1786,7 +1347,6 @@ async def test_update_container_username_change_without_token_rejected():
     from api.services.container import ContainerService
     from api.services.manifests.ksvc import build_ksvc
     from api.services.manifests.secrets import build_pull_secret
-    from common.errors import ValidationError
 
     existing = build_ksvc(
         name="api-team",
@@ -2387,7 +1947,6 @@ async def test_accept_rejects_invalid_spec_synchronously():
     from api.models.common import FileMount
     from api.models.container import ContainerCreate
     from api.services.container import ContainerService
-    from common.errors import ValidationError
 
     engine = _workload_service({"region-a": _DownCluster()})  # would error if reached
     svc = ContainerService(engine)
@@ -2758,46 +2317,6 @@ async def test_list_total_failure_details_have_message_key():
     assert all(set(d) == {"region", "message"} for d in ei.value.details)
 
 
-def test_deployer_close_releases_every_cluster():
-    closed = []
-
-    class _C:
-        def __init__(self, name):
-            self.name = name
-            self.region = name
-
-        def close(self):
-            closed.append(self.region)
-
-    d = Deployer(_settings_with_regions())
-    d._clusters = {"a": _C("a"), "b": _C("b")}
-    d.close()
-    assert sorted(closed) == ["a", "b"]
-
-
-def test_cluster_close_closes_api_client_and_resets():
-    from common.cluster import Cluster
-
-    settings = _settings_with_regions()
-    c = Cluster(settings.regions[0], settings)
-    calls = {"n": 0}
-
-    class _Api:
-        def close(self):
-            calls["n"] += 1
-
-    c._api_client_obj = _Api()
-    c._dynamic_client_obj = object()
-    c.close()
-    assert calls["n"] == 1
-    assert c._api_client_obj is None and c._dynamic_client_obj is None
-    c.close()  # idempotent: no client to close now
-    assert calls["n"] == 1
-
-
-# --- Terminating status (#3) and Israel-local timestamps (#2) ---
-
-
 async def test_get_reports_terminating_during_delete():
     """A KSVC carrying a deletionTimestamp (being garbage-collected) reports
     Terminating rather than a stale Ready."""
@@ -2815,15 +2334,6 @@ async def test_get_reports_terminating_during_delete():
     body = await engine.get(CONTAINER, "app", user, "team")
     assert body.status == "Terminating"
     assert body.regions[0].status == "Terminating"
-
-
-def test_overall_status_terminating_precedence():
-    from api.services.regions.rollup import overall_status
-
-    assert overall_status(["Terminating", "Ready"]) == "Terminating"
-    assert overall_status(["Terminating", "Deploying"]) == "Terminating"
-    # A real failure still outranks a termination in progress.
-    assert overall_status(["Failed", "Terminating"]) == "Failed"
 
 
 def test_creation_time_is_israel_local_time_with_dst():
@@ -2919,7 +2429,6 @@ async def test_function_accept_rejects_a_runtime_with_no_builder():
     from starlette.background import BackgroundTasks
 
     from api.models.function import FunctionCreate
-    from common.errors import ValidationError
 
     fsvc = _function_service_with_runtimes(["python"], builder=None)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -2936,7 +2445,6 @@ async def test_function_accept_rejects_unknown_runtime():
     from starlette.background import BackgroundTasks
 
     from api.models.function import FunctionCreate
-    from common.errors import ValidationError
 
     fsvc = _function_service_with_runtimes(["python", "go"])
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -2969,7 +2477,6 @@ async def test_function_update_rejects_unknown_runtime():
     from starlette.background import BackgroundTasks
 
     from api.models.function import FunctionUpdate
-    from common.errors import ValidationError
 
     fsvc = _function_service_with_runtimes(["python"])
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -3148,28 +2655,3 @@ async def test_get_reads_every_regions_build_concurrently():
 
     (a_start, a_end), (b_start, b_end) = spans["region-a"], spans["region-b"]
     assert a_start < b_end and b_start < a_end, "the per-region build reads did not overlap"
-
-
-async def test_admission_counts_the_thread_not_the_await():
-    """A read the caller timed out on is still occupying its worker; the pool
-    must refuse new work while zombies hold it, or shedding never fires."""
-    import threading
-
-    from cloudlet_apis.errors import ServiceUnavailableError
-
-    from api.services.regions.deployer import ReadPool
-
-    pool = ReadPool(workers=1, max_queued=0)
-    release = threading.Event()
-    try:
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(pool.run(release.wait), timeout=0.05)
-        # The await is gone; the THREAD is not. The slot must still be held.
-        with pytest.raises(ServiceUnavailableError):
-            await pool.run(lambda: "must be refused")
-        release.set()
-        await asyncio.sleep(0.1)  # let the zombie finish and release via its callback
-        assert await pool.run(lambda: "ok") == "ok"
-    finally:
-        release.set()
-        pool.shutdown()

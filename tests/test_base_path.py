@@ -21,7 +21,7 @@ from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
 
 # The stubs the other suites already build; this file varies the base path, not them.
-from tests.test_auth_and_deployer import _FakeCluster, _workload_service
+from tests.factories import _FakeCluster, _workload_service
 from tests.test_stream_endpoints import FakeStreams
 
 BASE_PATH = "/api/serverless"
