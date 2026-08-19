@@ -2159,7 +2159,7 @@ def _kpack_image(tag):
 
 def _reclaimed(monkeypatch):
     """Capture what the Quay reclaim was asked to delete, without any HTTP."""
-    from api.services import workloads as workloads_svc
+    from api.services.workloads import service as workloads_svc
 
     calls = []
     monkeypatch.setattr(

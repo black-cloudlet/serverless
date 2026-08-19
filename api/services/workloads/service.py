@@ -21,10 +21,8 @@ that is the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
-import weakref
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Executor
-from dataclasses import dataclass, field
 from datetime import datetime
 
 from cloudlet_apis.auth import Principal
@@ -66,8 +64,10 @@ from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revis
 from api.services.streams import logs as logs_stream
 from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
-from api.services.streams.capacity import StreamCapacity, StreamSlot
+from api.services.streams.capacity import StreamCapacity
 from api.services.streams.sse import StreamEvent
+from api.services.workloads.request import ApplyRequest
+from api.services.workloads.stream_guard import _slot_guarded
 from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
 from common.config import RegistryConfig
@@ -79,54 +79,6 @@ from common.errors import (
 from common.names import object_name
 
 logger = get_logger(__name__)
-
-
-class _SlotGuardedStream:
-    """``inner``'s events, with ``slot`` released however the stream ends.
-
-    The slot is held for the life of this object, not of the call that admitted
-    it - which is why it cannot simply be a ``with``. An object rather than a
-    wrapping generator, deliberately: closing a *never-started* generator skips
-    its body, so a ``finally`` in one cannot cover the stream that is handed to
-    the response layer and then never iterated (a client that disconnects
-    before the body begins) - exactly the stream whose slot would otherwise be
-    gone until a restart. Here ``aclose`` always runs, exhaustion and failure
-    release directly, and the ``weakref.finalize`` backstop covers an object
-    the response layer dropped without closing. Release is idempotent, so the
-    several owners cannot double-free.
-    """
-
-    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]):
-        self._slot = slot
-        self._inner = inner
-        # Bound to the slot only - a reference to `self` here would keep this
-        # object alive forever and the finalizer from ever firing.
-        weakref.finalize(self, slot.release)
-
-    def __aiter__(self) -> _SlotGuardedStream:
-        return self
-
-    async def __anext__(self) -> StreamEvent | str:
-        try:
-            return await self._inner.__anext__()
-        except BaseException:
-            # StopAsyncIteration included: however the stream ends, the slot
-            # goes back now, not when the caller remembers to aclose.
-            self._slot.release()
-            raise
-
-    async def aclose(self) -> None:
-        try:
-            await self._inner.aclose()
-        finally:
-            self._slot.release()
-
-
-def _slot_guarded(
-    slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]
-) -> _SlotGuardedStream:
-    """Wrap ``inner`` so ``slot`` is released however the stream ends."""
-    return _SlotGuardedStream(slot, inner)
 
 
 def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
@@ -147,106 +99,6 @@ def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -
         labels.get(LABEL_OFFERING),
     )
     return NotFoundError(f"{kind} '{name}' not found")
-
-
-@dataclass
-class ApplyRequest:
-    """Everything one apply needs, as a value instead of a signature.
-
-    :meth:`WorkloadService.apply_workload` took twenty-five keyword arguments, and
-    the reason it could is that they were the *union* of both offerings' needs -
-    a container passed five dead build-metadata nulls, a function
-    passed a dead pull-secret manifest. Bundling them does not by itself fix
-    that, but it puts the whole input in one place where the offering-specific
-    tail is visible as a group rather than as more parameters.
-
-    Attributes:
-        name: Workload name.
-        group: Owning group.
-        user: The authenticated caller.
-        image: The image to deploy when every region runs the same one (a
-            container's). Empty for an offering built per region; ``images``
-            carries it then.
-        env: Env vars to resolve onto the workload.
-        files: File mounts to resolve onto the workload.
-        scaling: Autoscaling settings.
-        size: Resource t-shirt size.
-        hostname: Optional custom host; None takes the default.
-        regions: Target region names, or None for all.
-        port: The container port to stamp. Always set - both offerings default
-            it to 8080 rather than leaving it implicit.
-        created: True for a create - enables the absence check and the
-            rollback of a half-applied workload, and picks the success status.
-        pull_secret_name: Name of the image-pull Secret the KSVC references.
-        pull_secret_manifest: The pull Secret to apply, when this offering
-            creates one (a container's; a function's is the chart's).
-        prev_host: The host the workload currently uses (update only); when it
-            differs from the resolved host, the old DomainMapping is retired so
-            the old host doesn't stay claimed.
-        kept_env: Decoded existing env-Secret values, so a secret env var sent
-            without a value keeps its stored value (update only).
-        kept_files: Decoded existing files-Secret values, so a secret file sent
-            without content keeps its stored content (update only).
-        images: The image to run, per region name; takes precedence over
-            ``image``. A function builds in each region's own registry, so its
-            regions do not run one reference.
-        extra_secrets: Owned Secrets applied to every target region (the
-            function's git token), so any of them can rebuild after a
-            switchover. Not in the managed prune set, so omitting one keeps the
-            stored copy.
-        region_resources: Owned manifests applied to one region only, keyed by region
-            name (a function's ``Image`` and build ServiceAccount). A region
-            builds what it runs, so these go to the targets, and each is owned
-            by the KSVC beside it.
-        runtime: Function runtime, stamped as an annotation.
-        version: Requested language version, stamped as an annotation. None
-            means the caller took the platform default.
-        git_url: Function source repo, stamped as an annotation.
-        branch: Function source branch, stamped as an annotation.
-        path: Function source sub-directory, stamped as an annotation.
-        pull_stamp: The workload's current pull stamp, carried forward so a
-            re-composed spec does not drop it and cut a revision.
-    """
-
-    name: str
-    group: str
-    user: Principal
-    image: str
-    env: list
-    files: list
-    scaling: object
-    size: str
-    hostname: str | None
-    regions: list[str] | None
-    port: int
-    created: bool
-    pull_secret_name: str | None = None
-    pull_secret_manifest: dict | None = None
-    prev_host: str | None = None
-    kept_env: dict[str, str] | None = None
-    kept_files: dict[str, bytes] | None = None
-    images: Mapping[str, str] = field(default_factory=dict)
-    extra_secrets: Sequence[dict] = field(default_factory=tuple)
-    region_resources: Mapping[str, Sequence[dict]] = field(default_factory=dict)
-    # Build metadata, stamped as KSVC annotations so a read can report the source
-    # a function was built from. All None for an offering that has no build.
-    runtime: str | None = None
-    version: str | None = None
-    git_url: str | None = None
-    branch: str | None = None
-    path: str | None = None
-    pull_stamp: str | None = None
-
-    def image_for(self, region: str) -> str:
-        """The image ``region`` should run.
-
-        Args:
-            region: The region name.
-
-        Returns:
-            That region's own image, falling back to the uniform ``image``.
-        """
-        return self.images.get(region) or self.image
 
 
 class WorkloadService:
