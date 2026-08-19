@@ -3,7 +3,8 @@
 One rule, in one place. Every read path asks it - the single GET, the stats
 view, the log snapshot, the update's state load, and the delete - and each does
 something different when the answer is no, which is why what is shared here is
-the predicate rather than the whole check.
+the predicate - and, for the paths that answer 404, :func:`hidden_404`, the
+response that keeps a denial indistinguishable from absence.
 
 Not in :mod:`api.services.state.ksvc_state`: that module is pure interpretation of a
 Kubernetes object, and this one weighs the object against a caller.
@@ -12,8 +13,12 @@ Kubernetes object, and this one weighs the object against a caller.
 from __future__ import annotations
 
 from cloudlet_apis.auth import Principal
+from cloudlet_apis.logging import get_logger
 
 from api.models.common import LABEL_GROUP, LABEL_OFFERING
+from common.errors import NotFoundError
+
+logger = get_logger(__name__)
 
 
 def owned_by(obj: dict, user: Principal, offering: str) -> bool:
@@ -39,3 +44,23 @@ def owned_by(obj: dict, user: Principal, offering: str) -> bool:
     return user.can_access_group(labels.get(LABEL_GROUP, "")) and (
         labels.get(LABEL_OFFERING) == offering
     )
+
+
+def hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
+    """Log a denied read and return the 404 that hides it.
+
+    Denied and absent are the same answer to the caller, so the response cannot
+    leak that the workload exists; the real reason goes to the log, where
+    denied-vs-absent stays debuggable.
+    """
+    labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
+    logger.debug(
+        "%s %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
+        action,
+        kind,
+        name,
+        user.username,
+        labels.get(LABEL_GROUP),
+        labels.get(LABEL_OFFERING),
+    )
+    return NotFoundError(f"{kind} '{name}' not found")

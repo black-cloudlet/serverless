@@ -21,10 +21,8 @@ that is the object the offering services and the routers hold.
 from __future__ import annotations
 
 import asyncio
-import weakref
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Executor
-from dataclasses import dataclass, field
 from datetime import datetime
 
 from cloudlet_apis.auth import Principal
@@ -63,11 +61,14 @@ from api.services.state import ksvc_state, ownership
 from api.services.state import metrics as metrics_svc
 from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
+from api.services.state.ownership import hidden_404
 from api.services.streams import logs as logs_stream
 from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
-from api.services.streams.capacity import StreamCapacity, StreamSlot
+from api.services.streams.capacity import StreamCapacity
 from api.services.streams.sse import StreamEvent
+from api.services.workloads.request import ApplyRequest
+from api.services.workloads.stream_guard import _slot_guarded
 from common.build import BuildBackend, BuildPlan
 from common.cluster import Cluster, ResourceKind
 from common.config import RegistryConfig
@@ -81,172 +82,95 @@ from common.names import object_name
 logger = get_logger(__name__)
 
 
-class _SlotGuardedStream:
-    """``inner``'s events, with ``slot`` released however the stream ends.
+async def run_background(fn, *args) -> None:
+    """Run background work, logging (not raising) any failure.
 
-    The slot is held for the life of this object, not of the call that admitted
-    it - which is why it cannot simply be a ``with``. An object rather than a
-    wrapping generator, deliberately: closing a *never-started* generator skips
-    its body, so a ``finally`` in one cannot cover the stream that is handed to
-    the response layer and then never iterated (a client that disconnects
-    before the body begins) - exactly the stream whose slot would otherwise be
-    gone until a restart. Here ``aclose`` always runs, exhaustion and failure
-    release directly, and the ``weakref.finalize`` backstop covers an object
-    the response layer dropped without closing. Release is idempotent, so the
-    several owners cannot double-free.
+    Failures surface to the client via status polling, not the caller.
+
+    Args:
+        fn: The coroutine function to run (e.g. create/update).
+        *args: Positional arguments passed to ``fn``.
     """
-
-    def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]):
-        self._slot = slot
-        self._inner = inner
-        # Bound to the slot only - a reference to `self` here would keep this
-        # object alive forever and the finalizer from ever firing.
-        weakref.finalize(self, slot.release)
-
-    def __aiter__(self) -> _SlotGuardedStream:
-        return self
-
-    async def __anext__(self) -> StreamEvent | str:
-        try:
-            return await self._inner.__anext__()
-        except BaseException:
-            # StopAsyncIteration included: however the stream ends, the slot
-            # goes back now, not when the caller remembers to aclose.
-            self._slot.release()
-            raise
-
-    async def aclose(self) -> None:
-        try:
-            await self._inner.aclose()
-        finally:
-            self._slot.release()
+    try:
+        await fn(*args)
+    except Exception:  # noqa: BLE001 - background work; surfaced via status polling
+        # The plain-string args only (group, name) - never the whole tuple:
+        # the spec in there carries the caller's git/registry tokens and
+        # secret values, and this is the one log line that would print them.
+        ident = "/".join(a for a in args if isinstance(a, str)) or "?"
+        logger.exception("background %s failed for %s", getattr(fn, "__name__", fn), ident)
 
 
-def _slot_guarded(
-    slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]
-) -> _SlotGuardedStream:
-    """Wrap ``inner`` so ``slot`` is released however the stream ends."""
-    return _SlotGuardedStream(slot, inner)
+async def _retag_region(cluster: Cluster, manifests: Sequence[dict]) -> None:
+    """Re-tag one region's Image, reclaiming the repository it leaves behind.
 
-
-def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
-    """Log a denied read and return the 404 that hides it.
-
-    Denied and absent are the same answer to the caller, so the response cannot
-    leak that the workload exists; the real reason goes to the log, where
-    denied-vs-absent stays debuggable.
+    Args:
+        cluster: The region to re-tag in.
+        manifests: That region's build manifests.
     """
-    labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-    logger.debug(
-        "%s %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
-        action,
-        kind,
-        name,
-        user.username,
-        labels.get(LABEL_GROUP),
-        labels.get(LABEL_OFFERING),
-    )
-    return NotFoundError(f"{kind} '{name}' not found")
+    desired = next((m for m in manifests if m.get("kind") == "Image"), None)
+    if desired is None:
+        return
+    name = (desired.get("metadata") or {}).get("name")
+    want = (desired.get("spec") or {}).get("tag")
+
+    def retag() -> str | None:
+        try:
+            current = cluster.get(ResourceKind.KPACK_IMAGE, name)
+        except NotFoundError:
+            return None  # nothing built here yet; the apply creates it
+        had = ((current.get("spec") or {}).get("tag")) or None
+        if not had or had == want:
+            return None
+        cluster.delete(ResourceKind.KPACK_IMAGE, name)
+        logger.info("Image '%s' re-tagged from '%s' to '%s' in %s", name, had, want, cluster.region)
+        return had
+
+    try:
+        previous = await asyncio.to_thread(retag)
+    except Exception:  # noqa: BLE001 - the apply below reports the real failure
+        logger.exception("could not re-tag Image '%s' in %s", name, cluster.region)
+        return
+    if previous:
+        # This region's registry: a reference on another host is somebody
+        # else's repository, and reclaim already refuses to touch it.
+        await asyncio.to_thread(registry_svc.reclaim_moved_repositories, cluster.registry, previous)
 
 
-@dataclass
-class ApplyRequest:
-    """Everything one apply needs, as a value instead of a signature.
+def _pod_authorizer(cluster: Cluster, oname: str, pod: str, kind: str, name: str, user: Principal):
+    """The check both log reads run, as one blocking callable.
 
-    :meth:`WorkloadService.apply_workload` took twenty-five keyword arguments, and
-    the reason it could is that they were the *union* of both offerings' needs -
-    a container passed five dead build-metadata nulls, a function
-    passed a dead pull-secret manifest. Bundling them does not by itself fix
-    that, but it puts the whole input in one place where the offering-specific
-    tail is visible as a group rather than as more parameters.
+    Shared rather than written twice because the second half is the security
+    boundary: owning the workload is not owning every pod, and the pods of
+    every workload on the platform sit in one namespace. Two copies of that
+    rule is one copy that gets fixed.
 
-    Attributes:
-        name: Workload name.
-        group: Owning group.
+    Args:
+        cluster: The local region.
+        oname: The object name (``{name}-{group}``).
+        pod: The pod the caller named.
+        kind: The offering label ("function"/"container").
+        name: The workload name, for the error message.
         user: The authenticated caller.
-        image: The image to deploy when every region runs the same one (a
-            container's). Empty for an offering built per region; ``images``
-            carries it then.
-        env: Env vars to resolve onto the workload.
-        files: File mounts to resolve onto the workload.
-        scaling: Autoscaling settings.
-        size: Resource t-shirt size.
-        hostname: Optional custom host; None takes the default.
-        regions: Target region names, or None for all.
-        port: The container port to stamp. Always set - both offerings default
-            it to 8080 rather than leaving it implicit.
-        created: True for a create - enables the absence check and the
-            rollback of a half-applied workload, and picks the success status.
-        pull_secret_name: Name of the image-pull Secret the KSVC references.
-        pull_secret_manifest: The pull Secret to apply, when this offering
-            creates one (a container's; a function's is the chart's).
-        prev_host: The host the workload currently uses (update only); when it
-            differs from the resolved host, the old DomainMapping is retired so
-            the old host doesn't stay claimed.
-        kept_env: Decoded existing env-Secret values, so a secret env var sent
-            without a value keeps its stored value (update only).
-        kept_files: Decoded existing files-Secret values, so a secret file sent
-            without content keeps its stored content (update only).
-        images: The image to run, per region name; takes precedence over
-            ``image``. A function builds in each region's own registry, so its
-            regions do not run one reference.
-        extra_secrets: Owned Secrets applied to every target region (the
-            function's git token), so any of them can rebuild after a
-            switchover. Not in the managed prune set, so omitting one keeps the
-            stored copy.
-        region_resources: Owned manifests applied to one region only, keyed by region
-            name (a function's ``Image`` and build ServiceAccount). A region
-            builds what it runs, so these go to the targets, and each is owned
-            by the KSVC beside it.
-        runtime: Function runtime, stamped as an annotation.
-        version: Requested language version, stamped as an annotation. None
-            means the caller took the platform default.
-        git_url: Function source repo, stamped as an annotation.
-        branch: Function source branch, stamped as an annotation.
-        path: Function source sub-directory, stamped as an annotation.
-        pull_stamp: The workload's current pull stamp, carried forward so a
-            re-composed spec does not drop it and cut a revision.
+
+    Returns:
+        A callable returning the pod's revision, to run off the event loop.
     """
 
-    name: str
-    group: str
-    user: Principal
-    image: str
-    env: list
-    files: list
-    scaling: object
-    size: str
-    hostname: str | None
-    regions: list[str] | None
-    port: int
-    created: bool
-    pull_secret_name: str | None = None
-    pull_secret_manifest: dict | None = None
-    prev_host: str | None = None
-    kept_env: dict[str, str] | None = None
-    kept_files: dict[str, bytes] | None = None
-    images: Mapping[str, str] = field(default_factory=dict)
-    extra_secrets: Sequence[dict] = field(default_factory=tuple)
-    region_resources: Mapping[str, Sequence[dict]] = field(default_factory=dict)
-    # Build metadata, stamped as KSVC annotations so a read can report the source
-    # a function was built from. All None for an offering that has no build.
-    runtime: str | None = None
-    version: str | None = None
-    git_url: str | None = None
-    branch: str | None = None
-    path: str | None = None
-    pull_stamp: str | None = None
+    def authorize() -> str | None:
+        obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+        if not ownership.owned_by(obj, user, kind):
+            raise hidden_404("read logs of", kind, name, user, obj)
+        found = cluster.get(ResourceKind.POD, pod)
+        labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
+        if labels.get(pods_stream.SERVICE_LABEL) != oname:
+            # Someone else's pod, or none of ours. Same answer as absent: the
+            # response must not confirm that a pod by this name exists.
+            logger.debug("pod '%s' is not a pod of %s '%s'; hidden as 404", pod, kind, name)
+            raise NotFoundError(f"pod '{pod}' not found")
+        return labels.get(pods_stream.REVISION_LABEL)
 
-    def image_for(self, region: str) -> str:
-        """The image ``region`` should run.
-
-        Args:
-            region: The region name.
-
-        Returns:
-            That region's own image, falling back to the uniform ``image``.
-        """
-        return self.images.get(region) or self.image
+    return authorize
 
 
 class WorkloadService:
@@ -379,24 +303,6 @@ class WorkloadService:
             **extra,
         )
 
-    async def run(self, fn, *args) -> None:
-        """Run background work, logging (not raising) any failure.
-
-        Failures surface to the client via status polling, not the caller.
-
-        Args:
-            fn: The coroutine function to run (e.g. create/update).
-            *args: Positional arguments passed to ``fn``.
-        """
-        try:
-            await fn(*args)
-        except Exception:  # noqa: BLE001 - background work; surfaced via status polling
-            # The plain-string args only (group, name) - never the whole tuple:
-            # the spec in there carries the caller's git/registry tokens and
-            # secret values, and this is the one log line that would print them.
-            ident = "/".join(a for a in args if isinstance(a, str)) or "?"
-            logger.exception("background %s failed for %s", getattr(fn, "__name__", fn), ident)
-
     async def accept_create(
         self, *, offering: Offering, group: str, spec, user: Principal, background, work, **extra
     ) -> WorkloadResponse:
@@ -428,7 +334,7 @@ class WorkloadService:
         # Host and name in one pass: an immediate 409 is the point of doing this
         # synchronously, and one round trip answers both.
         await self.assert_deployable(spec.name, group, targets, host=host, require_absent=True)
-        background.add_task(self.run, work, group, spec, user)
+        background.add_task(run_background, work, group, spec, user)
         return self.accepted(offering, spec.name, group, host, **extra)
 
     async def accept_update(
@@ -486,7 +392,7 @@ class WorkloadService:
         # A host collision must be a synchronous 409, not a lost background failure.
         # The workload's own mapping counts as available.
         await self.assert_host_available(host, name, group, self.deployer.resolve_targets(None))
-        background.add_task(self.run, work, group, name, spec, user, existing)
+        background.add_task(run_background, work, group, name, spec, user, existing)
         return self.accepted(offering, name, group, host, **extra)
 
     async def apply_workload(
@@ -688,47 +594,8 @@ class WorkloadService:
         if not region_resources:
             return
         await asyncio.gather(
-            *(self._retag_region(c, region_resources.get(c.region, ())) for c in targets)
+            *(_retag_region(c, region_resources.get(c.region, ())) for c in targets)
         )
-
-    async def _retag_region(self, cluster: Cluster, manifests: Sequence[dict]) -> None:
-        """Re-tag one region's Image, reclaiming the repository it leaves behind.
-
-        Args:
-            cluster: The region to re-tag in.
-            manifests: That region's build manifests.
-        """
-        desired = next((m for m in manifests if m.get("kind") == "Image"), None)
-        if desired is None:
-            return
-        name = (desired.get("metadata") or {}).get("name")
-        want = (desired.get("spec") or {}).get("tag")
-
-        def retag() -> str | None:
-            try:
-                current = cluster.get(ResourceKind.KPACK_IMAGE, name)
-            except NotFoundError:
-                return None  # nothing built here yet; the apply creates it
-            had = ((current.get("spec") or {}).get("tag")) or None
-            if not had or had == want:
-                return None
-            cluster.delete(ResourceKind.KPACK_IMAGE, name)
-            logger.info(
-                "Image '%s' re-tagged from '%s' to '%s' in %s", name, had, want, cluster.region
-            )
-            return had
-
-        try:
-            previous = await asyncio.to_thread(retag)
-        except Exception:  # noqa: BLE001 - the apply below reports the real failure
-            logger.exception("could not re-tag Image '%s' in %s", name, cluster.region)
-            return
-        if previous:
-            # This region's registry: a reference on another host is somebody
-            # else's repository, and reclaim already refuses to touch it.
-            await asyncio.to_thread(
-                registry_svc.reclaim_moved_repositories, cluster.registry, previous
-            )
 
     async def stamp_pull(self, name: str, group: str, stamp: str) -> list[RegionStatus]:
         """Stamp a new pull marker on the workload in every region.
@@ -926,7 +793,7 @@ class WorkloadService:
         # region if it has the workload, else any region that does.
         obj, cluster = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
         if not ownership.owned_by(obj, user, kind):
-            raise _hidden_404("get", kind, name, user, obj)
+            raise hidden_404("get", kind, name, user, obj)
 
         host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
         # A down region counts as Failed; otherwise the per-region KSVC
@@ -1051,7 +918,7 @@ class WorkloadService:
 
         obj = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
         if not ownership.owned_by(obj, user, kind):
-            raise _hidden_404("stats of", kind, name, user, obj)
+            raise hidden_404("stats of", kind, name, user, obj)
 
         overall = overall_status_for_regions(statuses)
         # Not reported here, but it is what makes a running build read as
@@ -1220,7 +1087,7 @@ class WorkloadService:
         def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("stream pods of", kind, name, user, obj)
+                raise hidden_404("stream pods of", kind, name, user, obj)
             return pods_stream.read_roster(cluster, oname)
 
         slot = self.capacity.admit()
@@ -1249,43 +1116,6 @@ class WorkloadService:
                 interval=self.capacity.interval(interval),
             ),
         )
-
-    def _pod_authorizer(
-        self, cluster: Cluster, oname: str, pod: str, kind: str, name: str, user: Principal
-    ):
-        """The check both log reads run, as one blocking callable.
-
-        Shared rather than written twice because the second half is the security
-        boundary: owning the workload is not owning every pod, and the pods of
-        every workload on the platform sit in one namespace. Two copies of that
-        rule is one copy that gets fixed.
-
-        Args:
-            cluster: The local region.
-            oname: The object name (``{name}-{group}``).
-            pod: The pod the caller named.
-            kind: The offering label ("function"/"container").
-            name: The workload name, for the error message.
-            user: The authenticated caller.
-
-        Returns:
-            A callable returning the pod's revision, to run off the event loop.
-        """
-
-        def authorize() -> str | None:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
-            if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("read logs of", kind, name, user, obj)
-            found = cluster.get(ResourceKind.POD, pod)
-            labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
-            if labels.get(pods_stream.SERVICE_LABEL) != oname:
-                # Someone else's pod, or none of ours. Same answer as absent: the
-                # response must not confirm that a pod by this name exists.
-                logger.debug("pod '%s' is not a pod of %s '%s'; hidden as 404", pod, kind, name)
-                raise NotFoundError(f"pod '{pod}' not found")
-            return labels.get(pods_stream.REVISION_LABEL)
-
-        return authorize
 
     async def pods(self, offering: Offering, name: str, user: Principal, group: str) -> PodRoster:
         """The workload's pods on the local region, read once (``follow=false``).
@@ -1320,7 +1150,7 @@ class WorkloadService:
         def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("read pods of", kind, name, user, obj)
+                raise hidden_404("read pods of", kind, name, user, obj)
             return pods_stream.read_roster(cluster, oname)
 
         return PodRoster(
@@ -1385,7 +1215,7 @@ class WorkloadService:
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         cluster = self.deployer.local_cluster()
-        authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
+        authorize = _pod_authorizer(cluster, oname, pod, kind, name, user)
 
         config = self.capacity.config
         # tail_lines picks the *newest* lines; limit_bytes truncates from the
@@ -1484,7 +1314,7 @@ class WorkloadService:
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         oname = object_name(name, group)
         cluster = self.deployer.local_cluster()
-        authorize = self._pod_authorizer(cluster, oname, pod, kind, name, user)
+        authorize = _pod_authorizer(cluster, oname, pod, kind, name, user)
 
         slot = self.capacity.admit()
         try:

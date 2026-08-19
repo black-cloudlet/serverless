@@ -19,6 +19,7 @@ from api.services.offering import FUNCTION
 from api.services.state import describe as describe_svc
 from api.services.streams.sse import StreamEvent
 from api.services.workloads import ApplyRequest, WorkloadService
+from api.services.workloads.service import run_background
 from common.build import BuildPlan, BuildRequest
 from common.config import RegistryConfig
 from common.errors import ValidationError
@@ -283,7 +284,7 @@ class FunctionService:
         # A runtime can be removed from the ConfigMap after a function was built
         # with it; that is a 400 now, not a build that fails minutes later.
         self._assert_runtime(req.runtime, req.version)
-        background.add_task(self._engine.run, self.build, group, name, user, existing)
+        background.add_task(run_background, self.build, group, name, user, existing)
         host = existing.get("host") or self._engine.host_for(name, None, group)
         return self._engine.accepted(
             FUNCTION,

@@ -1056,7 +1056,10 @@ Serverless/
 │   │   └── sse.py                   # renders a service's events as an event-stream response
 │   ├── models/                      # Pydantic schemas: common, function, container, info, stream
 │   ├── services/                    # business logic
-│   │   ├── workloads.py             # shared build-once / deploy-both engine (orchestration)
+│   │   ├── workloads/               # shared build-once / deploy-both engine
+│   │   │   ├── service.py           # WorkloadService - the whole orchestration, one class
+│   │   │   ├── request.py           # ApplyRequest - one apply's inputs as a value
+│   │   │   └── stream_guard.py      # ties a stream's admission slot to its generator
 │   │   ├── offering.py              # Offering protocol: all that differs between fn/container
 │   │   ├── function.py              # function orchestration (build from Git)
 │   │   ├── container.py             # container orchestration (image + pull secret)
