@@ -2,117 +2,22 @@
 
 Shared infrastructure: the API and the build controller both reach a cluster the
 same way (client-cert mTLS, lazy connect), configured from the shared
-:class:`~common.config.CommonSettings`. ``ResourceKind`` is the registry of GVKs
-the platform operates on.
+:class:`~common.config.CommonSettings`.
 """
 
 from __future__ import annotations
 
-import socket
 import threading
 from collections.abc import Iterator
-from enum import Enum
 
-import urllib3
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
-from urllib3.connection import HTTPConnection
 
+from common.cluster.follow import LogFollow
+from common.cluster.kinds import ResourceKind
+from common.cluster.pool import _default_connect_timeout, _keepalive_socket_options
 from common.config import CommonSettings, RegionConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
-
-
-def _keepalive_socket_options() -> list[tuple]:
-    """TCP keepalive options for the cluster connection pools.
-
-    The long-lived streams (a watch, a log follow) deliberately carry no read
-    timeout - they are idle between bytes by design - which leaves them with no
-    defence against a connection that dies *silently* (a NAT/conntrack entry or
-    LB dropping it without RST): the server-side timeout can never arrive over
-    a dead connection, and the blocked thread would sit in recv for however
-    long the kernel default keepalive takes (hours). With these, the kernel
-    probes an idle connection after 30s and gives up within ~a minute more, so
-    a wedged watch costs minutes, not a reconcile loop until restart.
-
-    Added to urllib3's defaults, not substituted for them: those carry
-    TCP_NODELAY, and dropping it re-enables Nagle on every cluster connection.
-
-    The TCP_* constants are Linux; anything the platform lacks is skipped, and
-    SO_KEEPALIVE alone still buys the kernel-default probing.
-    """
-    options = [*HTTPConnection.default_socket_options]
-    options.append((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1))
-    for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 6)):
-        if hasattr(socket, name):
-            options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
-    return options
-
-
-def _default_connect_timeout(api_client: client.ApiClient, connect: float) -> None:
-    """Give every request through ``api_client`` a connect timeout of its own.
-
-    Not ``connection_pool_kw["timeout"]``: urllib3 consults the pool default
-    only for its own sentinel, and ``kubernetes.client.rest`` always passes
-    ``timeout=`` explicitly - ``None`` for a call with no ``_request_timeout``,
-    which resolves to *no* timeout. Discovery and the watch are those calls.
-
-    Connect only: the long-lived streams are idle between bytes by design.
-
-    Args:
-        api_client: The client whose requests should carry the default.
-        connect: The connect timeout, in seconds.
-    """
-    pool_manager = api_client.rest_client.pool_manager
-    request = pool_manager.request
-    default = urllib3.Timeout(connect=connect, read=None)
-
-    def request_with_default_connect_timeout(*args, timeout=None, **kwargs):
-        return request(*args, timeout=default if timeout is None else timeout, **kwargs)
-
-    pool_manager.request = request_with_default_connect_timeout
-
-
-class ResourceKind(Enum):
-    """The resource kinds the platform manages, mapped to (apiVersion, kind)."""
-
-    KNATIVE_SERVICE = ("serving.knative.dev/v1", "Service")
-    KNATIVE_REVISION = ("serving.knative.dev/v1", "Revision")
-    DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
-    CONFIG_MAP = ("v1", "ConfigMap")
-    SECRET = ("v1", "Secret")
-    SERVICE_ACCOUNT = ("v1", "ServiceAccount")
-    POD = ("v1", "Pod")
-    POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
-    KPACK_IMAGE = ("kpack.io/v1alpha2", "Image")
-    KPACK_BUILD = ("kpack.io/v1alpha2", "Build")
-
-    @property
-    def api_version(self) -> str:
-        """The resource's ``apiVersion`` (e.g. ``serving.knative.dev/v1``)."""
-        return self.value[0]
-
-    @property
-    def kind(self) -> str:
-        """The resource's PascalCase ``kind`` (e.g. ``Service``)."""
-        return self.value[1]
-
-    @classmethod
-    def from_kind(cls, kind: str) -> "ResourceKind":
-        """Map a manifest's ``kind`` string (e.g. "Secret") to its ResourceKind.
-
-        Args:
-            kind: The PascalCase kind string.
-
-        Returns:
-            The matching ResourceKind.
-
-        Raises:
-            ValueError: If no member has that kind.
-        """
-        for member in cls:
-            if member.kind == kind:
-                return member
-        raise ValueError(f"unknown resource kind: {kind!r}")
 
 
 class Cluster:
@@ -501,82 +406,6 @@ class Cluster:
             self._dynamic_client_obj = None
         if api_client is not None:
             api_client.close()
-
-
-class LogFollow:
-    """A held-open pod log stream: lines as they arrive, and a way to end it.
-
-    Two threads touch one of these and they do different things. The worker
-    thread iterates :meth:`lines`, blocked on the socket in between. The event
-    loop calls :meth:`close`, which is the only way to end that block early -
-    setting a flag would not, because the flag is only read between lines and a
-    quiet workload produces none. Closing the socket makes the pending read fail,
-    the iteration stops, and the thread is returned to the pool.
-    """
-
-    def __init__(self, response):
-        """Wrap the raw streaming response.
-
-        Args:
-            response: The urllib3 response from a ``follow=True`` log read.
-        """
-        self._response = response
-        self._closed = False
-
-    # A line still waiting for its newline is held in memory; past this it is
-    # emitted as if the newline had arrived. A container that writes megabytes
-    # with no newline at all - binary spew, a runaway single-line JSON dump -
-    # would otherwise grow the buffer without bound, and the buffer lives in
-    # the API's process: that is an OOM kill wearing a log line's clothes.
-    MAX_LINE_BYTES = 1024 * 1024
-
-    def lines(self) -> Iterator[str]:
-        """Yield complete log lines as the container writes them (blocking).
-
-        Chunks are reassembled here rather than trusted to arrive line-aligned:
-        the transfer is chunked by the API server at whatever boundary it likes,
-        so a single write can be split across chunks and several can share one.
-
-        Yields:
-            One log line at a time, newline stripped. A trailing partial line is
-            emitted when the stream ends, so a final write with no newline is
-            not swallowed; a line longer than :attr:`MAX_LINE_BYTES` is emitted
-            in pieces rather than held.
-        """
-        buffer = ""
-        # A bounded amt: with amt=None urllib3 only yields per-chunk on a
-        # chunked-transfer response; anything that de-chunks (a proxy, HTTP/2)
-        # would degrade it to read-to-EOF - which for a follow never comes.
-        for chunk in self._response.stream(amt=2**16, decode_content=True):
-            if self._closed:
-                break
-            buffer += chunk.decode("utf-8", errors="replace")
-            # Not splitlines(): it also breaks on \v, \f and U+2028, any of which
-            # a workload may legitimately log inside one line.
-            *complete, buffer = buffer.split("\n")
-            for line in complete:
-                yield line.rstrip("\r")
-            if len(buffer) > self.MAX_LINE_BYTES:
-                yield buffer
-                buffer = ""
-        if buffer and not self._closed:
-            yield buffer.rstrip("\r")
-
-    def close(self) -> None:
-        """End the stream, unblocking a thread waiting on it. Idempotent.
-
-        Both calls matter and neither replaces the other: ``close`` drops the
-        socket, which is what interrupts the pending read, and ``release_conn``
-        is what stops the pool holding a connection that will never be reused.
-        Failures are swallowed - this only ever runs while tearing a stream
-        down, where there is nothing left to report to.
-        """
-        self._closed = True
-        for end in (self._response.close, self._response.release_conn):
-            try:
-                end()
-            except Exception:  # noqa: BLE001, S110 - teardown; nothing to report to
-                pass
 
 
 def clusters_for(settings: CommonSettings) -> dict[str, Cluster]:

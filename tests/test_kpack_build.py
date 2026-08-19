@@ -563,7 +563,7 @@ def test_a_failed_build_renames_its_failing_region_and_carries_the_cause():
 
 
 def test_building_is_a_non_terminal_poll_state():
-    from api.services.regions.deployer import status_code_for
+    from api.services.regions.rollup import status_code_for
 
     assert status_code_for("Building", created=False) == 202
     assert status_code_for("Building", created=True) == 202
@@ -671,7 +671,7 @@ def _create_spec(**over):
 def _function_service(clusters, builder, local_region=None):
     from api.services.function import FunctionService
     from tests.conftest import runtime_registry
-    from tests.test_auth_and_deployer import _workload_service
+    from tests.factories import _workload_service
 
     return FunctionService(
         _workload_service(clusters, builder=builder, local_region=local_region), runtime_registry()
@@ -679,7 +679,7 @@ def _function_service(clusters, builder, local_region=None):
 
 
 async def test_create_deploys_with_the_platform_pull_secret():
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {})
     svc = _function_service({"region-a": cluster}, _RecordingBuilder())
@@ -692,7 +692,7 @@ async def test_create_deploys_with_the_platform_pull_secret():
 
 
 async def test_build_manifests_are_applied_and_owned_by_the_ksvc():
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {})
     svc = _function_service({"region-a": cluster}, _RecordingBuilder())
@@ -707,13 +707,13 @@ async def test_build_manifests_are_applied_and_owned_by_the_ksvc():
 
 
 def _git_secrets(cluster):
-    from tests.test_auth_and_deployer import _applied_kind
+    from tests.factories import _applied_kind
 
     return [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"].endswith("-git")]
 
 
 async def test_every_region_builds_and_every_region_gets_the_credential():
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("region-a", {})
     remote = _ApplyCluster("region-b", {})
@@ -739,7 +739,7 @@ async def test_a_region_that_runs_no_copy_of_the_function_does_not_build_one():
     This is what retires the unowned-build-object path: an ownerReference must
     name an owner in the same cluster, and now every Image has a KSVC beside it.
     """
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("region-a", {})
     remote = _ApplyCluster("region-b", {})
@@ -772,7 +772,7 @@ async def test_an_update_keeps_each_regions_own_image_rather_than_one_regions():
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     a_digest = "registry.a/acme/payments/hello@sha256:" + "a" * 64
@@ -804,7 +804,7 @@ async def test_an_update_keeps_each_regions_own_image_rather_than_one_regions():
 
 async def test_every_regions_build_objects_are_owned_by_the_ksvc_beside_them():
     """Which is what deletes them - there is no cleanup code, and none needed."""
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     local = _ApplyCluster("region-a", {})
     remote = _ApplyCluster("region-b", {})
@@ -820,7 +820,7 @@ async def test_every_regions_build_objects_are_owned_by_the_ksvc_beside_them():
 
 def test_reading_the_build_status_does_not_fan_out_when_the_local_region_has_it():
     """The fallback must not cost every GET an extra cross-region call."""
-    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+    from tests.factories import _ApplyCluster, _workload_service
 
     seen = []
 
@@ -849,7 +849,7 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -880,7 +880,7 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     """path is a build input: a different directory is a different application."""
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -911,7 +911,7 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
 async def test_update_without_any_token_emits_no_build():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc()})
     builder = _RecordingBuilder()
@@ -933,7 +933,7 @@ async def test_update_without_any_token_emits_no_build():
 async def test_a_branch_change_rebuilds_without_disturbing_the_running_image():
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc()})
     builder = _RecordingBuilder()
@@ -1191,7 +1191,7 @@ async def test_changing_the_version_rebuilds_but_leaves_the_running_image():
     """The language version is a build input like branch or path."""
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -1223,7 +1223,7 @@ async def test_omitting_the_version_returns_to_the_default_and_rebuilds():
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -1248,7 +1248,7 @@ async def test_resending_the_same_version_is_not_a_rebuild():
     from api.models.common import Scaling
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -1313,7 +1313,7 @@ def test_the_kpack_backend_matches_the_build_backend_protocol():
 
 
 def _pod_ports(cluster):
-    from tests.test_auth_and_deployer import _applied_kind
+    from tests.factories import _applied_kind
 
     container = _applied_kind(cluster, "Service")[0]["spec"]["template"]["spec"]["containers"][0]
     return container.get("ports")
@@ -1326,7 +1326,7 @@ async def test_a_function_omitting_a_port_is_stamped_with_the_default():
     but now it is a value in the manifest that a read can report, instead of a
     default a client has to already know.
     """
-    from tests.test_auth_and_deployer import _ApplyCluster
+    from tests.factories import _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {})
     svc = _function_service({"region-a": cluster}, _RecordingBuilder())
@@ -1337,7 +1337,7 @@ async def test_a_function_omitting_a_port_is_stamped_with_the_default():
 
 
 async def test_a_function_can_pin_a_port_for_an_app_that_hardcodes_one():
-    from tests.test_auth_and_deployer import _ApplyCluster
+    from tests.factories import _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {})
     svc = _function_service({"region-a": cluster}, _RecordingBuilder())
@@ -1356,7 +1356,7 @@ async def test_a_function_port_is_replaced_on_update_not_kept():
     the default, not for no change.
     """
     from api.models.function import FunctionUpdate
-    from tests.test_auth_and_deployer import _ApplyCluster
+    from tests.factories import _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -1379,7 +1379,7 @@ async def test_a_function_port_is_replaced_on_update_not_kept():
 
 async def test_a_function_port_is_reported_on_read():
     from api.services.offering import FUNCTION
-    from tests.test_auth_and_deployer import _ApplyCluster, _workload_service
+    from tests.factories import _ApplyCluster, _workload_service
 
     cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc(port=9000)})
     engine = _workload_service({"region-a": cluster}, builder=_RecordingBuilder())
@@ -1430,7 +1430,7 @@ async def test_changing_only_the_port_does_not_rebuild():
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -1537,7 +1537,7 @@ class _RebuildCluster:
     """An _ApplyCluster that also serves kpack Builds and records patches."""
 
     def __init__(self, existing, secrets=None, builds=(), region="region-a"):
-        from tests.test_auth_and_deployer import _ApplyCluster
+        from tests.factories import _ApplyCluster
 
         self._inner = _ApplyCluster(region, existing, secrets)
         self._builds = list(builds)
@@ -1596,7 +1596,7 @@ def _build_service(clusters, builder, runtimes=None, **kwargs):
     """A FunctionService whose runtime offers versions, as a deployed one has."""
     from api.services.builder.runtimes import RuntimeRegistry, RuntimeSpec
     from api.services.function import FunctionService
-    from tests.test_auth_and_deployer import _workload_service
+    from tests.factories import _workload_service
 
     registry = runtimes or RuntimeRegistry(
         [
@@ -1649,7 +1649,7 @@ async def test_build_builds_the_source_the_function_already_has():
 
 async def test_build_applies_the_build_and_then_triggers_it():
     """Order matters: applying first is what makes a region with no Image build at all."""
-    from tests.test_auth_and_deployer import _applied_kind
+    from tests.factories import _applied_kind
 
     cluster = _build_cluster()
     builder = _TriggeringBuilder()
@@ -1668,7 +1668,7 @@ async def test_build_never_writes_the_workload():
     digest reaches it the way one from any other kpack-started build does
     (docs/BUILDING.md - Ownership: API vs Build Service).
     """
-    from tests.test_auth_and_deployer import _applied_kind
+    from tests.factories import _applied_kind
 
     cluster = _build_cluster()
 
@@ -1681,7 +1681,7 @@ async def test_build_never_writes_the_workload():
 
 async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
     """Re-applying them unowned would strand an Image that rebuilds a deleted function."""
-    from tests.test_auth_and_deployer import _applied_kind
+    from tests.factories import _applied_kind
 
     cluster = _build_cluster()
 
@@ -1693,7 +1693,7 @@ async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
 
 async def test_a_rebuild_skips_a_region_that_runs_no_copy_of_the_function():
     """No KSVC there means no build to re-declare - not an unowned one to apply."""
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     local = _RebuildCluster(existing={}, secrets={"hello-payments-git": stored}, builds=[])
@@ -1895,7 +1895,7 @@ async def test_a_created_function_is_deployed_at_the_branch_tag():
     """
     from api.models.function import FunctionCreate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {})
     builder = _RecordingBuilder()
@@ -1923,7 +1923,7 @@ async def test_no_api_path_writes_the_image_after_the_create():
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
 
@@ -1975,7 +1975,7 @@ async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     class _MovedBuilder(_RecordingBuilder):
         def image_ref(self, req, registry=None):
@@ -2014,7 +2014,7 @@ async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest()
     """
     from api.models.function import FunctionUpdate
     from api.services.state.ksvc_state import extract_image
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     digest = "reg/acme/payments/hello@sha256:" + "b" * 64
 
@@ -2177,7 +2177,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
     write to the function, not only the layout change that caused it.
     """
     from api.models.function import FunctionUpdate
-    from tests.test_auth_and_deployer import _applied_kind, _ApplyCluster
+    from tests.factories import _applied_kind, _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -2209,7 +2209,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
 async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
     """The normal case, and what the comparison buys - one GET, no churn."""
     from api.models.function import FunctionUpdate
-    from tests.test_auth_and_deployer import _ApplyCluster
+    from tests.factories import _ApplyCluster
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
@@ -2234,7 +2234,7 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
 async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
     """The create path: there is nothing to replace, and nothing to reclaim."""
     from api.models.function import FunctionCreate
-    from tests.test_auth_and_deployer import _ApplyCluster
+    from tests.factories import _ApplyCluster
 
     cluster = _ApplyCluster("region-a", {})
     reclaimed = _reclaimed(monkeypatch)

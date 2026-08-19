@@ -1066,7 +1066,9 @@ Serverless/
 │   │   │   ├── env.py / files.py    # env & file resolution (+ their Secret/ConfigMap)
 │   │   │   └── resources.py / secrets.py  # t-shirt sizes + imagePullSecret/git-token builders
 │   │   ├── regions/                   # talking to the clusters
-│   │   │   ├── deployer.py          # multi-region fan-out + status rollup
+│   │   │   ├── deployer.py          # multi-region fan-out
+│   │   │   ├── read_pool.py         # bounded pool + admission for the read fan-outs
+│   │   │   ├── rollup.py            # per-region results -> one status -> HTTP code
 │   │   │   ├── preflight.py         # guards that run before any write (host/name conflicts)
 │   │   │   ├── region_apply.py        # write one workload into one region (ordering + rollback)
 │   │   │   └── region_read.py         # read one workload's state back out of a region
@@ -1092,7 +1094,11 @@ Serverless/
 │   └── digest.py                    # which digests belong on a ksvc, and how to re-apply it
 ├── common/                          # shared by api + controller, in THIS repository
 │   ├── config.py                    # CommonSettings + regions/CA-bundle/registry sub-configs
-│   ├── cluster.py                   # Cluster client + ResourceKind (mTLS, lazy connect)
+│   ├── cluster/                     # per-region cluster access
+│   │   ├── client.py                # Cluster client (mTLS, lazy connect) + selection
+│   │   ├── kinds.py                 # ResourceKind - the GVK registry
+│   │   ├── pool.py                  # urllib3 plumbing: keepalive + default connect timeout
+│   │   └── follow.py                # LogFollow - the held-open pod log stream
 │   ├── build.py                     # BuildRequest/BuildPlan/BuildStatus/BuildBackend - the API↔build domain
 │   ├── kpack.py                     # kpack manifests + status parsing (written by the API, read by the controller)
 │   ├── names.py                     # object_name/image+cache repos/OCI tags; re-exports the shared group rules
