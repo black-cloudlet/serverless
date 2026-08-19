@@ -20,6 +20,7 @@ from api.services.offering import CONTAINER
 from api.services.state import describe as describe_svc
 from api.services.streams.sse import StreamEvent
 from api.services.workloads import ApplyRequest, WorkloadService
+from api.services.workloads.service import run_background
 from common.errors import ValidationError
 from common.labels import OFFERING_CONTAINER, workload_labels
 from common.names import digest_of, object_name
@@ -283,7 +284,7 @@ class ContainerService:
                 f"container '{name}' runs a digest ({image}); there is no newer image to "
                 "pull. Send a PUT with a tag to track one."
             )
-        background.add_task(self._engine.run, self.pull, group, name)
+        background.add_task(run_background, self.pull, group, name)
         # Same fallback as the function rebuild path: a workload written before the
         # host annotation existed still has a host, and it is the derived one - so
         # derive it rather than answering the 202 with an empty `hostname`.
