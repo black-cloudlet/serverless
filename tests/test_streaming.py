@@ -172,7 +172,7 @@ def test_a_drain_of_rendered_frames_coalesces_into_one_yield():
 
 
 async def test_the_response_passes_pre_rendered_frames_through_untouched():
-    from api.routers import sse as sse_router
+    from api.routers import streaming as sse_router
 
     async def gen():
         yield "event: log\ndata: {}\n\n"
