@@ -191,7 +191,7 @@ async def test_a_saturated_read_pool_refuses_with_503_not_failed_regions():
 
     from cloudlet_apis.errors import ServiceUnavailableError
 
-    from api.services.regions.deployer import ReadPool, ReadPoolSaturated
+    from api.services.regions.read_pool import ReadPool, ReadPoolSaturated
 
     pool = ReadPool(workers=1, max_queued=0)
     release = threading.Event()
@@ -232,7 +232,7 @@ async def test_a_read_fanout_is_admitted_whole_or_not_at_all():
     throws away - gather cancels no siblings - which is how shedding feeds itself."""
     from cloudlet_apis.errors import ServiceUnavailableError
 
-    from api.services.regions.deployer import ReadPool
+    from api.services.regions.read_pool import ReadPool
 
     d = Deployer(settings_with_regions())
     d._read_pool.shutdown()
@@ -273,7 +273,7 @@ async def test_a_single_read_is_bounded_by_the_read_timeout():
 async def test_an_admission_is_given_back_when_the_pool_refuses_the_submit():
     """A read that never reaches a thread gets no done callback either, so the
     slot it took would be held for the life of the process."""
-    from api.services.regions.deployer import ReadPool
+    from api.services.regions.read_pool import ReadPool
 
     pool = ReadPool(workers=1, max_queued=0)
     pool.shutdown()
@@ -336,7 +336,7 @@ async def test_admission_counts_the_thread_not_the_await():
 
     from cloudlet_apis.errors import ServiceUnavailableError
 
-    from api.services.regions.deployer import ReadPool
+    from api.services.regions.read_pool import ReadPool
 
     pool = ReadPool(workers=1, max_queued=0)
     release = threading.Event()
