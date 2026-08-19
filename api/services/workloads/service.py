@@ -61,6 +61,7 @@ from api.services.state import ksvc_state, ownership
 from api.services.state import metrics as metrics_svc
 from api.services.state import summaries as summaries_svc
 from api.services.state.ksvc_state import ISRAEL_TZ, ksvc_failure_message, revision_failure_message
+from api.services.state.ownership import hidden_404
 from api.services.streams import logs as logs_stream
 from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
@@ -79,26 +80,6 @@ from common.errors import (
 from common.names import object_name
 
 logger = get_logger(__name__)
-
-
-def _hidden_404(action: str, kind: str, name: str, user: Principal, obj: dict) -> NotFoundError:
-    """Log a denied read and return the 404 that hides it.
-
-    Denied and absent are the same answer to the caller, so the response cannot
-    leak that the workload exists; the real reason goes to the log, where
-    denied-vs-absent stays debuggable.
-    """
-    labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
-    logger.debug(
-        "%s %s '%s' denied for user %s (group=%s, offering=%s); hidden as 404",
-        action,
-        kind,
-        name,
-        user.username,
-        labels.get(LABEL_GROUP),
-        labels.get(LABEL_OFFERING),
-    )
-    return NotFoundError(f"{kind} '{name}' not found")
 
 
 async def run_background(fn, *args) -> None:
@@ -179,7 +160,7 @@ def _pod_authorizer(cluster: Cluster, oname: str, pod: str, kind: str, name: str
     def authorize() -> str | None:
         obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
         if not ownership.owned_by(obj, user, kind):
-            raise _hidden_404("read logs of", kind, name, user, obj)
+            raise hidden_404("read logs of", kind, name, user, obj)
         found = cluster.get(ResourceKind.POD, pod)
         labels = (found.get("metadata", {}) or {}).get("labels", {}) or {}
         if labels.get(pods_stream.SERVICE_LABEL) != oname:
@@ -812,7 +793,7 @@ class WorkloadService:
         # region if it has the workload, else any region that does.
         obj, cluster = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
         if not ownership.owned_by(obj, user, kind):
-            raise _hidden_404("get", kind, name, user, obj)
+            raise hidden_404("get", kind, name, user, obj)
 
         host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
         # A down region counts as Failed; otherwise the per-region KSVC
@@ -937,7 +918,7 @@ class WorkloadService:
 
         obj = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
         if not ownership.owned_by(obj, user, kind):
-            raise _hidden_404("stats of", kind, name, user, obj)
+            raise hidden_404("stats of", kind, name, user, obj)
 
         overall = overall_status_for_regions(statuses)
         # Not reported here, but it is what makes a running build read as
@@ -1106,7 +1087,7 @@ class WorkloadService:
         def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("stream pods of", kind, name, user, obj)
+                raise hidden_404("stream pods of", kind, name, user, obj)
             return pods_stream.read_roster(cluster, oname)
 
         slot = self.capacity.admit()
@@ -1169,7 +1150,7 @@ class WorkloadService:
         def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             if not ownership.owned_by(obj, user, kind):
-                raise _hidden_404("read pods of", kind, name, user, obj)
+                raise hidden_404("read pods of", kind, name, user, obj)
             return pods_stream.read_roster(cluster, oname)
 
         return PodRoster(
