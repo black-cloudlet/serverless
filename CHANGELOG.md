@@ -7,6 +7,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- **The stream-ticket flow is mounted from `cloudlet-apis` (>=0.6) instead of
+  written here.** The mint endpoint and the ticket-or-header stream dependency
+  moved beside their signer as factories; this API now wires them with its own
+  signer, auth, path allowlist and Israel-local timezone. Same paths, same
+  responses - the one visible change is that a bad `path` in a mint request is
+  reported through the standard error envelope's `message` rather than
+  pydantic's `details` (still `400 VALIDATION_ERROR`).
+
 ### Changed (paths)
 
 - **`SERVERLESS_BASE_PATH` (chart `basePath`) is the path the whole API is

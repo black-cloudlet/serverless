@@ -1,11 +1,15 @@
-"""Request/response schemas for minting a stream ticket."""
+"""Which paths a stream ticket may be minted for.
+
+The request/response schemas ship with the flow itself
+(:mod:`cloudlet_apis.auth.tickets`); what stays here is the one decision that
+is this API's alone - the allowlist the mint runs every path through.
+"""
 
 from __future__ import annotations
 
 import re
-from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from cloudlet_apis.errors import ValidationError
 
 from api.core.config import get_settings
 from api.core.paths import api_base
@@ -34,41 +38,22 @@ def stream_path_pattern() -> re.Pattern[str]:
     return re.compile(f"^{re.escape(api_base(get_settings()))}{_STREAM_SUFFIX}")
 
 
-class StreamTicketRequest(BaseModel):
-    """Ask for a ticket that opens one specific stream.
+def validate_stream_path(path: str) -> str:
+    """The allowlist the mint endpoint runs every requested path through.
 
-    Attributes:
-        path: The exact path the ticket will be used on - the complete one, as
-            the caller will open it, e.g. one under
-            ``/api/serverless/v1/groups/{group}/functions/{name}/``. Query
-            string excluded: the ticket travels in it.
+    Args:
+        path: The path the caller wants a ticket for.
+
+    Returns:
+        The path, if it names one of this API's streaming endpoints.
+
+    Raises:
+        ValidationError: If it does not.
     """
-
-    path: str
-
-    @field_validator("path")
-    @classmethod
-    def _known_stream(cls, value: str) -> str:
-        """Reject a path that is not one of the streaming endpoints."""
-        if not stream_path_pattern().match(value):
-            raise ValueError(
-                "path must be a streaming endpoint under "
-                f"{api_base(get_settings())}/groups/{{group}}/{{functions|containers}}/{{name}}/: "
-                "'pods', 'stats/stream', or 'logs/pods/{pod}'"
-            )
-        return value
-
-
-class StreamTicketResponse(BaseModel):
-    """A minted ticket and its expiry.
-
-    Attributes:
-        ticket: Send as ``?ticket=`` on the path it was minted for.
-        expiresAt: When it stops being accepted, in Israel local time like every
-            other timestamp the API returns.
-        path: Echoed back, since the ticket is only valid for this one.
-    """
-
-    ticket: str
-    expiresAt: datetime
-    path: str
+    if not stream_path_pattern().match(path):
+        raise ValidationError(
+            "path must be a streaming endpoint under "
+            f"{api_base(get_settings())}/groups/{{group}}/{{functions|containers}}/{{name}}/: "
+            "'pods', 'stats/stream', or 'logs/pods/{pod}'"
+        )
+    return path

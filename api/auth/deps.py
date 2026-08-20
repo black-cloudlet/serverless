@@ -16,11 +16,14 @@ from cloudlet_apis.auth import (  # noqa: F401 - Principal re-exported
     Principal,
     SSOAuth,
     StreamTickets,
+    stream_auth,
 )
+from cloudlet_apis.auth.tickets import TICKET_MINT_PATH
 from cloudlet_apis.errors import UnauthenticatedError
-from fastapi import Depends, Query, Request
+from fastapi import Depends, Request
 
 from api.core.config import get_settings
+from api.core.paths import api_base
 
 
 @lru_cache
@@ -94,56 +97,13 @@ def optional_auth(request: Request) -> Principal | None:
         return None
 
 
-def require_stream_auth(
-    request: Request,
-    header_user: Annotated[Principal | None, Depends(optional_auth)],
-    tickets: Annotated[StreamTickets, Depends(get_tickets)],
-    ticket: Annotated[
-        str | None,
-        Query(
-            description=(
-                "A ticket from POST /api/serverless/v1/stream-tickets, for browsers: "
-                "EventSource "
-                "cannot send an Authorization header. Clients that can send one should, "
-                "and omit this."
-            )
-        ),
-    ] = None,
-) -> Principal:
-    """Authenticate a stream by ticket, or by the ordinary Authorization header.
-
-    Ticket first, and deliberately without a fallback: a caller that sent one is
-    a browser, which has no second way to authenticate. Falling through to the
-    header would answer a bad ticket with a 401 about a missing header, sending
-    whoever debugs it after the wrong thing entirely.
-
-    Args:
-        request: The incoming request.
-        header_user: The caller the Authorization header identifies, if any
-            (injected).
-        tickets: The ticket signer (injected, like the router that mints them -
-            calling the cached factory here instead would put the one component
-            with a key in it beyond the reach of the app's own wiring).
-        ticket: The ``?ticket=`` value, if the caller is using one.
-
-    Returns:
-        The authenticated :class:`~cloudlet_apis.auth.Principal`.
-
-    Raises:
-        UnauthenticatedError: If the ticket is invalid, or neither credential
-            was supplied.
-        ForbiddenError: If a valid OIDC token carries no group membership.
-    """
-    if ticket is not None:
-        # Verified against the path alone. The query string holds the ticket
-        # itself, so signing over it would mean signing over the signature.
-        return tickets.verify(ticket, request.url.path)
-    if header_user is None:
-        raise UnauthenticatedError(
-            "Missing or malformed Authorization header. A browser should open this "
-            "stream with a ticket from POST /api/serverless/v1/stream-tickets instead."
-        )
-    return header_user
-
+# The library's dependency: ticket first, header second (see stream_auth).
+# The hint is display text derived from settings, bound at import - the same
+# moment main.py builds the app; a label needs no per-request laziness.
+require_stream_auth = stream_auth(
+    get_tickets,
+    optional_auth,
+    mint_path_hint=f"{api_base(get_settings())}{TICKET_MINT_PATH}",
+)
 
 StreamUser = Annotated[Principal, Depends(require_stream_auth)]
