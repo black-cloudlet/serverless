@@ -10,8 +10,9 @@ them (docs/DESIGN.md in cloudlet-apis - Stream tickets).
 from __future__ import annotations
 
 import pytest
+from cloudlet_apis.errors import ValidationError
 
-from api.models.stream import StreamTicketRequest
+from api.models.stream import validate_stream_path
 
 # --- the path a ticket may be minted for -----------------------------------
 
@@ -28,7 +29,7 @@ from api.models.stream import StreamTicketRequest
     ],
 )
 def test_the_streaming_paths_are_accepted(path):
-    assert StreamTicketRequest(path=path).path == path
+    assert validate_stream_path(path) == path
 
 
 @pytest.mark.parametrize(
@@ -47,5 +48,5 @@ def test_the_streaming_paths_are_accepted(path):
     ],
 )
 def test_anything_else_is_rejected(path):
-    with pytest.raises(ValueError):
-        StreamTicketRequest(path=path)
+    with pytest.raises(ValidationError):
+        validate_stream_path(path)

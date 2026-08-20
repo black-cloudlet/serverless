@@ -988,12 +988,13 @@ path, for ~60s, carrying an identity the caller already had. It is HMAC-signed r
 because two replicas serve behind one Route and either may take the stream - a ticket held in the
 minting process's memory would fail about half the time.
 
-The mechanism is **`cloudlet_apis.auth.StreamTickets`**, shared with every API on the platform for
-the same reason token validation is (ARCHITECTURE.md: Auth as a shared library) - `EventSource`
-sends no header anywhere, not just here. What stays in this repository is the half that is ours:
-`STREAM_PATH` in `api/models/stream.py` enumerates the paths a ticket may be minted for, because a
-bearer credential in a URL should open a listed thing rather than an inferred one, and those paths
-are this API's to know.
+The mechanism - the signer, the mint endpoint, the stream dependency - is
+**`cloudlet_apis.auth`** (`StreamTickets`, `ticket_mint_router`, `stream_auth`), shared with every
+API on the platform for the same reason token validation is (ARCHITECTURE.md: Auth as a shared
+library) - `EventSource` sends no header anywhere, not just here. What stays in this repository is
+the half that is ours: `validate_stream_path` in `api/models/stream.py` enumerates the paths a
+ticket may be minted for, because a bearer credential in a URL should open a listed thing rather
+than an inferred one, and those paths are this API's to know.
 
 ```
 POST /api/serverless/v1/stream-tickets            EventSource(url + "?ticket=…")
