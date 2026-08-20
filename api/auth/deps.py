@@ -18,10 +18,12 @@ from cloudlet_apis.auth import (  # noqa: F401 - Principal re-exported
     StreamTickets,
     stream_auth,
 )
+from cloudlet_apis.auth.tickets import TICKET_MINT_PATH
 from cloudlet_apis.errors import UnauthenticatedError
 from fastapi import Depends, Request
 
 from api.core.config import get_settings
+from api.core.paths import api_base
 
 
 @lru_cache
@@ -98,8 +100,15 @@ def optional_auth(request: Request) -> Principal | None:
 # The library's dependency, wired with this API's signer, header auth, and mint
 # path. Ticket first with no header fallback on a bad one; a caller with no
 # ticket still authenticates off the header, so CLI clients need none.
+#
+# The hint is display text (the 401 message, the ?ticket= docs), derived from
+# settings so a basePath change cannot leave it naming a path nobody serves.
+# Bound here, at import - the same moment main.py builds the app - not per
+# request like the credentials above: a label is not a credential.
 require_stream_auth = stream_auth(
-    get_tickets, optional_auth, mint_path_hint="/api/serverless/v1/stream-tickets"
+    get_tickets,
+    optional_auth,
+    mint_path_hint=f"{api_base(get_settings())}{TICKET_MINT_PATH}",
 )
 
 StreamUser = Annotated[Principal, Depends(require_stream_auth)]
