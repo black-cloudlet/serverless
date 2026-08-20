@@ -97,14 +97,9 @@ def optional_auth(request: Request) -> Principal | None:
         return None
 
 
-# The library's dependency, wired with this API's signer, header auth, and mint
-# path. Ticket first with no header fallback on a bad one; a caller with no
-# ticket still authenticates off the header, so CLI clients need none.
-#
-# The hint is display text (the 401 message, the ?ticket= docs), derived from
-# settings so a basePath change cannot leave it naming a path nobody serves.
-# Bound here, at import - the same moment main.py builds the app - not per
-# request like the credentials above: a label is not a credential.
+# The library's dependency: ticket first, header second (see stream_auth).
+# The hint is display text derived from settings, bound at import - the same
+# moment main.py builds the app; a label needs no per-request laziness.
 require_stream_auth = stream_auth(
     get_tickets,
     optional_auth,
