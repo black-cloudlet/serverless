@@ -19,7 +19,7 @@ from api.models.common import (
     WorkloadSummary,
 )
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
-from api.routers import sse
+from api.routers import streaming
 
 router = APIRouter(prefix="/groups/{group}/containers", tags=["containers"])
 
@@ -162,7 +162,7 @@ async def get_container_stats(
     return await svc.stats(name, group, user)
 
 
-@router.get("/{name}/pods", responses=sse.switchable(PodRoster, "`pods` and `error`"))
+@router.get("/{name}/pods", responses=streaming.switchable(PodRoster, "`pods` and `error`"))
 async def stream_container_pods(
     group: Group,
     name: Name,
@@ -203,12 +203,12 @@ async def stream_container_pods(
     """
     if not follow:
         return await svc.pods(name, group, user)
-    return sse.stream(await svc.stream_pods(name, group, user, interval=interval))
+    return streaming.stream(await svc.stream_pods(name, group, user, interval=interval))
 
 
 @router.get(
     "/{name}/logs/pods/{pod}",
-    responses=sse.switchable(PodLogSnapshot, "`open`, `log`, `warning`, `end` and `error`"),
+    responses=streaming.switchable(PodLogSnapshot, "`open`, `log`, `warning`, `end` and `error`"),
 )
 async def stream_container_pod_logs(
     group: Group,
@@ -271,7 +271,7 @@ async def stream_container_pod_logs(
             limit_bytes=limitBytes,
             tail_lines=tailLines,
         )
-    return sse.stream(
+    return streaming.stream(
         await svc.stream_pod_logs(
             name,
             group,
@@ -284,7 +284,7 @@ async def stream_container_pod_logs(
     )
 
 
-@router.get("/{name}/stats/stream", responses=sse.RESPONSES, response_class=StreamingResponse)
+@router.get("/{name}/stats/stream", responses=streaming.RESPONSES, response_class=StreamingResponse)
 async def stream_container_stats(
     group: Group,
     name: Name,
@@ -313,7 +313,7 @@ async def stream_container_stats(
     Returns:
         The event stream.
     """
-    return sse.stream(await svc.stream_stats(name, group, user, interval=interval))
+    return streaming.stream(await svc.stream_stats(name, group, user, interval=interval))
 
 
 @router.delete("/{name}", status_code=204)

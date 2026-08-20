@@ -1053,7 +1053,7 @@ Serverless/
 │   │   └── deps.py                  # get_auth()/get_tickets() from this service's settings;
 │   │                                # require_auth + require_stream_auth (header or ?ticket=)
 │   ├── routers/                     # functions, containers, info (public), streams (ticket minting)
-│   │   └── sse.py                   # renders a service's events as an event-stream response
+│   │   └── streaming.py             # renders a service's events as an event-stream response
 │   ├── models/                      # Pydantic schemas: common, function, container, info, stream
 │   ├── services/                    # business logic
 │   │   ├── workloads/               # shared build-once / deploy-both engine
