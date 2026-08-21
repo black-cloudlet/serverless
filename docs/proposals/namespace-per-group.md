@@ -90,12 +90,26 @@ Each phase is independently shippable and lands behind the
 
 ### Phase 0 - groundwork in `common/` (no behavior change)
 
-1. **`common/cluster/client.py`**: `self._namespace` becomes the *default*;
-   every method gains an optional `namespace=` parameter, and `apply`/`get`/
-   `delete` accept `namespace=None` for cluster-scoped objects (Namespace
-   itself). `apply` gains a `field_manager=` parameter so the provisioner
-   writes under its own SSA manager. Existing callers pass nothing and are
-   byte-for-byte unchanged.
+1. **`common/cluster/client.py`**: `Cluster` becomes what its name says -
+   a connection to one region (endpoint, mTLS identity, timeouts) with **no
+   baked-in namespace**. Namespaced operations take a required `namespace`;
+   `namespace=None` on `list_resources`/`watch`/`get` means *all
+   namespaces* (needed by the host preflight, admin listings, and the build
+   controller's Image watch). A deliberate choice over an optional-with-
+   default parameter: in the end-state there is no single workloads
+   namespace, so a default is a silent-wrong-namespace footgun during
+   migration - the value deciding where a write lands is always explicit,
+   for the same reason the auth library refuses a default issuer.
+   Ergonomics come back through a tiny bound view, `cluster.in_namespace
+   (ns)`: same method surface, namespace curried, no connection of its own
+   (one `ApiClient`/pool per region as today). `WorkloadService` resolves
+   `group → namespace` once per request and hands the view down, so
+   `region_apply`/`region_read`/streams keep their signatures and cannot
+   mix namespaces mid-operation. In this phase every caller still binds
+   `settings.workloads_namespace` - behavior identical, signatures final;
+   Phase 3 only changes *which* namespace gets bound. `apply` also gains a
+   `field_manager=` parameter so the provisioner writes under its own SSA
+   manager.
 2. **`common/names.py`**: `namespace_for_group(group)` - prefix
    `serverless-t-` + normalized group; explicit length rule (prefix + group
    ≤ 63 or reject at the same edge `normalize_group` errors surface today),
@@ -132,9 +146,14 @@ Mirrors `controller/` file-for-file where a counterpart exists:
    body. One source for each, two render targets during the transition.
 2. **RBAC split**: `rbac.yaml`'s Role becomes a **ClusterRole** (same rules);
    the chart keeps a RoleBinding in the legacy namespace; the template set
-   carries the per-tenant RoleBinding. The provisioner gets its own
-   ClusterRole (namespaces, networkpolicies, rolebindings, configmaps,
-   quotas, limitranges, + read on KSVCs for GC) bound to its cert CN.
+   carries the per-tenant RoleBinding. **Writes stay namespace-bound** - a
+   cluster-scoped client does not mean cluster-scoped write RBAC. What does
+   go cluster-wide is a small **read-only ClusterRole + ClusterRoleBinding**
+   for the cert user: KSVCs/DomainMappings (host preflight, admin listings)
+   and kpack Images/Builds (the controller's all-namespaces watch). The
+   provisioner gets its own ClusterRole (namespaces, networkpolicies,
+   rolebindings, configmaps, quotas, limitranges, + read on KSVCs for GC)
+   bound to its cert CN.
 3. **`certificate.yaml`**: second `Certificate` for the provisioner CN,
    same ACME issuer.
 4. **`provisioner.yaml`** (new Deployment + Service): modeled on
@@ -171,6 +190,12 @@ Mirrors `controller/` file-for-file where a counterpart exists:
 6. Builds need **no API change**: the kpack Image, build SA, and git Secret
    are applied beside the KSVC and follow its namespace automatically; the
    per-namespace build prerequisites come from the template set.
+7. **Build controller**: the resync/watch in `controller/reconciler.py`
+   becomes one all-namespaces, label-selected stream (`namespace=None` -
+   one watch, not N per-tenant watches), and `controller/digest.py` takes
+   the target namespace from each Image's own metadata when re-applying
+   the KSVC - Image and KSVC are co-located, so it is right there. `TagGC`
+   is unaffected (it reads the listing it is handed).
 
 ### Phase 4 - GC live + flag flip mechanics
 
@@ -199,7 +224,7 @@ be rejected at admission.
 |-----------|-------------|----------------------|
 | Provisioner loop | `controller/main.py` loop, pacing, signals | ~nothing |
 | Provisioner settings | `CommonSettings` (regions, certs, CA, timeouts) | 5 fields |
-| Cluster writes | `common.cluster.Cluster` (SSA, force-conflicts, timeouts, mTLS) | `namespace=`/`field_manager=` params |
+| Cluster writes | `common.cluster.Cluster` (SSA, force-conflicts, timeouts, mTLS) | cluster-scoped refactor + `in_namespace` view, `field_manager=` |
 | Region fan-out (ensure) | deployer fan-out shape + per-region status model | thin wrapper |
 | Namespace GC | `TagGC` structure and philosophy | the emptiness + grace rule |
 | Template loading | runtimes-ConfigMap mounted-file pattern | placeholder substitution + hash |
