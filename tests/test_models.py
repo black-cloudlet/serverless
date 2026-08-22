@@ -155,14 +155,6 @@ def test_filemount_content_required_unless_secret_keep():
         FileMount(mountPath="/etc/a")  # no content, not secret
 
 
-def test_filemount_rejects_removed_content_base64_field():
-    # Pydantic ignores unknown fields, so without an explicit check an old
-    # client's contentBase64 would silently vanish - on a secret file turning
-    # "here is new content" into "keep the stored content".
-    with pytest.raises(ValidationError, match="contentBase64"):
-        FileMount.model_validate({"mountPath": "/etc/a", "contentBase64": "eA==", "secret": True})
-
-
 def test_envvar_name_is_validated_at_the_edge():
     # The name reaches the container's `env` AND, for a secret, the key of the
     # {workload}-env Secret. An unusable one must be a 422, not a background

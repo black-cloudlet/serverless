@@ -11,10 +11,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - **BREAKING: `files[].contentBase64` was replaced by an `encoding` flag on the
   one `content` field.** Send text as before (`encoding` defaults to `"text"`),
-  and binary bytes as `{"content": "<base64>", "encoding": "base64"}`. A request
-  still carrying `contentBase64` is rejected with a 400 naming the replacement -
-  loudly, because silently ignoring the unknown field would turn a secret file's
-  new content into a "keep".
+  and binary bytes as `{"content": "<base64>", "encoding": "base64"}`.
 - **Binary non-secret file contents now read back.** A GET used to return
   `content: null` for a non-secret file whose bytes are not UTF-8, and that null
   could not be sent back on `PUT` (only secret files may omit content), so a

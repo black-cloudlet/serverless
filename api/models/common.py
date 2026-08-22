@@ -187,22 +187,6 @@ class FileMount(BaseModel):
         """Whether this (secret) file keeps its stored content (no content given)."""
         return self.content is None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_removed_content_base64(cls, data: object) -> object:
-        """Fail loud on the removed ``contentBase64`` field.
-
-        Pydantic ignores unknown fields, so without this an old client's
-        ``contentBase64`` would silently vanish - and on a secret file that turns
-        "here is new content" into "keep the stored content".
-        """
-        if isinstance(data, dict) and "contentBase64" in data:
-            raise ValueError(
-                "'contentBase64' was removed; send the base64 in 'content' "
-                "with 'encoding': 'base64'"
-            )
-        return data
-
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
         """Validate the content (present unless a secret keep, decodable if base64).
