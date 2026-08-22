@@ -142,16 +142,25 @@ def test_envvar_value_required_unless_secret_keep():
 def test_filemount_content_required_unless_secret_keep():
     f = FileMount(mountPath="/etc/a", content="hi")
     assert f.readOnly is True and f.keep is False
+    assert f.encoding == "text" and f.decoded() == b"hi"
     assert FileMount(mountPath="/etc/a", content="hi", readOnly=False).readOnly is False
+    # base64 content decodes to the raw bytes it carries
+    b64 = FileMount(mountPath="/etc/a", content="eA==", encoding="base64")
+    assert b64.decoded() == b"x"
     # a secret file MAY omit content -> "keep the stored content" on update
     keep = FileMount(mountPath="/etc/a", secret=True)
     assert keep.keep is True
-    # a non-secret file still needs exactly one content field
+    # a non-secret file still needs content
     with pytest.raises(ValidationError):
         FileMount(mountPath="/etc/a")  # no content, not secret
-    # supplying both is always rejected, even for a secret
-    with pytest.raises(ValidationError):
-        FileMount(mountPath="/etc/a", content="x", contentBase64="eA==", secret=True)
+
+
+def test_filemount_rejects_removed_content_base64_field():
+    # Pydantic ignores unknown fields, so without an explicit check an old
+    # client's contentBase64 would silently vanish - on a secret file turning
+    # "here is new content" into "keep the stored content".
+    with pytest.raises(ValidationError, match="contentBase64"):
+        FileMount.model_validate({"mountPath": "/etc/a", "contentBase64": "eA==", "secret": True})
 
 
 def test_envvar_name_is_validated_at_the_edge():
