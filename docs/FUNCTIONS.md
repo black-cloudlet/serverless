@@ -159,7 +159,9 @@ source, not images.)
 > **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
 > values and secret file contents come back `null` with `secret: true`; the **git token**
 > is omitted and the **registry token** is not shown (`registryUsername` is). Non-secret env
-> values and non-secret file contents (from the workload's ConfigMap) are returned in full.
+> values and non-secret file contents (from the workload's ConfigMap) are returned in full -
+> a binary file's content comes back base64-encoded with `encoding: "base64"`, exactly the
+> form it is submitted in, so it round-trips too.
 > Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
 > stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
 > stored; echoing the stored `registryUsername` back without a token keeps the credential -

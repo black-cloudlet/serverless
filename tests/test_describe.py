@@ -117,6 +117,22 @@ def test_parse_spec_reports_function_build_inputs():
     assert spec.registryUsername is None  # functions have no pull secret
 
 
+def test_parse_spec_returns_binary_configmap_content_as_base64():
+    import base64
+
+    # region_read hands binaryData entries over as bytes; the view reports them
+    # base64-encoded with encoding "base64", mirroring how they are submitted.
+    blob = bytes([0xFF, 0xFE, 0x00])
+    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": blob}})
+    plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
+    assert plain.encoding == "base64"
+    assert base64.b64decode(plain.content) == blob
+    # text entries stay str -> text encoding
+    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": "level=debug"}})
+    plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
+    assert plain.encoding == "text" and plain.content == "level=debug"
+
+
 def test_parse_spec_without_configmap_leaves_content_null():
     spec = parse_spec(_ksvc())  # no configmaps provided
     plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")

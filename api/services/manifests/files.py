@@ -79,10 +79,10 @@ def resolve_files(
     without content is filled from ``kept``, so a redacted read can be sent back.
 
     Content is carried as **bytes** throughout. A file is a byte string, not text:
-    ``contentBase64`` exists so a caller can mount a keystore or a DER certificate,
-    and decoding those to ``str`` on the way in only to re-encode on the way out
-    cannot round-trip (it raises on the first non-UTF-8 byte). The backing builders
-    take bytes and choose the right Kubernetes field.
+    ``encoding: base64`` exists so a caller can mount a keystore or a DER
+    certificate, and decoding those to ``str`` on the way in only to re-encode on
+    the way out cannot round-trip (it raises on the first non-UTF-8 byte). The
+    backing builders take bytes and choose the right Kubernetes field.
 
     Args:
         workload: The object name (``{name}-{group}``).
@@ -125,12 +125,12 @@ def resolve_files(
                     f"secret file '{f.mountPath}' has no content and none is stored to keep"
                 )
             raw = kept[key]
-        elif f.contentBase64 is not None:
+        elif f.encoding == "base64":
             try:
                 # Lenient decode tolerates line-wrapped PEM bodies but still raises on bad
                 # padding; both errors subclass ValueError. FileMount already rejected
                 # undecodable input at the edge; this keeps non-HTTP callers honest.
-                raw = base64.b64decode(f.contentBase64)
+                raw = base64.b64decode(f.content or "")
             except ValueError as exc:
                 raise ValidationError(f"file '{f.mountPath}' has invalid base64 content") from exc
         else:

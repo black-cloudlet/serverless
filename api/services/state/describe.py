@@ -8,6 +8,8 @@ contents, registry creds - is deliberately never reconstructed.
 
 from __future__ import annotations
 
+import base64
+
 from api.models.common import (
     ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_PATH,
@@ -41,27 +43,36 @@ def redact_env(env: list[EnvVar]) -> list[EnvVarView]:
 def redact_files(files: list[FileMount]) -> list[FileView]:
     """Convert submitted files to response views, dropping secret contents.
 
-    ``content`` is a JSON string, so a non-secret file whose bytes are not UTF-8 (a
-    keystore, a DER certificate) reads back as None - the same as a secret file.
-    Returning it re-encoded would be inventing a text form the file does not have,
-    and the caller already holds what they sent.
+    Non-secret content echoes back in canonical form: text when the bytes are
+    UTF-8, else base64 with ``encoding: base64`` - the same split the live read
+    makes - so what the caller sees does not depend on which encoding they chose
+    to send, and either view round-trips on update.
 
     Args:
         files: The submitted file mounts.
 
     Returns:
-        Views with secret and non-text file contents set to None.
+        Views with secret file contents set to None.
     """
     out: list[FileView] = []
     for f in files:
         content: str | None = None
+        encoding = "text"
         if not f.secret:
+            raw = f.decoded()
             try:
-                content = f.decoded().decode("utf-8")
-            except UnicodeDecodeError:
-                content = None  # binary: no text form to echo
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:  # binary: no text form, echo as base64
+                content = base64.b64encode(raw).decode("ascii")
+                encoding = "base64"
         out.append(
-            FileView(mountPath=f.mountPath, readOnly=f.readOnly, secret=f.secret, content=content)
+            FileView(
+                mountPath=f.mountPath,
+                readOnly=f.readOnly,
+                secret=f.secret,
+                content=content,
+                encoding=encoding,
+            )
         )
     return out
 
@@ -197,7 +208,13 @@ def _env(ksvc: dict) -> list[EnvVarView]:
 
 
 def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
-    """Read back mounted files as views; non-secret content from ``configmaps``."""
+    """Read back mounted files as views; non-secret content from ``configmaps``.
+
+    A ``configmaps`` value is ``str`` for a file stored in the ConfigMap's
+    ``data`` and ``bytes`` for one stored in ``binaryData`` (see
+    ``region_read.describe_spec``); bytes read back base64-encoded with
+    ``encoding: base64``, mirroring how such a file is submitted.
+    """
     volumes = {v.get("name"): v for v in _pod_spec(ksvc).get("volumes") or []}
     out: list[FileView] = []
     for mount in _container(ksvc).get("volumeMounts") or []:
@@ -207,17 +224,24 @@ def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
         # secret-backed volumes carry a "secret" key; configMap-backed a "configMap"
         is_secret = "secret" in volume
         content = None
+        encoding = "text"
         if not is_secret:
             # the mount's subPath IS the ConfigMap key (set to _key(mountPath) when
             # the volume was built), so read it straight off the manifest
             cm_name = (volume.get("configMap") or {}).get("name", "")
-            content = (configmaps.get(cm_name) or {}).get(mount.get("subPath"))
+            value = (configmaps.get(cm_name) or {}).get(mount.get("subPath"))
+            if isinstance(value, bytes):
+                content = base64.b64encode(value).decode("ascii")
+                encoding = "base64"
+            else:
+                content = value
         out.append(
             FileView(
                 mountPath=mount.get("mountPath", ""),
                 readOnly=bool(mount.get("readOnly", True)),
                 secret=is_secret,
                 content=content,
+                encoding=encoding,
             )
         )
     return out

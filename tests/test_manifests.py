@@ -303,14 +303,14 @@ def test_invalid_base64_is_rejected_by_the_model_not_only_the_resolver():
     # "abc" has incorrect padding -> binascii.Error (a ValueError) even on a
     # lenient decode, so it surfaces as a 400 at the model.
     with pytest.raises(PydanticValidationError, match="invalid base64 content"):
-        FileMount(mountPath="/a/conf", contentBase64="abc")
+        FileMount(mountPath="/a/conf", content="abc", encoding="base64")
 
     # resolve_files keeps its own guard for callers that build a spec directly,
     # off the HTTP edge, where the request model never ran.
     raw = SimpleNamespace(
         mountPath="/a/conf",
-        content=None,
-        contentBase64="abc",
+        content="abc",
+        encoding="base64",
         secret=False,
         readOnly=True,
         keep=False,
@@ -327,7 +327,10 @@ def test_resolve_files_accepts_linewrapped_base64():
     # PEM-style line-wrapped base64 (newlines) must still decode, not 400.
     wrapped = base64.encodebytes(b"hello world, this is a longer body").decode()
     resolved = resolve_files(
-        "app", "team", "alice", [FileMount(mountPath="/a/conf", contentBase64=wrapped)]
+        "app",
+        "team",
+        "alice",
+        [FileMount(mountPath="/a/conf", content=wrapped, encoding="base64")],
     )
     cm = next(b for b in resolved.backing if b["kind"] == "ConfigMap")
     assert "hello world" in next(iter(cm["data"].values()))
@@ -456,7 +459,7 @@ def test_resolve_env_secret_creates_secret_and_rewrites_ref():
 
 
 def test_binary_secret_file_survives_create_and_keep_on_update():
-    """contentBase64 exists so a caller can mount a keystore or a DER certificate.
+    """`encoding: base64` exists so a caller can mount a keystore or a DER certificate.
 
     Those have no text form, so carrying content as str could not round-trip: the
     decode needs surrogateescape and the re-encode then raises on the first
@@ -469,7 +472,8 @@ def test_binary_secret_file_survives_create_and_keep_on_update():
     blob = bytes([0x30, 0x82, 0x04, 0xA2, 0xFF, 0xFE, 0x00, 0x01])  # PKCS#12-ish
     mount = FileMount(
         mountPath="/etc/certs/keystore.p12",
-        contentBase64=base64.b64encode(blob).decode(),
+        content=base64.b64encode(blob).decode(),
+        encoding="base64",
         secret=True,
     )
 
@@ -500,7 +504,9 @@ def test_binary_non_secret_file_goes_to_binary_data():
     blob = bytes([0xFF, 0xFE, 0x00])
     files = [
         FileMount(mountPath="/etc/app.conf", content="level=debug"),
-        FileMount(mountPath="/etc/logo.ico", contentBase64=base64.b64encode(blob).decode()),
+        FileMount(
+            mountPath="/etc/logo.ico", content=base64.b64encode(blob).decode(), encoding="base64"
+        ),
     ]
     cm = next(
         m for m in resolve_files("a-t", "team", "alice", files).backing if m["kind"] == "ConfigMap"
@@ -509,10 +515,11 @@ def test_binary_non_secret_file_goes_to_binary_data():
     assert base64.b64decode(cm["binaryData"]["etc-logo.ico"]) == blob
 
 
-def test_redact_files_reports_no_text_form_for_binary_content():
-    """`content` is a JSON string, so binary reads back as null - like a secret.
+def test_redact_files_echoes_binary_content_as_base64():
+    """Binary content echoes back base64 + `encoding: base64`, so it round-trips.
 
-    Echoing it re-encoded would invent a text form the file does not have.
+    Text stays text whichever way it was sent: the echo is canonical form, not
+    the submitted encoding.
     """
     import base64
 
@@ -521,12 +528,24 @@ def test_redact_files_reports_no_text_form_for_binary_content():
     views = redact_files(
         [
             FileMount(mountPath="/etc/app.conf", content="level=debug"),
+            # text submitted as base64 still echoes as text
+            FileMount(
+                mountPath="/etc/extra.conf",
+                content=base64.b64encode(b"a=b").decode(),
+                encoding="base64",
+            ),
             FileMount(
                 mountPath="/etc/logo.ico",
-                contentBase64=base64.b64encode(bytes([0xFF, 0xFE])).decode(),
+                content=base64.b64encode(bytes([0xFF, 0xFE])).decode(),
+                encoding="base64",
             ),
         ]
     )
     by_path = {v.mountPath: v for v in views}
     assert by_path["/etc/app.conf"].content == "level=debug"
-    assert by_path["/etc/logo.ico"].content is None
+    assert by_path["/etc/app.conf"].encoding == "text"
+    assert by_path["/etc/extra.conf"].content == "a=b"
+    assert by_path["/etc/extra.conf"].encoding == "text"
+    ico = by_path["/etc/logo.ico"]
+    assert ico.encoding == "base64"
+    assert base64.b64decode(ico.content) == bytes([0xFF, 0xFE])
