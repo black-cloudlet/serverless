@@ -152,8 +152,7 @@ def test_filemount_content_required_unless_secret_keep():
     # a non-secret file still needs content
     with pytest.raises(ValidationError):
         FileMount(mountPath="/etc/a")  # no content, not secret
-    # a lone surrogate is a valid JSON string but not UTF-8-encodable text;
-    # unchecked it would 500 on the response echo instead of 400 here
+    # a lone surrogate is a valid JSON string but not UTF-8-encodable text
     with pytest.raises(ValidationError, match="not valid UTF-8"):
         FileMount(mountPath="/etc/a", content="\ud800bad")
 

@@ -204,8 +204,7 @@ class FileMount(BaseModel):
             raise ValueError("file requires 'content'")
         if self.encoding == "text" and self.content is not None:
             try:
-                # A JSON string can carry a lone surrogate (\ud800), which is not
-                # UTF-8-encodable; unchecked it would 500 on the response echo.
+                # A JSON string can carry a lone surrogate, which is not UTF-8.
                 self.content.encode("utf-8")
             except UnicodeEncodeError as exc:
                 raise ValueError(

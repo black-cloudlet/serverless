@@ -20,9 +20,7 @@ from common.labels import workload_labels
 CONFIG_VOLUME = "files-config"
 SECRET_VOLUME = "files-secret"  # noqa: S105 - a volume name, not a credential
 
-# Kubernetes caps a whole ConfigMap/Secret object at 1MiB. Checked here, on the
-# serialized manifest at accept time, because past this point an oversized
-# object only fails in the background apply - a Failed region instead of a 400.
+# The Kubernetes size cap on a whole ConfigMap/Secret object.
 MAX_BACKING_BYTES = 1024 * 1024
 
 
@@ -159,8 +157,7 @@ def resolve_files(
     if secret_data:
         backing.append(res.build_secret(name, labels, secret_data))
     for manifest in backing:
-        # Measure what the cluster stores (Secret values and binaryData are
-        # base64 there, so raw byte counts would under-report by a third).
+        # Serialized, not raw: Secret values and binaryData are base64 there.
         size = len(json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
         if size > MAX_BACKING_BYTES:
             raise ValidationError(
