@@ -156,7 +156,15 @@ def describe_spec(cluster: Cluster, obj: dict):
     for cm_name in describe_svc.configmap_refs(obj):
         try:
             cm = cluster.get(ResourceKind.CONFIG_MAP, cm_name)
-            configmaps[cm_name] = cm.get("data") or {}
+            # binaryData decodes to bytes; the str-vs-bytes split tells
+            # describe._files which encoding to report the content under.
+            entries: dict[str, str | bytes] = dict(cm.get("data") or {})
+            for key, val in (cm.get("binaryData") or {}).items():
+                try:
+                    entries[key] = base64.b64decode(val)
+                except Exception:  # noqa: BLE001, S112 - skip an undecodable key
+                    continue
+            configmaps[cm_name] = entries
         except Exception:  # noqa: BLE001, S110 - content is best-effort, skip silently
             pass
     registry_username = None

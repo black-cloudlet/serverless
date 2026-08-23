@@ -7,6 +7,34 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed (file mounts)
+
+- **Unencodable text content is a 400, not a 500.** A JSON string can carry a
+  lone surrogate (`\ud800`), which is not UTF-8-encodable; it now fails at the
+  model edge instead of exploding on the response echo.
+- **Oversized files are a 400 at accept, not a background apply failure.**
+  Kubernetes caps a whole ConfigMap/Secret at 1MiB; the resolver now measures
+  the serialized backing object (where Secret values and `binaryData` are
+  base64) and rejects a spec that could never apply.
+
+### Changed (file mounts)
+
+- **BREAKING: `files[].contentBase64` was replaced by an `encoding` flag on the
+  one `content` field.** Send text as before (`encoding` defaults to `"text"`),
+  and binary bytes as `{"content": "<base64>", "encoding": "base64"}`.
+- **BREAKING: `files[].readOnly` was removed.** It never had an effect:
+  Kubernetes mounts ConfigMap/Secret volumes read-only regardless of the pod
+  spec, so `readOnly: false` produced a file that was unwritable anyway. The
+  mount is stamped `readOnly: true` unconditionally and the field is gone from
+  both the request and the response.
+- **Binary non-secret file contents now read back.** A GET used to return
+  `content: null` for a non-secret file whose bytes are not UTF-8, and that null
+  could not be sent back on `PUT` (only secret files may omit content), so a
+  redacted read of a workload with a binary ConfigMap file did not round-trip.
+  The response now mirrors the request: binary content returns base64-encoded
+  with `encoding: "base64"` (read from the ConfigMap's `binaryData`), so the
+  GET body can be sent straight back whatever the file holds.
+
 ### Changed
 
 - **The stream-ticket flow is mounted from `cloudlet-apis` (>=0.6) instead of

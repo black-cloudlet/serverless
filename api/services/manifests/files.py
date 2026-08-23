@@ -9,6 +9,7 @@ single file, not a directory). Pure functions - no cluster access.
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import dataclass, field
 
 from api.models.common import FileMount
@@ -19,17 +20,23 @@ from common.labels import workload_labels
 CONFIG_VOLUME = "files-config"
 SECRET_VOLUME = "files-secret"  # noqa: S105 - a volume name, not a credential
 
+# The Kubernetes size cap on a whole ConfigMap/Secret object.
+MAX_BACKING_BYTES = 1024 * 1024
+
 
 @dataclass
 class VolumeSpec:
-    """A volume mount derived from a FileMount (always a single-file subPath)."""
+    """A volume mount derived from a FileMount (always a single-file subPath).
+
+    Always rendered read-only: Kubernetes mounts ConfigMap/Secret volumes
+    read-only whatever the pod spec asks for, so there is nothing to configure.
+    """
 
     volume_name: str
     kind: str  # "configmap" | "secret"
     source_name: str
     mount_path: str
     sub_path: str
-    read_only: bool = True
 
 
 @dataclass
@@ -79,10 +86,10 @@ def resolve_files(
     without content is filled from ``kept``, so a redacted read can be sent back.
 
     Content is carried as **bytes** throughout. A file is a byte string, not text:
-    ``contentBase64`` exists so a caller can mount a keystore or a DER certificate,
-    and decoding those to ``str`` on the way in only to re-encode on the way out
-    cannot round-trip (it raises on the first non-UTF-8 byte). The backing builders
-    take bytes and choose the right Kubernetes field.
+    ``encoding: base64`` exists so a caller can mount a keystore or a DER
+    certificate, and decoding those to ``str`` on the way in only to re-encode on
+    the way out cannot round-trip (it raises on the first non-UTF-8 byte). The
+    backing builders take bytes and choose the right Kubernetes field.
 
     Args:
         workload: The object name (``{name}-{group}``).
@@ -96,8 +103,9 @@ def resolve_files(
         The resolved volumes and backing manifests.
 
     Raises:
-        ValidationError: On a duplicate mount-path key, invalid base64 content, or a
-            secret file sent without content when none is stored to keep.
+        ValidationError: On a duplicate mount-path key, invalid base64 content, a
+            secret file sent without content when none is stored to keep, or a
+            backing object over the Kubernetes 1MiB size cap.
     """
     kept = kept or {}
     name = files_name(workload)
@@ -125,12 +133,12 @@ def resolve_files(
                     f"secret file '{f.mountPath}' has no content and none is stored to keep"
                 )
             raw = kept[key]
-        elif f.contentBase64 is not None:
+        elif f.encoding == "base64":
             try:
                 # Lenient decode tolerates line-wrapped PEM bodies but still raises on bad
                 # padding; both errors subclass ValueError. FileMount already rejected
                 # undecodable input at the edge; this keeps non-HTTP callers honest.
-                raw = base64.b64decode(f.contentBase64)
+                raw = base64.b64decode(f.content or "")
             except ValueError as exc:
                 raise ValidationError(f"file '{f.mountPath}' has invalid base64 content") from exc
         else:
@@ -138,16 +146,22 @@ def resolve_files(
 
         if f.secret:
             secret_data[key] = raw
-            volumes.append(VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key, f.readOnly))
+            volumes.append(VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key))
         else:
             config_data[key] = raw
-            volumes.append(
-                VolumeSpec(CONFIG_VOLUME, "configmap", name, f.mountPath, key, f.readOnly)
-            )
+            volumes.append(VolumeSpec(CONFIG_VOLUME, "configmap", name, f.mountPath, key))
 
     backing: list[dict] = []
     if config_data:
         backing.append(res.build_configmap(name, labels, config_data))
     if secret_data:
         backing.append(res.build_secret(name, labels, secret_data))
+    for manifest in backing:
+        # Serialized, not raw: Secret values and binaryData are base64 there.
+        size = len(json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
+        if size > MAX_BACKING_BYTES:
+            raise ValidationError(
+                f"files too large: the workload's {manifest['kind']} would be "
+                f"{size // 1024}KiB, over the 1MiB Kubernetes object limit"
+            )
     return ResolvedFiles(volumes=volumes, backing=backing)
