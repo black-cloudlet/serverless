@@ -7,6 +7,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed (file mounts)
+
+- **Unencodable text content is a 400, not a 500.** A JSON string can carry a
+  lone surrogate (`\ud800`), which is not UTF-8-encodable; it now fails at the
+  model edge instead of exploding on the response echo.
+- **Oversized files are a 400 at accept, not a background apply failure.**
+  Kubernetes caps a whole ConfigMap/Secret at 1MiB; the resolver now measures
+  the serialized backing object (where Secret values and `binaryData` are
+  base64) and rejects a spec that could never apply.
+
 ### Changed (file mounts)
 
 - **BREAKING: `files[].contentBase64` was replaced by an `encoding` flag on the

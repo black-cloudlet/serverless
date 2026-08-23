@@ -199,6 +199,15 @@ class FileMount(BaseModel):
         """
         if self.keep and not self.secret:
             raise ValueError("file requires 'content'")
+        if self.encoding == "text" and self.content is not None:
+            try:
+                # A JSON string can carry a lone surrogate (\ud800), which is not
+                # UTF-8-encodable; unchecked it would 500 on the response echo.
+                self.content.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"file '{self.mountPath}' content is not valid UTF-8 text"
+                ) from exc
         if self.encoding == "base64" and self.content is not None:
             try:
                 # Lenient: tolerates the line wrapping a PEM body carries, while

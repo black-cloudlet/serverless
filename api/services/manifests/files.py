@@ -9,6 +9,7 @@ single file, not a directory). Pure functions - no cluster access.
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import dataclass, field
 
 from api.models.common import FileMount
@@ -18,6 +19,11 @@ from common.labels import workload_labels
 
 CONFIG_VOLUME = "files-config"
 SECRET_VOLUME = "files-secret"  # noqa: S105 - a volume name, not a credential
+
+# Kubernetes caps a whole ConfigMap/Secret object at 1MiB. Checked here, on the
+# serialized manifest at accept time, because past this point an oversized
+# object only fails in the background apply - a Failed region instead of a 400.
+MAX_BACKING_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -96,8 +102,9 @@ def resolve_files(
         The resolved volumes and backing manifests.
 
     Raises:
-        ValidationError: On a duplicate mount-path key, invalid base64 content, or a
-            secret file sent without content when none is stored to keep.
+        ValidationError: On a duplicate mount-path key, invalid base64 content, a
+            secret file sent without content when none is stored to keep, or a
+            backing object over the Kubernetes 1MiB size cap.
     """
     kept = kept or {}
     name = files_name(workload)
@@ -150,4 +157,13 @@ def resolve_files(
         backing.append(res.build_configmap(name, labels, config_data))
     if secret_data:
         backing.append(res.build_secret(name, labels, secret_data))
+    for manifest in backing:
+        # Measure what the cluster stores (Secret values and binaryData are
+        # base64 there, so raw byte counts would under-report by a third).
+        size = len(json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
+        if size > MAX_BACKING_BYTES:
+            raise ValidationError(
+                f"files too large: the workload's {manifest['kind']} would be "
+                f"{size // 1024}KiB, over the 1MiB Kubernetes object limit"
+            )
     return ResolvedFiles(volumes=volumes, backing=backing)

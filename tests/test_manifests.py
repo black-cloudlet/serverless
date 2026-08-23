@@ -336,6 +336,25 @@ def test_resolve_files_accepts_linewrapped_base64():
     assert "hello world" in next(iter(cm["data"].values()))
 
 
+def test_resolve_files_rejects_backing_object_over_kubernetes_size_cap():
+    """An oversized ConfigMap/Secret must 400 at accept, not fail the background apply.
+
+    Kubernetes caps a whole ConfigMap/Secret object at 1MiB; the check measures
+    the serialized manifest, where Secret values and binaryData are base64.
+    """
+    import base64
+
+    import pytest
+
+    from common.errors import ValidationError
+
+    big = base64.b64encode(b"\xff" * (2 * 1024 * 1024)).decode()
+    for secret in (False, True):
+        files = [FileMount(mountPath="/etc/big.bin", content=big, encoding="base64", secret=secret)]
+        with pytest.raises(ValidationError, match="1MiB"):
+            resolve_files("app", "team", "alice", files)
+
+
 def test_resolve_env_duplicate_name_rejected():
     import pytest
 
