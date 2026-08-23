@@ -1,19 +1,19 @@
 # Serverless
 
-A self-service **FaaS (Function as a Service)** and **CaaS (Container as a Service)**
-platform that wraps the open-source [Knative](https://knative.dev/) project on **OpenShift**,
-exposed through a **Python / FastAPI** REST API.
+A self-service **FaaS** (Function as a Service) and **CaaS** (Container as a Service)
+platform that wraps the open-source [Knative](https://knative.dev/) project on OpenShift,
+exposed through a Python / FastAPI REST API.
 
-- **FaaS** - clients provide a Git repo (URL, branch, token) and source code; runtimes are
-  **configurable** (the chart ships **Python, Go, Node**; listed on
-  `GET /api/serverless/v1/functions/info`). Built in-cluster by **kpack** with Cloud Native Buildpacks.
+- **FaaS** - clients provide a Git repo (URL, branch, token); the source is built
+  in-cluster by kpack with Cloud Native Buildpacks. Runtimes are configurable
+  (the chart ships Python, Go, Node; listed on `GET /api/serverless/v1/functions/info`).
 - **CaaS** - clients provide a container image plus registry credentials.
-- Both support **env vars**, **mounted secrets/config files**, and **scaling options**, and
-  are exposed externally via **OpenShift Routes**.
-- Auth via **SSO (Keycloak) OIDC** with **SSO group-based** authorization.
-- Deployed via **Helm + ArgoCD**; secrets sourced from **HashiCorp Vault** through the
-  **External Secrets Operator**.
-- Designed for **two OpenShift clusters (active/active HA)** in an **airgapped** environment.
+- Both support env vars, mounted secret/config files, and scaling options, and are
+  exposed externally via OpenShift Routes.
+- Auth via SSO (Keycloak) OIDC with group-based authorization.
+- Deployed via Helm + ArgoCD; secrets sourced from HashiCorp Vault through the
+  External Secrets Operator.
+- Designed for two OpenShift clusters (active/active HA) in an airgapped environment.
 
 ## Documentation
 
@@ -32,35 +32,14 @@ the bug.
 
 ## Status at a glance
 
-The status model is Kubernetes' reason/message split, one level up. `status`
-is a closed phase set - `Pending`, `Building`, `Deploying`, `Ready`, `Failed`,
-`Terminating`, with `Ready` and `Failed` terminal for a poller - and causes
-never get promoted into it: a failure names its cause on the machine-readable
-`reason` (`BuildFailed`, `ImagePullFailed`, `CrashLooping`, `ConfigError`,
-`ProgressDeadlineExceeded`; null when unrecognized) with the human detail on
-the full GET's per-region `message`. All of it is published on
-`GET /api/serverless/v1/{type}/info` (`statuses`) so no client hardcodes a vocabulary.
-The lightweight poll target, `GET .../{name}/stats` (also pushed as SSE on
-`/stats/stream`), reads:
-
-```json
-{
-  "status": "Failed",
-  "reason": "ImagePullFailed",
-  "replicas": 2,
-  "usage": null,
-  "regions": [
-    { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
-      "usage": { "cpu": "120m", "memory": "180Mi" } },
-    { "region": "south", "status": "Failed", "reason": "ImagePullFailed",
-      "replicas": 0, "usage": null }
-  ]
-}
-```
-
-The full GET adds the desired-state config, each region's `revision`, and the raw
-failure text on the region's `message` (docs/FUNCTIONS.md - Function Status
-Resolution; docs/ARCHITECTURE.md - REST API Specification).
+A workload's `status` is a closed phase set - `Pending`, `Building`, `Deploying`,
+`Ready`, `Failed`, `Terminating` - and causes are never promoted into it: a failure
+names its machine-readable cause on `reason` (`BuildFailed`, `ImagePullFailed`, ...)
+with the human detail on the per-region `message`. The whole vocabulary is published
+on `GET /api/serverless/v1/{type}/info`, so no client hardcodes it. Poll the
+lightweight `GET .../{name}/stats`, or follow `/stats/stream` as Server-Sent Events;
+the full GET adds the desired-state config and per-region detail
+(docs/FUNCTIONS.md - Function Status Resolution).
 
 ## Layout
 
@@ -121,9 +100,8 @@ Configuration is environment-driven (`SERVERLESS_*`); see `.env.example`. In pro
 values are projected from Vault via the External Secrets Operator
 (docs/ARCHITECTURE.md - Secrets Management).
 
-> **Status:** Implemented end to end - endpoints, auth, multi-region deployer, manifest
-> builders, kpack builds and the build controller that rolls each finished digest out -
-> with unit/API tests. Not yet implemented: the per-function **git webhook** that would pin
-> a pushed commit SHA to a build (`BuildRequest.revision` already carries the field); until
-> then a build follows the branch head, and `POST .../functions/{name}/build` is the
-> on-demand trigger.
+**Status:** implemented end to end - endpoints, auth, multi-region deployer, manifest
+builders, kpack builds and the build controller that rolls each finished digest out -
+with unit/API tests. Not yet implemented: the per-function git webhook that would pin
+a pushed commit SHA to a build; until then a build follows the branch head, and
+`POST .../functions/{name}/build` is the on-demand trigger.
