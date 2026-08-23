@@ -102,7 +102,7 @@ def _volumes(volumes: list[VolumeSpec]) -> tuple[list[dict], list[dict]]:
                 "name": v.volume_name,
                 "mountPath": v.mount_path,
                 "subPath": v.sub_path,
-                "readOnly": v.read_only,
+                "readOnly": True,
             }
         )
     return list(vols.values()), mounts

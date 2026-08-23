@@ -66,13 +66,7 @@ def redact_files(files: list[FileMount]) -> list[FileView]:
                 content = base64.b64encode(raw).decode("ascii")
                 encoding = "base64"
         out.append(
-            FileView(
-                mountPath=f.mountPath,
-                readOnly=f.readOnly,
-                secret=f.secret,
-                content=content,
-                encoding=encoding,
-            )
+            FileView(mountPath=f.mountPath, secret=f.secret, content=content, encoding=encoding)
         )
     return out
 
@@ -238,7 +232,6 @@ def _files(ksvc: dict, configmaps: dict[str, dict]) -> list[FileView]:
         out.append(
             FileView(
                 mountPath=mount.get("mountPath", ""),
-                readOnly=bool(mount.get("readOnly", True)),
                 secret=is_secret,
                 content=content,
                 encoding=encoding,

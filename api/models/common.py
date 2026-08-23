@@ -174,13 +174,16 @@ class FileMount(BaseModel):
     A secret file may omit ``content``, meaning "keep the stored content" on
     update (the redacted read - ``secret: true, content: null`` - can be sent
     straight back). A non-secret file always needs content.
+
+    The mounted file is always read-only: Kubernetes mounts ConfigMap and
+    Secret volumes read-only regardless of what the pod spec asks for, so the
+    API offers no knob it could not honor.
     """
 
     mountPath: MountPath
     content: str | None = None
     encoding: FileEncoding = "text"
     secret: bool = False
-    readOnly: bool = True
 
     @property
     def keep(self) -> bool:
@@ -483,7 +486,6 @@ class FileView(BaseModel):
     """
 
     mountPath: str
-    readOnly: bool = True
     secret: bool = False
     content: str | None = None
     encoding: FileEncoding = "text"

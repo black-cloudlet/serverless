@@ -129,9 +129,9 @@ body (secrets redacted) with the live status alongside:
     { "name": "API_KEY", "value": null, "secret": true }
   ],
   "files": [
-    { "mountPath": "/etc/app/config.yaml", "readOnly": true, "secret": false,
+    { "mountPath": "/etc/app/config.yaml", "secret": false,
       "content": "level: debug\n" },
-    { "mountPath": "/etc/app/token", "readOnly": true, "secret": true, "content": null }
+    { "mountPath": "/etc/app/token", "secret": true, "content": null }
   ],
   "regions": [
     { "region": "central", "status": "Ready", "revision": "image-resizer-00001", "replicas": 2 },

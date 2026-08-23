@@ -141,9 +141,8 @@ def test_envvar_value_required_unless_secret_keep():
 
 def test_filemount_content_required_unless_secret_keep():
     f = FileMount(mountPath="/etc/a", content="hi")
-    assert f.readOnly is True and f.keep is False
+    assert f.keep is False
     assert f.encoding == "text" and f.decoded() == b"hi"
-    assert FileMount(mountPath="/etc/a", content="hi", readOnly=False).readOnly is False
     # base64 content decodes to the raw bytes it carries
     b64 = FileMount(mountPath="/etc/a", content="eA==", encoding="base64")
     assert b64.decoded() == b"x"

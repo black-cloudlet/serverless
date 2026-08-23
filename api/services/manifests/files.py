@@ -28,14 +28,17 @@ MAX_BACKING_BYTES = 1024 * 1024
 
 @dataclass
 class VolumeSpec:
-    """A volume mount derived from a FileMount (always a single-file subPath)."""
+    """A volume mount derived from a FileMount (always a single-file subPath).
+
+    Always rendered read-only: Kubernetes mounts ConfigMap/Secret volumes
+    read-only whatever the pod spec asks for, so there is nothing to configure.
+    """
 
     volume_name: str
     kind: str  # "configmap" | "secret"
     source_name: str
     mount_path: str
     sub_path: str
-    read_only: bool = True
 
 
 @dataclass
@@ -145,12 +148,10 @@ def resolve_files(
 
         if f.secret:
             secret_data[key] = raw
-            volumes.append(VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key, f.readOnly))
+            volumes.append(VolumeSpec(SECRET_VOLUME, "secret", name, f.mountPath, key))
         else:
             config_data[key] = raw
-            volumes.append(
-                VolumeSpec(CONFIG_VOLUME, "configmap", name, f.mountPath, key, f.readOnly)
-            )
+            volumes.append(VolumeSpec(CONFIG_VOLUME, "configmap", name, f.mountPath, key))
 
     backing: list[dict] = []
     if config_data:

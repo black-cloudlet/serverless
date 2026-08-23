@@ -245,7 +245,7 @@ def test_resolve_files_aggregates_one_cm_and_one_secret():
 
     files = [
         FileMount(mountPath="/etc/app/app.yaml", content="x: 1\n"),
-        FileMount(mountPath="/etc/app/extra.conf", content="a=b\n", readOnly=False),
+        FileMount(mountPath="/etc/app/extra.conf", content="a=b\n"),
         FileMount(mountPath="/etc/tls/tls.key", content="KEY", secret=True),
     ]
     resolved = resolve_files("app", "team", "alice", files)
@@ -265,11 +265,9 @@ def test_resolve_files_aggregates_one_cm_and_one_secret():
     sec = by_kind["Secret"]
     assert set(sec["data"]) == {"etc-tls-tls.key"}
 
-    # volumes share volume names per kind; mounts carry subPath + readOnly
+    # volumes share volume names per kind; mounts carry their subPath
     cfg_vols = [v for v in resolved.volumes if v.kind == "configmap"]
     assert {v.volume_name for v in cfg_vols} == {"files-config"}
-    rw = next(v for v in resolved.volumes if v.mount_path == "/etc/app/extra.conf")
-    assert rw.read_only is False
 
 
 def test_resolve_files_duplicate_key_rejected():
@@ -312,7 +310,6 @@ def test_invalid_base64_is_rejected_by_the_model_not_only_the_resolver():
         content="abc",
         encoding="base64",
         secret=False,
-        readOnly=True,
         keep=False,
     )
     with pytest.raises(ValidationError):

@@ -22,6 +22,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - **BREAKING: `files[].contentBase64` was replaced by an `encoding` flag on the
   one `content` field.** Send text as before (`encoding` defaults to `"text"`),
   and binary bytes as `{"content": "<base64>", "encoding": "base64"}`.
+- **BREAKING: `files[].readOnly` was removed.** It never had an effect:
+  Kubernetes mounts ConfigMap/Secret volumes read-only regardless of the pod
+  spec, so `readOnly: false` produced a file that was unwritable anyway. The
+  mount is stamped `readOnly: true` unconditionally and the field is gone from
+  both the request and the response.
 - **Binary non-secret file contents now read back.** A GET used to return
   `content: null` for a non-secret file whose bytes are not UTF-8, and that null
   could not be sent back on `PUT` (only secret files may omit content), so a

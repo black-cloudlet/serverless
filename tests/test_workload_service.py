@@ -482,11 +482,9 @@ async def test_get_returns_redacted_spec():
         ],
         volumes=[
             VolumeSpec(
-                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf", True
+                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf"
             ),
-            VolumeSpec(
-                "files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret", True
-            ),
+            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret"),
         ],
         scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
         size="medium",
