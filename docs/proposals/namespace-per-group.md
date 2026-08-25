@@ -7,7 +7,9 @@ Questions / Future Work, worked out against the code as it stands today.
 
 The guiding constraint throughout: **reuse what exists**. Every new piece below
 is named next to the existing code it is built from, and the phases are ordered
-so each lands green on its own.
+so each lands green on its own. The PR-by-PR execution breakdown - files,
+tests, and acceptance per step - is in
+[namespace-per-group-steps.md](./namespace-per-group-steps.md).
 
 ## Contents
 
