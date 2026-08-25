@@ -7,6 +7,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (health probes)
+
+- **BREAKING: `/healthz` and `/readyz` moved under the base path.** They were
+  the last paths outside it; a deployment serving under `basePath` now answers
+  `{basePath}/healthz` and `{basePath}/readyz`, and the bare paths no longer
+  answer. The chart's Deployment builds the kubelet's probe paths from the same
+  `basePath` value it hands the code (`SERVERLESS_BASE_PATH`), so the one
+  setting moves the probes and the API together and the two cannot drift apart.
+  A local run with no base path configured still serves `/healthz` and
+  `/readyz` bare.
+
 ### Fixed (file mounts)
 
 - **Unencodable text content is a 400, not a 500.** A JSON string can carry a

@@ -671,9 +671,9 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 Base path: **`/api/serverless/v1`** - the chart's `basePath` followed by the version.
 Naming the base path for the API is what lets it share a host with the platform's
 others. Every path below is written in full, because that is the whole of it: there is
-one path per endpoint and nothing answers beside it. The docs, the OpenAPI document and the SSO token proxy sit under the
-same base path; only `/healthz` and `/readyz` sit outside it, since the kubelet reaches
-the pod directly.
+one path per endpoint and nothing answers beside it. The docs, the OpenAPI document, the SSO token proxy and the
+health probes sit under the same base path; the chart builds the kubelet's probe paths
+from the same `basePath` value it hands the code, so the two cannot drift apart.
 
 Two consequences, stated once. **Whatever fronts the API must forward the path whole** -
 a plain Route with `spec.path`, no `rewrite-target` - because a router that strips the
@@ -709,7 +709,7 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `POST` | `/api/serverless/v1/stream-tickets` | Mint a short-lived ticket for **one** streaming path, sent as `?ticket=`. For browsers only: `EventSource` cannot set an `Authorization` header, so the token is spent here - on a request that can carry one - for a credential worth much less. Body `{"path": "..."}`; a path that is not a streaming endpoint is a `400`. `503` when the deployment configures no signing key (streams then accept the header only). |
 | `GET` | `/api/serverless/v1/containers/info` | **Public** (no auth), static container capabilities for dynamic UI rendering: the shared fields (`version`, `regions`, `sizes`, `scaling`, `routeDomain`, `defaultHostTemplate`, `statuses`, `errorCodes`) plus container-only `port` (required + bounds). Config/code-derived, no cluster calls. |
 | `GET` | `/api/serverless/v1/functions/info` | **Public** (no auth), static function capabilities: the same shared fields plus function-only `runtimes` - each entry carries `name`, selectable `versions` and `defaultVersion`, projected from the runtimes ConfigMap the builder reads. Config/code-derived, no cluster calls. |
-| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth), and the only paths outside the base path - the kubelet reaches the pod directly. Constant responses; they never touch a cluster, so a down region cannot fail a probe. |
+| `GET` | `/api/serverless/healthz`, `/api/serverless/readyz` | Liveness/readiness (no auth), under the base path like everything else - the chart points the kubelet's probes at the same `basePath` it hands the code. Constant responses; they never touch a cluster, so a down region cannot fail a probe. |
 | `GET` | `/api/serverless/{docs,redoc,openapi.json}` | Swagger UI / ReDoc, served from vendored assets (no CDN, for airgap). Under the base path like everything else, so several APIs on one host each keep their own. |
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
