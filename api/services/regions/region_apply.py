@@ -174,10 +174,9 @@ def delete_build_objects(cluster: Cluster, oname: str) -> None:
         cluster: The region to clean up.
         oname: The object name (``{name}-{group}``).
     """
-    build_name = kpack.build_object_name(oname)
     for kind, obj in (
-        (ResourceKind.KPACK_IMAGE, build_name),
-        (ResourceKind.SERVICE_ACCOUNT, build_name),
+        (ResourceKind.KPACK_IMAGE, kpack.build_image_name(oname)),
+        (ResourceKind.SERVICE_ACCOUNT, kpack.build_service_account_name(oname)),
         (ResourceKind.SECRET, secret_svc.git_secret_name(oname)),
     ):
         try:

@@ -1733,8 +1733,8 @@ async def test_delete_reaps_orphaned_build_objects_once_every_region_answers():
     with pytest.raises(NotFoundError):
         await engine.delete(FUNCTION, "app", user, "team")
 
-    assert (ResourceKind.KPACK_IMAGE, "fn-app-team") in cluster.deleted
-    assert (ResourceKind.SERVICE_ACCOUNT, "fn-app-team") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "app-team") in cluster.deleted
+    assert (ResourceKind.SERVICE_ACCOUNT, "app-team-build") in cluster.deleted
     assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
 
 

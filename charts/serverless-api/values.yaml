@@ -353,7 +353,7 @@ build:
     # at request time. False binds `build.serviceAccount.name` and those below.
     allServiceAccounts: true
     # serviceAccounts:
-    #   - fn-my-function
+    #   - my-function-build
     serviceAccounts: []
     # `persistentVolumeClaim` is only for kpack's volume build cache.
     volumes:

@@ -78,7 +78,7 @@ def _image(latest=DIGEST, workload=WORKLOAD, ready="True", created="2026-08-05T1
     if latest:
         status["latestImage"] = latest
     metadata = {
-        "name": f"fn-{workload}" if workload else "fn-orphan",
+        "name": workload if workload else "orphan-image",
         "labels": ({LABEL_WORKLOAD: workload} if workload else {}),
     }
     if created:

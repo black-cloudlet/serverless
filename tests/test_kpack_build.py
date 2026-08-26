@@ -110,7 +110,7 @@ def test_one_git_secret_serves_both_the_api_and_kpack():
 
 
 def test_service_account_carries_registry_in_both_lists():
-    sa = kpack.build_service_account("fn-x", {}, "x-git", ["reg-creds"])
+    sa = kpack.build_service_account("x-build", {}, "x-git", ["reg-creds"])
     # `secrets` is what kpack pushes with; `imagePullSecrets` is the build pod's
     assert sa["secrets"] == [{"name": "x-git"}, {"name": "reg-creds"}]
     assert sa["imagePullSecrets"] == [{"name": "reg-creds"}]
@@ -119,7 +119,7 @@ def test_service_account_carries_registry_in_both_lists():
 def test_the_build_account_also_carries_the_kpack_registry_credential():
     """`export` pulls the run image from it, so a region credential alone fails
     at the last phase of the first build. Docker auth is per host."""
-    sa = kpack.build_service_account("fn-x", {}, "x-git", ["reg-creds", "kpack-creds"])
+    sa = kpack.build_service_account("x-build", {}, "x-git", ["reg-creds", "kpack-creds"])
 
     assert sa["secrets"] == [{"name": "x-git"}, {"name": "reg-creds"}, {"name": "kpack-creds"}]
     assert sa["imagePullSecrets"] == [{"name": "reg-creds"}, {"name": "kpack-creds"}]
@@ -148,11 +148,11 @@ def test_a_configured_kpack_registry_reaches_the_per_function_account():
 
 def test_image_never_sets_creation_time():
     image = kpack.build_image(
-        "fn-x",
+        "x",
         {},
         tag="reg/x:main",
         builder="python",
-        service_account="fn-x",
+        service_account="x-build",
         git_url="https://git/x.git",
         revision="main",
     )
@@ -216,15 +216,34 @@ def test_manifests_share_one_git_secret_between_the_api_and_kpack():
     assert base64.b64decode(secret["data"]["password"]).decode() == "ghp_tok"
 
 
-def test_image_and_service_account_share_one_name():
+def test_image_is_named_the_workload_and_the_account_is_suffixed():
+    """The Image name must fit a 63-char label value (kpack stamps it on every
+    Build), so it is the workload's own `{name}-{group}` verbatim - that is what
+    keeps the function name limit identical to every other offering's. The
+    ServiceAccount is suffixed like the workload's other derived objects."""
     _, manifests = _manifests()
     image = _by_kind(manifests, "Image")
-    assert image["metadata"]["name"] == "fn-hello-payments"
-    assert image["spec"]["serviceAccountName"] == "fn-hello-payments"
+    sa = _by_kind(manifests, "ServiceAccount")
+    assert image["metadata"]["name"] == "hello-payments"
+    assert sa["metadata"]["name"] == "hello-payments-build"
+    assert image["spec"]["serviceAccountName"] == "hello-payments-build"
     assert image["spec"]["source"]["git"] == {
         "url": "https://git.internal/payments/hello.git",
         "revision": "main",
     }
+
+
+def test_the_longest_accepted_pair_still_fits_kpacks_image_label():
+    """The platform's own 63-char check on `{name}-{group}` is exactly the
+    label-value cap the Image name must fit, so no function-only limit exists -
+    any prefix or suffix on the Image's name would shrink the name budget."""
+    from common.names import MAX_OBJECT_NAME, validate_object_name
+
+    name, group = "n" * 31, "g" * 31  # 63 with the hyphen - the platform maximum
+    workload = validate_object_name(name, group)
+
+    assert len(kpack.build_image_name(workload)) <= MAX_OBJECT_NAME
+    assert kpack.build_service_account_name("hello-payments") == "hello-payments-build"
 
 
 def test_labels_are_stamped_on_every_manifest():
@@ -373,7 +392,7 @@ def test_status_reads_the_image_by_its_derived_name():
 
     cluster = _StatusCluster(
         {
-            (ResourceKind.KPACK_IMAGE, "fn-hello-payments"): {
+            (ResourceKind.KPACK_IMAGE, "hello-payments"): {
                 "status": {
                     "latestImage": "reg/x@sha256:1",
                     "conditions": [{"type": "Ready", "status": "True"}],
@@ -1459,7 +1478,7 @@ async def test_changing_only_the_port_does_not_rebuild():
 # -------------------------------------------------------------------- build
 
 
-def _build_obj(number, image="fn-hello-payments"):
+def _build_obj(number, image="hello-payments"):
     return {
         "apiVersion": "kpack.io/v1alpha2",
         "kind": "Build",
@@ -1478,7 +1497,7 @@ def test_latest_build_orders_on_the_number_not_the_string():
     # kpack actually looks at - so a text order would trigger nothing at all
     builds = [_build_obj(9), _build_obj(10), _build_obj(2)]
 
-    assert kpack.latest_build(builds)["metadata"]["name"] == "fn-hello-payments-build-10"
+    assert kpack.latest_build(builds)["metadata"]["name"] == "hello-payments-build-10"
     assert kpack.latest_build([]) is None
     # an object that is not one of kpack's numbered Builds gives no ordering key
     assert kpack.latest_build([{"metadata": {"labels": {}}}]) is None
@@ -1497,7 +1516,7 @@ class _BuildCluster:
         from common.cluster import ResourceKind
 
         assert kind == ResourceKind.KPACK_BUILD
-        assert label_selector == f"{kpack.IMAGE_LABEL}=fn-hello-payments"
+        assert label_selector == f"{kpack.IMAGE_LABEL}=hello-payments"
         return list(self._builds)
 
     def patch(self, kind, name, body):
@@ -1520,7 +1539,7 @@ def test_the_trigger_annotates_the_latest_build_and_leaves_the_image_alone():
     assert _builder().trigger(cluster, "hello", "payments") is True
 
     kind, name, body = cluster.patched[0]
-    assert (kind, name) == (ResourceKind.KPACK_BUILD, "fn-hello-payments-build-2")
+    assert (kind, name) == (ResourceKind.KPACK_BUILD, "hello-payments-build-2")
     assert kpack.BUILD_TRIGGER_ANNOTATION in body["metadata"]["annotations"]
     assert len(cluster.patched) == 1  # one request, one build
 
@@ -2074,8 +2093,8 @@ async def test_a_second_rebuild_annotates_whatever_build_is_latest_by_then():
     assert builder.trigger(cluster, "hello", "payments") is True
 
     assert [name for _, name, _ in cluster.patched] == [
-        "fn-hello-payments-build-1",
-        "fn-hello-payments-build-2",
+        "hello-payments-build-1",
+        "hello-payments-build-2",
     ]
 
 
@@ -2152,7 +2171,7 @@ def _kpack_image(tag):
     return {
         "apiVersion": "kpack.io/v1alpha2",
         "kind": "Image",
-        "metadata": {"name": "fn-hello-payments"},
+        "metadata": {"name": "hello-payments"},
         "spec": {"tag": tag},
     }
 
@@ -2184,7 +2203,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
         "region-a",
         {"hello-payments": _ksvc(image=DEPLOYED)},
         secrets={"hello-payments-git": stored},
-        images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+        images={"hello-payments": _kpack_image("reg/acme/payments/hello:main")},
     )
     reclaimed = _reclaimed(monkeypatch)
 
@@ -2199,7 +2218,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
         _principal(),
     )
 
-    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello-payments") in cluster.deleted
     applied = _applied_kind(cluster, "Image")[0]
     assert applied["spec"]["tag"] == "reg/acme/serverless/builders/payments/hello:main"
     # and the repositories the old tag pushed to are handed back
@@ -2216,7 +2235,7 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
         "region-a",
         {"hello-payments": _ksvc(image=DEPLOYED)},
         secrets={"hello-payments-git": stored},
-        images={"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+        images={"hello-payments": _kpack_image("reg/acme/payments/hello:main")},
     )
     reclaimed = _reclaimed(monkeypatch)
 
@@ -2227,7 +2246,7 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
         _principal(),
     )
 
-    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") not in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello-payments") not in cluster.deleted
     assert reclaimed == []
 
 
@@ -2250,14 +2269,14 @@ async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
         _principal(),
     )
 
-    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") not in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello-payments") not in cluster.deleted
     assert reclaimed == []
 
 
 async def test_the_build_endpoint_re_tags_too(monkeypatch):
     """It applies the same composed Image, so it hits the same immutable field."""
     cluster = _build_cluster()
-    cluster._inner._images = {"fn-hello-payments": _kpack_image("reg/acme/payments/hello:main")}
+    cluster._inner._images = {"hello-payments": _kpack_image("reg/acme/payments/hello:main")}
     reclaimed = _reclaimed(monkeypatch)
 
     class _MovedTriggering(_TriggeringBuilder):
@@ -2266,7 +2285,7 @@ async def test_the_build_endpoint_re_tags_too(monkeypatch):
 
     await _run_build(_build_service({"region-a": cluster}, _MovedTriggering()))
 
-    assert (ResourceKind.KPACK_IMAGE, "fn-hello-payments") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello-payments") in cluster.deleted
     assert reclaimed == ["reg/acme/payments/hello:main"]
 
 
