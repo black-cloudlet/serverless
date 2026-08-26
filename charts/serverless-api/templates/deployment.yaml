@@ -169,6 +169,11 @@ spec:
             - name: runtimes
               mountPath: {{ .Values.runtimesMountPath }}
               readOnly: true
+          # The probe paths are built from the same basePath value the env
+          # above hands the code (trailing slash trimmed exactly as the code
+          # normalizes it), so the one setting moves both and they cannot
+          # drift apart.
+          {{- $probeBase := trimSuffix "/" .Values.basePath }}
           # Explicit timings, because the probe endpoints share one event loop
           # with the SSE streams: under streaming load a response can take
           # longer than the kubelet's 1s default timeout, and with the default
@@ -183,14 +188,14 @@ spec:
           # against a socket that is not open yet.
           startupProbe:
             httpGet:
-              path: /healthz
+              path: {{ printf "%s/healthz" $probeBase }}
               port: {{ .Values.api.service.targetPort }}
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 12
           readinessProbe:
             httpGet:
-              path: /readyz
+              path: {{ printf "%s/readyz" $probeBase }}
               port: {{ .Values.api.service.targetPort }}
             periodSeconds: 10
             timeoutSeconds: 5
@@ -204,7 +209,7 @@ spec:
           # wedged three minutes later.
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: {{ printf "%s/healthz" $probeBase }}
               port: {{ .Values.api.service.targetPort }}
             periodSeconds: 10
             timeoutSeconds: 5
