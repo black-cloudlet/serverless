@@ -1080,6 +1080,9 @@ by design.
 
 ## Sample Manifests
 
+The build-side objects only; the platform manifests (KSVC, RBAC, ESO, DomainMapping)
+are under DEPLOYING.md: Sample Manifests.
+
 ### Image (created by the API, local cluster)
 
 ```yaml
@@ -1459,26 +1462,3 @@ Either form is attached per build through `spec.build.services`, alongside the C
    cleanup on delete), so the internal network must route each region's registry host
    from every cluster. If it does not, deletes leak repositories in the peer region and a
    different reclamation story is needed.
-
-### Resolved
-
-- **One registry, one builder region** - reversed. Every region now builds what it runs, into
-  its own registry, and publishes only to itself (BUILDING.md: Active/Active Behaviour;
-  the split and its rationale are under BUILDING.md: Registry layout). The migration is
-  complete, and its record retired with it. The cost is that two regions run different
-  bytes for the same commit; what it buys is that no region depends on another to build,
-  serve, or recover.
-
-- **`javascript` -> `node` rename** - done. The runtimes list is `python`, `go`, `node`
-  across the chart values, the runtimes ConfigMap, the contract docstring and the tests.
-  TypeScript was offered briefly as an alias to the node builder and has been
-  withdrawn: it needs the npm registry mirror to fetch the compiler as a devDependency,
-  which is not mirrored. A TS app can still be deployed by committing compiled JS, or by
-  building under the `node` runtime once `npm_config_registry` is set. It was safe to drop
-  without a compatibility alias because no function had ever been created at the time, so
-  none carries `ANNOTATION_RUNTIME: javascript` for BUILDING.md: Active/Active Behaviour to
-  reconstruct. The same fact retires the git-Secret compatibility path: no `{workload}-git`
-  Secret was ever written in the earlier Opaque shape, so nothing reads that key any more.
-- **A built-in runtimes fallback** - removed. The runtimes file is required and
-  `load_runtimes` raises without it, so a broken mount fails readiness instead of
-  advertising runtimes that map to no `Builder` (BUILDING.md: Where it lives).

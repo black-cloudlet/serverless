@@ -145,164 +145,181 @@ A **`ContainerResponse`** is the same idea mirroring `ContainerCreate`: instead 
 expose **no image** - the built image is an internal artifact; the client deals in
 source, not images.)
 
-> **Shape.** Each offering has its own response model (`FunctionResponse` /
-> `ContainerResponse`) so the response is the same shape as the create body - no
-> irrelevant fields (a container never shows `gitRepo`; a function never shows
-> `registryUsername`). Both share `WorkloadBase` (name, group, type, hostname,
-> status, size) with the list summary. `hostname` is the bare external host
-> (no scheme), mirroring the create body's `hostname`; reach the workload at
-> `https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
-> the source fields) are read from the **local region** (uniform across regions); the
-> per-region `regions[]` status/`replicas` come from fanning out to every region. Live
-> **usage** is not here - see the `/stats` endpoint below.
->
-> **Redaction & keep-on-write.** Secret material is never returned: secret-backed env
-> values and secret file contents come back `null` with `secret: true`; the **git token**
-> is omitted and the **registry token** is not shown (`registryUsername` is). Non-secret env
-> values and non-secret file contents (from the workload's ConfigMap) are returned in full -
-> a binary file's content comes back base64-encoded with `encoding: "base64"`, exactly the
-> form it is submitted in, so it round-trips too.
-> Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
-> stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
-> stored; echoing the stored `registryUsername` back without a token keeps the credential -
-> re-keyed to the current image's registry if the image moved (sending a *different* username
-> without a token is a `400`, since there's no token to rotate with); omitting `gitToken` keeps
-> the stored git token. So the redacted GET body can be sent straight back on `PUT` without wiping a secret.
-> To change a secret, send its new value; to remove an env var or file, drop it from the list;
-> to make a private image public, send **neither** registry cred (dropping the username, like
-> dropping an env var, removes the pull secret). `scaling.target` reflects the *effective*
-> target deployed (an omitted cpu/memory target shows `70`).
->
-> **Keep is `null`, not `""`.** Only an omitted/`null` value is a keep; an empty string is a
-> real value that **sets** the secret to empty. So a secret var/file must be sent with its
-> `value`/`content` omitted (`null`) to keep it - never `""`. A **new** secret (one not
-> already stored) sent with a `null` value is a synchronous `400` (`"…has no value and none is
-> stored to keep"`): keep only applies to something already stored, so a new secret must carry
-> its value. A non-secret var/file always requires a value. These checks run in the update
-> pre-flight, so they surface as an immediate `400`, not a background deploy failure.
->
-> **Live status.** `replicas` is the autoscaler's live scale
-> (`Revision.status.actualReplicas`), best-effort and `null` when it cannot be read.
-> It rides along on a read the per-region error detail needs anyway, which is why it
-> is on this response and live **usage** is not: measuring usage is a PodMetrics
-> call per region, and the full GET is not the endpoint to poll.
->
-> **Polling live state: `GET .../{name}/stats`.** A lightweight view of what
-> changes on its own - the rollup, replica count and resource usage, nothing else:
->
-> ```json
-> {
->   "status": "Ready",
->   "reason": null,
->   "replicas": 3,
->   "usage": { "cpu": "210m", "memory": "355Mi" },
->   "regions": [
->     { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
->       "usage": { "cpu": "120m", "memory": "180Mi" } },
->     { "region": "south", "status": "Ready", "reason": null, "replicas": 1,
->       "usage": { "cpu": "90m", "memory": "175Mi" } }
->   ]
-> }
-> ```
->
-> And when a region is failing, the same shape carries the cause:
->
-> ```json
-> {
->   "status": "Failed",
->   "reason": "ImagePullFailed",
->   "replicas": 2,
->   "usage": null,
->   "regions": [
->     { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
->       "usage": { "cpu": "120m", "memory": "180Mi" } },
->     { "region": "south", "status": "Failed", "reason": "ImagePullFailed",
->       "replicas": 0, "usage": null }
->   ]
-> }
-> ```
->
-> `status` matches the full GET's, `Building` included - the build is still
-> read, it is just not a field here. `reason` is the machine-readable cause
-> behind a failure (one of `/info`'s `statuses.reasons`, `BuildFailed`
-> included), null when nothing failed or the cause was not recognized; the raw
-> condition text stays on the full GET's per-region `message`, which `/stats`
-> deliberately does not carry. Usage covers each pod's user container only,
-> never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
-> API could not be read. The top-level totals are summed across regions **before**
-> rounding, so they need not equal the sum of the printed per-region figures; and a
-> total is `null` if any region could not be measured, rather than one quietly
-> missing a region. Usage is never fresher than the cluster's metrics-server scrape.
->
-> **Or don't poll at all: `GET .../{name}/stats/stream`.** The same body, pushed as
-> Server-Sent Events every few seconds instead of returned on request, so one
-> connection replaces the poll loop.
->
-> **Logs are per pod, and stream by default.** Two steps - find a pod, then follow
-> it:
->
-> ```bash
-> # 1. the roster (also a stream; pods come and go on every revision)
-> curl -N -H "Authorization: Bearer $TOKEN" \
->   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods"
-> #   event: pods
-> #   data: {"name":"orders","region":"central","pods":[
-> #           {"pod":"orders-team-00003-deployment-6b9f4c5d7-x2wql","revision":"orders-team-00003",
-> #            "phase":"Running","ready":true,"restarts":0,
-> #            "usage":{"cpu":"120m","memory":"180Mi"}}]}
->
-> # 2. follow one of them
-> curl -N -H "Authorization: Bearer $TOKEN" \
->   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
-> ```
->
-> **`?follow=false` on either** answers once, in JSON, and ends - for a caller that
-> cannot hold a connection open (a ServiceNow workflow attaching logs to a ticket,
-> a script, a CI step). It is on both endpoints deliberately: a log snapshot alone
-> would be unreachable, since finding a pod name would still need a stream.
->
-> ```bash
-> curl -H "Authorization: Bearer $TOKEN" \
->   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
-> curl -H "Authorization: Bearer $TOKEN" \
->   "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
-> ```
->
-> The snapshot returns the same `lines` a follow would have delivered, so a client
-> renders one shape either way - bounded by what the node still holds, which is the
-> recent past and never the whole history.
->
-> A browser cannot send that header (`EventSource` has no API for it), so it mints a
-> short-lived ticket first and puts that in the URL:
->
-> ```js
-> const open = async (path) => {
->   const { ticket } = await (await fetch("/api/serverless/v1/stream-tickets", {
->     method: "POST",
->     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
->     body: JSON.stringify({ path }),
->   })).json();
->   return new EventSource(`${path}?ticket=${ticket}`);
-> };
->
-> const base = `/api/serverless/v1/groups/${group}/functions/${name}`;
-> const pods = await open(`${base}/pods`);
-> pods.addEventListener("pods", (e) => renderPodPicker(JSON.parse(e.data).pods));
->
-> const logs = await open(`${base}/logs/pods/${chosenPod}`);
-> logs.addEventListener("log", (e) => append(JSON.parse(e.data)));
-> logs.addEventListener("end", (e) => {
->   // Not an error: the pod was scaled down or replaced by a new revision.
->   notice(JSON.parse(e.data).reason);   // pick the replacement off the pods stream
-> });
-> logs.addEventListener("warning", (e) => notice(JSON.parse(e.data).message));
-> ```
->
-> Listen for `end` and `warning`, not just `log`. `end` is a pod going away, which on
-> Knative is routine rather than a failure; `warning` is the stream saying it is
-> showing you an incomplete picture (lines skipped because the client fell behind).
-> Each open stream costs a slot against the per-replica limit, so close the ones the
-> user is not looking at. See ARCHITECTURE.md: Streaming.
+### Response shape
+
+Each offering has its own response model (`FunctionResponse` /
+`ContainerResponse`) so the response is the same shape as the create body - no
+irrelevant fields (a container never shows `gitRepo`; a function never shows
+`registryUsername`). Both share `WorkloadBase` (name, group, type, hostname,
+status, size) with the list summary. `hostname` is the bare external host
+(no scheme), mirroring the create body's `hostname`; reach the workload at
+`https://{hostname}`. The desired-state fields (`scaling`, `env`, `files`, plus
+the source fields) are read from the **local region** (uniform across regions); the
+per-region `regions[]` status/`replicas` come from fanning out to every region. Live
+**usage** is not here - see the `/stats` endpoint below.
+
+### Redaction & keep-on-write
+
+Secret material is never returned: secret-backed env
+values and secret file contents come back `null` with `secret: true`; the **git token**
+is omitted and the **registry token** is not shown (`registryUsername` is). Non-secret env
+values and non-secret file contents (from the workload's ConfigMap) are returned in full -
+a binary file's content comes back base64-encoded with `encoding: "base64"`, exactly the
+form it is submitted in, so it round-trips too.
+Because the read is redacted, `PUT` treats a **redacted/absent secret field as "keep the
+stored value"**: a `secret: true` env var or file sent without a value/content keeps what's
+stored; echoing the stored `registryUsername` back without a token keeps the credential -
+re-keyed to the current image's registry if the image moved (sending a *different* username
+without a token is a `400`, since there's no token to rotate with); omitting `gitToken` keeps
+the stored git token. So the redacted GET body can be sent straight back on `PUT` without wiping a secret.
+To change a secret, send its new value; to remove an env var or file, drop it from the list;
+to make a private image public, send **neither** registry cred (dropping the username, like
+dropping an env var, removes the pull secret). `scaling.target` reflects the *effective*
+target deployed (an omitted cpu/memory target shows `70`).
+
+#### Keep is `null`, not `""`
+
+Only an omitted/`null` value is a keep; an empty string is a
+real value that **sets** the secret to empty. So a secret var/file must be sent with its
+`value`/`content` omitted (`null`) to keep it - never `""`. A **new** secret (one not
+already stored) sent with a `null` value is a synchronous `400` (`"…has no value and none is
+stored to keep"`): keep only applies to something already stored, so a new secret must carry
+its value. A non-secret var/file always requires a value. These checks run in the update
+pre-flight, so they surface as an immediate `400`, not a background deploy failure.
+
+### Live status on the GET
+
+`replicas` is the autoscaler's live scale
+(`Revision.status.actualReplicas`), best-effort and `null` when it cannot be read.
+It rides along on a read the per-region error detail needs anyway, which is why it
+is on this response and live **usage** is not: measuring usage is a PodMetrics
+call per region, and the full GET is not the endpoint to poll.
+
+### Polling live state: `GET .../{name}/stats`
+
+A lightweight view of what
+changes on its own - the rollup, replica count and resource usage, nothing else:
+
+```json
+{
+  "status": "Ready",
+  "reason": null,
+  "replicas": 3,
+  "usage": { "cpu": "210m", "memory": "355Mi" },
+  "regions": [
+    { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
+      "usage": { "cpu": "120m", "memory": "180Mi" } },
+    { "region": "south", "status": "Ready", "reason": null, "replicas": 1,
+      "usage": { "cpu": "90m", "memory": "175Mi" } }
+  ]
+}
+```
+
+And when a region is failing, the same shape carries the cause:
+
+```json
+{
+  "status": "Failed",
+  "reason": "ImagePullFailed",
+  "replicas": 2,
+  "usage": null,
+  "regions": [
+    { "region": "central", "status": "Ready", "reason": null, "replicas": 2,
+      "usage": { "cpu": "120m", "memory": "180Mi" } },
+    { "region": "south", "status": "Failed", "reason": "ImagePullFailed",
+      "replicas": 0, "usage": null }
+  ]
+}
+```
+
+`status` matches the full GET's, `Building` included - the build is still
+read, it is just not a field here. `reason` is the machine-readable cause
+behind a failure (one of `/info`'s `statuses.reasons`, `BuildFailed`
+included), null when nothing failed or the cause was not recognized; the raw
+condition text stays on the full GET's per-region `message`, which `/stats`
+deliberately does not carry. Usage covers each pod's user container only,
+never the queue-proxy sidecar, and is `null` when scaled to zero or the metrics
+API could not be read. The top-level totals are summed across regions **before**
+rounding, so they need not equal the sum of the printed per-region figures; and a
+total is `null` if any region could not be measured, rather than one quietly
+missing a region. Usage is never fresher than the cluster's metrics-server scrape.
+
+### Or don't poll at all: `GET .../{name}/stats/stream`
+
+The same body, pushed as
+Server-Sent Events every few seconds instead of returned on request, so one
+connection replaces the poll loop.
+
+### Logs: per pod, streaming by default
+
+Two steps - find a pod, then follow it:
+
+```bash
+# 1. the roster (also a stream; pods come and go on every revision)
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods"
+#   event: pods
+#   data: {"name":"orders","region":"central","pods":[
+#           {"pod":"orders-team-00003-deployment-6b9f4c5d7-x2wql","revision":"orders-team-00003",
+#            "phase":"Running","ready":true,"restarts":0,
+#            "usage":{"cpu":"120m","memory":"180Mi"}}]}
+
+# 2. follow one of them
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/orders-team-00003-deployment-6b9f4c5d7-x2wql?sinceSeconds=60"
+```
+
+#### `?follow=false` answers once
+
+`?follow=false` on either endpoint answers once, in JSON, and ends - for a caller that
+cannot hold a connection open (a ServiceNow workflow attaching logs to a ticket,
+a script, a CI step). It is on both endpoints deliberately: a log snapshot alone
+would be unreachable, since finding a pod name would still need a stream.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/pods?follow=false"
+curl -H "Authorization: Bearer $TOKEN" \
+  "$API/api/serverless/v1/groups/$GROUP/functions/$NAME/logs/pods/$POD?follow=false&limitBytes=65536"
+```
+
+The snapshot returns the same `lines` a follow would have delivered, so a client
+renders one shape either way - bounded by what the node still holds, which is the
+recent past and never the whole history.
+
+#### Browser clients: stream tickets
+
+A browser cannot send that header (`EventSource` has no API for it), so it mints a
+short-lived ticket first and puts that in the URL:
+
+```js
+const open = async (path) => {
+  const { ticket } = await (await fetch("/api/serverless/v1/stream-tickets", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  })).json();
+  return new EventSource(`${path}?ticket=${ticket}`);
+};
+
+const base = `/api/serverless/v1/groups/${group}/functions/${name}`;
+const pods = await open(`${base}/pods`);
+pods.addEventListener("pods", (e) => renderPodPicker(JSON.parse(e.data).pods));
+
+const logs = await open(`${base}/logs/pods/${chosenPod}`);
+logs.addEventListener("log", (e) => append(JSON.parse(e.data)));
+logs.addEventListener("end", (e) => {
+  // Not an error: the pod was scaled down or replaced by a new revision.
+  notice(JSON.parse(e.data).reason);   // pick the replacement off the pods stream
+});
+logs.addEventListener("warning", (e) => notice(JSON.parse(e.data).message));
+```
+
+Listen for `end` and `warning`, not just `log`. `end` is a pod going away, which on
+Knative is routine rather than a failure; `warning` is the stream saying it is
+showing you an incomplete picture (lines skipped because the client fell behind).
+Each open stream costs a slot against the per-replica limit, so close the ones the
+user is not looking at. See ARCHITECTURE.md: Streaming.
 
 ### Editing a workload: `PUT` request recipes
 
@@ -392,6 +409,34 @@ here would reset it to `main`, so send the branch you are on:
 }
 ```
 
+### Listing the group's functions
+
+`GET /api/serverless/v1/groups/team/functions` to list the group's functions - general
+info only (no live usage/replicas; use the single-workload GET for those):
+
+```json
+[
+  {
+    "name": "image-resizer",
+    "group": "team",
+    "type": "function",
+    "hostname": "image-resizer-team.serverless.example.com",
+    "status": "Ready",
+    "size": "small",
+    "createdAt": "2026-06-21T15:00:00+03:00",
+    "regions": ["central", "south"]
+  }
+]
+```
+
+The list **fans out to all regions** and merges by workload name (best-effort):
+each workload's `regions` lists the regions that returned it and `status` is
+rolled up across them (`Ready`/`Deploying`/`Failed`, or `Terminating` while a
+workload is being deleted). A region that is unreachable is skipped; only if
+**every** region is down does the call fail (502). It returns general info only (no
+live replicas/usage) - use the single-workload GET for per-region live health.
+
+
 ## Building again without changing anything
 
 A `PUT` rebuilds only when a build **input** changes (or the token rotates), because
@@ -432,31 +477,6 @@ What it deliberately does **not** do:
 `{name}-{group}` is shared by both offerings). `400` if there is nothing to build with: no
 stored git token (send one with a `PUT`), or a `runtime` that has since been removed from
 the runtimes ConfigMap. Both are decided synchronously, before the `202`.
-
-And `GET /api/serverless/v1/groups/team/functions` to list the group's functions - general
-info only (no live usage/replicas; use the single-workload GET for those):
-
-```json
-[
-  {
-    "name": "image-resizer",
-    "group": "team",
-    "type": "function",
-    "hostname": "image-resizer-team.serverless.example.com",
-    "status": "Ready",
-    "size": "small",
-    "createdAt": "2026-06-21T15:00:00+03:00",
-    "regions": ["central", "south"]
-  }
-]
-```
-
-> The list **fans out to all regions** and merges by workload name (best-effort):
-> each workload's `regions` lists the regions that returned it and `status` is
-> rolled up across them (`Ready`/`Deploying`/`Failed`, or `Terminating` while a
-> workload is being deleted). A region that is unreachable is skipped; only if
-> **every** region is down does the call fail (502). It returns general info only (no
-> live replicas/usage) - use the single-workload GET for per-region live health.
 
 ## Function Status Resolution
 

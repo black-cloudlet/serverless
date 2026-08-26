@@ -251,6 +251,9 @@ oc -n kpack logs deploy/kpack-controller | grep -o 'unable to validate.*'
 
 ## Sample Manifests
 
+The platform-side objects; the build objects (kpack Image, Builder, ClusterStack,
+build ServiceAccount, Kyverno CA policy) are under BUILDING.md: Sample Manifests.
+
 > Illustrative only - final values are templated by Helm and parameterized per region.
 
 ### Knative Service (KSVC)

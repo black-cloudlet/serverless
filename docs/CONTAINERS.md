@@ -3,12 +3,6 @@
 Running a container image the caller already has. What containers share with
 functions - scaling, env, files, hosts, status - is in ARCHITECTURE.md.
 
-## Contents
-
-- [Overview](#overview)
-- [API - create & update](#api---create--update)
-- [Pulling the tag again](#pulling-the-tag-again)
-
 ## Overview
 
 **Inputs (request body):**
