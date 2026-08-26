@@ -720,9 +720,9 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 Base path: **`/api/serverless/v1`** - the chart's `basePath` followed by the version.
 Naming the base path for the API is what lets it share a host with the platform's
 others. Every path below is written in full, because that is the whole of it: there is
-one path per endpoint and nothing answers beside it. The docs, the OpenAPI document and the SSO token proxy sit under the
-same base path; only `/healthz` and `/readyz` sit outside it, since the kubelet reaches
-the pod directly.
+one path per endpoint and nothing answers beside it. The docs, the OpenAPI document, the SSO token proxy and the
+health probes sit under the same base path; the chart builds the kubelet's probe paths
+from the same `basePath` value it hands the code, so the two cannot drift apart.
 
 Two consequences, stated once. **Whatever fronts the API must forward the path whole** -
 a plain Route with `spec.path`, no `rewrite-target` - because a router that strips the
@@ -757,7 +757,7 @@ are RFC 3339 with a timezone offset; workload timestamps (`createdAt`) are rende
 | `GET` | `/api/serverless/v1/groups/{group}/{type}/{name}/logs/pods/{pod}` | One pod's log from the current region. Follows by default; `?follow=false` returns a snapshot. |
 | `POST` | `/api/serverless/v1/stream-tickets` | Mint a short-lived `?ticket=` for one streaming path (browsers; `EventSource` cannot send a header). |
 | `GET` | `/api/serverless/v1/{containers,functions}/info` | Public (no auth) capability discovery for dynamic UI rendering; config/code-derived, no cluster calls. |
-| `GET` | `/healthz`, `/readyz` | Liveness/readiness (no auth); the only paths outside the base path - the kubelet reaches the pod directly. |
+| `GET` | `/api/serverless/{healthz,readyz}` | Liveness/readiness (no auth), under the base path like everything else - the chart points the kubelet's probes at the same `basePath` it hands the code. Constant responses; they never touch a cluster. |
 | `GET` | `/api/serverless/{docs,redoc,openapi.json}` | Swagger UI / ReDoc from vendored assets (no CDN, for airgap). |
 
 Endpoint parameters worth knowing beyond the table:

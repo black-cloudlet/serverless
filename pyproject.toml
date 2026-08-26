@@ -14,7 +14,7 @@ dependencies = [
     # API is served under, so the docs, their assets and the SSO token proxy
     # sit beneath it like everything else. 0.4 takes no such argument and
     # create_app raises on it, so this floor is not advisory.
-    "cloudlet-apis>=0.6,<1",
+    "cloudlet-apis>=0.6.1,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "kubernetes>=36.0.3",
@@ -23,9 +23,9 @@ dependencies = [
 
 [project.optional-dependencies]
 api = [
-    "cloudlet-apis[web,auth]>=0.6,<1",
+    "cloudlet-apis[web,auth]>=0.6.1,<1",
     "fastapi>=0.141.1",
-    "uvicorn[standard]>=0.52.3",
+    "uvicorn[standard]>=0.52.4",
     "pyyaml>=6.0.3",
     "tzdata>=2026.3",
 ]
@@ -33,7 +33,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff==0.16.3",
+    "ruff==0.16.4",
     "pip-audit>=2.10.1",
 ]
 

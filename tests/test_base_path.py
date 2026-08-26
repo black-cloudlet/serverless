@@ -95,12 +95,14 @@ def test_the_complete_path_is_the_only_way_in(served_under):
     assert client.get("/v1/functions/info").status_code == 404
 
 
-def test_the_probes_stay_outside_the_base_path(served_under):
-    """The kubelet reaches the pod directly, not through whatever serves the API."""
+def test_the_probes_live_under_the_base_path(served_under):
+    """The chart points the kubelet at the same base path the code serves."""
     client = _client()
 
-    assert client.get("/healthz").status_code == 200
-    assert client.get(f"{BASE_PATH}/healthz").status_code == 404
+    assert client.get(f"{BASE_PATH}/healthz").status_code == 200
+    assert client.get(f"{BASE_PATH}/readyz").status_code == 200
+    # The bare path is not an address: nothing answers beside the complete one.
+    assert client.get("/healthz").status_code == 404
 
 
 # --- what the app hands a client -------------------------------------------
@@ -219,6 +221,7 @@ def test_the_base_path_is_the_whole_of_the_address(under_api):
     assert client.get("/api/v1/functions/info").status_code == 200
     assert client.get("/api/docs").status_code == 200
     assert client.get("/api/openapi.json").status_code == 200
+    assert client.get("/api/healthz").status_code == 200
     # ...and the slug the chart ships is not special.
     assert client.get(f"{BASE}/functions/info").status_code == 404
 
