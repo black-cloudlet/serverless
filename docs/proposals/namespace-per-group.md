@@ -18,8 +18,8 @@ tests, and acceptance per step - is in
 - [Architecture](#architecture)
 - [Implementation Phases](#implementation-phases)
 - [Reuse Map](#reuse-map)
-- [Migration](#migration)
-- [Rollout & Flags](#rollout--flags)
+- [Cutover (no migration - pre-GA)](#cutover-no-migration---pre-ga)
+- [Rollout & Switches](#rollout--switches)
 - [Testing](#testing)
 - [Risks & Open Items](#risks--open-items)
 
@@ -88,7 +88,10 @@ every tenant namespace, no per-namespace copies.
 ## Implementation Phases
 
 Each phase is independently shippable and lands behind the
-`tenantNamespaces.enabled` flag (Phase 4) so `main` stays releasable.
+inert until Phase 3 switches resolution, so `main` stays releasable. There
+is deliberately **no runtime flag and no dual mode**: pre-GA, git is the
+rollback lever, and a hard cutover buys a permanently single code path
+(see Cutover below).
 
 ### Phase 0 - groundwork in `common/` (no behavior change)
 
@@ -171,10 +174,11 @@ Mirrors `controller/` file-for-file where a counterpart exists:
 ### Phase 3 - API integration
 
 1. **`api/core/config.py` / `common/config.py`**: `tenant_namespaces`
-   settings block - `enabled` (default false), `provisioner_url`, prefix.
+   settings block - `provisioner_url`, prefix (no enable flag - see
+   Cutover).
 2. **Namespace resolution in one place**: the workload service resolves
    `group → namespace` once per request (via `common.names
-   .namespace_for_group` when enabled, else `workloads_namespace`) and
+   .namespace_for_group`) and
    threads it through `ApplyRequest` → deployer → `region_apply` →
    `Cluster` calls. The Phase 0 parameter is what makes this mechanical.
 3. **Ensure-on-create**: in the synchronous pre-flight (beside the existing
@@ -199,7 +203,7 @@ Mirrors `controller/` file-for-file where a counterpart exists:
    the KSVC - Image and KSVC are co-located, so it is right there. `TagGC`
    is unaffected (it reads the listing it is handed).
 
-### Phase 4 - GC live + flag flip mechanics
+### Phase 4 - GC live
 
 Wire `NamespaceGC` into the provisioner loop (it ships in Phase 1 but stays
 off), gated on a chart switch following the `registry.deleteOnFunctionDelete`
@@ -235,30 +239,34 @@ be rejected at admission.
 | Naming/labels | `normalize_group`, `common.names`, `common.labels` | one function, four constants |
 | CI | checks.yml helm/kubeconform job | render-the-template-set step |
 
-## Migration
+## Cutover (no migration - pre-GA)
 
-1. Ship Phases 0-2 with `tenantNamespaces.enabled=false`: provisioner runs,
-   reconciles nothing (no managed namespaces exist), API behavior unchanged.
-2. Enable in a non-production values file; new creates go to tenant
-   namespaces; the legacy namespace keeps serving existing workloads.
-   **Reads check the group namespace first, then fall back to the legacy
-   namespace** (one extra label-selected read on miss) so the API presents
-   one truthful view throughout.
-3. Migrate per group, using machinery that exists: re-apply the workload
-   into the group namespace (idempotent SSA; hostnames and DNS are
-   untouched, so a DomainMapping cutover is atomic per workload), verify
-   Ready in both regions, delete from the legacy namespace. Functions
-   rebuild in place (every region builds what it runs; the git Secret is
-   re-applied beside the new KSVC).
-4. When the legacy namespace is empty: drop the fallback read path, the
-   legacy NetworkPolicies/RoleBinding render, and the Kyverno name-match.
+There are no customers yet, so there is nothing to migrate: **namespace-per-
+group becomes the only mode** the moment the API integration lands, and no
+dual-mode code ships at all - no master flag, no fallback read path, no
+per-workload move. The cost of a hard cutover is one wipe of test data; the
+saving is a permanently single code path and test matrix. Rollback pre-GA
+is git: redeploy the previous chart version.
 
-## Rollout & Flags
+1. Land the client refactor, provisioner, and chart first (the system keeps
+   using the legacy namespace until the API integration lands, so the
+   legacy renders stay in the chart for that window).
+2. The API integration PR switches resolution outright. Deploy order per
+   environment: delete the old workloads (`kubectl delete ns
+   serverless-workloads` after sync, or just delete the workloads), sync
+   the chart, redeploy test workloads - they land in `serverless-t-{group}`.
+3. The cleanup PR drops the legacy namespace renders, the Kyverno
+   name-match, and the `workloads_namespace` setting, and folds these
+   proposal documents into ARCHITECTURE.md/DEPLOYING.md.
 
-- `tenantNamespaces.enabled` - master switch, default false through the
-  whole phase sequence.
-- `tenantNamespaces.gc.enabled` + `gc.graceSeconds` - deletion stays off
-  until migration completes.
+## Rollout & Switches
+
+- No `tenantNamespaces.enabled` master flag - dual-mode existed only to
+  protect live customers through a gradual migration, and there are none.
+- `tenantNamespaces.gc.enabled` + `gc.graceSeconds` - the one switch kept:
+  "may the platform delete things" is operational policy (the
+  `registry.deleteOnFunctionDelete` precedent), not migration scaffolding.
+  Off by default until the cutover settles.
 - Observability from day one: the template hash + applied-at stamped on each
   namespace (`kubectl get ns -L` answers "has the new policy reached every
   tenant"), a per-converge log line in the `TagGC` style, and
@@ -276,7 +284,7 @@ convergence, prune, SSA label removal on rename, crash-mid-converge
 re-stamp), `test_provisioner_gc.py` (grace period, keep annotation, subset-
 regions emptiness, disabled-is-loud - mirroring `test_kpack_build.py`'s GC
 tests), `test_workload_namespaces.py` (resolution, ensure-in-preflight,
-fallback reads during migration, cluster-scoped host preflight).
+cluster-scoped host preflight).
 
 ## Risks & Open Items
 

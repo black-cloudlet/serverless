@@ -3,8 +3,10 @@
 The execution companion to [namespace-per-group.md](./namespace-per-group.md).
 That document says *what* and *why*; this one says *in which order, in which
 PR, touching which files, verified how*. Each PR is small enough to review in
-one sitting, lands green on `main`, and changes no behavior until PR 5 flips
-resolution behind the flag.
+one sitting, lands green on `main`, and changes no behavior until PR 5
+switches resolution outright - pre-GA there are no customers, so there is no
+migration, no fallback path, and no runtime flag (see Cutover in the design
+doc); git is the rollback lever.
 
 Every PR runs the same local gate before push: `ruff check`, `pytest`
 (coverage per `checks.yml`), and - where the chart changed -
@@ -22,14 +24,14 @@ flowchart LR
     PR3 --> PR5
     PR1 --> PR5
     PR2 --> PR7["PR 7<br/>namespace GC"]
-    PR5 --> PR8["PR 8<br/>migration & cleanup"]
+    PR5 --> PR8["PR 8<br/>cutover cleanup"]
     PR6 --> PR8
     PR7 --> PR8
 ```
 
 PR 4 (chart) has no code dependency and can proceed in parallel from day one.
 PR 6 can land any time after PR 1. Everything before PR 8 is inert in
-production: the flag is off, the provisioner manages nothing, the legacy
+the running system: the provisioner manages nothing yet, and the legacy
 namespace serves as today.
 
 ---
@@ -143,7 +145,7 @@ fake clusters and a second call is a no-op.
 ## PR 4 - chart (parallel track)
 
 **Goal:** everything the provisioner needs exists at render; nothing changes
-for the running system (all new objects inert until the flag).
+for the running system (all new objects inert until PR 5).
 
 1. `templates/tenant-templates-configmap.yaml`: the per-namespace set,
    rendered via **existing helpers** - extract the bodies of
@@ -167,9 +169,10 @@ for the running system (all new objects inert until the flag).
    NetworkPolicy admitting ingress only from the API pods.
 6. `kpack/ca-policy.yaml`: match tenant namespaces **by label selector**,
    keeping the name match for the legacy namespace until PR 8.
-7. `values.yaml`: `tenantNamespaces:` block - `enabled: false`,
-   `prefix`, `provisioner.*` (image, resources), `gc.enabled: false`,
-   `gc.graceSeconds`.
+7. `values.yaml`: `tenantNamespaces:` block - `prefix`, `provisioner.*`
+   (image, resources), `gc.enabled: false`, `gc.graceSeconds`. No
+   `enabled` master flag - namespace-per-group becomes the only mode at
+   PR 5.
 8. `checks.yml`: render the embedded template set (helm template with a
    test values file, extract the ConfigMap data) through kubeconform.
 
@@ -177,35 +180,39 @@ for the running system (all new objects inert until the flag).
 default values except the new inert objects; kubeconform passes on both the
 chart and the extracted template set.
 
-## PR 5 - API integration behind the flag
+## PR 5 - API integration: the cutover
 
-**Goal:** with `tenantNamespaces.enabled=true`, workloads deploy into
-per-group namespaces; with it false, byte-for-byte today's behavior.
+**Goal:** workloads deploy into per-group namespaces. This is the one PR
+that changes behavior, and it changes it outright - no flag, no fallback:
+pre-GA the cost of a hard cutover is one wipe of test data, and the saving
+is a permanently single code path and test matrix.
 
 1. `common/config.py` / `api/core/config.py`: the `tenant_namespaces`
-   settings block (enabled, prefix, provisioner URL).
-2. One resolution point: `resolve_namespace(group, settings)` → group
-   namespace when enabled, else `workloads_namespace`. `WorkloadService`
-   calls it once per request and binds `cluster.in_namespace(...)` there -
-   the *only* line that changes where writes land.
+   settings block (prefix, provisioner URL).
+2. One resolution point: `resolve_namespace(group, settings)` → the group
+   namespace, always. `WorkloadService` calls it once per request and binds
+   `cluster.in_namespace(...)` there - the *only* line that changes where
+   writes land. (`workloads_namespace` survives until PR 8 only for
+   anything not yet cut over.)
 3. Ensure-on-create: an async client (httpx, CA bundle trusted) called from
    `assert_deployable` in `preflight.py` beside the host/name checks;
    failure → the fail-closed `503` posture ("a check could not be run").
-   Skipped entirely when the flag is off.
 4. Host-uniqueness preflight: the DomainMapping conflict probe lists
    cluster-scoped (`namespace=None`, label-selected) so hosts stay unique
    across all tenant namespaces.
-5. Migration fallback read: named GET/DELETE resolve the group namespace
-   first and fall back to one label-selected read in the legacy namespace
-   on miss; listings merge both. Behind the flag; removed in PR 8.
-6. `/info` `naming` publishes the namespace rule from PR 1.
+5. `/info` `naming` publishes the namespace rule from PR 1.
+6. Deploy note in the PR body: per environment, delete the old test
+   workloads (or the legacy namespace's contents), sync, redeploy - they
+   land in `serverless-t-{group}`. Rollback is redeploying the previous
+   chart + image.
 
-**Tests:** `test_workload_namespaces.py` - resolution on/off; ensure called
-in preflight and its `503` on failure; fallback read finds a legacy
-workload; host conflict detected across two namespaces; flag-off suite is
-the existing `test_workload_service.py` unchanged.
-**Done when:** the full existing suite passes with the flag off, and the
-new suite passes with it on.
+**Tests:** `test_workload_namespaces.py` - resolution, ensure called in
+preflight and its `503` on failure, host conflict detected across two
+namespaces; the existing `test_workload_service.py` suite updated to the
+group-namespace expectation (mechanical - the fake cluster records
+namespaces since PR 1).
+**Done when:** the full suite is green and a create in a fresh test
+environment lands Ready in `serverless-t-{group}` in both regions.
 
 ## PR 6 - build controller across namespaces
 
@@ -241,26 +248,23 @@ populated in the peer → collected here only).
 **Done when:** GC deletes exactly the fixture it should and logs the
 verdict line per sweep.
 
-## PR 8 - migration, then cleanup
+## PR 8 - cutover cleanup
 
-**Migration is operations, not code** - the machinery shipped in PRs 1-7.
-Runbook, per environment:
+**Goal:** nothing legacy remains - in the chart, the code, or the docs.
+No migration precedes this: PR 5 already switched the only mode, and the
+test environments redeployed their workloads then.
 
-1. Enable `tenantNamespaces.enabled` (GC still off). Verify: a canary
-   create lands in `serverless-t-{group}` in both regions, Ready, host
-   serving; legacy workloads read/serve untouched via fallback.
-2. Per group, per workload: re-apply into the group namespace (idempotent
-   SSA; hostname unchanged, so the DomainMapping cutover is atomic),
-   verify Ready in both regions, delete from the legacy namespace.
-   Functions rebuild in place (each region builds what it runs; the git
-   Secret re-applies beside the new KSVC). Order: containers first
-   (no build), then functions.
-3. Legacy namespace empty in both clusters → enable `gc.enabled`.
-4. Cleanup PR: remove the fallback read path, the legacy namespace's
-   NetworkPolicy/CA/RoleBinding renders and the Kyverno name-match, flip
-   the flag's default, fold both proposal docs into
-   ARCHITECTURE.md/DEPLOYING.md (per docs/README.md, the code is now the
-   source of truth).
+1. Chart: remove the legacy workloads namespace from `namespaces.yaml`,
+   its NetworkPolicy/CA-bundle/RoleBinding renders (the shared partials
+   keep their one remaining target, the template set), and the Kyverno
+   name-match.
+2. Code: remove `workloads_namespace` from `common/config.py` and every
+   remaining binding of it.
+3. Environments: delete `serverless-workloads` in both clusters; enable
+   `gc.enabled` once the cutover has settled.
+4. Docs: fold both proposal documents into ARCHITECTURE.md/DEPLOYING.md
+   (per docs/README.md, the code is now the source of truth).
 
 **Done when:** the legacy namespace is gone from both clusters and from the
-chart, and ARCHITECTURE.md: Design Decisions reads "namespace-per-group".
+chart, `git grep workloads_namespace` returns nothing, and
+ARCHITECTURE.md: Design Decisions reads "namespace-per-group".
