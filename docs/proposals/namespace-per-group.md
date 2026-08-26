@@ -35,6 +35,7 @@ tests, and acceptance per step - is in
 | Convergence | **Level-triggered reconcile is the mechanism; the API's ensure call is a kick** | A `helm upgrade` must reach *existing* namespaces, not only new groups. The template-set hash stamped on each namespace is what triggers re-apply. |
 | Multi-region | **Ensure fans out to both regions; reconcile and GC are local-only** | Ensure must complete in both clusters before a deploy fans out (same partial-failure semantics as deploys). Reconcile/GC stay local so the two sites never fight during Argo sync skew - each converges its own cluster to its own Git-derived ConfigMap. Same split as the API (fan-out writes) and the build controller (local loops). |
 | Namespace GC | **Periodic sweep with an empty-since grace period**, per cluster, modeled on `TagGC` - not a watch | Immediacy is an anti-feature for namespace deletion. With a grace period a watch buys nothing. Per-cluster is *required*: `"regions": ["central"]` makes cluster-local emptiness legitimate, and idempotent ensure-on-create re-provisions the swept side. |
+| Object naming | **The object name becomes plain `{name}`** - the namespace scopes it, as Kubernetes intends. The group stays in exactly three places: the **default hostname** `{name}-{group}.{routeDomain}` (DNS is global; and a two-level host would escape the single-label wildcard cert), the **registry repository paths** (the registry is flat across groups - `common/names.py` takes the group explicitly instead of parsing it out of the object name), and the **ownership labels** (defense-in-depth, unchanged). | The suffix existed to disambiguate the shared namespace; that job is gone. Relaxes the naming rule: `{name}` ≤ 63 alone, group bounded only by the namespace, and the combined ≤ 63 survives *only* for the default host - where a custom `hostname` is now an escape hatch instead of the create being impossible. Pre-GA there is nothing deployed to rename. |
 | Prune semantics | The provisioner deletes objects carrying its managed-by label that are absent from the current template set | This is the one Argo behavior (prune) being reimplemented; label-scoped keeps it safe. |
 
 ## What stays exactly as it is
@@ -50,7 +51,7 @@ Stating the non-changes first, because they are the point of the design:
   The provisioner uses the same call; SSA field ownership is what makes label
   add/change/*remove* on tenant namespaces converge with no diff logic (a
   merge-patch cannot remove a key it doesn't know existed).
-- **Auth, group normalization, `{name}-{group}` object naming, the host
+- **Auth, group normalization, the default-host
   convention, DomainMapping/Route flow, ESO/Vault categories, the async
   202+poll model, partial-failure semantics.** All unchanged.
 - **The operator's day-2 workflow**: one values edit, one Argo sync. The new

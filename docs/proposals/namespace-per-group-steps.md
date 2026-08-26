@@ -200,16 +200,32 @@ is a permanently single code path and test matrix.
 4. Host-uniqueness preflight: the DomainMapping conflict probe lists
    cluster-scoped (`namespace=None`, label-selected) so hosts stay unique
    across all tenant namespaces.
-5. `/info` `naming` publishes the namespace rule from PR 1.
-6. Deploy note in the PR body: per environment, delete the old test
+5. Object naming: `common/names.py`'s `object_name` becomes plain
+   `{name}` - the namespace scopes it - and every derived name
+   (`{name}-env`, `{name}-files`, `{name}-git`, `{name}-pull`, the build
+   objects) shortens with it. The group stays explicit in exactly three
+   places: the **default host** (`{name}-{group}.{routeDomain}`,
+   unchanged - DNS is global and the wildcard cert covers one label), the
+   **registry repository derivations** in `names.py` (take `group` as a
+   parameter instead of parsing the object name - the registry is flat
+   across groups), and the **ownership labels** (unchanged). This lands in
+   this PR because objects get their new names and new namespaces in one
+   move.
+6. `/info` `naming` publishes the relaxed rules: `{name}` ≤ 63 on its own,
+   the group bounded by the namespace rule from PR 1, and combined ≤ 63
+   only for the *default* host - a longer pair supplies a custom
+   `hostname` instead of being rejected outright.
+7. Deploy note in the PR body: per environment, delete the old test
    workloads (or the legacy namespace's contents), sync, redeploy - they
    land in `serverless-t-{group}`. Rollback is redeploying the previous
    chart + image.
 
 **Tests:** `test_workload_namespaces.py` - resolution, ensure called in
 preflight and its `503` on failure, host conflict detected across two
-namespaces; the existing `test_workload_service.py` suite updated to the
-group-namespace expectation (mechanical - the fake cluster records
+namespaces, same `{name}` in two groups coexists (distinct namespaces,
+distinct hosts, distinct registry repos); the existing
+`test_workload_service.py` suite updated to the group-namespace and
+plain-`{name}` expectations (mechanical - the fake cluster records
 namespaces since PR 1).
 **Done when:** the full suite is green and a create in a fresh test
 environment lands Ready in `serverless-t-{group}` in both regions.
