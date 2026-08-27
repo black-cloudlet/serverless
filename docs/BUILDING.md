@@ -492,7 +492,7 @@ Instead there are **two kinds of ServiceAccount**:
 | Account | Created by | Holds | Used by |
 |---------|-----------|-------|---------|
 | `kpack-builder` | the chart | both registry credentials, no git one | `Builder` objects (compose + push a builder image; never clone source) |
-| `fn-{name}-{group}` | the **API**, per function | that function's git Secret **+** both registry credentials | the function's `Image` |
+| `{name}-{group}-build` | the **API**, per function | that function's git Secret **+** both registry credentials | the function's `Image` |
 
 The per-function account is created alongside the function and named on its `Image`:
 
@@ -500,7 +500,7 @@ The per-function account is created alongside the function and named on its `Ima
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: fn-hello-payments
+  name: hello-payments-build
   namespace: serverless-workloads       # with the Image and the KSVC (DEPLOYING.md: Chart Topology)
 secrets:
   - name: serverless-registry-creds     # this region's, from the chart
@@ -815,7 +815,7 @@ replicated source of truth.
 Concurrent writers are safe **only** if the composed spec is a pure function of the function
 definition. Duplicate builds come from nonces, not from concurrency:
 
-1. **Deterministic name** - `fn-{name}-{group}`.
+1. **Deterministic name** - the workload's own `{name}-{group}`.
 2. **No timestamps, UUIDs or counters** anywhere in the spec.
 3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type
    and setting it forces a rebuild on every apply.
@@ -1089,7 +1089,7 @@ are under DEPLOYING.md: Sample Manifests.
 apiVersion: kpack.io/v1alpha2
 kind: Image
 metadata:
-  name: fn-hello-payments              # deterministic: fn-{name}-{group}
+  name: hello-payments                 # deterministic: the workload's own {name}-{group}
   namespace: serverless-workloads      # owned by the KSVC (DEPLOYING.md: Chart Topology)
   labels:                              # common/labels.py
     serverless.platform/managed-by: serverless-api
@@ -1100,7 +1100,7 @@ spec:
   builder:
     kind: Builder
     name: python
-  serviceAccountName: fn-hello-payments   # per-function: its git token + both registry creds
+  serviceAccountName: hello-payments-build   # per-function: its git token + both registry creds
   source:
     git:
       url: https://git.internal/payments/hello.git

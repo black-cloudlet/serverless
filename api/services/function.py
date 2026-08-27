@@ -23,9 +23,8 @@ from api.services.workloads.service import run_background
 from common.build import BuildPlan, BuildRequest
 from common.config import RegistryConfig
 from common.errors import ValidationError
-from common.kpack import MAX_BUILD_WORKLOAD_NAME
 from common.labels import OFFERING_FUNCTION, workload_labels
-from common.names import object_name, validate_object_name
+from common.names import object_name
 
 
 class FunctionService:
@@ -146,13 +145,10 @@ class FunctionService:
             A Pending response with a ``statusUrl`` to poll.
         """
         self._assert_runtime(spec.runtime, spec.version)
-        # A function's pair is capped tighter than the shared check's 63: its
-        # build objects prefix it, and kpack writes that prefixed name where a
-        # label value has to fit (common/kpack.py - MAX_BUILD_WORKLOAD_NAME).
-        try:
-            validate_object_name(spec.name, group, limit=MAX_BUILD_WORKLOAD_NAME)
-        except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
+        # No name check beyond the engine's shared one: the kpack Image is the
+        # workload's own `{name}-{group}` verbatim, so the 63-character label
+        # value it must fit is exactly the limit the engine already enforces
+        # (common/kpack.py - build_image_name).
         return await self._engine.accept_create(
             offering=FUNCTION,
             group=group,

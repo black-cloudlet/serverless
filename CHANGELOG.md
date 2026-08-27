@@ -7,6 +7,34 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (function build naming)
+
+- **A function's kpack `Image` is now named the workload's own `{name}-{group}`,
+  and its build ServiceAccount `{workload}-build`; both were `fn-{workload}`.**
+  The prefix cost every function three characters of name budget: kpack stamps
+  the Image *name* onto every Build as the `image.kpack.io/image` label value,
+  which caps at 63 characters - the same DNS-label limit the platform already
+  enforces on `{name}-{group}`. With the prefix gone those are the same limit,
+  so the tighter function-only check is deleted and a function's name and group
+  may fill all 63 characters together, exactly like a container's. Kinds are
+  separate name spaces, so the Image sharing the KSVC's name collides with
+  nothing; the ServiceAccount takes a suffix like the workload's other derived
+  objects (`{workload}-env`, `{workload}-git`), where an object name's
+  253-character subdomain cap makes it free. No migration is shipped: a
+  function deployed under the old names keeps its `fn-` Image until it is
+  deleted and recreated. An install that binds the build SCC to accounts by
+  name (`build.scc.serviceAccounts`) must list `{workload}-build` instead of
+  `fn-{workload}`.
+
+### Fixed (env vars)
+
+- **An over-long env var name is a 400 at accept, not a background apply
+  failure.** A secret var's name is used verbatim as its key in the
+  `{workload}-env` Secret, and Kubernetes caps a ConfigMap/Secret key at 253
+  characters - a limit the container `env` list itself does not have, so
+  nothing downstream would reject the name until the apply. The edge validator
+  now enforces the key's cap, and `/openapi.json` publishes it as `maxLength`.
+
 ### Changed (health probes)
 
 - **BREAKING: `/healthz` and `/readyz` moved under the base path.** They were
