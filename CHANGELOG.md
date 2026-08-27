@@ -26,6 +26,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   name (`build.scc.serviceAccounts`) must list `{workload}-build` instead of
   `fn-{workload}`.
 
+### Fixed (env vars)
+
+- **An over-long env var name is a 400 at accept, not a background apply
+  failure.** A secret var's name is used verbatim as its key in the
+  `{workload}-env` Secret, and Kubernetes caps a ConfigMap/Secret key at 253
+  characters - a limit the container `env` list itself does not have, so
+  nothing downstream would reject the name until the apply. The edge validator
+  now enforces the key's cap, and `/openapi.json` publishes it as `maxLength`.
+
 ### Changed (health probes)
 
 - **BREAKING: `/healthz` and `/readyz` moved under the base path.** They were

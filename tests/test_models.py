@@ -166,6 +166,11 @@ def test_envvar_name_is_validated_at_the_edge():
     for bad in ("", "1LEADING_DIGIT", "HAS SPACE", "has/slash", "has$dollar", "..", "..x"):
         with pytest.raises(ValidationError):
             EnvVar(name=bad, value="1")
+    # A Secret key caps at 253 and a secret var's name becomes one; Kubernetes
+    # puts no cap on the env name itself, so the key is the binding constraint.
+    assert EnvVar(name="E" * 253, value="1").name == "E" * 253
+    with pytest.raises(ValidationError):
+        EnvVar(name="E" * 254, value="1")
 
 
 def test_mount_path_is_validated_at_the_edge():
