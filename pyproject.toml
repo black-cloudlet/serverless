@@ -10,12 +10,6 @@ requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
-    # >=0.6.2: the shared Name/Group types stopped capping fields at 39/20 -
-    # this API's combined {name}-{group} <= 63 check is the real limit, and an
-    # older package would reject at the field what this API now permits. The
-    # earlier floors were load-bearing too (>=0.5: `mount_offline_docs` and
-    # `wire_sso_login` take this API's `base_path`), so this one is not advisory
-    # either.
     "cloudlet-apis>=0.6.2,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
