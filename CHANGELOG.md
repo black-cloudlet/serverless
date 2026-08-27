@@ -7,6 +7,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (name limits)
+
+- **Names and groups now get the full 63 characters, bounded only by the pair.**
+  `cloudlet-apis` 0.6.2 dropped its per-field caps (name <= 39, group <= 20),
+  which pre-dated the build-naming change below and silently made this API's
+  combined `{name}-{group} <= 63` check unreachable. The floor moves to
+  `>=0.6.2` so the per-field rule is just DNS's own (a label caps at 63) and
+  the combined check - already enforced at accept time and published on
+  `/info` - is the one real limit.
+
 ### Changed (function build naming)
 
 - **A function's kpack `Image` is now named the workload's own `{name}-{group}`,

@@ -10,11 +10,7 @@ requires-python = ">=3.14"
 # What BOTH services need. The build controller serves no HTTP and installs
 # nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
 dependencies = [
-    # >=0.5: `mount_offline_docs` and `wire_sso_login` take the `base_path` this
-    # API is served under, so the docs, their assets and the SSO token proxy
-    # sit beneath it like everything else. 0.4 takes no such argument and
-    # create_app raises on it, so this floor is not advisory.
-    "cloudlet-apis>=0.6.1,<1",
+    "cloudlet-apis>=0.6.2,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "kubernetes>=36.0.3",
@@ -23,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 api = [
-    "cloudlet-apis[web,auth]>=0.6.1,<1",
+    "cloudlet-apis[web,auth]>=0.6.2,<1",
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.4",
     "pyyaml>=6.0.3",
