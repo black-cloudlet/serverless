@@ -15,6 +15,7 @@ from kubernetes.dynamic import DynamicClient
 
 from common.cluster.follow import LogFollow
 from common.cluster.kinds import ResourceKind
+from common.cluster.namespaced_client import NamespacedCluster
 from common.cluster.pool import _default_connect_timeout, _keepalive_socket_options
 from common.config import CommonSettings, RegionConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
@@ -30,6 +31,11 @@ class Cluster:
     :attr:`registry` hangs off it: the registry a region pushes to and pulls from
     is part of what that region *is*, and a caller holding the cluster should not
     have to look it up by name.
+
+    A Cluster is a *cluster*, not a namespace: every namespaced operation
+    names its namespace explicitly, so where a write lands is always a
+    deliberate choice. Code working within one namespace binds it once via
+    :meth:`in_namespace` and passes the view around.
     """
 
     def __init__(self, region_config: RegionConfig, settings: CommonSettings):
@@ -37,8 +43,8 @@ class Cluster:
 
         Args:
             region_config: The region's name and cluster identifiers.
-            settings: Shared connection settings (namespace, TLS material, base
-                domain, timeouts, registry).
+            settings: Shared connection settings (TLS material, base domain,
+                timeouts, registry).
         """
         self.region: str = region_config.name
         self.name: str = region_config.cluster
@@ -46,7 +52,6 @@ class Cluster:
         # rather than reaching for the platform default, which on a per-region
         # path is silently the wrong one.
         self.registry: RegistryConfig = settings.registry_for(region_config.name)
-        self._namespace: str = settings.workloads_namespace
 
         self._configuration = client.Configuration()
         self._configuration.host = f"https://api.{self.name}.{settings.base_domain}:6443"
@@ -116,28 +121,44 @@ class Cluster:
         """
         _ = self._dynamic_client
 
-    def apply(self, manifest: dict) -> list[dict]:
+    def apply(
+        self, manifest: dict, *, namespace: str | None, field_manager: str | None = None
+    ) -> list[dict]:
         """Server-side apply a manifest (create-or-update), forcing conflicts.
 
         Args:
             manifest: The resource manifest dict to apply.
+            namespace: The namespace to apply into. None only for a
+                cluster-scoped manifest (a Namespace itself), where the value
+                is ignored.
+            field_manager: The SSA field-manager name to write under. None
+                keeps the client library's default. A component that must own
+                its fields distinctly (the provisioner, whose re-applies
+                remove the fields it no longer declares) passes its own.
 
         Returns:
             The applied object(s) as dicts (including server-assigned fields).
         """
+        extra: dict = {"field_manager": field_manager} if field_manager else {}
         results = utils.create_from_dict(
             self._api_client,
             manifest,
             verbose=False,
-            namespace=self._namespace,
+            namespace=namespace,
             apply=True,
             force_conflicts=True,
+            **extra,
             **self._opts,
         )
         return [i.to_dict() for i in results]
 
     def get(
-        self, kind: ResourceKind, name: str | None = None, label_selector: str | None = None
+        self,
+        kind: ResourceKind,
+        name: str | None = None,
+        label_selector: str | None = None,
+        *,
+        namespace: str | None,
     ) -> dict | list[dict]:
         """Get a resource by name, or list a kind by label selector.
 
@@ -145,6 +166,9 @@ class Cluster:
             kind: The resource kind to fetch.
             name: The object name for a single get; None to list.
             label_selector: Label selector for the list form.
+            namespace: The namespace to read. None lists across *all*
+                namespaces (or addresses a cluster-scoped kind); a named get
+                of a namespaced kind needs a real namespace.
 
         Returns:
             The object dict (named get) or a list of object dicts (list form).
@@ -155,18 +179,22 @@ class Cluster:
         dynamic_api = self._dynamic_api(kind)
         if name is None:
             results = dynamic_api.get(
-                namespace=self._namespace, label_selector=label_selector, **self._opts
+                namespace=namespace, label_selector=label_selector, **self._opts
             )
             return [i.to_dict() for i in results.items]
         try:
-            return dynamic_api.get(name=name, namespace=self._namespace, **self._opts).to_dict()
+            return dynamic_api.get(name=name, namespace=namespace, **self._opts).to_dict()
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
             raise
 
     def list_resources(
-        self, kind: ResourceKind, *, label_selector: str | None = None
+        self,
+        kind: ResourceKind,
+        *,
+        namespace: str | None,
+        label_selector: str | None = None,
     ) -> tuple[list[dict], str | None]:
         """List a kind together with the collection's ``resourceVersion``.
 
@@ -175,6 +203,7 @@ class Cluster:
 
         Args:
             kind: The resource kind to list.
+            namespace: The namespace to list. None lists across all namespaces.
             label_selector: Label selector to narrow the listing.
 
         Returns:
@@ -182,7 +211,7 @@ class Cluster:
             none, leaving a watch to start from now).
         """
         results = self._dynamic_api(kind).get(
-            namespace=self._namespace, label_selector=label_selector, **self._opts
+            namespace=namespace, label_selector=label_selector, **self._opts
         )
         version = getattr(getattr(results, "metadata", None), "resourceVersion", None)
         return [i.to_dict() for i in results.items], version
@@ -191,6 +220,7 @@ class Cluster:
         self,
         kind: ResourceKind,
         *,
+        namespace: str | None,
         resource_version: str | None = None,
         label_selector: str | None = None,
         timeout_seconds: int | None = None,
@@ -207,6 +237,8 @@ class Cluster:
 
         Args:
             kind: The resource kind to follow.
+            namespace: The namespace to watch. None follows all namespaces -
+                one stream, however many namespaces the objects live in.
             resource_version: Where to resume from, normally the version
                 :meth:`list_resources` returned. None starts from now.
             label_selector: Label selector to narrow the stream.
@@ -216,7 +248,7 @@ class Cluster:
             ``(event_type, object)`` - ADDED/MODIFIED/DELETED and the object.
         """
         stream = self._dynamic_api(kind).watch(
-            namespace=self._namespace,
+            namespace=namespace,
             resource_version=resource_version,
             label_selector=label_selector,
             timeout=timeout_seconds,
@@ -225,7 +257,7 @@ class Cluster:
             obj = event.get("object")
             yield str(event.get("type")), obj.to_dict() if hasattr(obj, "to_dict") else (obj or {})
 
-    def patch(self, kind: ResourceKind, name: str, body: dict) -> dict:
+    def patch(self, kind: ResourceKind, name: str, body: dict, *, namespace: str | None) -> dict:
         """Merge-patch one field of an existing resource.
 
         Deliberately narrow next to :meth:`apply`, which is how everything the
@@ -242,6 +274,7 @@ class Cluster:
             kind: The resource kind to patch.
             name: The object name.
             body: The merge patch (only the fields being changed).
+            namespace: The object's namespace (None for a cluster-scoped kind).
 
         Returns:
             The patched object.
@@ -254,7 +287,7 @@ class Cluster:
         try:
             patched = dynamic_api.patch(
                 name=name,
-                namespace=self._namespace,
+                namespace=namespace,
                 body=body,
                 content_type="application/merge-patch+json",
                 **self._opts,
@@ -265,12 +298,13 @@ class Cluster:
             raise
         return patched.to_dict()
 
-    def delete(self, kind: ResourceKind, name: str) -> None:
+    def delete(self, kind: ResourceKind, name: str, *, namespace: str | None) -> None:
         """Delete a resource by name.
 
         Args:
             kind: The resource kind to delete.
             name: The object name.
+            namespace: The object's namespace (None for a cluster-scoped kind).
 
         Raises:
             NotFoundError: If the resource is already absent (404). Other errors
@@ -278,7 +312,7 @@ class Cluster:
         """
         dynamic_api = self._dynamic_api(kind)
         try:
-            dynamic_api.delete(name=name, namespace=self._namespace, **self._opts)
+            dynamic_api.delete(name=name, namespace=namespace, **self._opts)
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 raise NotFoundError(f"{kind.kind} '{name}' not found") from exc
@@ -288,6 +322,7 @@ class Cluster:
         self,
         pod: str,
         *,
+        namespace: str,
         container: str,
         since_seconds: int | None = None,
         limit_bytes: int | None = None,
@@ -302,6 +337,7 @@ class Cluster:
 
         Args:
             pod: The pod name.
+            namespace: The pod's namespace (a pod read is never cluster-wide).
             container: The container to read (e.g. the Knative user-container).
             since_seconds: Only return logs newer than this many seconds, if set.
             limit_bytes: Cap the number of bytes returned, if set. Kubernetes
@@ -319,7 +355,7 @@ class Cluster:
         try:
             return core.read_namespaced_pod_log(
                 name=pod,
-                namespace=self._namespace,
+                namespace=namespace,
                 container=container,
                 timestamps=True,
                 since_seconds=since_seconds,
@@ -336,6 +372,7 @@ class Cluster:
         self,
         pod: str,
         *,
+        namespace: str,
         container: str,
         since_seconds: int | None = None,
         tail_lines: int | None = None,
@@ -359,6 +396,7 @@ class Cluster:
 
         Args:
             pod: The pod name.
+            namespace: The pod's namespace.
             container: The container to read.
             since_seconds: Start this many seconds back, so a client sees recent
                 context rather than only what arrives after it connected.
@@ -377,7 +415,7 @@ class Cluster:
         try:
             response = core.read_namespaced_pod_log(
                 name=pod,
-                namespace=self._namespace,
+                namespace=namespace,
                 container=container,
                 timestamps=True,
                 since_seconds=since_seconds,
@@ -394,6 +432,18 @@ class Cluster:
                 raise NotFoundError(f"pod '{pod}' not found") from exc
             raise
         return LogFollow(response)
+
+    def in_namespace(self, namespace: str) -> NamespacedCluster:
+        """A view of this cluster with ``namespace`` bound into every operation.
+
+        Args:
+            namespace: The namespace every operation on the view targets.
+
+        Returns:
+            The bound view. The connection stays this Cluster's; the view
+            holds none of its own.
+        """
+        return NamespacedCluster(self, namespace)
 
     def close(self) -> None:
         """Release the underlying HTTP client (connection pool) for this region.

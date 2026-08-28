@@ -20,14 +20,14 @@ from api.services.manifests import resources as res
 from api.services.manifests import secrets as secret_svc
 from api.services.state import ksvc_state
 from common import kpack
-from common.cluster import Cluster, ResourceKind
+from common.cluster import NamespacedCluster, ResourceKind
 from common.errors import NotFoundError
 
 logger = get_logger(__name__)
 
 
 def apply_to_region(
-    cluster: Cluster,
+    cluster: NamespacedCluster,
     *,
     oname: str,
     ksvc: dict,
@@ -130,7 +130,7 @@ def apply_to_region(
     return RegionStatus(region=cluster.region, status=status, revision=revision)
 
 
-def apply_build_objects(cluster: Cluster, manifests: list[dict], *, oname: str) -> bool:
+def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, oname: str) -> bool:
     """Re-declare a function's build in one region, outside a workload apply.
 
     The rebuild path (``POST .../build``), which touches no KSVC. A region builds
@@ -160,7 +160,7 @@ def apply_build_objects(cluster: Cluster, manifests: list[dict], *, oname: str) 
     return True
 
 
-def delete_build_objects(cluster: Cluster, oname: str) -> None:
+def delete_build_objects(cluster: NamespacedCluster, oname: str) -> None:
     """Remove a function's build objects from one region, by name.
 
     Normally every call is a no-op 404: the objects are owned by the KSVC, so

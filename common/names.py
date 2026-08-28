@@ -65,6 +65,15 @@ _IMAGE_MAX = 512
 # A KSVC name and a DNS label are both capped here, and {name}-{group} is both.
 MAX_OBJECT_NAME = 63
 
+# A Namespace name is a DNS-1123 label, so it shares the 63-character cap.
+MAX_NAMESPACE_NAME = 63
+# Tenant namespaces are `{group}-serverless`: group-first for readability; the
+# suffix keeps any group from naming an existing cluster namespace.
+NAMESPACE_SUFFIX = "-serverless"
+# Group-first means a `kube-*`/`openshift-*` group would produce a namespace
+# that reads as the system's own.
+_RESERVED_NAMESPACE_PREFIXES = ("kube-", "openshift-")
+
 # An environment variable name, exactly as Kubernetes accepts one
 # (`util/validation.IsEnvVarName`). It is also used verbatim as the key of the
 # workload's `{workload}-env` Secret, and this is a subset of what a Secret key
@@ -97,7 +106,10 @@ def validate_hostname(host: str) -> str:
     """
     if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
         return host
-    raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
+    raise ValueError(
+        "hostname must be a single lowercase label (letters, digits and '-') "
+        "or a full lowercase domain name like app.example.com"
+    )
 
 
 def validate_git_url(url: str) -> str:
@@ -238,9 +250,7 @@ def validate_pod_name(pod: str) -> str:
     if len(pod) > MAX_POD_NAME:
         raise ValueError(f"pod name must be at most {MAX_POD_NAME} characters")
     if not DNS1123_SUBDOMAIN.match(pod):
-        raise ValueError(
-            "pod name must be a DNS-1123 subdomain: lowercase alphanumeric, '-' and '.'"
-        )
+        raise ValueError("pod name may use only lowercase letters, digits, '-' and '.'")
     return pod
 
 
@@ -389,12 +399,49 @@ def validate_object_name(name: str, group: str, limit: int = MAX_OBJECT_NAME) ->
     oname = object_name(name, group)
     if len(oname) > limit:
         raise ValueError(
-            f"name and group are too long together: '{name}' + '{group}' is "
-            f"{len(oname)} characters and the limit is {limit} "
-            f"(the name is used as a DNS label); shorten the name by "
+            f"name and group are too long together: '{oname}' is {len(oname)} "
+            f"characters and the limit is {limit}; shorten the name by "
             f"{len(oname) - limit}"
         )
     return oname
+
+
+def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
+    """The namespace a group's workloads live in: ``{group}{suffix}``.
+
+    One home for the mapping, like :func:`object_name`: the API, the
+    provisioner and the GC must derive the same name. The group arrives
+    normalized; the checks here are the namespace's own, on the suffixed
+    whole.
+
+    Args:
+        group: The normalized owning group.
+        suffix: The tenant-namespace suffix (configurable via the chart).
+
+    Returns:
+        The namespace name.
+
+    Raises:
+        ValueError: If the result is too long, ill-formed, or starts with a
+            reserved system prefix.
+    """
+    namespace = f"{group}{suffix}"
+    if len(namespace) > MAX_NAMESPACE_NAME:
+        raise ValueError(
+            f"group '{group}' is too long: with the '{suffix}' suffix the "
+            f"namespace is {len(namespace)} characters and the limit is "
+            f"{MAX_NAMESPACE_NAME}; shorten the group by "
+            f"{len(namespace) - MAX_NAMESPACE_NAME}"
+        )
+    if not DNS1123.match(namespace):
+        raise ValueError(
+            "group may use only lowercase letters, digits and '-', "
+            "and must start and end with a letter or digit"
+        )
+    reserved = next((p for p in _RESERVED_NAMESPACE_PREFIXES if namespace.startswith(p)), None)
+    if reserved:
+        raise ValueError(f"group must not start with '{reserved}' (reserved for system namespaces)")
+    return namespace
 
 
 def image_tag(branch: str) -> str:
@@ -554,8 +601,8 @@ Hostname = Annotated[
     str,
     AfterValidator(validate_hostname),
     _schema(
-        "Custom host: one DNS-1123 label, or a lowercase FQDN one label under the "
-        "platform route domain.",
+        "Custom host: one lowercase label (letters, digits and '-'), or a full "
+        "domain name one label under the platform route domain.",
         "checkout",
         maxLength=253,
     ),
@@ -600,7 +647,7 @@ PodName = Annotated[
     str,
     AfterValidator(validate_pod_name),
     _schema(
-        "A pod name, as the pods stream reported it. DNS-1123 subdomain.",
+        "A pod name, exactly as the pods stream reported it.",
         "orders-team-00001-deployment-6b9f4c5d7-x2wql",
         pattern=DNS1123_SUBDOMAIN.pattern,
         maxLength=MAX_POD_NAME,

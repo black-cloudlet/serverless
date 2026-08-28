@@ -17,7 +17,7 @@ from cloudlet_apis.logging import get_logger
 from kubernetes.client.exceptions import ApiException
 
 from common import kpack
-from common.cluster import Cluster, ResourceKind, clusters_for, select_local
+from common.cluster import Cluster, NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings
 from common.errors import NotFoundError
 from common.labels import (
@@ -59,6 +59,9 @@ class Reconciler:
         # Every region is constructed only to pick this one out; the rest are
         # dropped unconnected, since nothing here touches a peer.
         self._local = select_local(clusters_for(settings), settings.local_region)
+        # The loop's one namespace binding; per-group namespaces widen this
+        # to an all-namespaces watch.
+        self._bound = NamespacedCluster(self._local, settings.workloads_namespace)
         self._gc = gc_factory(self._local.region) if gc_factory else None
 
     @property
@@ -77,7 +80,7 @@ class Reconciler:
             The listing's resourceVersion, or None to watch from now - safe,
             since the relist just reconciled everything.
         """
-        images, version = self._local.list_resources(
+        images, version = self._bound.list_resources(
             ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR
         )
         for image in images:
@@ -98,7 +101,7 @@ class Reconciler:
         """
         version = self.resync()
         try:
-            for _event, image in self._local.watch(
+            for _event, image in self._bound.watch(
                 ResourceKind.KPACK_IMAGE,
                 resource_version=version,
                 label_selector=IMAGE_SELECTOR,
@@ -143,7 +146,7 @@ class Reconciler:
         Returns:
             True if the KSVC was applied.
         """
-        cluster = self._local
+        cluster = self._bound
         try:
             ksvc = cluster.get(ResourceKind.KNATIVE_SERVICE, workload)
         except NotFoundError:

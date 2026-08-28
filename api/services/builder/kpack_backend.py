@@ -37,7 +37,7 @@ from common.build import (
     cache_reference,
     image_reference,
 )
-from common.cluster import Cluster, ResourceKind
+from common.cluster import NamespacedCluster, ResourceKind
 from common.config import BuildConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
 from common.labels import LABEL_GROUP, LABEL_OFFERING, LABEL_WORKLOAD, OFFERING_FUNCTION
@@ -220,7 +220,7 @@ class KpackBackend:
             per_region=per_region,
         )
 
-    def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
+    def trigger(self, cluster: NamespacedCluster, name: str, group: str) -> bool:
         """Ask kpack for one more build of the function's current inputs.
 
         Patches the annotation onto the latest ``Build``, which is where kpack
@@ -270,7 +270,7 @@ class KpackBackend:
         )
         return True
 
-    def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
+    def status(self, cluster: NamespacedCluster, name: str, group: str) -> BuildStatus | None:
         """Read a function's build state from one cluster.
 
         Args:
@@ -295,7 +295,7 @@ class KpackBackend:
         state, latest, message = kpack.build_status(image)
         return BuildStatus(state=state, image=latest, message=message)
 
-    def statuses(self, cluster: Cluster, group: str) -> dict[str, BuildStatus]:
+    def statuses(self, cluster: NamespacedCluster, group: str) -> dict[str, BuildStatus]:
         """Read every function build state a group has on one cluster, in one call.
 
         Keyed by the ``workload`` label - the object name ``{name}-{group}`` -

@@ -70,7 +70,7 @@ from api.services.streams.sse import StreamEvent
 from api.services.workloads.request import ApplyRequest
 from api.services.workloads.stream_guard import _slot_guarded
 from common.build import BuildBackend, BuildPlan
-from common.cluster import Cluster, ResourceKind
+from common.cluster import NamespacedCluster, ResourceKind
 from common.config import RegistryConfig
 from common.errors import (
     ForbiddenError,
@@ -101,7 +101,7 @@ async def run_background(fn, *args) -> None:
         logger.exception("background %s failed for %s", getattr(fn, "__name__", fn), ident)
 
 
-async def _retag_region(cluster: Cluster, manifests: Sequence[dict]) -> None:
+async def _retag_region(cluster: NamespacedCluster, manifests: Sequence[dict]) -> None:
     """Re-tag one region's Image, reclaiming the repository it leaves behind.
 
     Args:
@@ -137,7 +137,9 @@ async def _retag_region(cluster: Cluster, manifests: Sequence[dict]) -> None:
         await asyncio.to_thread(registry_svc.reclaim_moved_repositories, cluster.registry, previous)
 
 
-def _pod_authorizer(cluster: Cluster, oname: str, pod: str, kind: str, name: str, user: Principal):
+def _pod_authorizer(
+    cluster: NamespacedCluster, oname: str, pod: str, kind: str, name: str, user: Principal
+):
     """The check both log reads run, as one blocking callable.
 
     Shared rather than written twice because the second half is the security
@@ -254,7 +256,7 @@ class WorkloadService:
         self,
         name: str,
         group: str,
-        targets: list[Cluster],
+        targets: list[NamespacedCluster],
         *,
         host: str | None = None,
         require_absent: bool = False,
@@ -268,12 +270,14 @@ class WorkloadService:
         )
 
     async def assert_host_available(
-        self, host: str, name: str, group: str, targets: list[Cluster]
+        self, host: str, name: str, group: str, targets: list[NamespacedCluster]
     ) -> None:
         """Assert ``host`` is free (see :meth:`assert_deployable`)."""
         await self.assert_deployable(name, group, targets, host=host)
 
-    async def assert_workload_absent(self, name: str, group: str, targets: list[Cluster]) -> None:
+    async def assert_workload_absent(
+        self, name: str, group: str, targets: list[NamespacedCluster]
+    ) -> None:
         """Assert no workload named ``{name}-{group}`` exists (see :meth:`assert_deployable`)."""
         await self.assert_deployable(name, group, targets, require_absent=True)
 
@@ -481,7 +485,7 @@ class WorkloadService:
         # Before any apply: a moved tag cannot be applied over, only replaced.
         await self.retag_build(targets, req.region_resources)
 
-        def apply(cluster: Cluster) -> RegionStatus:
+        def apply(cluster: NamespacedCluster) -> RegionStatus:
             # A region builds what it runs, so its build objects ride along with
             # its KSVC and are owned by it - there is no unowned case left.
             return region_apply.apply_to_region(
@@ -555,7 +559,7 @@ class WorkloadService:
         targets = self.deployer.resolve_targets(None)
         await self.retag_build(targets, plan.manifests_by_region)
 
-        def work(cluster: Cluster) -> RegionStatus:
+        def work(cluster: NamespacedCluster) -> RegionStatus:
             manifests = list(plan.replicated) + plan.manifests_for(cluster.region)
             # Skips a region the workload does not run in, which is also every
             # region the plan does not cover.
@@ -570,7 +574,7 @@ class WorkloadService:
         return any(s.status == "Building" for s in statuses)
 
     async def retag_build(
-        self, targets: list[Cluster], region_resources: Mapping[str, Sequence[dict]]
+        self, targets: list[NamespacedCluster], region_resources: Mapping[str, Sequence[dict]]
     ) -> None:
         """Make way for an Image whose tag has moved, and reclaim what it left.
 
@@ -620,7 +624,7 @@ class WorkloadService:
             "spec": {"template": {"metadata": {"annotations": {ANNOTATION_PULL_STAMP: stamp}}}},
         }
 
-        def stamp_region(cluster: Cluster) -> RegionStatus:
+        def stamp_region(cluster: NamespacedCluster) -> RegionStatus:
             try:
                 cluster.patch(ResourceKind.KNATIVE_SERVICE, oname, patch)
             except NotFoundError:
@@ -659,7 +663,7 @@ class WorkloadService:
         found: dict = {}
         images: dict[str, str] = {}
 
-        def fetch(cluster: Cluster) -> RegionStatus:
+        def fetch(cluster: NamespacedCluster) -> RegionStatus:
             # Only a real 404 means absent; anything else must propagate so a down region
             # is recorded as an error, not mistaken for absence.
             try:
@@ -742,7 +746,7 @@ class WorkloadService:
         # is read in the same per-region thread as that region's KSVC.
         builds: dict[str, BuildStatusView | None] = {}
 
-        def fetch(cluster: Cluster) -> RegionStatus | None:
+        def fetch(cluster: NamespacedCluster) -> RegionStatus | None:
             # A 404 means not deployed here, so omit the region rather than fail it.
             # Anything else propagates, keeping a down region visible as Failed.
             try:
@@ -888,7 +892,7 @@ class WorkloadService:
         usage_by_region: dict[str, region_read.RegionUsage] = {}
         builds: dict[str, BuildStatusView | None] = {}
 
-        def fetch(cluster: Cluster) -> RegionStatus | None:
+        def fetch(cluster: NamespacedCluster) -> RegionStatus | None:
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
             except NotFoundError:
@@ -986,7 +990,7 @@ class WorkloadService:
         oname = object_name(name, group)
         denied: list[str] = []
 
-        def remove(cluster: Cluster) -> RegionStatus:
+        def remove(cluster: NamespacedCluster) -> RegionStatus:
             # A clean 404 means "not deployed here", which is not a failure and must
             # not read as one - only a region that cannot answer at all is an error.
             try:
@@ -1438,7 +1442,7 @@ class WorkloadService:
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={kind}"
 
-        def fetch(cluster: Cluster) -> tuple[list[dict], dict]:
+        def fetch(cluster: NamespacedCluster) -> tuple[list[dict], dict]:
             # Both reads in one per-region thread: the build states belong to this
             # region now, so pairing them costs no extra round trip and cannot
             # attribute one region's builds to another. Branching on the declared

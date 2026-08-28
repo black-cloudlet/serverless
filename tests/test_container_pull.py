@@ -48,12 +48,12 @@ class _FakeCluster:
         self._ksvc = ksvc
         self.patches = []
 
-    def get(self, kind, name=None, label_selector=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None):
         if self._ksvc is None:
             raise NotFoundError(f"{name} not found")
         return self._ksvc
 
-    def patch(self, kind, name, body):
+    def patch(self, kind, name, body, namespace=None):
         if self._ksvc is None:
             raise NotFoundError(f"{name} not found")
         self.patches.append((kind, name, body))

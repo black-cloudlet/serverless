@@ -41,7 +41,7 @@ from api.models.common import LogLine, PodLogStreamOpen, StreamEnd, StreamWarnin
 from api.services.state.ksvc_state import ISRAEL_TZ
 from api.services.streams.capacity import StreamCapacity, start_on
 from api.services.streams.sse import StreamEvent, heartbeat, render
-from common.cluster import Cluster
+from common.cluster import NamespacedCluster
 
 # `timestamps=True` prefixes every line with an RFC3339Nano stamp. Matched rather
 # than split on whitespace so a workload logging something that merely looks like
@@ -236,7 +236,7 @@ class _Tail:
 
 
 def _read(
-    cluster: Cluster,
+    cluster: NamespacedCluster,
     tail: _Tail,
     opening: PodLogStreamOpen,
     since: int | None,
@@ -319,7 +319,7 @@ def _coalesced(items: list[StreamEvent | str]) -> Iterator[StreamEvent | str]:
 
 async def follow(
     *,
-    cluster: Cluster,
+    cluster: NamespacedCluster,
     capacity: StreamCapacity,
     config: StreamConfig,
     opening: PodLogStreamOpen,
