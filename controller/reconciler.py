@@ -59,11 +59,8 @@ class Reconciler:
         # Every region is constructed only to pick this one out; the rest are
         # dropped unconnected, since nothing here touches a peer.
         self._local = select_local(clusters_for(settings), settings.local_region)
-        # The loop's reads and writes are namespace-bound here, once: the
-        # Cluster itself is cluster-scoped, and this is the boundary where the
-        # controller decides where it works (today the shared workloads
-        # namespace; per-group namespaces widen this to an all-namespaces
-        # watch - docs/proposals/namespace-per-group.md).
+        # The loop's one namespace binding; per-group namespaces widen this
+        # to an all-namespaces watch.
         self._bound = NamespacedCluster(self._local, settings.workloads_namespace)
         self._gc = gc_factory(self._local.region) if gc_factory else None
 

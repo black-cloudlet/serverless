@@ -42,11 +42,9 @@ class Deployer:
         self._read_timeout = settings.cluster_read_op_timeout
         self._local_region = settings.local_region
         self._clusters: dict[str, Cluster] = clusters_for(settings)
-        # The Cluster is cluster-scoped; the namespace is bound HERE, at the one
-        # boundary where clusters are handed out, so everything downstream works
-        # on a view that cannot mix namespaces mid-operation. Today the binding
-        # is the shared workloads namespace; namespace-per-group changes what is
-        # bound, not who binds it (docs/proposals/namespace-per-group.md).
+        # The one boundary where the namespace is bound: everything downstream
+        # gets a view that cannot mix namespaces. Namespace-per-group changes
+        # what is bound here, not who binds it.
         self._namespace: str = settings.workloads_namespace
         self._read_pool = ReadPool(settings.cluster_read_workers, settings.cluster_read_max_queued)
 
