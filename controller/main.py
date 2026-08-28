@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import signal
-import time
-
 from cloudlet_apis.logging import configure_logging, get_logger
 
+from common.loop import install_terminate_handlers, run_loop
 from controller.config import ControllerSettings, get_settings
 from controller.gc import TagGC
 from controller.reconciler import Reconciler
@@ -14,50 +12,28 @@ from controller.reconciler import Reconciler
 logger = get_logger(__name__)
 
 
-def _terminate(signum: int, _frame) -> None:
-    """Raise, so the blocking watch unwinds now rather than at its timeout."""
-    logger.info("received signal %s, shutting down", signum)
-    raise SystemExit(0)
-
-
-# The least a clean pass may take before the next one starts. Every pass opens
-# with a full relist, so a watch that ends *immediately* without raising - an
-# LB idle-closing streams, a proxy stripping the timeout param - must not
-# degenerate into back-to-back LISTs of every Image at full speed.
-_MIN_PASS_SECONDS = 1.0
-
-
 def loop(reconciler: Reconciler, settings: ControllerSettings) -> None:
-    """Resync and follow, forever.
+    """Resync and follow, forever (paced by ``common.loop``).
 
-    A watch ending is routine and leads straight into the next resync; a pass
-    that *raises* backs off, so an unreachable cluster does not spin. A pass
-    that ends suspiciously fast is paced to :data:`_MIN_PASS_SECONDS`, so a
-    stream that keeps being closed at the door cannot spin either.
+    The watch holds its own interval open, so a clean pass needs no interval
+    sleep - only the floor that keeps a stream closed at the door from
+    becoming back-to-back relists.
 
     Args:
         reconciler: The loop's work.
         settings: Pacing (resync interval, error backoff).
     """
-    while True:
-        started = time.monotonic()
-        try:
-            reconciler.follow(settings.resync_seconds)
-        except Exception:  # noqa: BLE001 - the loop outlives any one pass
-            logger.exception("reconcile pass failed, retrying")
-            time.sleep(settings.error_backoff_seconds)
-        else:
-            elapsed = time.monotonic() - started
-            if elapsed < _MIN_PASS_SECONDS:
-                time.sleep(_MIN_PASS_SECONDS - elapsed)
+    run_loop(
+        lambda: reconciler.follow(settings.resync_seconds),
+        error_backoff_seconds=settings.error_backoff_seconds,
+    )
 
 
 def run() -> None:
     """Configure logging and signals, then run the loop until terminated."""
     configure_logging()
     settings = get_settings()
-    signal.signal(signal.SIGTERM, _terminate)
-    signal.signal(signal.SIGINT, _terminate)
+    install_terminate_handlers()
 
     reconciler = Reconciler(settings, gc_factory=lambda region: TagGC(settings, region))
     logger.info("build controller watching kpack Images in %s", reconciler.local.region)

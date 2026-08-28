@@ -38,12 +38,20 @@ _ALLOWED_KINDS = {k.kind for k in TEMPLATE_KINDS} | {"Namespace"}
 
 @dataclass(frozen=True)
 class TemplateSet:
-    """One loaded template set: the raw sources and their content hash."""
+    """One loaded template set: raw sources, their hash, and the parsed docs.
+
+    Parsed and validated once at construction - a bad set fails at load, into
+    the loop's backoff, before any namespace is touched - and rendered per
+    namespace by substituting over the parsed structures, so a pass over N
+    namespaces parses each file once instead of N times.
+    """
 
     # (filename, raw text), sorted by filename so the hash and the render
     # order are properties of the set, not of the directory listing.
     sources: tuple[tuple[str, str], ...]
     digest: str
+    # (filename, manifest) in render order, placeholders still in the values.
+    docs: tuple[tuple[str, dict], ...]
 
     @classmethod
     def load(cls, directory: str | Path) -> "TemplateSet":
@@ -88,17 +96,23 @@ class TemplateSet:
             digest.update(b"\x00")
             digest.update(text.encode())
             digest.update(b"\x00")
-        return cls(sources=ordered, digest=digest.hexdigest()[:16])
+        return cls(
+            sources=ordered,
+            digest=digest.hexdigest()[:16],
+            docs=tuple(_parse(ordered)),
+        )
 
     def __len__(self) -> int:
         """How many template files the set holds."""
         return len(self.sources)
 
     def render(self, *, namespace: str, group: str) -> list[dict]:
-        """Substitute the placeholders and parse every manifest, in set order.
+        """Substitute the placeholders over the parsed docs, in set order.
 
-        A ``{{`` left after substitution is an unknown placeholder and fails
-        here, file named - not as a literal inside a live NetworkPolicy.
+        A lowercase ``{{token}}`` left after substitution is an unknown
+        placeholder and fails here, file named - not as a literal inside a
+        live NetworkPolicy. Returns fresh structures on every call, so a
+        caller may mutate them.
 
         Args:
             namespace: The tenant namespace being converged.
@@ -108,34 +122,66 @@ class TemplateSet:
             The manifests, in filename order then document order.
 
         Raises:
-            ValueError: On a leftover placeholder, a malformed manifest, or a
-                kind outside the template vocabulary (``TEMPLATE_KINDS``).
+            ValueError: On a leftover placeholder.
         """
-        manifests: list[dict] = []
-        for name, text in self.sources:
-            rendered = text.replace("{{namespace}}", namespace).replace("{{group}}", group)
-            leftover = _PLACEHOLDER_TOKEN.search(rendered)
-            if leftover:
+        values = {"{{namespace}}": namespace, "{{group}}": group}
+        return [_substitute(doc, values, name) for name, doc in self.docs]
+
+
+def _parse(sources: tuple[tuple[str, str], ...]) -> list[tuple[str, dict]]:
+    """Parse and validate every manifest once, at set construction.
+
+    Raises:
+        ValueError: On a malformed manifest or a kind outside the template
+            vocabulary (``TEMPLATE_KINDS``).
+    """
+    docs: list[tuple[str, dict]] = []
+    for name, text in sources:
+        for doc in yaml.safe_load_all(text):
+            if doc is None:
+                continue  # a trailing `---` separator, not a manifest
+            if not isinstance(doc, dict):
+                raise ValueError(f"template '{name}' holds a non-mapping document")
+            kind = doc.get("kind")
+            obj_name = (doc.get("metadata") or {}).get("name")
+            if not kind or not obj_name:
+                raise ValueError(f"template '{name}' holds a manifest without kind or name")
+            if kind not in _ALLOWED_KINDS:
+                # What render admits, the prune must be able to collect.
                 raise ValueError(
-                    f"template '{name}' holds an unknown placeholder "
-                    f"{leftover.group(0)!r}; only "
-                    f"{', '.join(_PLACEHOLDERS)} are substituted"
+                    f"template '{name}' holds kind '{kind}', which the "
+                    f"provisioner does not manage; allowed: "
+                    f"{', '.join(sorted(_ALLOWED_KINDS))}"
                 )
-            for doc in yaml.safe_load_all(rendered):
-                if doc is None:
-                    continue  # a trailing `---` separator, not a manifest
-                if not isinstance(doc, dict):
-                    raise ValueError(f"template '{name}' holds a non-mapping document")
-                kind = doc.get("kind")
-                obj_name = (doc.get("metadata") or {}).get("name")
-                if not kind or not obj_name:
-                    raise ValueError(f"template '{name}' holds a manifest without kind or name")
-                if kind not in _ALLOWED_KINDS:
-                    # What render admits, the prune must be able to collect.
-                    raise ValueError(
-                        f"template '{name}' holds kind '{kind}', which the "
-                        f"provisioner does not manage; allowed: "
-                        f"{', '.join(sorted(_ALLOWED_KINDS))}"
-                    )
-                manifests.append(doc)
-        return manifests
+            docs.append((name, doc))
+    return docs
+
+
+def _substitute(value, values: dict[str, str], source: str):
+    """A fresh copy of ``value`` with every placeholder replaced in its strings.
+
+    Args:
+        value: The parsed node (mapping, list, string, or scalar).
+        values: Placeholder token -> replacement.
+        source: The filename, for the leftover-placeholder error.
+
+    Raises:
+        ValueError: On a lowercase ``{{token}}`` that is not a placeholder.
+    """
+    if isinstance(value, str):
+        for token, replacement in values.items():
+            value = value.replace(token, replacement)
+        leftover = _PLACEHOLDER_TOKEN.search(value)
+        if leftover:
+            raise ValueError(
+                f"template '{source}' holds an unknown placeholder "
+                f"{leftover.group(0)!r}; only {', '.join(_PLACEHOLDERS)} are substituted"
+            )
+        return value
+    if isinstance(value, dict):
+        return {
+            _substitute(k, values, source): _substitute(v, values, source) for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_substitute(v, values, source) for v in value]
+    return value

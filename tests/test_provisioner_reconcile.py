@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from common import loop as common_loop
 from common.cluster import ResourceKind
 from common.errors import NotFoundError
 from common.labels import (
@@ -76,15 +77,23 @@ class _Cluster:
         self._objects = objects or {}
         self.applied = []  # (manifest, namespace, field_manager)
         self.deleted = []  # (kind, name, namespace)
+        self.lists = []  # (kind, namespace) per get, to count LIST round trips
         self._fail_apply_at = fail_apply_at
         self._applies = 0
 
     def get(self, kind, name=None, label_selector=None, *, namespace):
+        assert label_selector == PROVISIONER_SELECTOR
+        self.lists.append((kind, namespace))
         if kind is ResourceKind.NAMESPACE:
             assert namespace is None, "namespaces are cluster-scoped"
-            assert label_selector == PROVISIONER_SELECTOR
             return list(self._namespaces)
-        assert label_selector == PROVISIONER_SELECTOR
+        if namespace is None:  # the pass-wide snapshot: all namespaces at once
+            return [
+                {**o, "metadata": {**o["metadata"], "namespace": ns}}
+                for (k, ns), objs in self._objects.items()
+                if k == kind
+                for o in objs
+            ]
         return list(self._objects.get((kind, namespace), []))
 
     def apply(self, manifest, *, namespace, field_manager=None):
@@ -398,7 +407,7 @@ def test_run_pass_loads_the_mounted_set_fresh_each_time(tmp_path, monkeypatch):
     monkeypatch.setattr(
         provisioner_main,
         "reconcile_all",
-        lambda cluster, templates, *, force=False: (seen.append(templates.digest), (1, 1, 0))[1],
+        lambda cluster, templates, **kw: (seen.append(templates.digest), (1, 1, 0))[1],
     )
 
     provisioner_main.run_pass(object(), settings)
@@ -421,7 +430,7 @@ def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatc
             raise outcome
 
     monkeypatch.setattr(provisioner_main, "run_pass", fake_pass)
-    monkeypatch.setattr(provisioner_main.time, "sleep", sleeps.append)
+    monkeypatch.setattr(common_loop.time, "sleep", sleeps.append)
 
     with pytest.raises(SystemExit):
         provisioner_main.loop(object(), settings)
@@ -441,6 +450,7 @@ def test_settings_defaults():
     assert s.resync_seconds == 300
     assert s.templates_dir == "/etc/serverless/tenant-templates"
     assert s.full_resync_passes == 12
+    assert s.converge_workers == 4
 
 
 def test_a_set_that_renders_nothing_refuses_to_converge():
@@ -460,12 +470,13 @@ def test_a_set_that_renders_nothing_refuses_to_converge():
     assert cluster.applied == []  # ...and the stamp untouched, so it retries
 
 
-def test_a_kind_outside_the_vocabulary_is_rejected_at_render():
-    # What render admits, the prune must be able to collect: 'Service' is not
-    # in the vocabulary, so it cannot become an uncollectable leftover.
-    templates = _set({"t.yaml": "apiVersion: v1\nkind: Service\nmetadata:\n  name: x\n"})
+def test_a_kind_outside_the_vocabulary_is_rejected_at_load():
+    # What a set admits, the prune must be able to collect: 'Service' is not
+    # in the vocabulary, so it cannot become an uncollectable leftover. The
+    # refusal is at construction - a bad set fails into the loop's backoff
+    # before any namespace is touched.
     with pytest.raises(ValueError, match="does not manage"):
-        templates.render(namespace="n", group="g")
+        _set({"t.yaml": "apiVersion: v1\nkind: Service\nmetadata:\n  name: x\n"})
 
 
 def test_payload_braces_are_not_placeholders():
@@ -520,16 +531,90 @@ def test_an_all_failed_pass_raises_into_the_backoff(tmp_path, monkeypatch):
     (tmp_path / "ns.yaml").write_text(NS_TEMPLATE)
     settings = ProvisionerSettings(regions=[], templates_dir=str(tmp_path))
     monkeypatch.setattr(
-        provisioner_main, "reconcile_all", lambda cluster, templates, *, force=False: (3, 0, 3)
+        provisioner_main, "reconcile_all", lambda cluster, templates, **kw: (3, 0, 3)
     )
     with pytest.raises(RuntimeError, match="all 3"):
         provisioner_main.run_pass(object(), settings)
 
     # A partial failure is namespaces' business, not the pass's.
     monkeypatch.setattr(
-        provisioner_main, "reconcile_all", lambda cluster, templates, *, force=False: (3, 2, 1)
+        provisioner_main, "reconcile_all", lambda cluster, templates, **kw: (3, 2, 1)
     )
     provisioner_main.run_pass(object(), settings)
+
+
+def test_a_pass_prunes_from_one_listing_per_kind():
+    # The snapshot: N stale namespaces cost len(PRUNABLE_KINDS) LISTs, not
+    # N x len(PRUNABLE_KINDS).
+    from provisioner.reconcile import PRUNABLE_KINDS
+
+    templates = _set()
+    cluster = _Cluster(
+        namespaces=[
+            _namespace("a-serverless", "a"),
+            _namespace("b-serverless", "b"),
+        ]
+    )
+
+    reconcile_all(cluster, templates)
+
+    object_lists = [(k, ns) for k, ns in cluster.lists if k is not ResourceKind.NAMESPACE]
+    assert len(object_lists) == len(PRUNABLE_KINDS)
+    assert {ns for _k, ns in object_lists} == {None}
+
+
+def test_the_snapshot_still_prunes_per_namespace():
+    # The bucketing must keep leftovers in their own namespace: a leftover in
+    # A is pruned from A, and B's converge never sees it.
+    templates = _set()
+    cluster = _Cluster(
+        namespaces=[
+            _namespace("a-serverless", "a"),
+            _namespace("b-serverless", "b"),
+        ],
+        objects={(ResourceKind.NETWORK_POLICY, "a-serverless"): [_leftover("dropped")]},
+    )
+
+    reconcile_all(cluster, templates)
+
+    assert cluster.deleted == [(ResourceKind.NETWORK_POLICY, "dropped", "a-serverless")]
+
+
+def test_a_never_stamped_namespace_skips_the_clearing_apply():
+    # No stamp means nothing to clear: the crash-safety property (no stamp
+    # until the set landed) already holds, so the opening Namespace write is
+    # saved. A stamped namespace keeps the full clear-then-stamp protocol.
+    templates = _set()
+    cluster = _Cluster(
+        namespaces=[
+            _namespace("new-serverless", "new"),  # never converged
+            _namespace("stale-serverless", "stale", stamp="0" * 16),
+        ]
+    )
+
+    reconcile_all(cluster, templates)
+
+    ns_applies: dict[str, int] = {}
+    for m, _ns, _fm in cluster.applied:
+        if m["kind"] == "Namespace":
+            ns_applies[m["metadata"]["name"]] = ns_applies.get(m["metadata"]["name"], 0) + 1
+    assert ns_applies == {"new-serverless": 1, "stale-serverless": 2}
+
+
+def test_workers_converge_all_namespaces():
+    # Converges are independent per namespace (the stamp is per namespace),
+    # so a pool changes wall time, never the outcome.
+    templates = _set()
+    cluster = _Cluster(namespaces=[_namespace(f"g{i}-serverless", f"g{i}") for i in range(5)])
+
+    assert reconcile_all(cluster, templates, workers=3) == (5, 5, 0)
+    stamped = {
+        m["metadata"]["name"]
+        for m, _ns, _fm in cluster.applied
+        if m["kind"] == "Namespace"
+        and ANNOTATION_TEMPLATE_HASH in (m["metadata"].get("annotations") or {})
+    }
+    assert stamped == {f"g{i}-serverless" for i in range(5)}
 
 
 def test_deletes_tolerate_not_found():

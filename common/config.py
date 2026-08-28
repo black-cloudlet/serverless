@@ -295,3 +295,17 @@ class CommonSettings(BaseSettings):
     def region_names(self) -> list[str]:
         """The names of all configured regions."""
         return [z.name for z in self.regions]
+
+
+class LoopSettings(CommonSettings):
+    """Settings for a paced control loop (``common.loop``).
+
+    Shared by the build controller and the provisioner, so the pacing
+    contract lives once.
+    """
+
+    # The pass cadence: how long the controller's watch is held open, and the
+    # pause between the provisioner's reconcile passes.
+    resync_seconds: int = Field(default=300, gt=0)
+    # Only for a pass that raised; a clean pass follows the resync cadence.
+    error_backoff_seconds: float = Field(default=5.0, ge=0)

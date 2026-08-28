@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from common import loop as common_loop
 from common.cluster import NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings, RegionConfig
 from common.errors import NotFoundError, ValidationError
@@ -443,12 +444,12 @@ def test_a_zero_resync_interval_is_rejected():
 
 def test_terminating_raises_so_a_blocking_watch_unwinds():
     with pytest.raises(SystemExit):
-        controller_main._terminate(15, None)
+        common_loop._terminate(15, None)
 
 
 def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
     slept = []
-    monkeypatch.setattr(controller_main.time, "sleep", slept.append)
+    monkeypatch.setattr(common_loop.time, "sleep", slept.append)
     passes = iter([RuntimeError("apiserver down"), None, SystemExit(0)])
 
     class _Flaky:
@@ -465,7 +466,7 @@ def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
     # keeps a stream closed at the door from becoming back-to-back relists.
     assert slept[0] == 2.5
     assert len(slept) == 2
-    assert 0 < slept[1] <= controller_main._MIN_PASS_SECONDS
+    assert 0 < slept[1] <= common_loop.MIN_PASS_SECONDS
 
 
 def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch):
@@ -479,12 +480,12 @@ def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch)
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr(controller_main.signal, "signal", lambda s, h: signals.setdefault(s, h))
+    monkeypatch.setattr(common_loop.signal, "signal", lambda s, h: signals.setdefault(s, h))
     monkeypatch.setattr(controller_main, "Reconciler", lambda settings, **kw: _Reconciler())
     monkeypatch.setattr(controller_main, "loop", lambda r, s: (_ for _ in ()).throw(SystemExit(0)))
 
     with pytest.raises(SystemExit):
         controller_main.run()
 
-    assert set(signals) == {controller_main.signal.SIGTERM, controller_main.signal.SIGINT}
+    assert set(signals) == {common_loop.signal.SIGTERM, common_loop.signal.SIGINT}
     assert closed == [True]
