@@ -1,0 +1,91 @@
+"""Provisioner entrypoint: run the reconcile loop until the pod is stopped."""
+
+from __future__ import annotations
+
+import signal
+import time
+
+from cloudlet_apis.logging import configure_logging, get_logger
+
+from common.cluster import Cluster, clusters_for, select_local
+from provisioner.config import ProvisionerSettings, get_settings
+from provisioner.reconcile import reconcile_all
+from provisioner.templates import TemplateSet
+
+logger = get_logger(__name__)
+
+
+def _terminate(signum: int, _frame) -> None:
+    """Raise, so a sleeping loop unwinds now rather than at the next pass."""
+    logger.info("received signal %s, shutting down", signum)
+    raise SystemExit(0)
+
+
+# The least a pass may take before the next one starts, so a loop whose sleep
+# arithmetic ever lands at zero (a pass outrunning its own resync interval)
+# cannot degenerate into back-to-back LISTs of every namespace at full speed.
+_MIN_PASS_SECONDS = 1.0
+
+
+def run_pass(cluster: Cluster, settings: ProvisionerSettings) -> None:
+    """One reconcile pass: load the mounted set fresh, converge the stale.
+
+    The template set is re-read every pass because the kubelet refreshes the
+    mounted ConfigMap in place - this is the hop that carries a helm upgrade
+    to namespaces that already exist.
+
+    Args:
+        cluster: The local cluster.
+        settings: For the templates directory.
+    """
+    templates = TemplateSet.load(settings.templates_dir)
+    reconcile_all(cluster, templates)
+
+
+def loop(cluster: Cluster, settings: ProvisionerSettings) -> None:
+    """Reconcile, sleep, forever.
+
+    A pass that *raises* (an unreadable mount, an unreachable cluster) backs
+    off and retries, so a transient failure does not wait out a whole resync
+    interval; a clean pass waits the interval. Per-namespace failures never
+    reach here - ``reconcile_all`` contains them.
+
+    Args:
+        cluster: The local cluster.
+        settings: Pacing (resync interval, error backoff).
+    """
+    while True:
+        started = time.monotonic()
+        try:
+            run_pass(cluster, settings)
+        except Exception:  # noqa: BLE001 - the loop outlives any one pass
+            logger.exception("reconcile pass failed, retrying")
+            time.sleep(settings.error_backoff_seconds)
+            continue
+        elapsed = time.monotonic() - started
+        time.sleep(max(settings.resync_seconds - elapsed, _MIN_PASS_SECONDS))
+
+
+def run() -> None:
+    """Configure logging and signals, then run the loop until terminated."""
+    configure_logging()
+    settings = get_settings()
+    signal.signal(signal.SIGTERM, _terminate)
+    signal.signal(signal.SIGINT, _terminate)
+
+    # Local-only, like the build controller: every region is constructed just
+    # to pick this one out (docs/proposals/namespace-per-group.md).
+    cluster = select_local(clusters_for(settings), settings.local_region)
+    logger.info(
+        "provisioner reconciling tenant namespaces in %s from %s",
+        cluster.region,
+        settings.templates_dir,
+    )
+    try:
+        loop(cluster, settings)
+    finally:
+        cluster.close()
+
+
+if __name__ == "__main__":
+    run()

@@ -62,7 +62,7 @@ convention = "google"
 "tests/**" = ["E501", "D", "S", "B"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "common*", "controller*"]
+include = ["api*", "common*", "controller*", "provisioner*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
