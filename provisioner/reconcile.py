@@ -1,23 +1,14 @@
 """Converging tenant namespaces to the template set, one cluster at a time.
 
-Local-only by design, like the build controller's loop: each provisioner
-converges **its own cluster** from **its own cluster's** ConfigMap, so the two
-sites never fight over a namespace during Argo sync skew - each converges to
-its local Git-derived state, and both end at the same hash because Git is the
-single source (docs/proposals/namespace-per-group.md - multi-region).
+Local-only, like the build controller: each provisioner converges its own
+cluster from its own cluster's ConfigMap, so the two sites never fight during
+Argo sync skew. The stamp protocol makes a converge crash-safe:
 
-The stamp protocol is what makes a converge crash-safe without bookkeeping:
-
-1. Apply the Namespace **without** the hash annotation. Under server-side
-   apply with our field manager this *removes* the previous stamp, marking
-   the namespace mid-converge.
-2. Apply the rendered contents, then prune: delete objects carrying our
-   managed-by label that the current set no longer renders - the one Argo
-   semantic (prune) reimplemented here, label-scoped so nothing the API or a
-   tenant created can ever be collected.
-3. Re-apply the Namespace **with** the hash. The stamp is the last write, so
-   a crash anywhere above leaves no stamp and the next pass redoes the
-   namespace; server-side apply makes redoing free.
+1. Apply the Namespace *without* the hash annotation (under SSA this removes
+   the old stamp, marking the converge in progress).
+2. Apply the contents, then prune managed objects the set no longer renders.
+3. Re-apply the Namespace *with* the hash - last, so a crash anywhere above
+   leaves no stamp and the next pass redoes the namespace.
 """
 
 from __future__ import annotations
@@ -36,19 +27,15 @@ from provisioner.templates import TemplateSet
 
 logger = get_logger(__name__)
 
-# The SSA identity every provisioner write carries. Stable, because field
-# ownership is per manager: it is what lets a re-apply *remove* a label or
-# annotation this component owned last time and no longer declares, while
-# never touching fields the API server, the API, or an admin own.
+# The SSA identity every provisioner write carries: what lets a re-apply
+# remove fields it no longer declares without touching anyone else's.
 FIELD_MANAGER = "serverless-provisioner"
 
 # What the provisioner manages, and nothing else.
 PROVISIONER_SELECTOR = f"{LABEL_MANAGED_BY}={PROVISIONER_VALUE}"
 
-# The namespaced kinds a template set may put in a tenant namespace, and so
-# the kinds the prune must sweep. Fixed rather than derived from the current
-# set: a kind *removed* from the set entirely still has leftovers to collect,
-# which a set-derived list would never look at again.
+# What the prune sweeps. Fixed, not derived from the current set: a kind
+# removed from the set entirely still has leftovers to collect.
 PRUNABLE_KINDS = (
     ResourceKind.NETWORK_POLICY,
     ResourceKind.CONFIG_MAP,
@@ -59,41 +46,33 @@ PRUNABLE_KINDS = (
 
 
 def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
-    """Bring one tenant namespace to the template set, following the stamp protocol.
+    """Bring one tenant namespace to the template set (the stamp protocol above).
 
-    Idempotent by construction (server-side apply throughout), so an ensure
-    call and the reconcile loop can both run it without coordination.
+    Idempotent throughout, so the ensure call and the loop can both run it.
 
     Args:
-        cluster: The cluster to converge in (cluster-scoped client; this
-            function spans the namespace and the Namespace object itself).
-        namespace: The tenant namespace's name. Passed rather than derived:
-            the loop converges the namespace it *found*, so a changed suffix
-            setting cannot strand existing namespaces under their old names.
-        group: The owning (normalized) group, for the render and the labels.
+        cluster: The cluster to converge in (cluster-scoped client).
+        namespace: The namespace's name - passed, not derived, so a changed
+            suffix setting cannot strand existing namespaces.
+        group: The owning (normalized) group.
         templates: The loaded template set.
 
     Raises:
-        Exception: Any render or apply error; the caller decides whether one
-            namespace's failure ends the pass (the loop continues; an ensure
-            call surfaces it).
+        Exception: Any render or apply error; the caller decides whether it
+            ends the pass.
     """
     manifests = templates.render(namespace=namespace, group=group)
     ns_manifest = next((m for m in manifests if m["kind"] == "Namespace"), None)
     if ns_manifest is None:
-        # A set may carry no Namespace template; the namespace itself is then
-        # ours to synthesize. Labels come from _stamped like everything else.
         ns_manifest = {"apiVersion": "v1", "kind": "Namespace", "metadata": {}}
     contents = [m for m in manifests if m["kind"] != "Namespace"]
 
-    # The namespace's name is the target's, whatever the template said: the
-    # loop converges what it found, and a template naming something else would
-    # otherwise create a *second* namespace mid-converge.
+    # The target's name wins over the template's: a template naming something
+    # else would create a second namespace mid-converge.
     ns_manifest = _stamped(ns_manifest, group)
     ns_manifest["metadata"]["name"] = namespace
 
-    # 1. Namespace first, without the hash - clearing the old stamp marks the
-    #    converge in progress (see the module docstring).
+    # 1. Namespace first, without the hash: mid-converge marker.
     cluster.apply(_without_hash(ns_manifest), namespace=None, field_manager=FIELD_MANAGER)
 
     # 2. Contents, then prune.
@@ -120,24 +99,18 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
 def reconcile_all(cluster: Cluster, templates: TemplateSet) -> tuple[int, int, int]:
     """Converge every managed namespace in this cluster whose stamp is stale.
 
-    One namespace failing is logged and skipped, never the end of the pass -
-    the listing order is stable, so an aborting error would starve every
-    namespace after the failing one on every pass, deterministically
-    (the same rule as ``TagGC.sweep``).
-
-    An **empty** template set refuses to converge anything: mounted-but-empty
-    is indistinguishable from a broken mount mid-update, and treating it as
-    intent would prune every managed object out of every tenant namespace.
-    Emptying a live set on purpose is an operation that deserves a human and
-    a deliberate mechanism, not a ConfigMap race.
+    One namespace failing is logged and skipped, never the end of the pass
+    (``TagGC``'s rule: an aborting error would starve every namespace after
+    it, deterministically). An empty set is refused: mounted-but-empty is
+    indistinguishable from a broken mount, and obeying it would prune every
+    tenant namespace bare.
 
     Args:
         cluster: The local cluster (cluster-scoped client).
         templates: The currently mounted template set.
 
     Returns:
-        ``(seen, converged, failed)`` counts, for the pass's log line and for
-        readiness ("unconverged namespaces" is the provisioner's signal).
+        ``(seen, converged, failed)``, for the log line and for readiness.
     """
     if len(templates) == 0:
         logger.warning(
@@ -155,8 +128,7 @@ def reconcile_all(cluster: Cluster, templates: TemplateSet) -> tuple[int, int, i
         name = meta.get("name", "")
         group = (meta.get("labels") or {}).get(LABEL_GROUP)
         if not group:
-            # Ours by managed-by but unattributable: converging would render
-            # templates for a group nothing names. A human made this state.
+            # Ours by label but unattributable - a human made this state.
             logger.warning("managed namespace '%s' carries no group label; skipping", name)
             failed += 1
             continue
@@ -183,10 +155,8 @@ def reconcile_all(cluster: Cluster, templates: TemplateSet) -> tuple[int, int, i
 def _stamped(manifest: dict, group: str) -> dict:
     """A copy of ``manifest`` carrying the provisioner's ownership labels.
 
-    Injected in code rather than trusted to the templates: the prune and the
-    GC select on these labels, and a template that forgot them would create
-    objects the prune could never collect - or worse, a namespace the GC
-    would never see.
+    Injected in code, not trusted to templates: the prune and the GC select
+    on these labels.
     """
     meta = dict(manifest.get("metadata") or {})
     labels = dict(meta.get("labels") or {})
@@ -197,11 +167,7 @@ def _stamped(manifest: dict, group: str) -> dict:
 
 
 def _without_hash(ns_manifest: dict) -> dict:
-    """The namespace manifest with no template-hash annotation declared.
-
-    Under SSA with our field manager, applying this *removes* a previously
-    stamped hash - the mid-converge marker the module docstring describes.
-    """
+    """The namespace manifest with no template-hash annotation declared."""
     meta = dict(ns_manifest.get("metadata") or {})
     annotations = {
         k: v for k, v in (meta.get("annotations") or {}).items() if k != ANNOTATION_TEMPLATE_HASH
@@ -213,8 +179,7 @@ def _without_hash(ns_manifest: dict) -> dict:
 def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None:
     """Delete managed objects the current template set no longer renders.
 
-    Label-scoped twice over: only kinds a template set may contain, and only
-    objects carrying the provisioner's managed-by label - the API's workload
+    Only prunable kinds, only provisioner-labeled objects: the API's workload
     Secrets and a tenant's own objects are invisible to it.
     """
     for kind in PRUNABLE_KINDS:

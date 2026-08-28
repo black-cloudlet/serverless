@@ -1,15 +1,9 @@
 """The tenant template set: Helm-rendered manifests, loaded and rendered per group.
 
-The chart renders the per-namespace resources into a ConfigMap of **final
-YAML** - Helm has already done the real templating from values - leaving
-exactly two placeholders, ``{{namespace}}`` and ``{{group}}``, which are the
-runtime facts Helm cannot know. This module owns both halves of that contract:
-loading the mounted set (and hashing it, so a changed set is detectable), and
-rendering it for one group.
-
-The hash is computed over the **raw** template text, before substitution, so
-it names the set itself: every namespace converged from the same ConfigMap
-carries the same stamp whatever its group.
+The chart ships final YAML with two placeholders - ``{{namespace}}`` and
+``{{group}}``, the runtime facts Helm cannot know. The hash is over the raw
+text, before substitution, so it names the set itself: one stamp per
+ConfigMap, whatever the group.
 """
 
 from __future__ import annotations
@@ -22,8 +16,7 @@ import yaml
 
 from common.cluster import ResourceKind
 
-# The two runtime facts. Anything else in {{...}} is a template bug, and it
-# fails here rather than as a string literal inside a live NetworkPolicy.
+# Anything else in {{...}} is a template bug and fails at render.
 _PLACEHOLDERS = ("{{namespace}}", "{{group}}")
 
 
@@ -40,20 +33,19 @@ class TemplateSet:
     def load(cls, directory: str | Path) -> "TemplateSet":
         """Load the mounted template directory.
 
-        Hidden entries are skipped: a mounted ConfigMap directory holds the
-        kubelet's ``..data`` symlink machinery beside the keys, and only the
-        keys are templates.
+        Hidden entries are skipped - a ConfigMap mount holds the kubelet's
+        ``..data`` machinery beside the keys.
 
         Args:
             directory: The mounted ConfigMap directory.
 
         Returns:
-            The loaded set (possibly empty - the caller decides what an empty
-            set means; see :func:`provisioner.reconcile.reconcile_all`).
+            The loaded set, possibly empty (the caller decides what that
+            means).
 
         Raises:
-            FileNotFoundError: If the directory does not exist - a broken
-                mount, distinct from a mounted-but-empty ConfigMap.
+            FileNotFoundError: If the directory does not exist (a broken
+                mount, distinct from an empty ConfigMap).
         """
         root = Path(directory)
         sources = sorted(
@@ -76,11 +68,8 @@ class TemplateSet:
     def render(self, *, namespace: str, group: str) -> list[dict]:
         """Substitute the placeholders and parse every manifest, in set order.
 
-        Substitution is textual and happens before parsing - the templates are
-        final YAML, so there is nothing structural to evaluate. A ``{{`` left
-        after substitution is an unknown placeholder and fails loudly, here,
-        with the file named: the alternative is a NetworkPolicy selecting the
-        literal string ``{{namespce}}`` in a live cluster.
+        A ``{{`` left after substitution is an unknown placeholder and fails
+        here, file named - not as a literal inside a live NetworkPolicy.
 
         Args:
             namespace: The tenant namespace being converged.
@@ -90,9 +79,8 @@ class TemplateSet:
             The manifests, in filename order then document order.
 
         Raises:
-            ValueError: On a leftover placeholder, a non-mapping document, a
-                manifest without ``kind``/``metadata.name``, or a kind the
-                platform does not operate on (``ResourceKind``).
+            ValueError: On a leftover placeholder, a malformed manifest, or a
+                kind outside ``ResourceKind``.
         """
         manifests: list[dict] = []
         for name, text in self.sources:
@@ -113,9 +101,7 @@ class TemplateSet:
                 obj_name = (doc.get("metadata") or {}).get("name")
                 if not kind or not obj_name:
                     raise ValueError(f"template '{name}' holds a manifest without kind or name")
-                # Fails for a kind the platform has no GVK for - the same
-                # registry the prune walks, so a set cannot create what the
-                # prune could never collect.
+                # A set must not create what the prune could never collect.
                 ResourceKind.from_kind(kind)
                 manifests.append(doc)
         return manifests

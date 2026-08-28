@@ -15,23 +15,19 @@ class ProvisionerSettings(CommonSettings):
 
     app_name: str = "serverless-provisioner"
 
-    # The pause between reconcile passes. There is no watch to hold open: the
-    # loop is periodic because its triggers - a synced templates ConfigMap, a
-    # namespace created by an ensure call - need convergence within minutes,
-    # not milliseconds, and a relist per pass is what makes a crashed pass
-    # self-healing.
+    # The pause between reconcile passes: periodic, no watch - convergence
+    # within minutes is enough, and a relist per pass self-heals a crash.
     resync_seconds: int = Field(default=300, gt=0)
     # Only for a pass that raised; a clean pass waits the resync interval.
     error_backoff_seconds: float = Field(default=5.0, ge=0)
 
-    # Where the chart mounts the tenant-templates ConfigMap. A whole-ConfigMap
-    # mount, never subPath: subPath mounts are not refreshed by the kubelet,
-    # and the refresh is how a helm upgrade reaches this loop.
+    # The tenant-templates ConfigMap mount. Whole-ConfigMap, never subPath:
+    # subPath mounts are not refreshed, and the refresh is how a helm upgrade
+    # reaches this loop.
     templates_dir: str = "/etc/serverless/tenant-templates"
 
-    # Suffixes every tenant namespace (common.names.namespace_for_group). A
-    # value here so the chart can set it, and shared with the API through the
-    # same one function - the two must never derive different names.
+    # Tenant-namespace suffix (common.names.namespace_for_group) - the same
+    # one function the API uses, so the two never derive different names.
     namespace_suffix: str = NAMESPACE_SUFFIX
 
 

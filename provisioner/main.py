@@ -21,18 +21,16 @@ def _terminate(signum: int, _frame) -> None:
     raise SystemExit(0)
 
 
-# The least a pass may take before the next one starts, so a loop whose sleep
-# arithmetic ever lands at zero (a pass outrunning its own resync interval)
-# cannot degenerate into back-to-back LISTs of every namespace at full speed.
+# The least a pass may take, so the loop can never degenerate into
+# back-to-back LISTs of every namespace at full speed.
 _MIN_PASS_SECONDS = 1.0
 
 
 def run_pass(cluster: Cluster, settings: ProvisionerSettings) -> None:
     """One reconcile pass: load the mounted set fresh, converge the stale.
 
-    The template set is re-read every pass because the kubelet refreshes the
-    mounted ConfigMap in place - this is the hop that carries a helm upgrade
-    to namespaces that already exist.
+    Re-read every pass - the kubelet refreshes the mount in place, and that
+    refresh is how a helm upgrade reaches existing namespaces.
 
     Args:
         cluster: The local cluster.
@@ -45,10 +43,8 @@ def run_pass(cluster: Cluster, settings: ProvisionerSettings) -> None:
 def loop(cluster: Cluster, settings: ProvisionerSettings) -> None:
     """Reconcile, sleep, forever.
 
-    A pass that *raises* (an unreadable mount, an unreachable cluster) backs
-    off and retries, so a transient failure does not wait out a whole resync
-    interval; a clean pass waits the interval. Per-namespace failures never
-    reach here - ``reconcile_all`` contains them.
+    A raising pass backs off and retries; a clean pass waits the interval.
+    Per-namespace failures never reach here - ``reconcile_all`` contains them.
 
     Args:
         cluster: The local cluster.
@@ -73,8 +69,7 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _terminate)
     signal.signal(signal.SIGINT, _terminate)
 
-    # Local-only, like the build controller: every region is constructed just
-    # to pick this one out (docs/proposals/namespace-per-group.md).
+    # Local-only, like the build controller.
     cluster = select_local(clusters_for(settings), settings.local_region)
     logger.info(
         "provisioner reconciling tenant namespaces in %s from %s",
