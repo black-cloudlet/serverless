@@ -31,12 +31,10 @@ class Cluster:
     is part of what that region *is*, and a caller holding the cluster should not
     have to look it up by name.
 
-    A Cluster is exactly that - a *cluster*, not a namespace. Every namespaced
-    operation names its namespace explicitly, because the value deciding where a
-    write lands must always be a deliberate choice: a baked-in default is a
-    silent-wrong-namespace bug the moment more than one namespace exists. Code
-    that works within one namespace binds it once via :meth:`in_namespace` and
-    passes the view around instead.
+    A Cluster is a *cluster*, not a namespace: every namespaced operation
+    names its namespace explicitly, so where a write lands is always a
+    deliberate choice. Code working within one namespace binds it once via
+    :meth:`in_namespace` and passes the view around.
     """
 
     def __init__(self, region_config: RegionConfig, settings: CommonSettings):
@@ -462,16 +460,10 @@ class Cluster:
 class NamespacedCluster:
     """A :class:`Cluster` with one namespace curried into every operation.
 
-    The ergonomic half of the cluster-scoped client: code that works within a
-    single namespace - a workload apply, a pod-log stream, the build loop's
-    rollout - binds the namespace once, where it is decided, and everything
-    downstream operates on the view without being able to mix namespaces
-    mid-operation. The view owns no connection; region identity, the registry,
-    and lifecycle stay with the underlying Cluster (which is why there is no
-    ``close`` here - closing is its owner's call, not a borrower's).
-
-    Duck-typed over anything with the Cluster's method surface, which is what
-    lets a test's fake cluster stand in underneath.
+    Bound once where the namespace is decided, so downstream code cannot mix
+    namespaces mid-operation. The view owns no connection - hence no
+    ``close``; closing is the owner's call. Duck-typed, so a test's fake
+    cluster can stand in underneath.
     """
 
     def __init__(self, cluster, namespace: str):
@@ -505,8 +497,7 @@ class NamespacedCluster:
 
     def apply(self, manifest: dict, *, field_manager: str | None = None) -> list[dict]:
         """Server-side apply into the bound namespace (see Cluster.apply)."""
-        # Forwarded only when set, so a double standing in underneath needs no
-        # field_manager parameter until a caller actually uses one.
+        # Forwarded only when set, so fakes need the parameter only if used.
         extra: dict = {"field_manager": field_manager} if field_manager else {}
         return self.cluster.apply(manifest, namespace=self.namespace, **extra)
 
