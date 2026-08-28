@@ -67,11 +67,17 @@ MAX_OBJECT_NAME = 63
 
 # A Namespace name is a DNS-1123 label, so it shares the 63-character cap.
 MAX_NAMESPACE_NAME = 63
-# Prefixes every tenant namespace. The prefix is what removes the collision
-# class between a group name and an existing cluster namespace - a group
-# normalizing to `default` or `kube-system` must not name either - and it is
-# short because every character it spends comes out of the group's budget.
-NAMESPACE_PREFIX = "serverless-t-"
+# Suffixes every tenant namespace: `{group}-serverless`. The suffix is what
+# removes the collision class between a group name and an existing cluster
+# namespace - a group normalizing to `default` or `kube-system` must not name
+# either - and it is short because every character it spends comes out of the
+# group's budget. Group-first, so tenant namespaces list beside each other
+# under their group's name.
+NAMESPACE_SUFFIX = "-serverless"
+# What a suffix cannot rule out that a platform-first prefix did: a group
+# *beginning* with a reserved system prefix would produce a namespace that
+# reads as the system's (`kube-team-serverless`). Refused outright.
+_RESERVED_NAMESPACE_PREFIXES = ("kube-", "openshift-")
 
 # An environment variable name, exactly as Kubernetes accepts one
 # (`util/validation.IsEnvVarName`). It is also used verbatim as the key of the
@@ -405,8 +411,8 @@ def validate_object_name(name: str, group: str, limit: int = MAX_OBJECT_NAME) ->
     return oname
 
 
-def namespace_for_group(group: str, prefix: str = NAMESPACE_PREFIX) -> str:
-    """The namespace a group's workloads live in: ``{prefix}{group}``.
+def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
+    """The namespace a group's workloads live in: ``{group}{suffix}``.
 
     Written once, here, for the same reason as :func:`object_name`: the API
     that deploys into a namespace, the provisioner that creates it, and the
@@ -414,31 +420,41 @@ def namespace_for_group(group: str, prefix: str = NAMESPACE_PREFIX) -> str:
 
     The group is expected already normalized (:func:`normalize_group`) - the
     check here is the *namespace's* rule, not a second normalization pass. A
-    Namespace name is a DNS-1123 label, so the prefixed result is checked as
+    Namespace name is a DNS-1123 label, so the suffixed result is checked as
     a whole: the group alone being valid does not make the pair fit, exactly
-    as with ``{name}-{group}``.
+    as with ``{name}-{group}``. And because the group comes *first*, a group
+    beginning with a reserved system prefix would produce a namespace that
+    reads as the system's - refused here, not left to an operator's double
+    take at ``kube-team-serverless``.
 
     Args:
         group: The normalized owning group.
-        prefix: The tenant-namespace prefix (configurable via the chart).
+        suffix: The tenant-namespace suffix (configurable via the chart).
 
     Returns:
         The namespace name.
 
     Raises:
-        ValueError: If the prefixed name is not a valid DNS-1123 label or
-            exceeds ``MAX_NAMESPACE_NAME`` characters.
+        ValueError: If the suffixed name is not a valid DNS-1123 label,
+            exceeds ``MAX_NAMESPACE_NAME`` characters, or begins with a
+            reserved system prefix.
     """
-    namespace = f"{prefix}{group}"
+    namespace = f"{group}{suffix}"
     if len(namespace) > MAX_NAMESPACE_NAME:
         raise ValueError(
-            f"group is too long for a tenant namespace: '{prefix}' + '{group}' is "
+            f"group is too long for a tenant namespace: '{group}' + '{suffix}' is "
             f"{len(namespace)} characters and the limit is {MAX_NAMESPACE_NAME} "
             f"(a namespace name is a DNS label); shorten the group by "
             f"{len(namespace) - MAX_NAMESPACE_NAME}"
         )
     if not DNS1123.match(namespace):
         raise ValueError(f"'{namespace}' is not a valid namespace name (DNS-1123 label)")
+    reserved = next((p for p in _RESERVED_NAMESPACE_PREFIXES if namespace.startswith(p)), None)
+    if reserved:
+        raise ValueError(
+            f"'{namespace}' begins with the reserved system prefix '{reserved}'; "
+            f"a group may not start with {' or '.join(_RESERVED_NAMESPACE_PREFIXES)}"
+        )
     return namespace
 
 
