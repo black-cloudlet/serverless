@@ -159,18 +159,20 @@ jobs:
             -c "import controller.main as m; assert callable(m.run)"
           docker run --rm --entrypoint python serverless-provisioner:scan \
             -c "import provisioner.main as m; assert callable(m.run)"
-      # The point of two images: the controller serves no HTTP, so its own must
-      # not carry a web stack. An import in `common` that quietly pulled fastapi
-      # back in would pass every other check (docs/BUILDING.md - Two images).
-      - name: The controller image carries no web stack
+      # Neither the controller nor the provisioner serves HTTP, so their images
+      # must not carry a web stack. An import in `common` that quietly pulled
+      # fastapi back in would pass every other check (docs/BUILDING.md - Two images).
+      - name: The controller and provisioner images carry no web stack
         run: |
-          docker run --rm --entrypoint python serverless-build-controller:scan -c "
+          for img in serverless-build-controller:scan serverless-provisioner:scan; do
+            docker run --rm --entrypoint python "$img" -c "
           import importlib.util, sys
           leaked = [m for m in ('fastapi', 'starlette', 'uvicorn', 'jwt', 'cryptography')
                     if importlib.util.find_spec(m) is not None]
           if leaked:
-              sys.exit(f'the build controller image should not ship {leaked}')
+              sys.exit(f'this image should not ship {leaked}')
           "
+          done
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
       # even when nothing in our code changed. The python:3.14-slim base is
@@ -183,7 +185,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "0"
-      # Gate: fail the build only on CRITICAL vulnerabilities, in either image.
+      # Gate: fail the build only on CRITICAL vulnerabilities, in any image.
       - name: Vulnerability gate (Trivy, CRITICAL, API)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -196,6 +198,14 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: serverless-build-controller:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Vulnerability gate (Trivy, CRITICAL, provisioner)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: serverless-provisioner:scan
           format: table
           severity: CRITICAL
           ignore-unfixed: true

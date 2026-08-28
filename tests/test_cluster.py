@@ -352,3 +352,35 @@ def test_the_view_forwards_field_manager_only_when_set():
 
     assert raw.calls[0] == ("apply", "wl", None)
     assert raw.calls[1] == ("apply", "wl", "serverless-provisioner")
+
+
+def test_apply_with_a_field_manager_goes_through_the_dynamic_client():
+    """utils.create_from_dict hardcodes its own field manager on the SSA call,
+    so routing a caller-supplied one through it raises TypeError before any
+    request - the provisioner's writes must take the dynamic client directly."""
+    from types import SimpleNamespace
+
+    class _SsaApi:
+        def __init__(self):
+            self.kwargs = None
+
+        def server_side_apply(self, **kwargs):
+            self.kwargs = kwargs
+            return _Item({"kind": "Secret", "metadata": {"name": "s"}})
+
+    api = _SsaApi()
+    cluster = _cluster_calling(api)
+    cluster._dynamic_client_obj = SimpleNamespace(
+        resources=SimpleNamespace(get=lambda api_version, kind: api)
+    )
+
+    out = cluster.apply(
+        {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "s"}},
+        namespace="payments-serverless",
+        field_manager="serverless-provisioner",
+    )
+
+    assert api.kwargs["field_manager"] == "serverless-provisioner"
+    assert api.kwargs["force_conflicts"] is True
+    assert api.kwargs["namespace"] == "payments-serverless"
+    assert out == [{"kind": "Secret", "metadata": {"name": "s"}}]

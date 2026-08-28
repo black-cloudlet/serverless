@@ -23,7 +23,7 @@ from common.labels import (
     LABEL_MANAGED_BY,
     PROVISIONER_VALUE,
 )
-from provisioner.templates import TemplateSet
+from provisioner.templates import TEMPLATE_KINDS, TemplateSet
 
 logger = get_logger(__name__)
 
@@ -34,15 +34,10 @@ FIELD_MANAGER = "serverless-provisioner"
 # What the provisioner manages, and nothing else.
 PROVISIONER_SELECTOR = f"{LABEL_MANAGED_BY}={PROVISIONER_VALUE}"
 
-# What the prune sweeps. Fixed, not derived from the current set: a kind
-# removed from the set entirely still has leftovers to collect.
-PRUNABLE_KINDS = (
-    ResourceKind.NETWORK_POLICY,
-    ResourceKind.CONFIG_MAP,
-    ResourceKind.ROLE_BINDING,
-    ResourceKind.SECRET,
-    ResourceKind.SERVICE_ACCOUNT,
-)
+# What the prune sweeps: the same vocabulary the render gate admits, so a set
+# can never create what the prune could not collect - and a kind removed from
+# the set entirely still has its leftovers swept.
+PRUNABLE_KINDS = TEMPLATE_KINDS
 
 
 def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
@@ -66,6 +61,11 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
     if ns_manifest is None:
         ns_manifest = {"apiVersion": "v1", "kind": "Namespace", "metadata": {}}
     contents = [m for m in manifests if m["kind"] != "Namespace"]
+    if not contents:
+        # Files that render to nothing read as a truncated ConfigMap, and
+        # obeying them would prune the namespace bare. Raised before any
+        # write, so the stamp survives and the next pass retries.
+        raise ValueError(f"template set {templates.digest} rendered no namespaced contents")
 
     # The target's name wins over the template's: a template naming something
     # else would create a second namespace mid-converge.
@@ -79,6 +79,9 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
     keep: set[tuple[str, str]] = set()
     for manifest in contents:
         stamped = _stamped(manifest, group)
+        # The target's namespace wins over the template's, as its name does
+        # for the Namespace above.
+        stamped["metadata"]["namespace"] = namespace
         keep.add((manifest["kind"], stamped["metadata"]["name"]))
         cluster.apply(stamped, namespace=namespace, field_manager=FIELD_MANAGER)
     _prune(cluster, namespace, keep)
@@ -96,7 +99,9 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
     )
 
 
-def reconcile_all(cluster: Cluster, templates: TemplateSet) -> tuple[int, int, int]:
+def reconcile_all(
+    cluster: Cluster, templates: TemplateSet, *, force: bool = False
+) -> tuple[int, int, int]:
     """Converge every managed namespace in this cluster whose stamp is stale.
 
     One namespace failing is logged and skipped, never the end of the pass
@@ -108,9 +113,11 @@ def reconcile_all(cluster: Cluster, templates: TemplateSet) -> tuple[int, int, i
     Args:
         cluster: The local cluster (cluster-scoped client).
         templates: The currently mounted template set.
+        force: Converge even stamp-matching namespaces - the periodic drift
+            repair, since a deleted object does not change the stamp.
 
     Returns:
-        ``(seen, converged, failed)``, for the log line and for readiness.
+        ``(seen, converged, failed)``, for the log line and the pass verdict.
     """
     if len(templates) == 0:
         logger.warning(
@@ -133,7 +140,7 @@ def reconcile_all(cluster: Cluster, templates: TemplateSet) -> tuple[int, int, i
             failed += 1
             continue
         stamp = (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH)
-        if stamp == templates.digest:
+        if stamp == templates.digest and not force:
             continue
         try:
             converge(cluster, name, group, templates)

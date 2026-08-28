@@ -7,7 +7,6 @@ from functools import lru_cache
 from pydantic import Field
 
 from common.config import CommonSettings
-from common.names import NAMESPACE_SUFFIX
 
 
 class ProvisionerSettings(CommonSettings):
@@ -26,9 +25,10 @@ class ProvisionerSettings(CommonSettings):
     # reaches this loop.
     templates_dir: str = "/etc/serverless/tenant-templates"
 
-    # Tenant-namespace suffix (common.names.namespace_for_group) - the same
-    # one function the API uses, so the two never derive different names.
-    namespace_suffix: str = NAMESPACE_SUFFIX
+    # Every Nth pass converges even stamp-matching namespaces, repairing
+    # drift in the objects themselves (a deleted NetworkPolicy does not
+    # change the stamp). Roughly hourly at the default resync.
+    full_resync_passes: int = Field(default=12, gt=0)
 
 
 @lru_cache

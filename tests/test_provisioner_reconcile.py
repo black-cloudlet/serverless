@@ -61,18 +61,7 @@ def _set(files: dict[str, str] | None = None) -> TemplateSet:
         if files is None
         else files
     )
-    sources = tuple(sorted(files.items()))
-    # Build through load() semantics but from memory: reuse the hashing by
-    # writing nothing - construct directly with the same digest recipe.
-    import hashlib
-
-    digest = hashlib.sha256()
-    for name, text in sources:
-        digest.update(name.encode())
-        digest.update(b"\x00")
-        digest.update(text.encode())
-        digest.update(b"\x00")
-    return TemplateSet(sources=sources, digest=digest.hexdigest()[:16])
+    return TemplateSet.from_sources(files.items())
 
 
 class _Cluster:
@@ -181,7 +170,7 @@ def test_a_malformed_manifest_is_rejected(text):
 # --------------------------------------------------------------------------- #
 
 
-def test_converge_orders_namespace_contents_stamp(monkeypatch):
+def test_converge_orders_namespace_contents_stamp():
     cluster = _Cluster()
 
     converge(cluster, "payments-serverless", "payments", _set())
@@ -247,11 +236,16 @@ def test_converge_injects_the_ownership_labels_everywhere():
 
 
 def test_converge_targets_the_found_namespace_whatever_the_template_says():
-    # The loop converges the namespace it *found*: a changed prefix setting
+    # The loop converges the namespace it *found*: a changed suffix setting
     # must not strand existing namespaces under their old names, and a
     # template hardcoding a name must not create a second namespace.
     cluster = _Cluster()
-    templates = _set({"ns.yaml": "kind: Namespace\napiVersion: v1\nmetadata:\n  name: wrong\n"})
+    templates = _set(
+        {
+            "ns.yaml": "kind: Namespace\napiVersion: v1\nmetadata:\n  name: wrong\n",
+            "p.yaml": POLICY_TEMPLATE,
+        }
+    )
 
     converge(cluster, "payments-serverless", "payments", templates)
 
@@ -342,22 +336,18 @@ def test_one_failing_namespace_does_not_starve_the_rest():
         namespaces=[
             _namespace("broken-serverless", "broken"),
             _namespace("fine-serverless", "fine"),
-        ],
-        fail_apply_at=1,
+        ]
     )
 
-    # Fail every apply for the first namespace, then heal.
+    # Fail every apply for the first namespace only.
     original_apply = cluster.apply
-    calls = {"n": 0}
 
     def flaky(manifest, *, namespace, field_manager=None):
         if manifest["metadata"].get("labels", {}).get(LABEL_GROUP) == "broken":
             raise RuntimeError("region hiccup")
         return original_apply(manifest, namespace=namespace, field_manager=field_manager)
 
-    cluster._fail_apply_at = None
     cluster.apply = flaky
-    _ = calls
 
     seen, converged, failed = reconcile_all(cluster, templates)
 
@@ -406,7 +396,9 @@ def test_run_pass_loads_the_mounted_set_fresh_each_time(tmp_path, monkeypatch):
     settings = ProvisionerSettings(regions=[], templates_dir=str(tmp_path))
     seen = []
     monkeypatch.setattr(
-        provisioner_main, "reconcile_all", lambda cluster, templates: seen.append(templates.digest)
+        provisioner_main,
+        "reconcile_all",
+        lambda cluster, templates, *, force=False: (seen.append(templates.digest), (1, 1, 0))[1],
     )
 
     provisioner_main.run_pass(object(), settings)
@@ -423,7 +415,7 @@ def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatc
     outcomes = iter([RuntimeError("mount vanished"), None, SystemExit(0)])
     sleeps = []
 
-    def fake_pass(cluster, s):
+    def fake_pass(cluster, s, *, force=False):
         outcome = next(outcomes)
         if outcome is not None:
             raise outcome
@@ -448,7 +440,96 @@ def test_settings_defaults():
     s = ProvisionerSettings(regions=[])
     assert s.resync_seconds == 300
     assert s.templates_dir == "/etc/serverless/tenant-templates"
-    assert s.namespace_suffix == "-serverless"
+    assert s.full_resync_passes == 12
+
+
+def test_a_set_that_renders_nothing_refuses_to_converge():
+    # Files that render to zero manifests read as a truncated ConfigMap;
+    # obeying them would prune the namespace bare and stamp it converged.
+    templates = _set({"20-policies.yaml": "# rendered empty by a values flag\n"})
+    leftover = _leftover("default-deny")
+    cluster = _Cluster(
+        namespaces=[_namespace("x-serverless", "x", stamp="old")],
+        objects={(ResourceKind.NETWORK_POLICY, "x-serverless"): [leftover]},
+    )
+
+    seen, converged, failed = reconcile_all(cluster, templates)
+
+    assert (seen, converged, failed) == (1, 0, 1)
+    assert cluster.deleted == []  # nothing pruned...
+    assert cluster.applied == []  # ...and the stamp untouched, so it retries
+
+
+def test_a_kind_outside_the_vocabulary_is_rejected_at_render():
+    # What render admits, the prune must be able to collect: 'Service' is not
+    # in the vocabulary, so it cannot become an uncollectable leftover.
+    templates = _set({"t.yaml": "apiVersion: v1\nkind: Service\nmetadata:\n  name: x\n"})
+    with pytest.raises(ValueError, match="does not manage"):
+        templates.render(namespace="n", group="g")
+
+
+def test_payload_braces_are_not_placeholders():
+    # A tenant-facing ConfigMap may legitimately carry a Go-template payload;
+    # only lowercase {{token}} shapes are treated as placeholders.
+    templates = _set(
+        {
+            "cm.yaml": (
+                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: dash\n"
+                "data:\n  tmpl: '{{ .Values.x }}'\n"
+            )
+        }
+    )
+    [cm] = templates.render(namespace="n", group="g")
+    assert cm["data"]["tmpl"] == "{{ .Values.x }}"
+
+
+def test_contents_namespace_is_forced_to_the_target():
+    # A hardcoded namespace in a content template must not decide where the
+    # object lands - the target wins, as its name does for the Namespace.
+    templates = _set(
+        {
+            "cm.yaml": (
+                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ca\n"
+                "  namespace: somewhere-else\n"
+            )
+        }
+    )
+    cluster = _Cluster()
+
+    converge(cluster, "payments-serverless", "payments", templates)
+
+    cm = next(m for m, _ns, _fm in cluster.applied if m["kind"] == "ConfigMap")
+    assert cm["metadata"]["namespace"] == "payments-serverless"
+
+
+def test_force_reconverges_a_matching_stamp():
+    # The periodic drift repair: a deleted object does not change the stamp,
+    # so every Nth pass converges even fresh-looking namespaces.
+    templates = _set()
+    cluster = _Cluster(namespaces=[_namespace("a-serverless", "a", stamp=templates.digest)])
+
+    assert reconcile_all(cluster, templates) == (1, 0, 0)
+    assert cluster.applied == []
+    assert reconcile_all(cluster, templates, force=True) == (1, 1, 0)
+    assert cluster.applied != []
+
+
+def test_an_all_failed_pass_raises_into_the_backoff(tmp_path, monkeypatch):
+    # Every namespace failing is one cause, not many: the pass fails, so the
+    # loop backs off instead of sleeping a full resync on it.
+    (tmp_path / "ns.yaml").write_text(NS_TEMPLATE)
+    settings = ProvisionerSettings(regions=[], templates_dir=str(tmp_path))
+    monkeypatch.setattr(
+        provisioner_main, "reconcile_all", lambda cluster, templates, *, force=False: (3, 0, 3)
+    )
+    with pytest.raises(RuntimeError, match="all 3"):
+        provisioner_main.run_pass(object(), settings)
+
+    # A partial failure is namespaces' business, not the pass's.
+    monkeypatch.setattr(
+        provisioner_main, "reconcile_all", lambda cluster, templates, *, force=False: (3, 2, 1)
+    )
+    provisioner_main.run_pass(object(), settings)
 
 
 def test_deletes_tolerate_not_found():
