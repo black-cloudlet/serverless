@@ -68,7 +68,7 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         cluster: The cluster to converge in (cluster-scoped client; this
             function spans the namespace and the Namespace object itself).
         namespace: The tenant namespace's name. Passed rather than derived:
-            the loop converges the namespace it *found*, so a changed prefix
+            the loop converges the namespace it *found*, so a changed suffix
             setting cannot strand existing namespaces under their old names.
         group: The owning (normalized) group, for the render and the labels.
         templates: The loaded template set.

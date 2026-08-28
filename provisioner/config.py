@@ -7,7 +7,7 @@ from functools import lru_cache
 from pydantic import Field
 
 from common.config import CommonSettings
-from common.names import NAMESPACE_PREFIX
+from common.names import NAMESPACE_SUFFIX
 
 
 class ProvisionerSettings(CommonSettings):
@@ -29,10 +29,10 @@ class ProvisionerSettings(CommonSettings):
     # and the refresh is how a helm upgrade reaches this loop.
     templates_dir: str = "/etc/serverless/tenant-templates"
 
-    # Prefixes every tenant namespace (common.names.namespace_for_group). A
+    # Suffixes every tenant namespace (common.names.namespace_for_group). A
     # value here so the chart can set it, and shared with the API through the
     # same one function - the two must never derive different names.
-    namespace_prefix: str = NAMESPACE_PREFIX
+    namespace_suffix: str = NAMESPACE_SUFFIX
 
 
 @lru_cache

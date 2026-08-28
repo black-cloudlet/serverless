@@ -140,18 +140,18 @@ def test_the_digest_names_the_set_not_the_group():
     # Every namespace converged from one ConfigMap carries one stamp: the
     # hash is over the raw text, before any substitution.
     templates = _set()
-    a = templates.render(namespace="serverless-t-a", group="a")
-    b = templates.render(namespace="serverless-t-b", group="b")
+    a = templates.render(namespace="a-serverless", group="a")
+    b = templates.render(namespace="b-serverless", group="b")
     assert a != b
     assert templates.digest == _set().digest
 
 
 def test_render_substitutes_both_placeholders():
-    manifests = _set().render(namespace="serverless-t-payments", group="payments")
+    manifests = _set().render(namespace="payments-serverless", group="payments")
     ns = next(m for m in manifests if m["kind"] == "Namespace")
-    assert ns["metadata"]["name"] == "serverless-t-payments"
+    assert ns["metadata"]["name"] == "payments-serverless"
     policy = next(m for m in manifests if m["kind"] == "NetworkPolicy")
-    assert policy["metadata"]["namespace"] == "serverless-t-payments"
+    assert policy["metadata"]["namespace"] == "payments-serverless"
 
 
 def test_an_unknown_placeholder_fails_loudly_with_the_file_named():
@@ -184,7 +184,7 @@ def test_a_malformed_manifest_is_rejected(text):
 def test_converge_orders_namespace_contents_stamp(monkeypatch):
     cluster = _Cluster()
 
-    converge(cluster, "serverless-t-payments", "payments", _set())
+    converge(cluster, "payments-serverless", "payments", _set())
 
     kinds = [m["kind"] for m, _ns, _fm in cluster.applied]
     # Namespace opens and closes the converge; contents sit between.
@@ -194,7 +194,7 @@ def test_converge_orders_namespace_contents_stamp(monkeypatch):
     # the contents carry the tenant's.
     assert [ns for m, ns, _fm in cluster.applied if m["kind"] == "Namespace"] == [None, None]
     assert {ns for m, ns, _fm in cluster.applied if m["kind"] != "Namespace"} == {
-        "serverless-t-payments"
+        "payments-serverless"
     }
     # Every write is the provisioner's own SSA identity.
     assert {fm for _m, _ns, fm in cluster.applied} == {FIELD_MANAGER}
@@ -204,7 +204,7 @@ def test_the_hash_is_stamped_last_and_cleared_first():
     cluster = _Cluster()
     templates = _set()
 
-    converge(cluster, "serverless-t-payments", "payments", templates)
+    converge(cluster, "payments-serverless", "payments", templates)
 
     first, last = cluster.applied[0][0], cluster.applied[-1][0]
     # The opening apply declares no hash - under SSA that *removes* the old
@@ -220,7 +220,7 @@ def test_a_crashed_converge_leaves_no_stamp_so_the_next_pass_redoes_it():
     cluster = _Cluster(fail_apply_at=3)
 
     with pytest.raises(RuntimeError):
-        converge(cluster, "serverless-t-payments", "payments", templates)
+        converge(cluster, "payments-serverless", "payments", templates)
 
     stamped = [
         m
@@ -235,7 +235,7 @@ def test_converge_injects_the_ownership_labels_everywhere():
     # select on these labels.
     cluster = _Cluster()
 
-    converge(cluster, "serverless-t-payments", "payments", _set())
+    converge(cluster, "payments-serverless", "payments", _set())
 
     for manifest, _ns, _fm in cluster.applied:
         labels = manifest["metadata"]["labels"]
@@ -253,19 +253,19 @@ def test_converge_targets_the_found_namespace_whatever_the_template_says():
     cluster = _Cluster()
     templates = _set({"ns.yaml": "kind: Namespace\napiVersion: v1\nmetadata:\n  name: wrong\n"})
 
-    converge(cluster, "serverless-t-payments", "payments", templates)
+    converge(cluster, "payments-serverless", "payments", templates)
 
-    assert cluster.applied[0][0]["metadata"]["name"] == "serverless-t-payments"
+    assert cluster.applied[0][0]["metadata"]["name"] == "payments-serverless"
 
 
 def test_a_set_without_a_namespace_template_synthesizes_one():
     cluster = _Cluster()
     templates = _set({"p.yaml": POLICY_TEMPLATE})
 
-    converge(cluster, "serverless-t-payments", "payments", templates)
+    converge(cluster, "payments-serverless", "payments", templates)
 
     assert cluster.applied[0][0]["kind"] == "Namespace"
-    assert cluster.applied[0][0]["metadata"]["name"] == "serverless-t-payments"
+    assert cluster.applied[0][0]["metadata"]["name"] == "payments-serverless"
 
 
 # --------------------------------------------------------------------------- #
@@ -275,20 +275,20 @@ def test_a_set_without_a_namespace_template_synthesizes_one():
 
 def test_prune_deletes_a_managed_leftover_the_set_no_longer_renders():
     leftover = _leftover("dropped-policy")
-    cluster = _Cluster(objects={(ResourceKind.NETWORK_POLICY, "serverless-t-payments"): [leftover]})
+    cluster = _Cluster(objects={(ResourceKind.NETWORK_POLICY, "payments-serverless"): [leftover]})
 
-    converge(cluster, "serverless-t-payments", "payments", _set())
+    converge(cluster, "payments-serverless", "payments", _set())
 
-    assert (ResourceKind.NETWORK_POLICY, "dropped-policy", "serverless-t-payments") in (
+    assert (ResourceKind.NETWORK_POLICY, "dropped-policy", "payments-serverless") in (
         cluster.deleted
     )
 
 
 def test_prune_keeps_what_the_set_still_renders():
     rendered = _leftover("default-deny")  # same name the template renders
-    cluster = _Cluster(objects={(ResourceKind.NETWORK_POLICY, "serverless-t-payments"): [rendered]})
+    cluster = _Cluster(objects={(ResourceKind.NETWORK_POLICY, "payments-serverless"): [rendered]})
 
-    converge(cluster, "serverless-t-payments", "payments", _set())
+    converge(cluster, "payments-serverless", "payments", _set())
 
     assert cluster.deleted == []
 
@@ -297,11 +297,11 @@ def test_prune_sweeps_kinds_the_set_dropped_entirely():
     # PRUNABLE_KINDS is fixed rather than derived from the current set: a
     # kind removed from the set entirely still has leftovers to collect.
     leftover = _leftover("old-binding", "RoleBinding")
-    cluster = _Cluster(objects={(ResourceKind.ROLE_BINDING, "serverless-t-payments"): [leftover]})
+    cluster = _Cluster(objects={(ResourceKind.ROLE_BINDING, "payments-serverless"): [leftover]})
 
-    converge(cluster, "serverless-t-payments", "payments", _set())
+    converge(cluster, "payments-serverless", "payments", _set())
 
-    assert (ResourceKind.ROLE_BINDING, "old-binding", "serverless-t-payments") in cluster.deleted
+    assert (ResourceKind.ROLE_BINDING, "old-binding", "payments-serverless") in cluster.deleted
 
 
 # --------------------------------------------------------------------------- #
@@ -323,9 +323,9 @@ def test_only_stale_namespaces_are_converged():
     templates = _set()
     cluster = _Cluster(
         namespaces=[
-            _namespace("serverless-t-fresh", "fresh", stamp=templates.digest),
-            _namespace("serverless-t-stale", "stale", stamp="0" * 16),
-            _namespace("serverless-t-new", "new"),  # no stamp: never converged
+            _namespace("fresh-serverless", "fresh", stamp=templates.digest),
+            _namespace("stale-serverless", "stale", stamp="0" * 16),
+            _namespace("new-serverless", "new"),  # no stamp: never converged
         ]
     )
 
@@ -333,15 +333,15 @@ def test_only_stale_namespaces_are_converged():
 
     assert (seen, converged, failed) == (3, 2, 0)
     touched = {m["metadata"]["name"] for m, _ns, _fm in cluster.applied if m["kind"] == "Namespace"}
-    assert touched == {"serverless-t-stale", "serverless-t-new"}
+    assert touched == {"stale-serverless", "new-serverless"}
 
 
 def test_one_failing_namespace_does_not_starve_the_rest():
     templates = _set()
     cluster = _Cluster(
         namespaces=[
-            _namespace("serverless-t-broken", "broken"),
-            _namespace("serverless-t-fine", "fine"),
+            _namespace("broken-serverless", "broken"),
+            _namespace("fine-serverless", "fine"),
         ],
         fail_apply_at=1,
     )
@@ -362,7 +362,7 @@ def test_one_failing_namespace_does_not_starve_the_rest():
     seen, converged, failed = reconcile_all(cluster, templates)
 
     assert (seen, converged, failed) == (2, 1, 1)
-    assert any(m["metadata"]["name"] == "serverless-t-fine" for m, _ns, _fm in cluster.applied)
+    assert any(m["metadata"]["name"] == "fine-serverless" for m, _ns, _fm in cluster.applied)
 
 
 def test_a_managed_namespace_without_a_group_is_skipped_loudly(caplog):
@@ -380,7 +380,7 @@ def test_a_managed_namespace_without_a_group_is_skipped_loudly(caplog):
 def test_an_empty_template_set_is_refused(caplog):
     # Mounted-but-empty is indistinguishable from a broken mount mid-update;
     # obeying it would prune every managed object out of every namespace.
-    cluster = _Cluster(namespaces=[_namespace("serverless-t-a", "a")])
+    cluster = _Cluster(namespaces=[_namespace("a-serverless", "a")])
 
     assert reconcile_all(cluster, _set({})) == (0, 0, 0)
     assert cluster.applied == []
@@ -448,7 +448,7 @@ def test_settings_defaults():
     s = ProvisionerSettings(regions=[])
     assert s.resync_seconds == 300
     assert s.templates_dir == "/etc/serverless/tenant-templates"
-    assert s.namespace_prefix == "serverless-t-"
+    assert s.namespace_suffix == "-serverless"
 
 
 def test_deletes_tolerate_not_found():
@@ -460,9 +460,9 @@ def test_deletes_tolerate_not_found():
             raise NotFoundError(name)
 
     leftover = _leftover("dropped")
-    cluster = _GoneCluster(objects={(ResourceKind.NETWORK_POLICY, "serverless-t-p"): [leftover]})
+    cluster = _GoneCluster(objects={(ResourceKind.NETWORK_POLICY, "p-serverless"): [leftover]})
 
-    converge(cluster, "serverless-t-p", "p", _set())  # must not raise
+    converge(cluster, "p-serverless", "p", _set())  # must not raise
 
 
 def test_run_wires_the_local_cluster_and_closes_it_on_exit(monkeypatch):
