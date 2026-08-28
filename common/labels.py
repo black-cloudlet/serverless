@@ -21,9 +21,10 @@ MANAGED_BY_VALUE = "serverless-api"
 PROVISIONER_VALUE = "serverless-provisioner"
 
 # Stamped on a tenant namespace by the provisioner's converge. The hash names
-# the template set last applied there - a mismatch with the mounted set is what
-# triggers re-apply - and is written *after* the set, so a crashed converge
-# leaves the old value and the next pass redoes the namespace.
+# the template set last applied there; a mismatch with the mounted set triggers
+# re-apply. The converge clears it first and rewrites it last (the protocol
+# lives in provisioner/reconcile.py), so a crashed converge leaves NO stamp
+# and the next pass redoes the namespace.
 ANNOTATION_TEMPLATE_HASH = "serverless.platform/template-hash"
 # First observed empty of KSVCs (RFC 3339); cleared when a workload appears.
 # The GC deletes only namespaces continuously empty longer than its grace.

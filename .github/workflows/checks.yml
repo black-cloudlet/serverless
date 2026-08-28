@@ -24,7 +24,7 @@ jobs:
       - id: derive
         run: |
           req_py=$(grep -oP 'requires-python = ">=\K[0-9]+\.[0-9]+' pyproject.toml)
-          for df in Dockerfile Dockerfile.controller; do
+          for df in Dockerfile Dockerfile.controller Dockerfile.provisioner; do
             docker_py=$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' "$df")
             if [ -z "$docker_py" ] || [ "$docker_py" != "$req_py" ]; then
               echo "::error::Python version drift: $df=$docker_py, requires-python=$req_py. Bump them together."
@@ -63,7 +63,7 @@ jobs:
           python-version: ${{ needs.version.outputs.python }}
           cache: pip
       - run: pip install -e ".[api,dev]"
-      - run: pytest -q --cov=api --cov=common --cov=controller --cov-report=term-missing --cov-fail-under=90
+      - run: pytest -q --cov=api --cov=common --cov=controller --cov=provisioner --cov-report=term-missing --cov-fail-under=90
 
   security:
     needs: version
@@ -138,6 +138,15 @@ jobs:
           tags: serverless-build-controller:scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build the provisioner image (load, no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile.provisioner
+          load: true
+          tags: serverless-provisioner:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       # Each image must actually start its own service. Nothing else in the
       # suite would notice a package left out of a COPY or a module path that
       # stopped resolving - the failure would arrive as a CrashLoopBackOff
@@ -148,18 +157,22 @@ jobs:
             -c "import api.main as m; assert m.app"
           docker run --rm --entrypoint python serverless-build-controller:scan \
             -c "import controller.main as m; assert callable(m.run)"
-      # The point of two images: the controller serves no HTTP, so its own must
-      # not carry a web stack. An import in `common` that quietly pulled fastapi
-      # back in would pass every other check (docs/BUILDING.md - Two images).
-      - name: The controller image carries no web stack
+          docker run --rm --entrypoint python serverless-provisioner:scan \
+            -c "import provisioner.main as m; assert callable(m.run)"
+      # Neither the controller nor the provisioner serves HTTP, so their images
+      # must not carry a web stack. An import in `common` that quietly pulled
+      # fastapi back in would pass every other check (docs/BUILDING.md - Two images).
+      - name: The controller and provisioner images carry no web stack
         run: |
-          docker run --rm --entrypoint python serverless-build-controller:scan -c "
+          for img in serverless-build-controller:scan serverless-provisioner:scan; do
+            docker run --rm --entrypoint python "$img" -c "
           import importlib.util, sys
           leaked = [m for m in ('fastapi', 'starlette', 'uvicorn', 'jwt', 'cryptography')
                     if importlib.util.find_spec(m) is not None]
           if leaked:
-              sys.exit(f'the build controller image should not ship {leaked}')
+              sys.exit(f'this image should not ship {leaked}')
           "
+          done
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
       # even when nothing in our code changed. The python:3.14-slim base is
@@ -172,7 +185,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "0"
-      # Gate: fail the build only on CRITICAL vulnerabilities, in either image.
+      # Gate: fail the build only on CRITICAL vulnerabilities, in any image.
       - name: Vulnerability gate (Trivy, CRITICAL, API)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -185,6 +198,14 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: serverless-build-controller:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Vulnerability gate (Trivy, CRITICAL, provisioner)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: serverless-provisioner:scan
           format: table
           severity: CRITICAL
           ignore-unfixed: true

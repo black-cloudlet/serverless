@@ -139,7 +139,21 @@ class Cluster:
         Returns:
             The applied object(s) as dicts (including server-assigned fields).
         """
-        extra: dict = {"field_manager": field_manager} if field_manager else {}
+        if field_manager:
+            # utils.create_from_dict hardcodes its own field manager on the
+            # SSA call (a second one raises TypeError), so a caller-supplied
+            # manager goes through the dynamic client directly.
+            api = self._dynamic_client.resources.get(
+                api_version=manifest["apiVersion"], kind=manifest["kind"]
+            )
+            resp = api.server_side_apply(
+                body=manifest,
+                namespace=namespace,
+                field_manager=field_manager,
+                force_conflicts=True,
+                **self._opts,
+            )
+            return [resp.to_dict()]
         results = utils.create_from_dict(
             self._api_client,
             manifest,
@@ -147,7 +161,6 @@ class Cluster:
             namespace=namespace,
             apply=True,
             force_conflicts=True,
-            **extra,
             **self._opts,
         )
         return [i.to_dict() for i in results]

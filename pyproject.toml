@@ -7,14 +7,17 @@ name = "serverless-api"
 version = "0.1.0"
 description = "FaaS/CaaS REST API wrapping Knative on OpenShift"
 requires-python = ">=3.14"
-# What BOTH services need. The build controller serves no HTTP and installs
-# nothing else, so its image carries no web stack (docs/BUILDING.md - Two images).
+# What EVERY service needs. The build controller and the provisioner serve no
+# HTTP and install nothing else, so their images carry no web stack
+# (docs/BUILDING.md - Two images). pyyaml is declared even though kubernetes
+# currently requires it: provisioner/templates.py imports it directly.
 dependencies = [
     "cloudlet-apis>=0.6.2,<1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "kubernetes>=36.0.3",
     "httpx>=0.28.1",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -62,7 +65,7 @@ convention = "google"
 "tests/**" = ["E501", "D", "S", "B"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "common*", "controller*"]
+include = ["api*", "common*", "controller*", "provisioner*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
