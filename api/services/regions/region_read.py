@@ -38,14 +38,14 @@ from api.services.manifests.files import files_name
 from api.services.state import describe as describe_svc
 from api.services.state import metrics as metrics_svc
 from api.services.state.ksvc_state import extract_image
-from common.cluster import NamespacedCluster, ResourceKind
+from common.cluster import Cluster, ResourceKind
 from common.errors import NotFoundError, ServiceUnavailableError
 
 if TYPE_CHECKING:  # a type hint only - offering imports this module at runtime
     from api.services.offering import Offering
 
 
-def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, oname: str) -> dict:
+def existing_state(obj: dict, cluster: Cluster, offering: Offering, oname: str) -> dict:
     """Read an existing workload's carried-forward state + backing secret values.
 
     Runs off the event loop (blocking cluster reads). ``env_values``/
@@ -96,7 +96,7 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, on
     return state
 
 
-def secret_data(cluster: NamespacedCluster, name: str) -> dict[str, bytes]:
+def secret_data(cluster: Cluster, name: str) -> dict[str, bytes]:
     """Raw ``data`` of a Secret (base64 -> bytes); ``{}`` if it doesn't exist.
 
     Bytes, not text: a secret file may hold a keystore or a DER certificate, and
@@ -128,7 +128,7 @@ def secret_data(cluster: NamespacedCluster, name: str) -> dict[str, bytes]:
     return out
 
 
-def secret_text(cluster: NamespacedCluster, name: str) -> dict[str, str]:
+def secret_text(cluster: Cluster, name: str) -> dict[str, str]:
     """:func:`secret_data` as text, for the values that genuinely are text.
 
     Env values and the git token become a container env var and an HTTP basic-auth
@@ -145,7 +145,7 @@ def secret_text(cluster: NamespacedCluster, name: str) -> dict[str, str]:
     return out
 
 
-def describe_spec(cluster: NamespacedCluster, obj: dict):
+def describe_spec(cluster: Cluster, obj: dict):
     """Read the desired-state spec (secrets redacted) from a KSVC.
 
     Fetches the file ConfigMap(s) for non-secret file contents and the pull
@@ -178,7 +178,7 @@ def describe_spec(cluster: NamespacedCluster, obj: dict):
     return describe_svc.parse_spec(obj, configmaps, registry_username=registry_username)
 
 
-def revision(cluster: NamespacedCluster, name: str | None) -> dict | None:
+def revision(cluster: Cluster, name: str | None) -> dict | None:
     """Best-effort fetch of the Knative Revision the KSVC points at.
 
     The Revision carries both the autoscaler's live scale and the specific
@@ -210,7 +210,7 @@ class RegionUsage:
     total: metrics_svc.Usage | None
 
 
-def region_usage(cluster: NamespacedCluster, oname: str) -> RegionUsage:
+def region_usage(cluster: Cluster, oname: str) -> RegionUsage:
     """Best-effort live cpu/memory summed over one region's running pods.
 
     Never raises: an unreadable metrics API must not fail a status that is

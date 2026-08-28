@@ -31,7 +31,7 @@ from common.names import (
 )
 
 if TYPE_CHECKING:  # a type hint only - importing it would pull the k8s client
-    from common.cluster import NamespacedCluster
+    from common.cluster import Cluster
 
 
 @validated_dataclass
@@ -201,7 +201,7 @@ class BuildBackend(Protocol):
         """
         ...
 
-    def trigger(self, cluster: NamespacedCluster, name: str, group: str) -> bool:
+    def trigger(self, cluster: Cluster, name: str, group: str) -> bool:
         """Ask for one more build of inputs that have not changed.
 
         The counterpart to :meth:`plan`, and the only imperative call in this
@@ -227,11 +227,11 @@ class BuildBackend(Protocol):
         """
         ...
 
-    def status(self, cluster: NamespacedCluster, name: str, group: str) -> BuildStatus | None:
+    def status(self, cluster: Cluster, name: str, group: str) -> BuildStatus | None:
         """The build state on one cluster, or None if it has no build for this workload."""
         ...
 
-    def statuses(self, cluster: NamespacedCluster, group: str) -> dict[str, BuildStatus]:
+    def statuses(self, cluster: Cluster, group: str) -> dict[str, BuildStatus]:
         """Every build state a group has on one cluster, keyed by workload object name.
 
         The listing counterpart of :meth:`status`. It exists as its own call

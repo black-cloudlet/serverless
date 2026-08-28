@@ -15,22 +15,6 @@ LABEL_OFFERING = "serverless.platform/offering"
 LABEL_WORKLOAD = "serverless.platform/workload"
 MANAGED_BY_VALUE = "serverless-api"
 
-# The provisioner's own identity on the tenant namespaces it manages. A distinct
-# managed-by value, not MANAGED_BY_VALUE: its reconcile and GC loops select on
-# this label, and they must never adopt (or delete) anything the API stamped.
-PROVISIONER_VALUE = "serverless-provisioner"
-
-# Stamped on a tenant namespace by the provisioner's converge. The hash names
-# the template set last applied there - a mismatch with the mounted set is what
-# triggers re-apply - and is written *after* the set, so a crashed converge
-# leaves the old value and the next pass redoes the namespace.
-ANNOTATION_TEMPLATE_HASH = "serverless.platform/template-hash"
-# First observed empty of KSVCs (RFC 3339); cleared when a workload appears.
-# The GC deletes only namespaces continuously empty longer than its grace.
-ANNOTATION_EMPTY_SINCE = "serverless.platform/empty-since"
-# Operator opt-out: a namespace carrying this (any value) is never collected.
-ANNOTATION_KEEP = "serverless.platform/keep"
-
 # The two values LABEL_OFFERING takes. They live beside the key rather than in
 # the API's service layer because they are the same string in three places - the
 # label, the API kind in the URL path, and the response `type` - and a service

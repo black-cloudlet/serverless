@@ -20,7 +20,7 @@ class _FakeCluster:
         self.region = name
         self._existing = existing or {}
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name, namespace=None):
         from common.errors import NotFoundError as _NF
 
         if name in self._existing:
@@ -86,7 +86,7 @@ class _ApplyCluster:
             return self._images[name]
         raise _NF("not found")  # domain mapping -> Available; missing ksvc/secret/image
 
-    def apply(self, manifest, namespace=None):
+    def apply(self, manifest):
         self.applied.append(manifest)
         # Mirror the real client: return the applied object(s), with a uid the
         # server would assign (used to build ownerReferences for derived objects).
@@ -96,7 +96,7 @@ class _ApplyCluster:
             self._existing[meta.get("name")] = applied
         return [applied]
 
-    def delete(self, kind, name, namespace=None):
+    def delete(self, kind, name):
         self.deleted.append((kind, name))
 
 

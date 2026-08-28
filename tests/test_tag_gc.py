@@ -15,7 +15,6 @@ import logging
 import httpx
 import pytest
 
-from common.cluster import NamespacedCluster
 from common.config import RegionConfig, RegionRegistry
 from common.errors import NotFoundError
 from common.names import digest_of, tag_of
@@ -504,10 +503,10 @@ def test_resync_hands_its_listing_to_the_gc():
     class _Cluster:
         region = "central"
 
-        def list_resources(self, kind, *, label_selector=None, namespace=None):
+        def list_resources(self, kind, *, label_selector=None):
             return [_image()], "7"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None):
             raise NotFoundError(name or "")
 
     class _GC:
@@ -519,7 +518,6 @@ def test_resync_hands_its_listing_to_the_gc():
 
     reconciler = object.__new__(Reconciler)
     reconciler._local = _Cluster()
-    reconciler._bound = NamespacedCluster(reconciler._local, "serverless-workloads")
     reconciler._gc = _GC()
 
     reconciler.resync()

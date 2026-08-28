@@ -375,7 +375,7 @@ class _StatusCluster:
         self.region = self.name = "region-a"
         self._objects = objects or {}
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None):
         try:
             return self._objects[(kind, name)]
         except KeyError:
@@ -1519,7 +1519,7 @@ class _BuildCluster:
         assert label_selector == f"{kpack.IMAGE_LABEL}=hello-payments"
         return list(self._builds)
 
-    def patch(self, kind, name, body, namespace=None):
+    def patch(self, kind, name, body):
         self.patched.append((kind, name, body))
         return {}
 
@@ -1574,7 +1574,7 @@ class _RebuildCluster:
             return list(self._builds)
         return self._inner.get(kind, name, label_selector, namespace)
 
-    def patch(self, kind, name, body, namespace=None):
+    def patch(self, kind, name, body):
         self.patched.append((kind, name, body))
         return {}
 
@@ -2144,7 +2144,7 @@ async def test_a_rebuild_that_cannot_reach_the_local_region_does_not_fail_the_20
     from fastapi import BackgroundTasks
 
     class _DownLocal(_RebuildCluster):
-        def apply(self, manifest, namespace=None):
+        def apply(self, manifest):
             raise RuntimeError("region down")
 
     stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")

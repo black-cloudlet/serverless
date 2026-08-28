@@ -17,7 +17,7 @@ from api.services.manifests import route as route_svc
 from api.services.manifests.env import resolve_env
 from api.services.manifests.files import resolve_files
 from api.services.regions.deployer import Deployer
-from common.cluster import NamespacedCluster, ResourceKind
+from common.cluster import Cluster, ResourceKind
 from common.errors import (
     ConflictError,
     NotFoundError,
@@ -103,7 +103,7 @@ async def assert_deployable(
     deployer: Deployer,
     name: str,
     group: str,
-    targets: list[NamespacedCluster],
+    targets: list[Cluster],
     *,
     host: str | None = None,
     require_absent: bool = False,
@@ -143,7 +143,7 @@ async def assert_deployable(
     """
     oname = object_name(name, group)
 
-    def probe(cluster: NamespacedCluster) -> RegionStatus:
+    def probe(cluster: Cluster) -> RegionStatus:
         if host is not None:
             try:
                 existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)

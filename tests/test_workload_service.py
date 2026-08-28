@@ -1652,7 +1652,7 @@ class _DeleteCluster:
             return self._ksvc
         raise _NF(f"{name} not found")
 
-    def delete(self, kind, name, namespace=None):
+    def delete(self, kind, name):
         self.deleted.append((kind, name))
 
 
@@ -2126,7 +2126,7 @@ async def test_prune_failure_aborts_update_fail_closed():
     from api.services.container import ContainerService
 
     class _PruneFails(_ApplyCluster):
-        def delete(self, kind, name, namespace=None):  # a real API error, not a 404
+        def delete(self, kind, name):  # a real API error, not a 404
             raise RuntimeError("boom: API error, not a 404")
 
     cluster = _PruneFails("region-a", {"api-team": _existing_container_ksvc()})
@@ -2155,7 +2155,7 @@ async def test_prune_not_found_is_tolerated():
     from common.errors import NotFoundError
 
     class _PruneMissing(_ApplyCluster):
-        def delete(self, kind, name, namespace=None):
+        def delete(self, kind, name):
             self.deleted.append((kind, name))
             raise NotFoundError("already gone")
 
@@ -2188,11 +2188,11 @@ async def test_prune_runs_before_apply_on_update():
             super().__init__(name, existing)
             self.ops = []  # [(op, kind)]
 
-        def apply(self, manifest, namespace=None):
+        def apply(self, manifest):
             self.ops.append(("apply", manifest.get("kind")))
             return super().apply(manifest)
 
-        def delete(self, kind, name, namespace=None):
+        def delete(self, kind, name):
             self.ops.append(("delete", kind))
             return super().delete(kind, name)
 
@@ -2359,7 +2359,7 @@ def test_creation_time_is_israel_local_time_with_dst():
 class _BackingFails(_ApplyCluster):
     """Applies the KSVC fine, but fails on any derived backing/mapping apply."""
 
-    def apply(self, manifest, namespace=None):
+    def apply(self, manifest):
         if manifest.get("kind") == "Service":
             return super().apply(manifest)
         raise RuntimeError("backing apply failed")

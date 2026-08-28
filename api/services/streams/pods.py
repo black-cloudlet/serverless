@@ -34,7 +34,7 @@ from api.services.state import metrics as metrics_svc
 from api.services.state.ksvc_state import ISRAEL_TZ
 from api.services.streams.capacity import StreamCapacity
 from api.services.streams.sse import StreamEvent, heartbeat
-from common.cluster import NamespacedCluster, ResourceKind
+from common.cluster import Cluster, ResourceKind
 
 logger = get_logger(__name__)
 
@@ -106,7 +106,7 @@ def _usage_by_pod(items: list[dict]) -> dict[str, metrics_svc.Usage]:
     return measured
 
 
-def read_roster(cluster: NamespacedCluster, oname: str) -> list[PodInfo]:
+def read_roster(cluster: Cluster, oname: str) -> list[PodInfo]:
     """The workload's pods on this region, with usage joined on (blocking).
 
     Args:
@@ -148,7 +148,7 @@ def read_roster(cluster: NamespacedCluster, oname: str) -> list[PodInfo]:
 
 async def follow(
     *,
-    cluster: NamespacedCluster,
+    cluster: Cluster,
     capacity: StreamCapacity,
     config: StreamConfig,
     first: PodRoster,

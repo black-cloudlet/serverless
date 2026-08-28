@@ -19,13 +19,13 @@ from api.core.config import Settings
 from api.models.common import RegionStatus
 from api.services.regions.read_pool import ReadPool, ReadPoolSaturated
 from api.services.streams.capacity import run_on
-from common.cluster import Cluster, NamespacedCluster, clusters_for, select_local
+from common.cluster import Cluster, clusters_for, select_local
 from common.errors import ValidationError
 
 logger = get_logger(__name__)
 
 # fn(cluster) -> RegionStatus  (may run blocking I/O; executed in a thread)
-RegionFn = Callable[[NamespacedCluster], RegionStatus]
+RegionFn = Callable[[Cluster], RegionStatus]
 
 
 class Deployer:
@@ -42,12 +42,6 @@ class Deployer:
         self._read_timeout = settings.cluster_read_op_timeout
         self._local_region = settings.local_region
         self._clusters: dict[str, Cluster] = clusters_for(settings)
-        # The Cluster is cluster-scoped; the namespace is bound HERE, at the one
-        # boundary where clusters are handed out, so everything downstream works
-        # on a view that cannot mix namespaces mid-operation. Today the binding
-        # is the shared workloads namespace; namespace-per-group changes what is
-        # bound, not who binds it (docs/proposals/namespace-per-group.md).
-        self._namespace: str = settings.workloads_namespace
         self._read_pool = ReadPool(settings.cluster_read_workers, settings.cluster_read_max_queued)
 
     def close(self) -> None:
@@ -78,8 +72,8 @@ class Deployer:
                 f"the cluster did not answer within {self._read_timeout}s; retry shortly"
             ) from exc
 
-    def local_cluster(self) -> NamespacedCluster:
-        """The cluster this API instance sits in, bound to the workloads namespace.
+    def local_cluster(self) -> Cluster:
+        """The cluster this API instance sits in.
 
         Selected by config ``local_region`` (matched by region name then cluster
         name), falling back to the first configured region. Used for reads of data
@@ -87,25 +81,25 @@ class Deployer:
         round trip.
 
         Returns:
-            The local cluster, as a namespace-bound view.
+            The local cluster.
 
         Raises:
             ValidationError: If no regions are configured.
         """
-        return NamespacedCluster(select_local(self._clusters, self._local_region), self._namespace)
+        return select_local(self._clusters, self._local_region)
 
     def local_region(self) -> str:
         """The name of the local region (see :meth:`local_cluster`)."""
         return self.local_cluster().region
 
-    def resolve_targets(self, requested: list[str] | None) -> list[NamespacedCluster]:
-        """Resolve the clusters to act on for a request, namespace-bound.
+    def resolve_targets(self, requested: list[str] | None) -> list[Cluster]:
+        """Resolve the clusters to act on for a request.
 
         Args:
             requested: Explicit region names, or None for all configured regions.
 
         Returns:
-            The target clusters, as namespace-bound views.
+            The target clusters.
 
         Raises:
             ValidationError: If no regions are configured or a name is unknown.
@@ -113,18 +107,18 @@ class Deployer:
         if not self._clusters:
             raise ValidationError("no regions are configured")
         if not requested:
-            return [NamespacedCluster(c, self._namespace) for c in self._clusters.values()]
+            return list(self._clusters.values())
         targets = []
         for name in requested:
             cluster = self._clusters.get(name)
             if cluster is None:
                 raise ValidationError(f"unknown region: {name}")
-            targets.append(NamespacedCluster(cluster, self._namespace))
+            targets.append(cluster)
         return targets
 
     async def fanout(
         self,
-        targets: list[NamespacedCluster],
+        targets: list[Cluster],
         fn: RegionFn,
         *,
         executor: Executor | None = None,
@@ -161,7 +155,7 @@ class Deployer:
         on_pool = read and executor is None
         reserved = self._read_pool.reserve(len(targets)) if on_pool else nullcontext()
 
-        async def run(cluster: NamespacedCluster, run_read) -> RegionStatus:
+        async def run(cluster: Cluster, run_read) -> RegionStatus:
             try:
                 # Backstop: a down/slow region fails fast and is reported as an
                 # error rather than blocking the whole fan-out indefinitely.
@@ -189,7 +183,7 @@ class Deployer:
             return await asyncio.gather(*(run(c, run_read) for c in targets))
 
     async def gather_each(
-        self, targets: list[NamespacedCluster], fn: Callable[[NamespacedCluster], object]
+        self, targets: list[Cluster], fn: Callable[[Cluster], object]
     ) -> list[tuple[str, object | None]]:
         """Run ``fn`` on each target concurrently, returning ``[(region, result)]``.
 
@@ -210,7 +204,7 @@ class Deployer:
                 fan-out.
         """
 
-        async def run(cluster: NamespacedCluster, run_read) -> tuple[str, object | None]:
+        async def run(cluster: Cluster, run_read) -> tuple[str, object | None]:
             try:
                 result = await asyncio.wait_for(run_read(fn, cluster), timeout=self._read_timeout)
                 return cluster.region, result

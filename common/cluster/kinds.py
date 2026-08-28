@@ -8,9 +8,6 @@ from enum import Enum
 class ResourceKind(Enum):
     """The resource kinds the platform manages, mapped to (apiVersion, kind)."""
 
-    NAMESPACE = ("v1", "Namespace")
-    NETWORK_POLICY = ("networking.k8s.io/v1", "NetworkPolicy")
-    ROLE_BINDING = ("rbac.authorization.k8s.io/v1", "RoleBinding")
     KNATIVE_SERVICE = ("serving.knative.dev/v1", "Service")
     KNATIVE_REVISION = ("serving.knative.dev/v1", "Revision")
     DOMAIN_MAPPING = ("serving.knative.dev/v1beta1", "DomainMapping")
