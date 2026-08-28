@@ -115,9 +115,10 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
 
     register_exception_handlers(app)
-    # Off the base path: the probes are the kubelet's, which reaches the pod
-    # directly and never goes through whatever serves the API to everyone else.
-    app.include_router(health_router)
+    # Under the base path like everything else: the chart builds the kubelet's
+    # probe paths from the same basePath value it hands the code, so the one
+    # setting moves the probes and the API together.
+    app.include_router(health_router, prefix=base_path)
     for router in (info.router, streams.router, functions.router, containers.router):
         app.include_router(router, prefix=api_base(settings))
 

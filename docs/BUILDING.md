@@ -492,7 +492,7 @@ Instead there are **two kinds of ServiceAccount**:
 | Account | Created by | Holds | Used by |
 |---------|-----------|-------|---------|
 | `kpack-builder` | the chart | both registry credentials, no git one | `Builder` objects (compose + push a builder image; never clone source) |
-| `fn-{name}-{group}` | the **API**, per function | that function's git Secret **+** both registry credentials | the function's `Image` |
+| `{name}-{group}-build` | the **API**, per function | that function's git Secret **+** both registry credentials | the function's `Image` |
 
 The per-function account is created alongside the function and named on its `Image`:
 
@@ -500,7 +500,7 @@ The per-function account is created alongside the function and named on its `Ima
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: fn-hello-payments
+  name: hello-payments-build
   namespace: serverless-workloads       # with the Image and the KSVC (DEPLOYING.md: Chart Topology)
 secrets:
   - name: serverless-registry-creds     # this region's, from the chart
@@ -815,7 +815,7 @@ replicated source of truth.
 Concurrent writers are safe **only** if the composed spec is a pure function of the function
 definition. Duplicate builds come from nonces, not from concurrency:
 
-1. **Deterministic name** - `fn-{name}-{group}`.
+1. **Deterministic name** - the workload's own `{name}-{group}`.
 2. **No timestamps, UUIDs or counters** anywhere in the spec.
 3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type
    and setting it forces a rebuild on every apply.
@@ -1080,13 +1080,16 @@ by design.
 
 ## Sample Manifests
 
+The build-side objects only; the platform manifests (KSVC, RBAC, ESO, DomainMapping)
+are under DEPLOYING.md: Sample Manifests.
+
 ### Image (created by the API, local cluster)
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
 kind: Image
 metadata:
-  name: fn-hello-payments              # deterministic: fn-{name}-{group}
+  name: hello-payments                 # deterministic: the workload's own {name}-{group}
   namespace: serverless-workloads      # owned by the KSVC (DEPLOYING.md: Chart Topology)
   labels:                              # common/labels.py
     serverless.platform/managed-by: serverless-api
@@ -1097,7 +1100,7 @@ spec:
   builder:
     kind: Builder
     name: python
-  serviceAccountName: fn-hello-payments   # per-function: its git token + both registry creds
+  serviceAccountName: hello-payments-build   # per-function: its git token + both registry creds
   source:
     git:
       url: https://git.internal/payments/hello.git
@@ -1459,26 +1462,3 @@ Either form is attached per build through `spec.build.services`, alongside the C
    cleanup on delete), so the internal network must route each region's registry host
    from every cluster. If it does not, deletes leak repositories in the peer region and a
    different reclamation story is needed.
-
-### Resolved
-
-- **One registry, one builder region** - reversed. Every region now builds what it runs, into
-  its own registry, and publishes only to itself (BUILDING.md: Active/Active Behaviour;
-  the split and its rationale are under BUILDING.md: Registry layout). The migration is
-  complete, and its record retired with it. The cost is that two regions run different
-  bytes for the same commit; what it buys is that no region depends on another to build,
-  serve, or recover.
-
-- **`javascript` -> `node` rename** - done. The runtimes list is `python`, `go`, `node`
-  across the chart values, the runtimes ConfigMap, the contract docstring and the tests.
-  TypeScript was offered briefly as an alias to the node builder and has been
-  withdrawn: it needs the npm registry mirror to fetch the compiler as a devDependency,
-  which is not mirrored. A TS app can still be deployed by committing compiled JS, or by
-  building under the `node` runtime once `npm_config_registry` is set. It was safe to drop
-  without a compatibility alias because no function had ever been created at the time, so
-  none carries `ANNOTATION_RUNTIME: javascript` for BUILDING.md: Active/Active Behaviour to
-  reconstruct. The same fact retires the git-Secret compatibility path: no `{workload}-git`
-  Secret was ever written in the earlier Opaque shape, so nothing reads that key any more.
-- **A built-in runtimes fallback** - removed. The runtimes file is required and
-  `load_runtimes` raises without it, so a broken mount fails readiness instead of
-  advertising runtimes that map to no `Builder` (BUILDING.md: Where it lives).

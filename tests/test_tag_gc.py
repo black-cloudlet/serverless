@@ -69,7 +69,7 @@ def _image(tag=TAG, latest=f"registry.internal/{REPO}@{_D[6]}", workload="hello-
         status["latestImage"] = latest
     return {
         "metadata": {
-            "name": "fn-hello-payments",
+            "name": "hello-payments",
             "labels": {"serverless.platform/workload": workload},
         },
         "spec": {"tag": tag},
@@ -371,7 +371,7 @@ def test_an_image_naming_no_tag_is_skipped(monkeypatch):
     quay = _Quay()
     gc = _gc(monkeypatch, quay)
 
-    gc.maybe_sweep([{"metadata": {"name": "fn-x"}, "spec": {}, "status": {}}])
+    gc.maybe_sweep([{"metadata": {"name": "x"}, "spec": {}, "status": {}}])
     gc.wait()
 
     assert quay.deleted == []
@@ -523,7 +523,7 @@ def test_resync_hands_its_listing_to_the_gc():
     reconciler.resync()
 
     # the same listing the rollouts just used - being due costs no second LIST
-    assert [i["metadata"]["name"] for i in reconciler._gc.calls[0]] == ["fn-hello-payments"]
+    assert [i["metadata"]["name"] for i in reconciler._gc.calls[0]] == ["hello-payments"]
 
 
 def test_the_gc_factory_receives_the_resolved_region_name():

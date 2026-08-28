@@ -7,6 +7,83 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (name limits)
+
+- **Names and groups now get the full 63 characters, bounded only by the pair.**
+  `cloudlet-apis` 0.6.2 dropped its per-field caps (name <= 39, group <= 20),
+  which pre-dated the build-naming change below and silently made this API's
+  combined `{name}-{group} <= 63` check unreachable. The floor moves to
+  `>=0.6.2` so the per-field rule is just DNS's own (a label caps at 63) and
+  the combined check - already enforced at accept time and published on
+  `/info` - is the one real limit.
+
+### Changed (function build naming)
+
+- **A function's kpack `Image` is now named the workload's own `{name}-{group}`,
+  and its build ServiceAccount `{workload}-build`; both were `fn-{workload}`.**
+  The prefix cost every function three characters of name budget: kpack stamps
+  the Image *name* onto every Build as the `image.kpack.io/image` label value,
+  which caps at 63 characters - the same DNS-label limit the platform already
+  enforces on `{name}-{group}`. With the prefix gone those are the same limit,
+  so the tighter function-only check is deleted and a function's name and group
+  may fill all 63 characters together, exactly like a container's. Kinds are
+  separate name spaces, so the Image sharing the KSVC's name collides with
+  nothing; the ServiceAccount takes a suffix like the workload's other derived
+  objects (`{workload}-env`, `{workload}-git`), where an object name's
+  253-character subdomain cap makes it free. No migration is shipped: a
+  function deployed under the old names keeps its `fn-` Image until it is
+  deleted and recreated. An install that binds the build SCC to accounts by
+  name (`build.scc.serviceAccounts`) must list `{workload}-build` instead of
+  `fn-{workload}`.
+
+### Fixed (env vars)
+
+- **An over-long env var name is a 400 at accept, not a background apply
+  failure.** A secret var's name is used verbatim as its key in the
+  `{workload}-env` Secret, and Kubernetes caps a ConfigMap/Secret key at 253
+  characters - a limit the container `env` list itself does not have, so
+  nothing downstream would reject the name until the apply. The edge validator
+  now enforces the key's cap, and `/openapi.json` publishes it as `maxLength`.
+
+### Changed (health probes)
+
+- **BREAKING: `/healthz` and `/readyz` moved under the base path.** They were
+  the last paths outside it; a deployment serving under `basePath` now answers
+  `{basePath}/healthz` and `{basePath}/readyz`, and the bare paths no longer
+  answer. The chart's Deployment builds the kubelet's probe paths from the same
+  `basePath` value it hands the code (`SERVERLESS_BASE_PATH`), so the one
+  setting moves the probes and the API together and the two cannot drift apart.
+  A local run with no base path configured still serves `/healthz` and
+  `/readyz` bare.
+
+### Fixed (file mounts)
+
+- **Unencodable text content is a 400, not a 500.** A JSON string can carry a
+  lone surrogate (`\ud800`), which is not UTF-8-encodable; it now fails at the
+  model edge instead of exploding on the response echo.
+- **Oversized files are a 400 at accept, not a background apply failure.**
+  Kubernetes caps a whole ConfigMap/Secret at 1MiB; the resolver now measures
+  the serialized backing object (where Secret values and `binaryData` are
+  base64) and rejects a spec that could never apply.
+
+### Changed (file mounts)
+
+- **BREAKING: `files[].contentBase64` was replaced by an `encoding` flag on the
+  one `content` field.** Send text as before (`encoding` defaults to `"text"`),
+  and binary bytes as `{"content": "<base64>", "encoding": "base64"}`.
+- **BREAKING: `files[].readOnly` was removed.** It never had an effect:
+  Kubernetes mounts ConfigMap/Secret volumes read-only regardless of the pod
+  spec, so `readOnly: false` produced a file that was unwritable anyway. The
+  mount is stamped `readOnly: true` unconditionally and the field is gone from
+  both the request and the response.
+- **Binary non-secret file contents now read back.** A GET used to return
+  `content: null` for a non-secret file whose bytes are not UTF-8, and that null
+  could not be sent back on `PUT` (only secret files may omit content), so a
+  redacted read of a workload with a binary ConfigMap file did not round-trip.
+  The response now mirrors the request: binary content returns base64-encoded
+  with `encoding: "base64"` (read from the ConfigMap's `binaryData`), so the
+  GET body can be sent straight back whatever the file holds.
+
 ### Changed
 
 - **The stream-ticket flow is mounted from `cloudlet-apis` (>=0.6) instead of

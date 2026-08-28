@@ -18,11 +18,9 @@ def _ksvc():
         ],
         volumes=[
             VolumeSpec(
-                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf", True
+                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf"
             ),
-            VolumeSpec(
-                "files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret", True
-            ),
+            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret"),
         ],
         scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
         size="medium",
@@ -115,6 +113,22 @@ def test_parse_spec_reports_function_build_inputs():
     assert spec.branch == "release"
     assert spec.path == "services/api"
     assert spec.registryUsername is None  # functions have no pull secret
+
+
+def test_parse_spec_returns_binary_configmap_content_as_base64():
+    import base64
+
+    # region_read hands binaryData entries over as bytes; the view reports them
+    # base64-encoded with encoding "base64", mirroring how they are submitted.
+    blob = bytes([0xFF, 0xFE, 0x00])
+    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": blob}})
+    plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
+    assert plain.encoding == "base64"
+    assert base64.b64decode(plain.content) == blob
+    # text entries stay str -> text encoding
+    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": "level=debug"}})
+    plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
+    assert plain.encoding == "text" and plain.content == "level=debug"
 
 
 def test_parse_spec_without_configmap_leaves_content_null():

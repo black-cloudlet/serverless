@@ -156,6 +156,9 @@ class EnvVar(BaseModel):
         return self
 
 
+FileEncoding = Literal["text", "base64"]
+
+
 class FileMount(BaseModel):
     """An inline file to load into the workload at ``mountPath``.
 
@@ -163,42 +166,55 @@ class FileMount(BaseModel):
     ``secret: true``) - one ConfigMap and one Secret per workload - and mounts
     each file at its ``mountPath`` via ``subPath``.
 
-    A secret file may omit both content fields, meaning "keep the stored content"
-    on update (the redacted read - ``secret: true, content: null`` - can be sent
-    straight back). A non-secret file always needs exactly one content field, and
-    supplying both is always rejected.
+    ``content`` carries the file, and ``encoding`` says how: ``text`` (the
+    default) means the string *is* the file, ``base64`` means the string is the
+    file's raw bytes base64-encoded - for a keystore or a DER certificate, which
+    have no text form a JSON string could carry.
+
+    A secret file may omit ``content``, meaning "keep the stored content" on
+    update (the redacted read - ``secret: true, content: null`` - can be sent
+    straight back). A non-secret file always needs content.
+
+    The mounted file is always read-only: Kubernetes mounts ConfigMap and
+    Secret volumes read-only regardless of what the pod spec asks for, so the
+    API offers no knob it could not honor.
     """
 
     mountPath: MountPath
     content: str | None = None
-    contentBase64: str | None = None
+    encoding: FileEncoding = "text"
     secret: bool = False
-    readOnly: bool = True
 
     @property
     def keep(self) -> bool:
         """Whether this (secret) file keeps its stored content (no content given)."""
-        return self.content is None and self.contentBase64 is None
+        return self.content is None
 
     @model_validator(mode="after")
     def _check(self) -> "FileMount":
-        """Validate the content fields (exactly one, or none only for a secret keep).
+        """Validate the content (present unless a secret keep, decodable if base64).
 
-        Whether ``contentBase64`` decodes is a property of the field, so it is
+        Whether base64 ``content`` decodes is a property of the field, so it is
         settled here rather than in the service layer. It has to be: the accept
         path echoes the submitted spec back (``describe.redact_files``) as an
         argument expression, which runs *before* the service-layer validation, so
         a check further in would be reached too late to answer with a 400.
         """
-        if self.content is not None and self.contentBase64 is not None:
-            raise ValueError("file accepts at most one of 'content' or 'contentBase64'")
         if self.keep and not self.secret:
-            raise ValueError("file requires exactly one of 'content' or 'contentBase64'")
-        if self.contentBase64 is not None:
+            raise ValueError("file requires 'content'")
+        if self.encoding == "text" and self.content is not None:
+            try:
+                # A JSON string can carry a lone surrogate, which is not UTF-8.
+                self.content.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    f"file '{self.mountPath}' content is not valid UTF-8 text"
+                ) from exc
+        if self.encoding == "base64" and self.content is not None:
             try:
                 # Lenient: tolerates the line wrapping a PEM body carries, while
                 # still rejecting bad padding or a truncated blob.
-                base64.b64decode(self.contentBase64)
+                base64.b64decode(self.content)
             except ValueError as exc:
                 raise ValueError(f"file '{self.mountPath}' has invalid base64 content") from exc
         return self
@@ -206,12 +222,14 @@ class FileMount(BaseModel):
     def decoded(self) -> bytes:
         """The file's content as raw bytes (``b""`` for a keep).
 
-        Bytes because a file is a byte string: ``contentBase64`` exists so a caller
-        can mount a keystore or a DER certificate, which have no text form.
+        Bytes because a file is a byte string: ``encoding: base64`` exists so a
+        caller can mount a keystore or a DER certificate, which have no text form.
         """
-        if self.contentBase64 is not None:
-            return base64.b64decode(self.contentBase64)
-        return (self.content or "").encode("utf-8")
+        if self.content is None:
+            return b""
+        if self.encoding == "base64":
+            return base64.b64decode(self.content)
+        return self.content.encode("utf-8")
 
 
 class Scaling(BaseModel):
@@ -461,13 +479,15 @@ class FileView(BaseModel):
     """A mounted file as read back from a deployed workload.
 
     ``content`` is returned only for non-secret (ConfigMap-backed) files; it is
-    always null for secret files.
+    always null for secret files. Mirroring :class:`FileMount`, a binary file
+    comes back base64-encoded with ``encoding: base64`` - so the read can be
+    sent straight back on update, whatever the file holds.
     """
 
     mountPath: str
-    readOnly: bool = True
     secret: bool = False
     content: str | None = None
+    encoding: FileEncoding = "text"
 
 
 class BuildStatusView(BaseModel):

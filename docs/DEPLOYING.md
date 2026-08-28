@@ -206,7 +206,7 @@ own range and rejects an explicit one outside it. With no other SCC available to
 ServiceAccount, admission finds nothing that admits it and the build never starts:
 
 ```
-pods "fn-hello-build-1-build-pod" is forbidden: unable to validate against any
+pods "hello-team-build-1-build-pod" is forbidden: unable to validate against any
 security context constraint: ... .spec.securityContext.fsGroup: Invalid value:
 []int64{1000}: 1000 is not an allowed group, provider restricted-v2:
 .initContainers[0].runAsUser: Invalid value: 1001: must be in the ranges:
@@ -217,7 +217,7 @@ The tail of that message is the useful part: it names the exact ids the pod aske
 is what `build.scc.runAsUser` and `.fsGroup` have to match.
 
 **This fails per function, not per install.** A Builder build runs as `kpack-builder`, but a
-function build runs as the `fn-{workload}` account the API creates at request time - so the
+function build runs as the `{workload}-build` account the API creates at request time - so the
 symptom appears on the first function build, after everything else looked healthy.
 
 `build.scc.enabled` ships a `SecurityContextConstraints` granting exactly those ids and
@@ -250,6 +250,9 @@ oc -n kpack logs deploy/kpack-controller | grep -o 'unable to validate.*'
 ---
 
 ## Sample Manifests
+
+The platform-side objects; the build objects (kpack Image, Builder, ClusterStack,
+build ServiceAccount, Kyverno CA policy) are under BUILDING.md: Sample Manifests.
 
 > Illustrative only - final values are templated by Helm and parameterized per region.
 

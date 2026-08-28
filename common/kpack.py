@@ -27,21 +27,37 @@ BUILD_NUMBER_LABEL = "image.kpack.io/buildNumber"
 
 # kpack stamps the Image *name* onto every Build as the `image.kpack.io/image`
 # label value - the exact label this platform selects builds by - and a label
-# value caps at 63 characters. The prefix therefore narrows how long a
-# function's `{name}-{group}` may be, on top of the DNS limit the shared check
-# enforces; a pair that only fits without the prefix would be accepted and then
-# silently never build.
-BUILD_NAME_PREFIX = "fn-"
-MAX_BUILD_WORKLOAD_NAME = 63 - len(BUILD_NAME_PREFIX)
+# value caps at 63 characters: the same DNS-label limit the shared check
+# (`common.names.MAX_OBJECT_NAME`) already enforces on `{name}-{group}`. Naming
+# the Image the workload's object name *verbatim* is what keeps those two
+# limits the same limit - any pair the API accepts is a name kpack can label
+# with, and functions get no tighter a name budget than any other workload.
+# Kinds are separate name spaces, so sharing the KSVC's name collides with
+# nothing. Anything prepended or appended here would silently shrink the
+# platform-wide limit for functions.
 
 
-def build_object_name(workload: str) -> str:
-    """Name shared by a function's Image and build ServiceAccount: ``fn-{workload}``.
+def build_image_name(workload: str) -> str:
+    """The kpack Image's name: the workload's own ``{name}-{group}``, verbatim.
 
-    Prefixed so it cannot collide with the KSVC or any other object the workload
-    owns in the same namespace.
+    An identity, kept as a function so the rule has one home - the code that
+    applies an Image and the code that deletes one must agree on it exactly -
+    and so the label-value constraint above guards every caller at once.
     """
-    return f"{BUILD_NAME_PREFIX}{workload}"
+    return workload
+
+
+# The build ServiceAccount is suffixed like the workload's other derived
+# objects (`{workload}-env`, `{workload}-git`), so a listing says what it is
+# for. Unlike the Image's, its name is never written where a label value has
+# to fit - an object name is a DNS subdomain (253 chars), not a label (63) -
+# so the suffix costs no name budget.
+BUILD_SA_SUFFIX = "-build"
+
+
+def build_service_account_name(workload: str) -> str:
+    """The build ServiceAccount's name: ``{workload}-build``."""
+    return f"{workload}{BUILD_SA_SUFFIX}"
 
 
 def build_service_account(
@@ -102,7 +118,7 @@ def build_image(
     apply look like a change and rebuild forever.
 
     Args:
-        name: The Image name (``fn-{workload}``).
+        name: The Image name (the workload's own ``{name}-{group}``).
         labels: Labels to stamp on it.
         tag: Where the built image is pushed.
         builder: Name of the namespaced Builder to build with.

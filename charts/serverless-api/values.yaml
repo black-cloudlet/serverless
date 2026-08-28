@@ -145,8 +145,9 @@ routeDomain: serverless.example.com
 #   https://{host}/api/serverless/v1/groups/{group}/functions
 #
 # Naming it for the API is what lets it share a host with the platform's others.
-# Only /healthz and /readyz sit outside it, since the kubelet reaches the pod
-# directly rather than through whatever serves the API to everyone else.
+# The health probes sit under it too - the Deployment builds the kubelet's
+# probe paths ({basePath}/healthz, {basePath}/readyz) from this same value, so
+# nothing answers beside the base path and the two cannot drift apart.
 #
 # Whatever does that serving must forward the path WHOLE - a plain Route with
 # `spec.path`, no haproxy.router.openshift.io/rewrite-target. There is one path
@@ -352,7 +353,7 @@ build:
     # at request time. False binds `build.serviceAccount.name` and those below.
     allServiceAccounts: true
     # serviceAccounts:
-    #   - fn-my-function
+    #   - my-function-build
     serviceAccounts: []
     # `persistentVolumeClaim` is only for kpack's volume build cache.
     volumes:

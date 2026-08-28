@@ -482,11 +482,9 @@ async def test_get_returns_redacted_spec():
         ],
         volumes=[
             VolumeSpec(
-                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf", True
+                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf"
             ),
-            VolumeSpec(
-                "files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret", True
-            ),
+            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret"),
         ],
         scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
         size="medium",
@@ -1735,8 +1733,8 @@ async def test_delete_reaps_orphaned_build_objects_once_every_region_answers():
     with pytest.raises(NotFoundError):
         await engine.delete(FUNCTION, "app", user, "team")
 
-    assert (ResourceKind.KPACK_IMAGE, "fn-app-team") in cluster.deleted
-    assert (ResourceKind.SERVICE_ACCOUNT, "fn-app-team") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "app-team") in cluster.deleted
+    assert (ResourceKind.SERVICE_ACCOUNT, "app-team-build") in cluster.deleted
     assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
 
 

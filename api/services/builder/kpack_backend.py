@@ -182,7 +182,8 @@ class KpackBackend:
         """
         oname = object_name(req.name, req.group)
         builder, env = self._runtime_config(req.runtime, req.version)
-        build_name = kpack.build_object_name(oname)
+        image_name = kpack.build_image_name(oname)
+        sa_name = kpack.build_service_account_name(oname)
         git_secret = secret_svc.git_secret_name(oname)
         per_region: dict[str, RegionBuild] = {}
         for region, registry in registries.items():
@@ -191,14 +192,14 @@ class KpackBackend:
                 tag=tag,
                 manifests=[
                     kpack.build_service_account(
-                        build_name, labels, git_secret, self._registry_secrets
+                        sa_name, labels, git_secret, self._registry_secrets
                     ),
                     kpack.build_image(
-                        build_name,
+                        image_name,
                         labels,
                         tag=tag,
                         builder=builder,
-                        service_account=build_name,
+                        service_account=sa_name,
                         git_url=req.git_url,
                         revision=req.build_revision,
                         sub_path=req.path,
@@ -243,7 +244,7 @@ class KpackBackend:
                 Unlike a status read, this one is the whole point of the call: a
                 swallowed error is a rebuild that silently never happens.
         """
-        image_name = kpack.build_object_name(object_name(name, group))
+        image_name = kpack.build_image_name(object_name(name, group))
         builds = cluster.get(
             ResourceKind.KPACK_BUILD, label_selector=f"{kpack.IMAGE_LABEL}={image_name}"
         )
@@ -283,7 +284,7 @@ class KpackBackend:
             it, and must fall through to the KSVC status rather than read as a
             failure (docs/FUNCTIONS.md - Function Status Resolution).
         """
-        image_name = kpack.build_object_name(object_name(name, group))
+        image_name = kpack.build_image_name(object_name(name, group))
         try:
             image = cluster.get(ResourceKind.KPACK_IMAGE, image_name)
         except NotFoundError:
@@ -299,8 +300,9 @@ class KpackBackend:
 
         Keyed by the ``workload`` label - the object name ``{name}-{group}`` -
         because that is what the Image carries and what the caller already has
-        from the KSVC it is annotating. The Image's own name (``fn-{workload}``)
-        is an implementation detail of this module.
+        from the KSVC it is annotating. The Image's name is the same string
+        (:func:`common.kpack.build_image_name`), but the label is the
+        selection contract, so it is what this read stands on.
 
         Never an error: a listing that could not read kpack falls through to the
         KSVC statuses, exactly as :meth:`status` does for a single workload.

@@ -68,8 +68,12 @@ MAX_OBJECT_NAME = 63
 # An environment variable name, exactly as Kubernetes accepts one
 # (`util/validation.IsEnvVarName`). It is also used verbatim as the key of the
 # workload's `{workload}-env` Secret, and this is a subset of what a Secret key
-# allows, so one rule covers both writers.
+# allows, so one rule covers both writers. The length cap is that key's, too:
+# Kubernetes puts none on a container env name itself, so the Secret key is the
+# binding constraint - without the cap here, a longer name on a secret var
+# would be accepted (202) and die in the background apply.
 ENV_VAR_NAME = re.compile(r"^[-._a-zA-Z][-._a-zA-Z0-9]*$")
+MAX_ENV_VAR_NAME = 253
 # A ConfigMap/Secret key is capped here, and a mount path becomes one (see
 # `api.services.manifests.files._key`).
 MAX_MOUNT_PATH = 253
@@ -291,10 +295,13 @@ def validate_env_var_name(name: str) -> str:
         The name unchanged.
 
     Raises:
-        ValueError: If it is empty or not a legal environment variable name.
+        ValueError: If it is empty, over-long, or not a legal environment
+            variable name.
     """
     if not name:
         raise ValueError("env var name must not be empty")
+    if len(name) > MAX_ENV_VAR_NAME:
+        raise ValueError(f"env var name must be at most {MAX_ENV_VAR_NAME} characters")
     if name.startswith(".."):
         raise ValueError("env var name must not start with '..'")
     if not ENV_VAR_NAME.match(name):
@@ -607,6 +614,7 @@ EnvVarName = Annotated[
         "with a digit. A secret var is stored under this same key.",
         "LOG_LEVEL",
         pattern=ENV_VAR_NAME.pattern,
+        maxLength=MAX_ENV_VAR_NAME,
     ),
 ]
 MountPath = Annotated[
