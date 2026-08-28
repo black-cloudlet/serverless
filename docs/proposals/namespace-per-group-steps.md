@@ -65,8 +65,12 @@ Zero behavior change: every caller binds the legacy namespace.
      `Cluster` to the view; bodies unchanged.
    - `controller/reconciler.py`, `controller/digest.py` - bind the legacy
      namespace explicitly for now (PR 6 removes this).
-3. `common/names.py`: `namespace_for_group(group, prefix="serverless-t-")`
-   - prefix + normalized group, **reject > 63 chars as `422`** at the same
+3. `common/names.py`: `namespace_for_group(group, suffix="-serverless")`
+   - the normalized group + suffix (`{group}-serverless`, group-first so
+   tenant namespaces list under their group's name), **reject > 63 chars as
+   `422`** on the suffixed result, and **refuse a group beginning with
+   `kube-` or `openshift-`** - group-first naming could otherwise produce a
+   namespace that reads as the system's own - at the same
    edge the DNS-1123 check runs (per the plan's risk decision); surfaced on
    `/info` `naming`.
 4. `common/labels.py`: `LABEL_PROVISIONER_MANAGED`,
@@ -77,7 +81,7 @@ Zero behavior change: every caller binds the legacy namespace.
    and answers namespaced/all-namespaces lists; existing tests pass with
    the legacy binding.
 
-**Tests:** new `test_names.py` cases (prefix, length rejection, collision
+**Tests:** new `test_names.py` cases (the suffixed shape, length rejection, reserved system prefixes, collision
 with normalization rules); every existing suite green unmodified in intent.
 **Done when:** full pytest green; `git grep "_namespace"` in
 `common/cluster/` returns nothing.
@@ -90,7 +94,7 @@ exist.
 
 1. `provisioner/config.py`: `ProvisionerSettings(CommonSettings)` -
    `resync_seconds`, `error_backoff_seconds` (defaults per
-   `ControllerSettings`), `templates_dir`, `namespace_prefix`.
+   `ControllerSettings`), `templates_dir`, `namespace_suffix`.
 2. `provisioner/templates.py`: read the mounted directory (whole-ConfigMap
    mount), parse manifests, substitute `{{namespace}}`/`{{group}}`, compute
    the set hash (sorted, content-addressed). Mirrors the mounted-file
@@ -169,7 +173,7 @@ for the running system (all new objects inert until PR 5).
    NetworkPolicy admitting ingress only from the API pods.
 6. `kpack/ca-policy.yaml`: match tenant namespaces **by label selector**,
    keeping the name match for the legacy namespace until PR 8.
-7. `values.yaml`: `tenantNamespaces:` block - `prefix`, `provisioner.*`
+7. `values.yaml`: `tenantNamespaces:` block - `suffix`, `provisioner.*`
    (image, resources), `gc.enabled: false`, `gc.graceSeconds`. No
    `enabled` master flag - namespace-per-group becomes the only mode at
    PR 5.
@@ -188,7 +192,7 @@ pre-GA the cost of a hard cutover is one wipe of test data, and the saving
 is a permanently single code path and test matrix.
 
 1. `common/config.py` / `api/core/config.py`: the `tenant_namespaces`
-   settings block (prefix, provisioner URL).
+   settings block (suffix, provisioner URL).
 2. One resolution point: `resolve_namespace(group, settings)` → the group
    namespace, always. `WorkloadService` calls it once per request and binds
    `cluster.in_namespace(...)` there - the *only* line that changes where
@@ -227,7 +231,7 @@ is a permanently single code path and test matrix.
    rule from PR 1, combined ≤ 63 for the default host only.
 7. Deploy note in the PR body: per environment, delete the old test
    workloads (or the legacy namespace's contents), sync, redeploy - they
-   land in `serverless-t-{group}`. Rollback is redeploying the previous
+   land in `{group}-serverless`. Rollback is redeploying the previous
    chart + image.
 
 **Tests:** `test_workload_namespaces.py` - resolution, ensure called in
@@ -238,7 +242,7 @@ distinct hosts, distinct registry repos); the existing
 plain-`{name}` expectations (mechanical - the fake cluster records
 namespaces since PR 1).
 **Done when:** the full suite is green and a create in a fresh test
-environment lands Ready in `serverless-t-{group}` in both regions.
+environment lands Ready in `{group}-serverless` in both regions.
 
 ## PR 6 - build controller across namespaces
 

@@ -27,7 +27,7 @@ tests, and acceptance per step - is in
 
 | Topic | Decision | Why |
 |-------|----------|-----|
-| Granularity | **One namespace per group** (`serverless-t-{group}`), never per workload | The group is already the unit of ownership everywhere: the `{group}` path segment, the ownership labels, `normalize_group`. Per-group is what makes future per-tenant `ResourceQuota` expressible. |
+| Granularity | **One namespace per group** (`{group}-serverless`), never per workload | The group is already the unit of ownership everywhere: the `{group}` path segment, the ownership labels, `normalize_group`. Per-group is what makes future per-tenant `ResourceQuota` expressible. |
 | Builds | **Co-located with the workload, in the group namespace** | ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). Co-location keeps the KSVC-owns-everything cascade, so apply, rollback, and delete are unchanged. A central build namespace would force explicit cross-namespace cleanup plus an orphan-Image sweep - an orphaned kpack Image *rebuilds a deleted function forever*, so that sweep would be correctness-critical. Build quota fairness is handled inside the namespace (see Phase 5). |
 | New component | **`provisioner/` package in this monorepo**, own Deployment + image, internal-only (Service, no Route) | Same shape as the build controller. A separate deployment (not a library in the API) exists for exactly one reason: **privilege separation** - creating/deleting Namespaces and RoleBindings is cluster-scoped power the internet-facing API must not hold. |
 | Provisioner identity | **Its own cert-manager `Certificate`**, CN `serverless-provisioner.clients.{base_domain}` | Reusing the API's cert would make the privilege separation fiction. Same CA trust means the one identity is valid in both clusters, like the API's. |
@@ -64,8 +64,8 @@ flowchart TB
     GIT[("GitOps repo<br/>ArgoCD")] -->|sync| CM["tenant-templates ConfigMap<br/>(rendered by Helm, per cluster)"]
     API["FastAPI API"] -->|"POST /ensure/{group}<br/>(local, in-cluster)"| P["provisioner"]
     CM -->|mounted, hashed| P
-    P -->|"ensure: SSA to BOTH clusters"| NSA["ns serverless-t-{group}<br/>(central)"]
-    P -->|"ensure: SSA to BOTH clusters"| NSB["ns serverless-t-{group}<br/>(south)"]
+    P -->|"ensure: SSA to BOTH clusters"| NSA["ns {group}-serverless<br/>(central)"]
+    P -->|"ensure: SSA to BOTH clusters"| NSB["ns {group}-serverless<br/>(south)"]
     P -->|"reconcile + GC: LOCAL cluster only"| NSA
     API -->|"deploy workload (unchanged fan-out)"| NSA
     API --> NSB
@@ -116,10 +116,13 @@ rollback lever, and a hard cutover buys a permanently single code path
    Phase 3 only changes *which* namespace gets bound. `apply` also gains a
    `field_manager=` parameter so the provisioner writes under its own SSA
    manager.
-2. **`common/names.py`**: `namespace_for_group(group)` - prefix
-   `serverless-t-` + normalized group; explicit length rule (prefix + group
-   ≤ 63 or reject at the same edge `normalize_group` errors surface today),
-   published on `/info` `naming` like the `{name}-{group}` rule.
+2. **`common/names.py`**: `namespace_for_group(group)` - the normalized
+   group + the `-serverless` suffix (group-first, so tenant namespaces list
+   under their group's name); explicit length rule (group + suffix ≤ 63 or
+   reject at the same edge `normalize_group` errors surface today), and a
+   refusal of groups beginning `kube-`/`openshift-` - group-first naming
+   could otherwise produce a namespace that reads as the system's own.
+   Published on `/info` `naming` like the `{name}-{group}` rule.
 3. **`common/labels.py`**: `LABEL_PROVISIONER_MANAGED`,
    `ANNOTATION_TEMPLATE_HASH`, `ANNOTATION_EMPTY_SINCE`, `ANNOTATION_KEEP`.
 4. **`common/cluster/kinds.py`**: add `NAMESPACE`, `NETWORK_POLICY`,
@@ -175,7 +178,7 @@ Mirrors `controller/` file-for-file where a counterpart exists:
 ### Phase 3 - API integration
 
 1. **`api/core/config.py` / `common/config.py`**: `tenant_namespaces`
-   settings block - `provisioner_url`, prefix (no enable flag - see
+   settings block - `provisioner_url`, suffix (no enable flag - see
    Cutover).
 2. **Namespace resolution in one place**: the workload service resolves
    `group → namespace` once per request (via `common.names
@@ -255,7 +258,7 @@ is git: redeploy the previous chart version.
 2. The API integration PR switches resolution outright. Deploy order per
    environment: delete the old workloads (`kubectl delete ns
    serverless-workloads` after sync, or just delete the workloads), sync
-   the chart, redeploy test workloads - they land in `serverless-t-{group}`.
+   the chart, redeploy test workloads - they land in `{group}-serverless`.
 3. The cleanup PR drops the legacy namespace renders, the Kyverno
    name-match, and the `workloads_namespace` setting, and folds these
    proposal documents into ARCHITECTURE.md/DEPLOYING.md.
@@ -292,8 +295,8 @@ cluster-scoped host preflight).
 | Item | Notes |
 |------|-------|
 | Argo sync skew between sites | Ensure writes the peer cluster with the local hash; the peer's local reconciler re-converges when its ConfigMap lands. Transient and self-healing - document it so it is not debugged as a bug. |
-| Namespace-name length | `serverless-t-` + 63-char group can exceed 63. Decide reject-at-422 (recommended - consistent with the DNS-1123 stance) vs truncate+hash before Phase 0. |
-| Group named like a system namespace | The prefix removes the collision class; keep a small denylist anyway. |
+| Namespace-name length | `{group}` + `-serverless` can exceed 63. Decided: reject-at-422, consistent with the DNS-1123 stance. |
+| Group named like a system namespace | The suffix removes the head-on collision (no group can *equal* an existing namespace's name); what it cannot rule out - a group *beginning* with `kube-`/`openshift-` producing a system-looking namespace - is refused by `namespace_for_group`. |
 | Provisioner down | Every create's pre-flight fails closed with a clear, retryable error (the `503` posture the API already takes when a check cannot be *run*). Deliberately no caching or degraded mode in the API - ensure always round-trips; availability comes from running the provisioner as two replicas behind a Service, the same posture as the API itself. |
 | Knative `ClusterDomainClaim` | With `autocreate-cluster-domain-claims` the operator enforces cross-namespace host uniqueness anyway; the preflight remains for the clean 409. Verify the operator setting during Phase 3. |
 | kpack `priorityClassName` support | Determines whether Phase 5 needs the Kyverno mutate rule. Check the mirrored kpack version when quota work starts. |
