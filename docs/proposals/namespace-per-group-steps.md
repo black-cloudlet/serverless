@@ -201,20 +201,30 @@ is a permanently single code path and test matrix.
    cluster-scoped (`namespace=None`, label-selected) so hosts stay unique
    across all tenant namespaces.
 5. Object naming: `common/names.py`'s `object_name` becomes plain
-   `{name}` - the namespace scopes it - and every derived name
-   (`{name}-env`, `{name}-files`, `{name}-git`, `{name}-pull`, the build
-   objects) shortens with it. The group stays explicit in exactly three
-   places: the **default host** (`{name}-{group}.{routeDomain}`,
-   unchanged - DNS is global and the wildcard cert covers one label), the
-   **registry repository derivations** in `names.py` (take `group` as a
-   parameter instead of parsing the object name - the registry is flat
-   across groups), and the **ownership labels** (unchanged). This lands in
-   this PR because objects get their new names and new namespaces in one
-   move.
-6. `/info` `naming` publishes the relaxed rules: `{name}` ≤ 63 on its own,
-   the group bounded by the namespace rule from PR 1, and combined ≤ 63
-   only for the *default* host - a longer pair supplies a custom
-   `hostname` instead of being rejected outright.
+   `{name}` - the namespace scopes it, and the platform's primary key
+   becomes **(namespace, name)** - and every derived name (`{name}-env`,
+   `{name}-files`, `{name}-git`, `{name}-pull`, the `{name}-build` SA)
+   shortens with it. The kpack Image stays the object name **verbatim**
+   (`build_image_name` is unchanged): the rule that the Image name must
+   fit a 63-char label value now binds plain `{name}`, so the alignment
+   #69 built holds with more headroom. The group stays explicit in
+   exactly three places: the **default host**
+   (`{name}-{group}.{routeDomain}`, unchanged - DNS is global and the
+   wildcard cert covers one label), the **registry repositories**
+   (`image_repository(group, name)` / `cache_repository(group, name)`
+   already take the group as a parameter - no change), and the
+   **ownership labels** (unchanged). Reverse mapping already goes through
+   the labels, so nothing ever parses a name back into halves. This lands
+   in this PR because objects get their new names and new namespaces in
+   one move.
+6. The pair rule **moves, it does not disappear**: `validate_object_name`'s
+   combined `{name}-{group}` ≤ 63 check (the one real limit since the
+   per-field caps were dropped) relocates to the default-host derivation
+   in `preflight.py` - a create whose *default* host would exceed 63 is a
+   `422` telling the caller to supply `hostname`; with a custom hostname
+   the pair length no longer matters. `/info` `naming` re-words the rule
+   accordingly: `{name}` ≤ 63 alone, the group bounded by the namespace
+   rule from PR 1, combined ≤ 63 for the default host only.
 7. Deploy note in the PR body: per environment, delete the old test
    workloads (or the legacy namespace's contents), sync, redeploy - they
    land in `serverless-t-{group}`. Rollback is redeploying the previous
