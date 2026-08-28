@@ -35,7 +35,7 @@ from api.services.manifests import secrets as secret_svc
 from api.services.regions import region_apply, region_read
 from api.services.state import ksvc_state
 from common.build import BuildBackend
-from common.cluster import Cluster, ResourceKind
+from common.cluster import NamespacedCluster, ResourceKind
 from common.labels import OFFERING_CONTAINER, OFFERING_FUNCTION
 
 if TYPE_CHECKING:  # a type hint only - importing it at runtime would be a cycle
@@ -57,7 +57,7 @@ class DeleteContext:
         group: The owning group.
     """
 
-    cluster: Cluster
+    cluster: NamespacedCluster
     oname: str
     name: str
     group: str
@@ -125,7 +125,7 @@ class Offering(Protocol):
         """
         ...
 
-    def read_extra_state(self, cluster: Cluster, oname: str) -> dict:
+    def read_extra_state(self, cluster: NamespacedCluster, oname: str) -> dict:
         """Offering-specific carried-forward state, merged into the loaded state.
 
         Runs off the event loop, on a region that has the workload.
@@ -140,13 +140,13 @@ class Offering(Protocol):
         ...
 
     def build_status(
-        self, builder: BuildBackend, cluster: Cluster, name: str, group: str
+        self, builder: BuildBackend, cluster: NamespacedCluster, name: str, group: str
     ) -> BuildStatusView | None:
         """The workload's build state, or None when the offering has no build."""
         ...
 
     def build_states(
-        self, builder: BuildBackend, cluster: Cluster, group: str
+        self, builder: BuildBackend, cluster: NamespacedCluster, group: str
     ) -> dict[str, BuildStatusView]:
         """Build states for a whole group's listing, keyed by object name.
 
@@ -213,7 +213,7 @@ class FunctionOffering:
         """
         return set()
 
-    def read_extra_state(self, cluster: Cluster, oname: str) -> dict:
+    def read_extra_state(self, cluster: NamespacedCluster, oname: str) -> dict:
         """The stored git token, so a build-input change can rebuild without one."""
         git = region_read.secret_text(cluster, secret_svc.git_secret_name(oname))
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
@@ -234,7 +234,7 @@ class FunctionOffering:
         registry_svc.delete_function_repositories(ctx.cluster.registry, ctx.group, ctx.name)
 
     def build_status(
-        self, builder: BuildBackend, cluster: Cluster, name: str, group: str
+        self, builder: BuildBackend, cluster: NamespacedCluster, name: str, group: str
     ) -> BuildStatusView | None:
         """The function's build state from the local region, or None if it has none.
 
@@ -252,7 +252,7 @@ class FunctionOffering:
         return BuildStatusView(state=status.state, message=status.message)
 
     def build_states(
-        self, builder: BuildBackend, cluster: Cluster, group: str
+        self, builder: BuildBackend, cluster: NamespacedCluster, group: str
     ) -> dict[str, BuildStatusView]:
         """Every function's build state in the group, from the local region's Images.
 
@@ -291,7 +291,7 @@ class ContainerOffering:
         """The image-pull Secret, so dropping the registry creds deletes it."""
         return {(ResourceKind.SECRET, secret_svc.pull_secret_name(oname))}
 
-    def read_extra_state(self, cluster: Cluster, oname: str) -> dict:
+    def read_extra_state(self, cluster: NamespacedCluster, oname: str) -> dict:
         """None. The registry credential is read by the shared state loader."""
         return {}
 
@@ -303,13 +303,13 @@ class ContainerOffering:
         """
 
     def build_status(
-        self, builder: BuildBackend, cluster: Cluster, name: str, group: str
+        self, builder: BuildBackend, cluster: NamespacedCluster, name: str, group: str
     ) -> BuildStatusView | None:
         """None. A container is deployed from an image the caller already built."""
         return None
 
     def build_states(
-        self, builder: BuildBackend, cluster: Cluster, group: str
+        self, builder: BuildBackend, cluster: NamespacedCluster, group: str
     ) -> dict[str, BuildStatusView]:
         """Empty. A container has no build to fold into a listing."""
         return {}

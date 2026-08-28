@@ -416,7 +416,7 @@ class FakeCluster:
             },
         }
 
-    def get(self, kind, name=None, label_selector=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None):
         from common.cluster import ResourceKind
 
         if kind is ResourceKind.POD_METRICS:
@@ -439,7 +439,9 @@ class FakeCluster:
         with self._lock:
             return [self._pod_obj(pod, rev) for pod, rev in self._pods.items()]
 
-    def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
+    def follow_pod_logs(
+        self, pod, *, namespace=None, container, since_seconds=None, tail_lines=None
+    ):
         self.followed.append(pod)
         self.follow_bounds.append((since_seconds, tail_lines))
         block = threading.Event() if self._live else None
@@ -523,7 +525,9 @@ async def test_the_stream_ends_when_the_pod_s_log_does(capacity):
 
 async def test_a_pod_that_cannot_be_read_warns_and_ends_rather_than_hanging(capacity):
     class Refusing(FakeCluster):
-        def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
+        def follow_pod_logs(
+            self, pod, *, namespace=None, container, since_seconds=None, tail_lines=None
+        ):
             raise RuntimeError("forbidden")
 
     events = [e async for e in _follow(Refusing({"p1": "r1"}), capacity)]
@@ -594,7 +598,7 @@ def test_a_pod_with_no_metrics_yet_is_still_listed():
     metrics-server has not scraped. Missing usage must never hide it."""
 
     class NoMetrics(FakeCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             from common.cluster import ResourceKind
 
             if kind is ResourceKind.POD_METRICS:
@@ -608,7 +612,7 @@ def test_a_pod_with_no_metrics_yet_is_still_listed():
 
 def test_an_unreadable_metrics_api_does_not_empty_the_roster():
     class BrokenMetrics(FakeCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             from common.cluster import ResourceKind
 
             if kind is ResourceKind.POD_METRICS:
@@ -690,7 +694,7 @@ async def test_a_scaled_to_zero_workload_streams_an_empty_roster(capacity):
 
 async def test_a_deleted_workload_ends_the_roster_stream_with_its_envelope_code(capacity):
     class Gone(FakeCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             raise NotFoundError("function 'foo' not found")
 
     events = [e async for e in _pods_follow(Gone({}), capacity)]
@@ -701,7 +705,7 @@ async def test_a_deleted_workload_ends_the_roster_stream_with_its_envelope_code(
 
 async def test_an_unexpected_roster_failure_does_not_leak_its_text(capacity):
     class Angry(FakeCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             raise RuntimeError("postgres://user:hunter2@db.internal")
 
     events = [e async for e in _pods_follow(Angry({}), capacity)]
@@ -842,7 +846,7 @@ class OwnedCluster(FakeCluster):
 
     ksvc: dict | None = None
 
-    def get(self, kind, name=None, label_selector=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None):
         from common.cluster import ResourceKind
 
         if kind is ResourceKind.KNATIVE_SERVICE:
@@ -972,7 +976,7 @@ async def test_a_pod_of_another_workload_is_a_404(capacity):
     """
 
     class Foreign(OwnedCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             from common.cluster import ResourceKind
 
             if kind is ResourceKind.POD and name is not None:
@@ -1001,7 +1005,7 @@ async def test_a_pod_of_another_workload_is_a_404(capacity):
 
 async def test_a_pod_with_no_service_label_at_all_is_a_404(capacity):
     class Unlabelled(OwnedCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             from common.cluster import ResourceKind
 
             if kind is ResourceKind.POD and name is not None:
@@ -1132,7 +1136,16 @@ class SnapshotCluster(OwnedCluster):
         self.text = text
         self.reads: list[tuple] = []
 
-    def pod_logs(self, pod, *, container, since_seconds=None, limit_bytes=None, tail_lines=None):
+    def pod_logs(
+        self,
+        pod,
+        *,
+        namespace=None,
+        container,
+        since_seconds=None,
+        limit_bytes=None,
+        tail_lines=None,
+    ):
         self.reads.append((pod, container, since_seconds, limit_bytes, tail_lines))
         return self.text
 
@@ -1237,7 +1250,7 @@ async def test_the_snapshot_runs_the_same_pod_ownership_check_as_the_stream(capa
     """follow=false must not be a way around the check that matters."""
 
     class Foreign(SnapshotCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             from common.cluster import ResourceKind
 
             if kind is ResourceKind.POD and name is not None:
@@ -1374,7 +1387,9 @@ async def test_the_rollover_reports_lines_dropped_since_the_last_tick(capacity):
             self._open = False
 
     class FirehoseCluster(FakeCluster):
-        def follow_pod_logs(self, pod, *, container, since_seconds=None, tail_lines=None):
+        def follow_pod_logs(
+            self, pod, *, namespace=None, container, since_seconds=None, tail_lines=None
+        ):
             return Endless()
 
     config = FAST.model_copy(update={"max_seconds": 1, "queue_size": 2, "heartbeat_seconds": 0.02})

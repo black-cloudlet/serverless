@@ -81,7 +81,7 @@ def test_an_unparseable_quantity_never_escapes_the_usage_read():
     class Cluster:
         region = "central"
 
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             return [{"containers": [{"usage": {"cpu": "1e3n", "memory": "1e6"}}]}]
 
     read = region_usage(Cluster(), "orders-api-team")
@@ -95,7 +95,7 @@ def test_a_readable_region_still_reports_its_usage():
     class Cluster:
         region = "central"
 
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             return [{"containers": [{"usage": {"cpu": "120m", "memory": "180Mi"}}]}]
 
     read = region_usage(Cluster(), "orders-api-team")
