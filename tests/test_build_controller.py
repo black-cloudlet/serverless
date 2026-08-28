@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.cluster import ResourceKind, clusters_for, select_local
+from common.cluster import NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings, RegionConfig
 from common.errors import NotFoundError, ValidationError
 from common.labels import (
@@ -111,29 +111,37 @@ class _FakeCluster:
         self.closed = False
         self.events = []
 
-    def get(self, kind, name=None, label_selector=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None):
         assert kind is ResourceKind.KNATIVE_SERVICE
         if name not in self._ksvcs:
             raise NotFoundError(f"Service '{name}' not found")
         return self._ksvcs[name]
 
-    def apply(self, manifest):
+    def apply(self, manifest, namespace=None):
         if self._fail_apply:
             raise RuntimeError("apply refused")
         self.applied.append(manifest)
         self._ksvcs[manifest["metadata"]["name"]] = manifest
         return [manifest]
 
-    def list_resources(self, kind, *, label_selector=None):
+    def list_resources(self, kind, *, label_selector=None, namespace=None):
         if self._fail_list:
             raise RuntimeError("apiserver unreachable")
         self.list_calls.append((kind, label_selector))
         return list(self._images), self._version
 
-    def delete(self, kind, name):
+    def delete(self, kind, name, namespace=None):
         self.deleted.append((kind, name))
 
-    def watch(self, kind, *, resource_version=None, label_selector=None, timeout_seconds=None):
+    def watch(
+        self,
+        kind,
+        *,
+        resource_version=None,
+        label_selector=None,
+        timeout_seconds=None,
+        namespace=None,
+    ):
         self.watch_calls.append((kind, resource_version, label_selector, timeout_seconds))
         yield from (("MODIFIED", e) for e in self.events)
 
@@ -149,6 +157,9 @@ def _reconciler(clusters, local="central"):
     """
     reconciler = object.__new__(Reconciler)
     reconciler._local = clusters[local]
+    # The real constructor binds the workloads namespace over the local
+    # cluster; the fakes are duck-typed under the same view.
+    reconciler._bound = NamespacedCluster(clusters[local], "serverless-workloads")
     reconciler._gc = None
     return reconciler
 
@@ -314,7 +325,7 @@ def test_an_unreadable_workload_is_logged_and_skipped():
     """Not a 404 but a broken read: it must not take the watch down."""
 
     class _Unreadable(_FakeCluster):
-        def get(self, kind, name=None, label_selector=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None):
             raise RuntimeError("apiserver said no")
 
     unreadable = _Unreadable("central", {WORKLOAD: _ksvc()})

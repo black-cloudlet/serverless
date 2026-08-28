@@ -106,7 +106,7 @@ def test_list_resources_returns_the_objects_and_the_watch_position():
     api = _WatchableApi(_Listing([{"metadata": {"name": "fn-hello"}}], "4242"))
 
     objects, version = _cluster_calling(api).list_resources(
-        ResourceKind.KPACK_IMAGE, label_selector="a=b"
+        ResourceKind.KPACK_IMAGE, namespace="serverless-workloads", label_selector="a=b"
     )
 
     assert objects == [{"metadata": {"name": "fn-hello"}}]
@@ -118,7 +118,9 @@ def test_list_resources_returns_the_objects_and_the_watch_position():
 def test_list_resources_tolerates_a_server_that_reports_no_version():
     api = _WatchableApi(_Listing([], None))
 
-    assert _cluster_calling(api).list_resources(ResourceKind.KPACK_IMAGE) == ([], None)
+    assert _cluster_calling(api).list_resources(
+        ResourceKind.KPACK_IMAGE, namespace="serverless-workloads"
+    ) == ([], None)
 
 
 def test_watch_yields_typed_events_and_carries_the_resume_position():
@@ -127,6 +129,7 @@ def test_watch_yields_typed_events_and_carries_the_resume_position():
     events = list(
         _cluster_calling(api).watch(
             ResourceKind.KPACK_IMAGE,
+            namespace="serverless-workloads",
             resource_version="7",
             label_selector="a=b",
             timeout_seconds=300,
@@ -146,7 +149,7 @@ def test_watch_does_not_impose_the_per_request_read_timeout():
     # A watch is idle between events by design; the read timeout would tear it down.
     api = _WatchableApi(events=[])
 
-    list(_cluster_calling(api).watch(ResourceKind.KPACK_IMAGE))
+    list(_cluster_calling(api).watch(ResourceKind.KPACK_IMAGE, namespace="serverless-workloads"))
 
     assert "_request_timeout" not in api.watch_kwargs
 
@@ -254,3 +257,98 @@ def test_the_connection_pool_enables_tcp_keepalive():
 
     assert (socket_mod.SOL_SOCKET, socket_mod.SO_KEEPALIVE, 1) in options
     cluster.close()
+
+
+# --------------------------------------------------------------------------- #
+# NamespacedCluster: the namespace bound once, everywhere                       #
+# --------------------------------------------------------------------------- #
+
+
+class _Recording:
+    """A duck-typed cluster recording the namespace every operation received."""
+
+    region = "central"
+    name = "central-0"
+    registry = "the-registry"
+
+    def __init__(self):
+        self.calls = []
+
+    def apply(self, manifest, *, namespace, field_manager=None):
+        self.calls.append(("apply", namespace, field_manager))
+        return [manifest]
+
+    def get(self, kind, name=None, label_selector=None, *, namespace):
+        self.calls.append(("get", namespace))
+        return {}
+
+    def list_resources(self, kind, *, namespace, label_selector=None):
+        self.calls.append(("list", namespace))
+        return [], None
+
+    def watch(
+        self, kind, *, namespace, resource_version=None, label_selector=None, timeout_seconds=None
+    ):
+        self.calls.append(("watch", namespace))
+        return iter(())
+
+    def patch(self, kind, name, body, *, namespace):
+        self.calls.append(("patch", namespace))
+        return {}
+
+    def delete(self, kind, name, *, namespace):
+        self.calls.append(("delete", namespace))
+
+    def pod_logs(
+        self, pod, *, namespace, container, since_seconds=None, limit_bytes=None, tail_lines=None
+    ):
+        self.calls.append(("pod_logs", namespace))
+        return ""
+
+    def follow_pod_logs(self, pod, *, namespace, container, since_seconds=None, tail_lines=None):
+        self.calls.append(("follow", namespace))
+        return object()
+
+
+def test_the_view_binds_its_namespace_into_every_operation():
+    from common.cluster import NamespacedCluster, ResourceKind
+
+    raw = _Recording()
+    view = NamespacedCluster(raw, "serverless-t-payments")
+
+    view.apply({"kind": "Secret"})
+    view.get(ResourceKind.SECRET, "s")
+    view.list_resources(ResourceKind.KPACK_IMAGE)
+    view.watch(ResourceKind.KPACK_IMAGE)
+    view.patch(ResourceKind.KPACK_BUILD, "b", {})
+    view.delete(ResourceKind.SECRET, "s")
+    view.pod_logs("p", container="user-container")
+    view.follow_pod_logs("p", container="user-container")
+
+    assert {ns for _op, ns, *_ in view.cluster.calls} == {"serverless-t-payments"}
+    assert len(raw.calls) == 8
+
+
+def test_the_view_is_the_cluster_for_identity_but_not_lifecycle():
+    from common.cluster import NamespacedCluster
+
+    view = NamespacedCluster(_Recording(), "wl")
+
+    # Region identity and the registry pass through: code that logs a region
+    # or resolves its registry holds the view, not the raw cluster.
+    assert (view.region, view.name, view.registry) == ("central", "central-0", "the-registry")
+    # No close: closing is the connection owner's call, and the view owns none.
+    assert not hasattr(view, "close")
+
+
+def test_the_view_forwards_field_manager_only_when_set():
+    from common.cluster import NamespacedCluster
+
+    raw = _Recording()
+    view = NamespacedCluster(raw, "wl")
+
+    view.apply({"kind": "Secret"})
+    view.apply({"kind": "Secret"}, field_manager="serverless-provisioner")
+
+    assert raw.calls[0] == ("apply", "wl", None)
+    assert raw.calls[1] == ("apply", "wl", "serverless-provisioner")

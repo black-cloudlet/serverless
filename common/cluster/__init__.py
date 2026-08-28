@@ -7,8 +7,15 @@ response that outlives its request. Everything public is re-exported here, so
 ``from common.cluster import ...`` keeps working unchanged.
 """
 
-from common.cluster.client import Cluster, clusters_for, select_local
+from common.cluster.client import Cluster, NamespacedCluster, clusters_for, select_local
 from common.cluster.follow import LogFollow
 from common.cluster.kinds import ResourceKind
 
-__all__ = ["Cluster", "LogFollow", "ResourceKind", "clusters_for", "select_local"]
+__all__ = [
+    "Cluster",
+    "LogFollow",
+    "NamespacedCluster",
+    "ResourceKind",
+    "clusters_for",
+    "select_local",
+]
