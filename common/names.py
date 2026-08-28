@@ -106,7 +106,10 @@ def validate_hostname(host: str) -> str:
     """
     if (DNS1123.match(host) and len(host) <= 63) or HOSTNAME.match(host):
         return host
-    raise ValueError("hostname must be a DNS-1123 label or a valid lowercase FQDN")
+    raise ValueError(
+        "hostname must be a single lowercase label (letters, digits and '-') "
+        "or a full lowercase domain name like app.example.com"
+    )
 
 
 def validate_git_url(url: str) -> str:
@@ -247,9 +250,7 @@ def validate_pod_name(pod: str) -> str:
     if len(pod) > MAX_POD_NAME:
         raise ValueError(f"pod name must be at most {MAX_POD_NAME} characters")
     if not DNS1123_SUBDOMAIN.match(pod):
-        raise ValueError(
-            "pod name must be a DNS-1123 subdomain: lowercase alphanumeric, '-' and '.'"
-        )
+        raise ValueError("pod name may use only lowercase letters, digits, '-' and '.'")
     return pod
 
 
@@ -398,9 +399,8 @@ def validate_object_name(name: str, group: str, limit: int = MAX_OBJECT_NAME) ->
     oname = object_name(name, group)
     if len(oname) > limit:
         raise ValueError(
-            f"name and group are too long together: '{name}' + '{group}' is "
-            f"{len(oname)} characters and the limit is {limit} "
-            f"(the name is used as a DNS label); shorten the name by "
+            f"name and group are too long together: '{oname}' is {len(oname)} "
+            f"characters and the limit is {limit}; shorten the name by "
             f"{len(oname) - limit}"
         )
     return oname
@@ -428,8 +428,9 @@ def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
     namespace = f"{group}{suffix}"
     if len(namespace) > MAX_NAMESPACE_NAME:
         raise ValueError(
-            f"group is too long: '{namespace}' is {len(namespace)} characters, "
-            f"the limit is {MAX_NAMESPACE_NAME}; shorten the group by "
+            f"group '{group}' is too long: with the '{suffix}' suffix the "
+            f"namespace is {len(namespace)} characters and the limit is "
+            f"{MAX_NAMESPACE_NAME}; shorten the group by "
             f"{len(namespace) - MAX_NAMESPACE_NAME}"
         )
     if not DNS1123.match(namespace):
@@ -600,8 +601,8 @@ Hostname = Annotated[
     str,
     AfterValidator(validate_hostname),
     _schema(
-        "Custom host: one DNS-1123 label, or a lowercase FQDN one label under the "
-        "platform route domain.",
+        "Custom host: one lowercase label (letters, digits and '-'), or a full "
+        "domain name one label under the platform route domain.",
         "checkout",
         maxLength=253,
     ),
@@ -646,7 +647,7 @@ PodName = Annotated[
     str,
     AfterValidator(validate_pod_name),
     _schema(
-        "A pod name, as the pods stream reported it. DNS-1123 subdomain.",
+        "A pod name, exactly as the pods stream reported it.",
         "orders-team-00001-deployment-6b9f4c5d7-x2wql",
         pattern=DNS1123_SUBDOMAIN.pattern,
         maxLength=MAX_POD_NAME,
