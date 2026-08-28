@@ -67,16 +67,11 @@ MAX_OBJECT_NAME = 63
 
 # A Namespace name is a DNS-1123 label, so it shares the 63-character cap.
 MAX_NAMESPACE_NAME = 63
-# Suffixes every tenant namespace: `{group}-serverless`. The suffix is what
-# removes the collision class between a group name and an existing cluster
-# namespace - a group normalizing to `default` or `kube-system` must not name
-# either - and it is short because every character it spends comes out of the
-# group's budget. Group-first, so tenant namespaces list beside each other
-# under their group's name.
+# Tenant namespaces are `{group}-serverless`: group-first for readability; the
+# suffix keeps any group from naming an existing cluster namespace.
 NAMESPACE_SUFFIX = "-serverless"
-# What a suffix cannot rule out that a platform-first prefix did: a group
-# *beginning* with a reserved system prefix would produce a namespace that
-# reads as the system's (`kube-team-serverless`). Refused outright.
+# Group-first means a `kube-*`/`openshift-*` group would produce a namespace
+# that reads as the system's own.
 _RESERVED_NAMESPACE_PREFIXES = ("kube-", "openshift-")
 
 # An environment variable name, exactly as Kubernetes accepts one
@@ -414,18 +409,10 @@ def validate_object_name(name: str, group: str, limit: int = MAX_OBJECT_NAME) ->
 def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
     """The namespace a group's workloads live in: ``{group}{suffix}``.
 
-    Written once, here, for the same reason as :func:`object_name`: the API
-    that deploys into a namespace, the provisioner that creates it, and the
-    GC that collects it must agree on the mapping exactly.
-
-    The group is expected already normalized (:func:`normalize_group`) - the
-    check here is the *namespace's* rule, not a second normalization pass. A
-    Namespace name is a DNS-1123 label, so the suffixed result is checked as
-    a whole: the group alone being valid does not make the pair fit, exactly
-    as with ``{name}-{group}``. And because the group comes *first*, a group
-    beginning with a reserved system prefix would produce a namespace that
-    reads as the system's - refused here, not left to an operator's double
-    take at ``kube-team-serverless``.
+    One home for the mapping, like :func:`object_name`: the API, the
+    provisioner and the GC must derive the same name. The group arrives
+    normalized; the checks here are the namespace's own, on the suffixed
+    whole.
 
     Args:
         group: The normalized owning group.
@@ -435,26 +422,24 @@ def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
         The namespace name.
 
     Raises:
-        ValueError: If the suffixed name is not a valid DNS-1123 label,
-            exceeds ``MAX_NAMESPACE_NAME`` characters, or begins with a
+        ValueError: If the result is too long, ill-formed, or starts with a
             reserved system prefix.
     """
     namespace = f"{group}{suffix}"
     if len(namespace) > MAX_NAMESPACE_NAME:
         raise ValueError(
-            f"group is too long for a tenant namespace: '{group}' + '{suffix}' is "
-            f"{len(namespace)} characters and the limit is {MAX_NAMESPACE_NAME} "
-            f"(a namespace name is a DNS label); shorten the group by "
+            f"group is too long: '{namespace}' is {len(namespace)} characters, "
+            f"the limit is {MAX_NAMESPACE_NAME}; shorten the group by "
             f"{len(namespace) - MAX_NAMESPACE_NAME}"
         )
     if not DNS1123.match(namespace):
-        raise ValueError(f"'{namespace}' is not a valid namespace name (DNS-1123 label)")
+        raise ValueError(
+            "group may use only lowercase letters, digits and '-', "
+            "and must start and end with a letter or digit"
+        )
     reserved = next((p for p in _RESERVED_NAMESPACE_PREFIXES if namespace.startswith(p)), None)
     if reserved:
-        raise ValueError(
-            f"'{namespace}' begins with the reserved system prefix '{reserved}'; "
-            f"a group may not start with {' or '.join(_RESERVED_NAMESPACE_PREFIXES)}"
-        )
+        raise ValueError(f"group must not start with '{reserved}' (reserved for system namespaces)")
     return namespace
 
 
