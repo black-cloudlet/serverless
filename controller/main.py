@@ -15,9 +15,9 @@ logger = get_logger(__name__)
 def loop(reconciler: Reconciler, settings: ControllerSettings) -> None:
     """Resync and follow, forever (paced by ``common.loop``).
 
-    The watch holds its own interval open, so a clean pass needs no interval
-    sleep - only the floor that keeps a stream closed at the door from
-    becoming back-to-back relists.
+    The watch holds its own interval open, so no interval is passed - only
+    the floor keeps a stream closed at the door from becoming back-to-back
+    relists.
 
     Args:
         reconciler: The loop's work.

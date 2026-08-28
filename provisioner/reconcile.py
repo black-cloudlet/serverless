@@ -13,7 +13,6 @@ Argo sync skew. The stamp protocol makes a converge crash-safe:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 
 from cloudlet_apis.logging import get_logger
@@ -43,18 +42,13 @@ PROVISIONER_SELECTOR = f"{LABEL_MANAGED_BY}={PROVISIONER_VALUE}"
 PRUNABLE_KINDS = TEMPLATE_KINDS
 
 
-def converge(
-    cluster: Cluster,
-    namespace: str,
-    group: str,
-    templates: TemplateSet,
-    *,
-    clear_stamp: bool = True,
-    managed: Mapping[str, set[tuple[str, str]]] | None = None,
-) -> None:
+def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
     """Bring one tenant namespace to the template set (the stamp protocol above).
 
     Idempotent throughout, so the ensure call and the loop can both run it.
+    Every step is unconditional: the protocol has one shape, so a caller
+    cannot skip the opening apply - which is also the write that creates the
+    namespace - on a stale read of someone else's stamp.
 
     Args:
         cluster: The cluster to converge in (cluster-scoped client).
@@ -62,14 +56,6 @@ def converge(
             suffix setting cannot strand existing namespaces.
         group: The owning (normalized) group.
         templates: The loaded template set.
-        clear_stamp: Apply the opening hash-less Namespace. False only when
-            the caller observed no stamp AND the namespace already exists (a
-            listed-but-never-converged namespace): there is nothing to clear,
-            and the crash-safety property - no stamp until the set landed -
-            already holds, so the write is saved.
-        managed: A pre-listed ``{namespace: {(kind, name)}}`` snapshot of the
-            provisioner's objects, so a pass prunes from one listing per kind
-            instead of one per kind per namespace. None lists here.
 
     Raises:
         Exception: Any render or apply error; the caller decides whether it
@@ -92,8 +78,7 @@ def converge(
     ns_manifest["metadata"]["name"] = namespace
 
     # 1. Namespace first, without the hash: mid-converge marker.
-    if clear_stamp:
-        cluster.apply(_without_hash(ns_manifest), namespace=None, field_manager=FIELD_MANAGER)
+    cluster.apply(_without_hash(ns_manifest), namespace=None, field_manager=FIELD_MANAGER)
 
     # 2. Contents, then prune.
     keep: set[tuple[str, str]] = set()
@@ -104,12 +89,7 @@ def converge(
         stamped["metadata"]["namespace"] = namespace
         keep.add((manifest["kind"], stamped["metadata"]["name"]))
         cluster.apply(stamped, namespace=namespace, field_manager=FIELD_MANAGER)
-    _prune(
-        cluster,
-        namespace,
-        keep,
-        existing=None if managed is None else managed.get(namespace, set()),
-    )
+    _prune(cluster, namespace, keep)
 
     # 3. The stamp, last.
     annotations = ns_manifest["metadata"].setdefault("annotations", {})
@@ -142,7 +122,7 @@ def reconcile_all(
             repair, since a deleted object does not change the stamp.
         workers: Converges run on a thread pool of this size - independent
             per namespace, so a template rollout over many tenants is bounded
-            by the pool, not serialized. 1 runs them inline.
+            by the pool, not serialized.
 
     Returns:
         ``(seen, converged, failed)``, for the log line and the pass verdict.
@@ -157,7 +137,7 @@ def reconcile_all(
         ResourceKind.NAMESPACE, label_selector=PROVISIONER_SELECTOR, namespace=None
     )
     seen = failed = 0
-    stale: list[tuple[str, str, str | None]] = []
+    stale: list[tuple[str, str]] = []
     for ns in namespaces:
         seen += 1
         meta = ns.get("metadata") or {}
@@ -171,36 +151,29 @@ def reconcile_all(
         stamp = (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH)
         if stamp == templates.digest and not force:
             continue
-        stale.append((name, group, stamp))
+        stale.append((name, group))
 
-    # One listing per kind for the whole pass, not per namespace. Taken
-    # before the converges: anything they apply is in their keep sets, so a
-    # pre-apply snapshot can never prune what a converge just wrote.
-    managed = _managed_snapshot(cluster) if stale else {}
-
-    def one(entry: tuple[str, str, str | None]) -> bool:
-        name, group, stamp = entry
+    def one(entry: tuple[str, str]) -> bool:
+        name, group = entry
         try:
-            converge(
-                cluster,
-                name,
-                group,
-                templates,
-                clear_stamp=stamp is not None,
-                managed=managed,
-            )
+            converge(cluster, name, group, templates)
             return True
         except Exception:  # noqa: BLE001 - the next namespace still gets its converge
             logger.exception("converging namespace '%s' failed; continuing", name)
             return False
 
-    if len(stale) > 1 and workers > 1:
-        with ThreadPoolExecutor(max_workers=min(workers, len(stale))) as pool:
+    outcomes: list[bool] = []
+    if stale:
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(stale)))
+        try:
             outcomes = list(pool.map(one, stale))
-    else:
-        outcomes = [one(entry) for entry in stale]
-    converged = sum(outcomes)
-    failed += len(outcomes) - converged
+        finally:
+            # cancel_futures, so a SIGTERM mid-pass drops the queue instead of
+            # working through every namespace map() already submitted - the
+            # pod has a grace period to respect.
+            pool.shutdown(wait=True, cancel_futures=True)
+    converged = outcomes.count(True)
+    failed += outcomes.count(False)
     logger.info(
         "reconciled %d managed namespace(s) in %s: %d converged, %d failed, set %s",
         seen,
@@ -210,17 +183,6 @@ def reconcile_all(
         templates.digest,
     )
     return (seen, converged, failed)
-
-
-def _managed_snapshot(cluster: Cluster) -> dict[str, set[tuple[str, str]]]:
-    """Every provisioner-labeled prunable object, bucketed by namespace."""
-    managed: dict[str, set[tuple[str, str]]] = {}
-    for kind in PRUNABLE_KINDS:
-        for obj in cluster.get(kind, label_selector=PROVISIONER_SELECTOR, namespace=None):
-            meta = obj.get("metadata") or {}
-            ns = meta.get("namespace", "")
-            managed.setdefault(ns, set()).add((kind.kind, meta.get("name", "")))
-    return managed
 
 
 def _stamped(manifest: dict, group: str) -> dict:
@@ -247,40 +209,34 @@ def _without_hash(ns_manifest: dict) -> dict:
     return {**ns_manifest, "metadata": meta}
 
 
-def _prune(
-    cluster: Cluster,
-    namespace: str,
-    keep: set[tuple[str, str]],
-    *,
-    existing: set[tuple[str, str]] | None = None,
-) -> None:
+def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None:
     """Delete managed objects the current template set no longer renders.
 
     Only prunable kinds, only provisioner-labeled objects: the API's workload
-    Secrets and a tenant's own objects are invisible to it.
+    Secrets and a tenant's own objects are invisible to it. Listed here, per
+    namespace, rather than from a pass-wide cluster-wide listing: a
+    provisioner that could list every Secret in the cluster is a far larger
+    grant than one scoped to the namespaces it owns, and a listing read at
+    prune time cannot miss what another writer created mid-pass.
 
     Args:
         cluster: The cluster to prune in.
         namespace: The tenant namespace.
         keep: The (kind, name) pairs the current render produced.
-        existing: This namespace's slice of a pass-wide snapshot
-            (``_managed_snapshot``); None lists here, per kind.
     """
-    if existing is None:
-        existing = {
-            (kind.kind, (obj.get("metadata") or {}).get("name", ""))
-            for kind in PRUNABLE_KINDS
-            for obj in cluster.get(kind, label_selector=PROVISIONER_SELECTOR, namespace=namespace)
-        }
-    by_kind = {k.kind: k for k in PRUNABLE_KINDS}
-    for kind_name, name in sorted(existing - keep):
-        logger.info(
-            "pruning %s '%s' from namespace '%s' (no longer in the template set)",
-            kind_name,
-            name,
-            namespace,
-        )
-        try:
-            cluster.delete(by_kind[kind_name], name, namespace=namespace)
-        except NotFoundError:
-            pass  # already gone between the list and the delete
+    for kind in PRUNABLE_KINDS:
+        existing = cluster.get(kind, label_selector=PROVISIONER_SELECTOR, namespace=namespace)
+        for obj in existing:
+            name = (obj.get("metadata") or {}).get("name", "")
+            if (kind.kind, name) in keep:
+                continue
+            logger.info(
+                "pruning %s '%s' from namespace '%s' (no longer in the template set)",
+                kind.kind,
+                name,
+                namespace,
+            )
+            try:
+                cluster.delete(kind, name, namespace=namespace)
+            except NotFoundError:
+                pass  # already gone between the list and the delete

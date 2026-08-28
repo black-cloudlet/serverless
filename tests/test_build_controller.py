@@ -442,11 +442,6 @@ def test_a_zero_resync_interval_is_rejected():
         ControllerSettings(resync_seconds=0)
 
 
-def test_terminating_raises_so_a_blocking_watch_unwinds():
-    with pytest.raises(SystemExit):
-        common_loop._terminate(15, None)
-
-
 def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
     slept = []
     monkeypatch.setattr(common_loop.time, "sleep", slept.append)

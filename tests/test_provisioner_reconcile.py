@@ -87,13 +87,7 @@ class _Cluster:
         if kind is ResourceKind.NAMESPACE:
             assert namespace is None, "namespaces are cluster-scoped"
             return list(self._namespaces)
-        if namespace is None:  # the pass-wide snapshot: all namespaces at once
-            return [
-                {**o, "metadata": {**o["metadata"], "namespace": ns}}
-                for (k, ns), objs in self._objects.items()
-                if k == kind
-                for o in objs
-            ]
+        assert namespace is not None, "objects are listed per namespace, never cluster-wide"
         return list(self._objects.get((kind, namespace), []))
 
     def apply(self, manifest, *, namespace, field_manager=None):
@@ -152,12 +146,49 @@ def test_render_substitutes_both_placeholders():
     assert policy["metadata"]["namespace"] == "payments-serverless"
 
 
-def test_an_unknown_placeholder_fails_loudly_with_the_file_named():
-    # The alternative is a NetworkPolicy selecting the literal string
-    # `{{namespce}}` in a live cluster.
-    templates = _set({"bad.yaml": "kind: ConfigMap\nmetadata:\n  name: '{{namespce}}'\n"})
+def test_an_unquoted_placeholder_is_legal_yaml():
+    # YAML authors write `name: {{namespace}}` unquoted; parsed as-is that is
+    # a flow mapping with an unhashable key, so placeholders become sentinels
+    # BEFORE the parse.
+    templates = _set(
+        {
+            "t.yaml": (
+                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n"
+                "  name: {{namespace}}-ca\n  namespace: {{namespace}}\n"
+                "data:\n  group: {{group}}\n"
+            )
+        }
+    )
+
+    [cm] = templates.render(namespace="payments-serverless", group="payments")
+
+    assert cm["metadata"]["name"] == "payments-serverless-ca"
+    assert cm["metadata"]["namespace"] == "payments-serverless"
+    assert cm["data"]["group"] == "payments"
+
+
+def test_an_unknown_placeholder_fails_at_load_with_the_file_named():
+    # A bad set fails before any namespace is touched, like a bad kind.
     with pytest.raises(ValueError, match="bad.yaml"):
-        templates.render(namespace="n", group="g")
+        _set({"bad.yaml": "kind: ConfigMap\nmetadata:\n  name: '{{namespce}}'\n"})
+
+
+def test_an_unknown_placeholder_in_a_comment_is_caught_too():
+    # The check runs on the raw text, so a typo an author left in a
+    # commented-out block still fails loudly rather than shipping silently.
+    with pytest.raises(ValueError, match="namepace"):
+        _set(
+            {
+                "bad.yaml": "# todo: restore for {{namepace}}\nkind: ConfigMap\nmetadata:\n  name: x\n"
+            }
+        )
+
+
+def test_yaml_that_does_not_parse_names_its_file_as_a_ValueError():
+    # An operator reading the backoff log needs the ConfigMap key to fix;
+    # a bare ScannerError names only "<unicode string>, line 3".
+    with pytest.raises(ValueError, match="bad.yaml.*not valid YAML"):
+        _set({"bad.yaml": "kind: ConfigMap\n\tbad: indent\n"})
 
 
 @pytest.mark.parametrize(
@@ -171,7 +202,7 @@ def test_an_unknown_placeholder_fails_loudly_with_the_file_named():
 )
 def test_a_malformed_manifest_is_rejected(text):
     with pytest.raises(ValueError):
-        _set({"t.yaml": text}).render(namespace="n", group="g")
+        _set({"t.yaml": text})
 
 
 # --------------------------------------------------------------------------- #
@@ -481,7 +512,7 @@ def test_a_kind_outside_the_vocabulary_is_rejected_at_load():
 
 def test_payload_braces_are_not_placeholders():
     # A tenant-facing ConfigMap may legitimately carry a Go-template payload;
-    # only lowercase {{token}} shapes are treated as placeholders.
+    # only bare lowercase {{token}} shapes are placeholders.
     templates = _set(
         {
             "cm.yaml": (
@@ -543,29 +574,20 @@ def test_an_all_failed_pass_raises_into_the_backoff(tmp_path, monkeypatch):
     provisioner_main.run_pass(object(), settings)
 
 
-def test_a_pass_prunes_from_one_listing_per_kind():
-    # The snapshot: N stale namespaces cost len(PRUNABLE_KINDS) LISTs, not
-    # N x len(PRUNABLE_KINDS).
-    from provisioner.reconcile import PRUNABLE_KINDS
-
+def test_objects_are_listed_per_namespace_never_cluster_wide():
+    # A provisioner that could list every Secret in the cluster is a far
+    # larger grant than one scoped to the namespaces it owns; only the
+    # Namespace listing is cluster-scoped. (The fake asserts this too.)
     templates = _set()
-    cluster = _Cluster(
-        namespaces=[
-            _namespace("a-serverless", "a"),
-            _namespace("b-serverless", "b"),
-        ]
-    )
+    cluster = _Cluster(namespaces=[_namespace("a-serverless", "a")])
 
     reconcile_all(cluster, templates)
 
-    object_lists = [(k, ns) for k, ns in cluster.lists if k is not ResourceKind.NAMESPACE]
-    assert len(object_lists) == len(PRUNABLE_KINDS)
-    assert {ns for _k, ns in object_lists} == {None}
+    scopes = {ns for kind, ns in cluster.lists if kind is not ResourceKind.NAMESPACE}
+    assert scopes == {"a-serverless"}
 
 
-def test_the_snapshot_still_prunes_per_namespace():
-    # The bucketing must keep leftovers in their own namespace: a leftover in
-    # A is pruned from A, and B's converge never sees it.
+def test_a_leftover_is_pruned_from_its_own_namespace_only():
     templates = _set()
     cluster = _Cluster(
         namespaces=[
@@ -580,10 +602,10 @@ def test_the_snapshot_still_prunes_per_namespace():
     assert cluster.deleted == [(ResourceKind.NETWORK_POLICY, "dropped", "a-serverless")]
 
 
-def test_a_never_stamped_namespace_skips_the_clearing_apply():
-    # No stamp means nothing to clear: the crash-safety property (no stamp
-    # until the set landed) already holds, so the opening Namespace write is
-    # saved. A stamped namespace keeps the full clear-then-stamp protocol.
+def test_every_converge_opens_by_clearing_the_stamp():
+    # The protocol has one shape: the opening apply is also the write that
+    # creates the namespace, so no caller can skip it on a stale read of a
+    # stamp someone else wrote.
     templates = _set()
     cluster = _Cluster(
         namespaces=[
@@ -598,7 +620,7 @@ def test_a_never_stamped_namespace_skips_the_clearing_apply():
     for m, _ns, _fm in cluster.applied:
         if m["kind"] == "Namespace":
             ns_applies[m["metadata"]["name"]] = ns_applies.get(m["metadata"]["name"], 0) + 1
-    assert ns_applies == {"new-serverless": 1, "stale-serverless": 2}
+    assert ns_applies == {"new-serverless": 2, "stale-serverless": 2}
 
 
 def test_workers_converge_all_namespaces():
@@ -615,6 +637,32 @@ def test_workers_converge_all_namespaces():
         and ANNOTATION_TEMPLATE_HASH in (m["metadata"].get("annotations") or {})
     }
     assert stamped == {f"g{i}-serverless" for i in range(5)}
+
+
+def test_a_signal_mid_pass_drops_the_queued_converges():
+    # map() submits every stale namespace up front; without cancel_futures a
+    # SIGTERM would still work through all of them, blowing past the pod's
+    # grace period. Here the third converge raises SystemExit as the signal
+    # handler would, and the rest must not run.
+    templates = _set()
+    cluster = _Cluster(namespaces=[_namespace(f"g{i}-serverless", f"g{i}") for i in range(40)])
+    started = []
+    real_apply = cluster.apply
+
+    def apply(manifest, *, namespace, field_manager=None):
+        if manifest["kind"] == "Namespace":
+            started.append(manifest["metadata"]["name"])
+            if len(started) == 3:
+                raise SystemExit(0)
+        return real_apply(manifest, namespace=namespace, field_manager=field_manager)
+
+    cluster.apply = apply
+
+    with pytest.raises(SystemExit):
+        reconcile_all(cluster, templates, workers=1)
+
+    # Only what was already running, not the whole submitted queue.
+    assert len(set(started)) < 40
 
 
 def test_deletes_tolerate_not_found():

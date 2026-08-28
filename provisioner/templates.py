@@ -2,8 +2,14 @@
 
 The chart ships final YAML with two placeholders - ``{{namespace}}`` and
 ``{{group}}``, the runtime facts Helm cannot know. The hash is over the raw
-text, before substitution, so it names the set itself: one stamp per
-ConfigMap, whatever the group.
+text, so it names the set itself: one stamp per ConfigMap, whatever the group.
+
+A set is read, validated and parsed once, at load: every placeholder becomes a
+YAML-safe sentinel *before* parsing - so a template may write ``{{namespace}}``
+unquoted, as YAML authors do - and rendering per namespace is then a walk over
+the parsed docs swapping sentinels for values. Everything a bad set can be
+caught for is caught here, into the loop's backoff, before a namespace is
+touched.
 """
 
 from __future__ import annotations
@@ -17,10 +23,14 @@ import yaml
 
 from common.cluster import ResourceKind
 
-# Any other lowercase {{token}} is a template bug and fails at render; braces
-# that are not that shape (a Go-template payload in a ConfigMap) pass through.
-_PLACEHOLDERS = ("{{namespace}}", "{{group}}")
-_PLACEHOLDER_TOKEN = re.compile(r"\{\{[a-z]+\}\}")
+# The runtime facts a template may name. Each is swapped for a sentinel that
+# parses as an ordinary YAML scalar, so an unquoted `name: {{namespace}}` is
+# legal; render swaps the sentinels back. Any other `{{token}}` of this shape
+# is a template bug and fails at load; braces that are not this shape (a
+# Go-template payload in a ConfigMap) pass through untouched.
+PLACEHOLDERS = ("namespace", "group")
+_SENTINELS = {name: f"__serverless_placeholder_{name}__" for name in PLACEHOLDERS}
+_TOKEN = re.compile(r"\{\{([a-z]+)\}\}")
 
 # The template vocabulary: the namespaced kinds a set may put in a tenant
 # namespace. The render gate and the prune both iterate THIS tuple, so what a
@@ -107,12 +117,10 @@ class TemplateSet:
         return len(self.sources)
 
     def render(self, *, namespace: str, group: str) -> list[dict]:
-        """Substitute the placeholders over the parsed docs, in set order.
+        """Swap the sentinels for their values, in set order.
 
-        A lowercase ``{{token}}`` left after substitution is an unknown
-        placeholder and fails here, file named - not as a literal inside a
-        live NetworkPolicy. Returns fresh structures on every call, so a
-        caller may mutate them.
+        Pure mechanism - the set was validated at load. Returns fresh
+        structures on every call, so a caller may mutate them.
 
         Args:
             namespace: The tenant namespace being converged.
@@ -120,24 +128,30 @@ class TemplateSet:
 
         Returns:
             The manifests, in filename order then document order.
-
-        Raises:
-            ValueError: On a leftover placeholder.
         """
-        values = {"{{namespace}}": namespace, "{{group}}": group}
-        return [_substitute(doc, values, name) for name, doc in self.docs]
+        values = {_SENTINELS["namespace"]: namespace, _SENTINELS["group"]: group}
+        return [_substitute(doc, values) for _name, doc in self.docs]
 
 
 def _parse(sources: tuple[tuple[str, str], ...]) -> list[tuple[str, dict]]:
-    """Parse and validate every manifest once, at set construction.
+    """Substitute sentinels, then parse and validate every manifest, once.
 
     Raises:
-        ValueError: On a malformed manifest or a kind outside the template
-            vocabulary (``TEMPLATE_KINDS``).
+        ValueError: On an unknown placeholder, YAML that does not parse, a
+            malformed manifest, or a kind outside the template vocabulary
+            (``TEMPLATE_KINDS``). Always ValueError, always naming the file:
+            an operator reading the backoff log needs the key to fix.
     """
     docs: list[tuple[str, dict]] = []
     for name, text in sources:
-        for doc in yaml.safe_load_all(text):
+        # Before parsing, so an unquoted placeholder is legal YAML - and so
+        # the unknown-token check covers the whole file, comments included.
+        substituted = _TOKEN.sub(lambda match, file=name: _sentinel(match, file), text)
+        try:
+            loaded = list(yaml.safe_load_all(substituted))
+        except yaml.YAMLError as exc:
+            raise ValueError(f"template '{name}' is not valid YAML: {exc}") from exc
+        for doc in loaded:
             if doc is None:
                 continue  # a trailing `---` separator, not a manifest
             if not isinstance(doc, dict):
@@ -157,31 +171,29 @@ def _parse(sources: tuple[tuple[str, str], ...]) -> list[tuple[str, dict]]:
     return docs
 
 
-def _substitute(value, values: dict[str, str], source: str):
-    """A fresh copy of ``value`` with every placeholder replaced in its strings.
-
-    Args:
-        value: The parsed node (mapping, list, string, or scalar).
-        values: Placeholder token -> replacement.
-        source: The filename, for the leftover-placeholder error.
+def _sentinel(match: re.Match, source: str) -> str:
+    """The sentinel for a matched placeholder token.
 
     Raises:
-        ValueError: On a lowercase ``{{token}}`` that is not a placeholder.
+        ValueError: If the token is not one of ``PLACEHOLDERS``.
     """
+    name = match.group(1)
+    if name not in _SENTINELS:
+        raise ValueError(
+            f"template '{source}' holds an unknown placeholder {match.group(0)!r}; "
+            f"only {', '.join('{{' + p + '}}' for p in PLACEHOLDERS)} are substituted"
+        )
+    return _SENTINELS[name]
+
+
+def _substitute(value, values: dict[str, str]):
+    """A fresh copy of ``value`` with every sentinel replaced in its strings."""
     if isinstance(value, str):
-        for token, replacement in values.items():
-            value = value.replace(token, replacement)
-        leftover = _PLACEHOLDER_TOKEN.search(value)
-        if leftover:
-            raise ValueError(
-                f"template '{source}' holds an unknown placeholder "
-                f"{leftover.group(0)!r}; only {', '.join(_PLACEHOLDERS)} are substituted"
-            )
+        for sentinel, replacement in values.items():
+            value = value.replace(sentinel, replacement)
         return value
     if isinstance(value, dict):
-        return {
-            _substitute(k, values, source): _substitute(v, values, source) for k, v in value.items()
-        }
+        return {_substitute(k, values): _substitute(v, values) for k, v in value.items()}
     if isinstance(value, list):
-        return [_substitute(v, values, source) for v in value]
+        return [_substitute(v, values) for v in value]
     return value
