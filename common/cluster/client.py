@@ -15,8 +15,8 @@ from kubernetes.dynamic import DynamicClient
 
 from common.cluster.follow import LogFollow
 from common.cluster.kinds import ResourceKind
+from common.cluster.namespaced import NamespacedCluster
 from common.cluster.pool import _default_connect_timeout, _keepalive_socket_options
-from common.cluster.view import NamespacedCluster
 from common.config import CommonSettings, RegionConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
 

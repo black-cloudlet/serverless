@@ -1,4 +1,4 @@
-"""One namespace curried over a cluster - the ergonomic half of the client.
+"""NamespacedCluster: one namespace curried over a cluster.
 
 :class:`~common.cluster.client.Cluster` is cluster-scoped; code that works
 within a single namespace binds it once and passes this view around.
