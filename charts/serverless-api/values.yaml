@@ -34,17 +34,20 @@ api:
   #   prometheus.io/scrape: "true"
   podAnnotations: {}
 
+  # Platform convention: the CPU limit is 4x the request, and memory is
+  # requested at its limit. CPU is compressible, so the headroom is burst a pod
+  # takes only when the node has it; memory is not, so requesting less than the
+  # limit only buys an eviction under pressure.
   resources:
     requests:
-      cpu: 250m
+      # The 4x below has to land on "2", not on "1": the health probes share
+      # the process's one event loop with everything else it serves, a CPU
+      # limit is enforced as throttling, and at "1" a streaming burst stretched
+      # into multi-second stalls that missed the 5s probe timeout and restarted
+      # the pod. So the REQUEST is what moves to keep the ratio.
+      cpu: 500m
       memory: 512Mi
     limits:
-      # The health probes share the process's one event loop with everything
-      # else it serves, and a CPU limit is enforced as throttling - at "1" a
-      # streaming burst stretched into multi-second stalls that missed the 5s
-      # probe timeout and restarted the pod. "2" gives the loop headroom to
-      # answer while the stream threads work; the request stays low, so the
-      # slack is only used when the node has it.
       cpu: "2"
       memory: 512Mi
 
@@ -91,13 +94,14 @@ buildController:
   podLabels: {}
   podAnnotations: {}
 
-  # A watch and an occasional apply; far lighter than the API.
+  # A watch and an occasional apply; far lighter than the API. Serves no HTTP
+  # and has no probes, so throttling costs it latency and nothing else.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
-      cpu: 500m
+      cpu: 200m
       memory: 256Mi
 
   # How long each watch is held open, and so also the full-relist interval.
@@ -164,13 +168,16 @@ tenantNamespaces:
     podLabels: {}
     podAnnotations: {}
 
-    # A periodic list and an occasional apply; lighter than the API.
+    # A periodic list and an occasional apply, plus an endpoint a create waits
+    # on. More CPU than the build controller for that reason: this one answers
+    # probes, so throttling it hard has the failure mode the API's comment
+    # above records, not just slower convergence.
     resources:
       requests:
-        cpu: 50m
-        memory: 128Mi
+        cpu: 100m
+        memory: 256Mi
       limits:
-        cpu: 500m
+        cpu: 400m
         memory: 256Mi
 
     service:

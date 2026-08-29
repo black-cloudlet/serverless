@@ -95,14 +95,25 @@ spec:
           # actually converge a namespace right now - regions configured and a
           # template set that loads and is not empty. Neither touches a cluster:
           # a probe that did would take the pod out on someone else's outage.
+          #
+          # Both carry an explicit 5s timeout rather than the 1s default. A CPU
+          # limit is enforced as throttling, and the API's own resources
+          # comment records what a 1s budget did to a throttled Python process:
+          # missed probes and a restart, from load rather than from a fault.
           livenessProbe:
             httpGet:
               path: /healthz
               port: {{ $p.service.portName }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /readyz
               port: {{ $p.service.portName }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: tenant-templates
               mountPath: /etc/serverless/tenant-templates
