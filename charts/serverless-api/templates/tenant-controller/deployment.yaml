@@ -127,9 +127,23 @@ spec:
           resources:
             {{- toYaml $p.resources | nindent 12 }}
       volumes:
+        # One directory, several ConfigMaps. A projected volume is what lets the
+        # chart split the set by resource group while the controller still sees
+        # a single mount to read and hash; the kubelet refreshes a projected
+        # ConfigMap source exactly as it refreshes a plain one.
+        #
+        # The parts arrive independently, so a sync can be observed half-applied
+        # - the controller converges that mixed set, stamps its hash, and puts
+        # it right on the next pass when the rest has landed. Costs one extra
+        # converge; a single ConfigMap would have made it atomic, at the price
+        # of one 5 KB blob nobody can review by resource.
         - name: tenant-templates
-          configMap:
-            name: {{ include "serverless-api.tenantTemplatesName" . }}
+          projected:
+            sources:
+              {{- range splitList " " (include "serverless-api.tenantTemplateParts" $) }}
+              - configMap:
+                  name: {{ include "serverless-api.tenantTemplatesName" (dict "root" $ "part" .) }}
+              {{- end }}
         - name: {{ $p.certificate.name }}
           secret:
             secretName: {{ $p.certificate.name }}

@@ -27,17 +27,21 @@ import yaml
 
 from tenant_controller.templates import TemplateSet
 
-# What the ConfigMap is called, and a plausible tenant to render it for. The
-# group is arbitrary: rendering proves the placeholders resolve, not that any
-# particular group exists.
-CONFIG_MAP_SUFFIX = "-tenant-templates"
+# The mount whose ConfigMaps hold the set, and a plausible tenant to render it
+# for. The group is arbitrary: rendering proves the placeholders resolve, not
+# that any particular group exists.
+VOLUME_NAME = "tenant-templates"
 SAMPLE_GROUP = "payments"
 SAMPLE_REGION = "central"
 SAMPLE_REGISTRY = "registry.example.internal"
 
 
 def template_set(rendered: str) -> TemplateSet:
-    """The template set the chart ships, loaded the way the tenant controller loads it.
+    """The template set the chart ships, assembled the way the kubelet does.
+
+    Follows the tenant controller's own projected volume rather than guessing
+    at ConfigMap names, so a Deployment that projects a ConfigMap the chart
+    does not render fails here instead of as a pod that will not mount.
 
     Args:
         rendered: A whole ``helm template`` output.
@@ -46,16 +50,42 @@ def template_set(rendered: str) -> TemplateSet:
         The loaded set.
 
     Raises:
-        SystemExit: If the render holds no tenant-templates ConfigMap - the
-            chart changed shape, and silently checking nothing is the one
-            outcome this script must not have.
+        SystemExit: If the render holds no such volume, or names a ConfigMap it
+            does not contain. Silently checking nothing is the one outcome this
+            script must not have.
     """
-    for doc in yaml.safe_load_all(rendered):
-        if not doc or doc.get("kind") != "ConfigMap":
+    docs = [d for d in yaml.safe_load_all(rendered) if d]
+    config_maps = {
+        d["metadata"]["name"]: (d.get("data") or {}) for d in docs if d.get("kind") == "ConfigMap"
+    }
+    wanted = _projected_config_maps(docs)
+    if not wanted:
+        raise SystemExit(f"no {VOLUME_NAME!r} projected volume in the rendered chart")
+    sources: dict[str, str] = {}
+    for name in wanted:
+        if name not in config_maps:
+            raise SystemExit(
+                f"the tenant controller projects ConfigMap {name!r}, "
+                "which the chart does not render"
+            )
+        sources.update(config_maps[name])
+    return TemplateSet.from_sources(sources.items())
+
+
+def _projected_config_maps(docs: list) -> list[str]:
+    """The ConfigMap names the tenant controller mounts as its template set."""
+    for doc in docs:
+        if doc.get("kind") != "Deployment":
             continue
-        if str(doc.get("metadata", {}).get("name", "")).endswith(CONFIG_MAP_SUFFIX):
-            return TemplateSet.from_sources((doc.get("data") or {}).items())
-    raise SystemExit(f"no *{CONFIG_MAP_SUFFIX} ConfigMap in the rendered chart")
+        for volume in doc["spec"]["template"]["spec"].get("volumes") or []:
+            if volume.get("name") != VOLUME_NAME:
+                continue
+            return [
+                source["configMap"]["name"]
+                for source in (volume.get("projected") or {}).get("sources") or []
+                if "configMap" in source
+            ]
+    return []
 
 
 def main() -> None:

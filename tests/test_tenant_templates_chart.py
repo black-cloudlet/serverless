@@ -11,6 +11,7 @@ is a build that cannot reach an internal git server.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -79,14 +80,36 @@ def test_the_two_services_hold_different_identities():
     )
 
 
+def test_every_part_the_controller_mounts_has_a_configmap_to_mount():
+    """The parts list is the join between the Deployment and these files.
+
+    A part with no file is a ConfigMap the pod cannot mount, so it never
+    starts; a file with no part entry is a resource group that renders, passes
+    review, and is silently never applied to a tenant. CI catches the first
+    direction end to end; this catches the second, which is the quiet one.
+    """
+    helper = (TEMPLATES / "tenant-controller" / "_tenant.tpl").read_text()
+    body = helper.split('define "serverless-api.tenantTemplateParts" -}}')[1].split("{{- end -}}")[
+        0
+    ]
+    listed = set(re.sub(r"\{\{.*?\}\}", " ", body).split())
+    on_disk = {
+        path.name.removeprefix("configmap-").removesuffix(".yaml")
+        for path in (TEMPLATES / "tenant-controller").glob("configmap-*.yaml")
+    }
+    assert listed == on_disk, (
+        f"the Deployment mounts {sorted(listed)}; the chart renders {sorted(on_disk)}"
+    )
+
+
 def test_the_chart_emits_exactly_the_placeholders_the_controller_substitutes():
     """A token the code does not know fails the whole set at load - in the
     backoff log, with nothing converged - so catch it against the chart instead.
 
-    The ConfigMap never writes a token literally; every one comes from a helper,
-    so the helpers are the list to compare against the code.
+    No ConfigMap writes a token literally; every one comes from a helper, so
+    the helpers are the list to compare against the code.
     """
-    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    helpers = (TEMPLATES / "tenant-controller" / "_tenant.tpl").read_text()
     emitted = {
         line.split("`")[1].strip("{}")
         for line in helpers.splitlines()

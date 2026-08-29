@@ -1,0 +1,96 @@
+{{- if .Values.build.enabled }}
+{{- $ns := include "serverless-api.tenantNamespaceToken" . }}
+{{/*
+Part of the tenant template set: everything a build needs in the tenant's own
+namespace. Builds run there because a kpack Image is an owned resource of the
+function's KSVC and an ownerReference cannot cross a namespace
+(docs/BUILDING.md - Lifecycle & Cleanup).
+
+Argo syncs these ConfigMaps; the controller mounts them projected into one
+directory, hashes the whole set, and applies it into each {group}{suffix}
+namespace with the tokens substituted.
+
+NOTHING IN THE SET MAY DEPEND ON THE REGION - see the sibling ConfigMaps. This
+part is where that bites: the Vault path and the registry host are both per
+region, and both go in as tokens the controller resolves against the cluster it
+is writing to.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "serverless-api.tenantTemplatesName" (dict "root" $ "part" "build") }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  50-build-serviceaccount.yaml: |
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: {{ .Values.build.serviceAccount.name }}
+      namespace: {{ $ns }}
+    {{- $creds := list .Values.build.serviceAccount.registrySecret.name }}
+    {{- with .Values.build.kpackRegistry }}
+    {{- if and .url .pullSecret.name }}
+    {{- $creds = append $creds .pullSecret.name }}
+    {{- end }}
+    {{- end }}
+    secrets:
+      {{- range $creds }}
+      - name: {{ . }}
+      {{- end }}
+    imagePullSecrets:
+      {{- range $creds }}
+      - name: {{ . }}
+      {{- end }}
+{{- if .Values.build.scc.enabled }}
+  # The SCC grant, same ClusterRole as the legacy namespace's - the per-function
+  # build accounts the API names at request time live here now.
+  60-build-scc.yaml: |
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: {{ .Values.name }}-use-{{ .Values.build.scc.name }}
+      namespace: {{ $ns }}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: {{ .Values.name }}-use-{{ .Values.build.scc.name }}
+    subjects:
+      - kind: Group
+        apiGroup: rbac.authorization.k8s.io
+        name: system:serviceaccounts:{{ $ns }}
+{{- end }}
+{{- if .Values.build.serviceAccount.registrySecret.create }}
+  # Written as an ExternalSecret rather than a Secret, so the credential never
+  # passes through a ConfigMap: ESO fills it in the tenant namespace from Vault,
+  # exactly as it does for the legacy one. A Vault path, never a credential.
+  70-registry-credentials.yaml: |
+    apiVersion: external-secrets.io/v1beta1
+    kind: ExternalSecret
+    metadata:
+      name: {{ .Values.build.serviceAccount.registrySecret.name }}
+      namespace: {{ $ns }}
+    spec:
+      refreshInterval: {{ .Values.externalSecrets.refreshInterval }}
+      secretStoreRef:
+        name: {{ .Values.externalSecrets.clusterSecretStore }}
+        kind: ClusterSecretStore
+      target:
+        name: {{ .Values.build.serviceAccount.registrySecret.name }}
+        template:
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: |-
+              {{ printf `{"auths":{"%s":{"username":"{{ .username }}","password":"{{ .password }}"}}}` (include "serverless-api.tenantRegistryToken" .) }}
+      data:
+        - secretKey: username
+          remoteRef:
+            key: {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" .Values.build.serviceAccount.registrySecret.key) }}
+            property: {{ .Values.build.serviceAccount.registrySecret.usernameProperty }}
+        - secretKey: password
+          remoteRef:
+            key: {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" .Values.build.serviceAccount.registrySecret.key) }}
+            property: {{ .Values.build.serviceAccount.registrySecret.passwordProperty }}
+{{- end }}
+{{- end }}
