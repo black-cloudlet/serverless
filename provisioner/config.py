@@ -14,6 +14,14 @@ class ProvisionerSettings(LoopSettings):
 
     app_name: str = "serverless-provisioner"
 
+    # The internal ensure API (no Route, no Ingress - a ClusterIP Service the
+    # API's namespace reaches).
+    port: int = 8080
+    # Shared secret the ensure call must present, from Vault via ESO. Empty
+    # disables the check: the NetworkPolicy is the primary control, and a dev
+    # cluster has no Vault to take a token from.
+    provisioner_token: str = ""
+
     # The tenant-templates ConfigMap mount. Whole-ConfigMap, never subPath:
     # subPath mounts are not refreshed, and the refresh is how a helm upgrade
     # reaches this loop.
@@ -28,6 +36,11 @@ class ProvisionerSettings(LoopSettings):
     # (the stamp is per namespace), so a template rollout over many tenants
     # is bounded by the pool, not serialized.
     converge_workers: int = Field(default=4, ge=1)
+
+    # The ensure API's own pool, separate from the loop's. It is the bound on
+    # how many converges a burst of creates can have in flight, and the reason
+    # a slow region cannot reach the server's threads and starve the probes.
+    ensure_workers: int = Field(default=8, ge=1)
 
 
 @lru_cache

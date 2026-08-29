@@ -8,6 +8,9 @@ obeyed - each is a way tenant state could otherwise be lost silently.
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from common import loop as common_loop
@@ -21,6 +24,7 @@ from common.labels import (
     PROVISIONER_VALUE,
 )
 from provisioner import main as provisioner_main
+from provisioner import reconcile as provisioner_reconcile
 from provisioner.config import ProvisionerSettings
 from provisioner.reconcile import (
     FIELD_MANAGER,
@@ -639,21 +643,31 @@ def test_workers_converge_all_namespaces():
     assert stamped == {f"g{i}-serverless" for i in range(5)}
 
 
-def test_a_signal_mid_pass_drops_the_queued_converges():
-    # map() submits every stale namespace up front; without cancel_futures a
-    # SIGTERM would still work through all of them, blowing past the pod's
-    # grace period. Here the third converge raises SystemExit as the signal
-    # handler would, and the rest must not run.
+def test_a_signal_mid_pass_drops_the_queued_converges(monkeypatch):
+    """map() submits every stale namespace up front, so the pass must drop the queue.
+
+    Asserted as the call we make, not as a count of how far a worker got:
+    what ``cancel_futures`` then does is CPython's to guarantee, and racing a
+    thread against the interpreter to observe it only buys a flaky test.
+    """
     templates = _set()
     cluster = _Cluster(namespaces=[_namespace(f"g{i}-serverless", f"g{i}") for i in range(40)])
-    started = []
+    shutdowns = []
+
+    class _RecordingPool(ThreadPoolExecutor):
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            shutdowns.append({"wait": wait, "cancel_futures": cancel_futures})
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(provisioner_reconcile, "ThreadPoolExecutor", _RecordingPool)
     real_apply = cluster.apply
+    applied = []
 
     def apply(manifest, *, namespace, field_manager=None):
         if manifest["kind"] == "Namespace":
-            started.append(manifest["metadata"]["name"])
-            if len(started) == 3:
-                raise SystemExit(0)
+            applied.append(manifest["metadata"]["name"])
+            if len(applied) == 3:
+                raise SystemExit(0)  # the signal handler, mid-pass
         return real_apply(manifest, namespace=namespace, field_manager=field_manager)
 
     cluster.apply = apply
@@ -661,8 +675,7 @@ def test_a_signal_mid_pass_drops_the_queued_converges():
     with pytest.raises(SystemExit):
         reconcile_all(cluster, templates, workers=1)
 
-    # Only what was already running, not the whole submitted queue.
-    assert len(set(started)) < 40
+    assert shutdowns == [{"wait": True, "cancel_futures": True}]
 
 
 def test_deletes_tolerate_not_found():
@@ -679,25 +692,134 @@ def test_deletes_tolerate_not_found():
     converge(cluster, "p-serverless", "p", _set())  # must not raise
 
 
-def test_run_wires_the_local_cluster_and_closes_it_on_exit(monkeypatch):
-    closed = []
+class _Server:
+    """Stands in for the uvicorn server the API thread runs."""
 
-    class _Local:
-        region = "central"
+    should_exit = False
+
+
+class _Thread:
+    """Stands in for that thread, recording the join that waits on it."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def join(self, timeout=None):
+        self._events.append("joined")
+
+    def is_alive(self):
+        return False  # it stopped when asked, so no "did not stop" warning
+
+
+def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypatch):
+    """The split the design turns on: ensure fans out, the loop never does."""
+    events = []
+    served = {}
+    looped = {}
+
+    class _Cluster:
+        def __init__(self, region):
+            self.region = region
 
         def close(self):
-            closed.append(True)
+            events.append(f"closed {self.region}")
 
-    monkeypatch.setattr(provisioner_main, "clusters_for", lambda s: {"central": _Local()})
-    monkeypatch.setattr(
-        provisioner_main, "select_local", lambda clusters, local: clusters["central"]
-    )
-    monkeypatch.setattr(
-        provisioner_main, "loop", lambda cluster, settings: (_ for _ in ()).throw(SystemExit(0))
-    )
+    clusters = {"central": _Cluster("central"), "south": _Cluster("south")}
+    monkeypatch.setattr(provisioner_main, "clusters_for", lambda s: clusters)
+    monkeypatch.setattr(provisioner_main, "select_local", lambda c, local: c["central"])
+
+    def _serve(settings, given):
+        served["clusters"] = given
+        served["server"] = _Server()
+        events.append("served")
+        return served["server"], _Thread(events)
+
+    def _loop(cluster, settings):
+        looped["cluster"] = cluster
+        raise SystemExit(0)
+
+    monkeypatch.setattr(provisioner_main, "serve", _serve)
+    monkeypatch.setattr(provisioner_main, "loop", _loop)
 
     with pytest.raises(SystemExit):
         provisioner_main.run()
 
-    # The cluster is released even when the loop ends by signal.
-    assert closed == [True]
+    assert [c.region for c in served["clusters"]] == ["central", "south"]
+    assert looped["cluster"].region == "central"
+    # Shut down in order, even when the loop ends by signal: the API is asked
+    # to stop before the clients an in-flight ensure is still writing through.
+    assert served["server"].should_exit is True
+    assert events == ["served", "joined", "closed central", "closed south"]
+
+
+def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
+    """Off the main thread, so uvicorn installs no handler over the loop's."""
+    built = {}
+
+    class _RecordingServer:
+        def __init__(self, config):
+            built["config"] = config
+            self.should_exit = False
+            self.started = False
+
+        def run(self):
+            built["ran"] = True
+            self.started = True
+
+    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _RecordingServer)
+    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
+    settings = ProvisionerSettings(port=9999)
+
+    server, thread = provisioner_main.serve(settings, [])
+    thread.join(timeout=5)
+
+    assert thread.daemon and thread.name == "ensure-api"
+    assert built["ran"], "the thread actually served"
+    assert built["config"].port == 9999
+    # Ours is already configured; uvicorn's dictConfig would replace it.
+    assert built["config"].log_config is None
+
+    provisioner_main.stop(server, thread)
+    assert server.should_exit is True
+
+
+# pytest installs its own threading.excepthook and warns about the SystemExit
+# this test raises on purpose; plain Python discards it, which is the point.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_server_that_never_binds_fails_the_pod_instead_of_hiding(monkeypatch):
+    """uvicorn answers a bind failure with sys.exit *in the thread*, and Python
+    discards that silently - so without this check the loop would run on beside
+    a dead API and every ensure would be refused with nothing in the log."""
+
+    class _DyingServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        def run(self):
+            raise SystemExit(3)  # what uvicorn does when the port is taken
+
+    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _DyingServer)
+    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
+
+    with pytest.raises(RuntimeError, match="stopped before it began serving"):
+        provisioner_main.serve(ProvisionerSettings(), [])
+
+
+def test_a_server_that_never_comes_up_is_not_waited_on_forever(monkeypatch):
+    class _SilentServer:
+        started = False
+        should_exit = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            time.sleep(5)  # alive, but never listening
+
+    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _SilentServer)
+    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
+    monkeypatch.setattr(provisioner_main, "API_STARTUP_SECONDS", 0.2)
+
+    with pytest.raises(RuntimeError, match="did not start within"):
+        provisioner_main.serve(ProvisionerSettings(), [])
