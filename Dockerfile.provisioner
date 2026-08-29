@@ -11,7 +11,7 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY common ./common
 COPY provisioner ./provisioner
-RUN pip install .
+RUN pip install ".[provisioner]"
 
 USER 1001
 

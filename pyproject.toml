@@ -7,10 +7,11 @@ name = "serverless-api"
 version = "0.1.0"
 description = "FaaS/CaaS REST API wrapping Knative on OpenShift"
 requires-python = ">=3.14"
-# What EVERY service needs. The build controller and the provisioner serve no
-# HTTP and install nothing else, so their images carry no web stack
-# (docs/BUILDING.md - Two images). pyyaml is declared even though kubernetes
-# currently requires it: provisioner/templates.py imports it directly.
+# What EVERY service needs. The build controller installs nothing else, so its
+# image carries no web stack at all (docs/BUILDING.md - Two images); the
+# provisioner takes only the [provisioner] extra below - a web server, still no
+# auth stack. pyyaml is declared even though kubernetes currently requires it:
+# provisioner/templates.py imports it directly.
 dependencies = [
     "cloudlet-apis>=0.6.2,<1",
     "pydantic>=2.13.4",
@@ -27,6 +28,15 @@ api = [
     "uvicorn[standard]>=0.52.4",
     "pyyaml>=6.0.3",
     "tzdata>=2026.3",
+]
+# The provisioner serves one internal endpoint, so it needs a web server but
+# none of the API's browser or SSO surface: no cloudlet-apis[auth] (that is the
+# JWT stack), and plain uvicorn rather than [standard] - the extras there serve
+# websockets and reload, neither of which a JSON POST has any use for.
+provisioner = [
+    "cloudlet-apis[web]>=0.6.2,<1",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.4",
 ]
 dev = [
     "pytest>=9.1.1",

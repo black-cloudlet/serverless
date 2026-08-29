@@ -8,6 +8,8 @@ obeyed - each is a way tenant state could otherwise be lost silently.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from common import loop as common_loop
@@ -650,6 +652,10 @@ def test_a_signal_mid_pass_drops_the_queued_converges():
     real_apply = cluster.apply
 
     def apply(manifest, *, namespace, field_manager=None):
+        # A real apply is a round trip to an apiserver. An instant fake lets
+        # the worker burn the whole queue before the main thread can cancel
+        # it, which no deployed converge could do.
+        time.sleep(0.001)
         if manifest["kind"] == "Namespace":
             started.append(manifest["metadata"]["name"])
             if len(started) == 3:
@@ -662,7 +668,7 @@ def test_a_signal_mid_pass_drops_the_queued_converges():
         reconcile_all(cluster, templates, workers=1)
 
     # Only what was already running, not the whole submitted queue.
-    assert len(set(started)) < 40
+    assert len(set(started)) < 10
 
 
 def test_deletes_tolerate_not_found():
@@ -679,25 +685,87 @@ def test_deletes_tolerate_not_found():
     converge(cluster, "p-serverless", "p", _set())  # must not raise
 
 
-def test_run_wires_the_local_cluster_and_closes_it_on_exit(monkeypatch):
-    closed = []
+class _Server:
+    """Stands in for the uvicorn server the API thread runs."""
 
-    class _Local:
-        region = "central"
+    should_exit = False
+
+
+class _Thread:
+    """Stands in for that thread, recording the join that waits on it."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def join(self, timeout=None):
+        self._events.append("joined")
+
+
+def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypatch):
+    """The split the design turns on: ensure fans out, the loop never does."""
+    events = []
+    served = {}
+    looped = {}
+
+    class _Cluster:
+        def __init__(self, region):
+            self.region = region
 
         def close(self):
-            closed.append(True)
+            events.append(f"closed {self.region}")
 
-    monkeypatch.setattr(provisioner_main, "clusters_for", lambda s: {"central": _Local()})
-    monkeypatch.setattr(
-        provisioner_main, "select_local", lambda clusters, local: clusters["central"]
-    )
-    monkeypatch.setattr(
-        provisioner_main, "loop", lambda cluster, settings: (_ for _ in ()).throw(SystemExit(0))
-    )
+    clusters = {"central": _Cluster("central"), "south": _Cluster("south")}
+    monkeypatch.setattr(provisioner_main, "clusters_for", lambda s: clusters)
+    monkeypatch.setattr(provisioner_main, "select_local", lambda c, local: c["central"])
+
+    def _serve(settings, given):
+        served["clusters"] = given
+        served["server"] = _Server()
+        events.append("served")
+        return served["server"], _Thread(events)
+
+    def _loop(cluster, settings):
+        looped["cluster"] = cluster
+        raise SystemExit(0)
+
+    monkeypatch.setattr(provisioner_main, "serve", _serve)
+    monkeypatch.setattr(provisioner_main, "loop", _loop)
 
     with pytest.raises(SystemExit):
         provisioner_main.run()
 
-    # The cluster is released even when the loop ends by signal.
-    assert closed == [True]
+    assert [c.region for c in served["clusters"]] == ["central", "south"]
+    assert looped["cluster"].region == "central"
+    # Shut down in order, even when the loop ends by signal: the API is asked
+    # to stop before the clients an in-flight ensure is still writing through.
+    assert served["server"].should_exit is True
+    assert events == ["served", "joined", "closed central", "closed south"]
+
+
+def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
+    """Off the main thread, so uvicorn installs no handler over the loop's."""
+    built = {}
+
+    class _RecordingServer:
+        def __init__(self, config):
+            built["config"] = config
+            self.should_exit = False
+
+        def run(self):
+            built["ran"] = True
+
+    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _RecordingServer)
+    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
+    settings = ProvisionerSettings(port=9999)
+
+    server, thread = provisioner_main.serve(settings, [])
+    thread.join(timeout=5)
+
+    assert thread.daemon and thread.name == "ensure-api"
+    assert built["ran"], "the thread actually served"
+    assert built["config"].port == 9999
+    # Ours is already configured; uvicorn's dictConfig would replace it.
+    assert built["config"].log_config is None
+
+    provisioner_main.stop(server, thread)
+    assert server.should_exit is True

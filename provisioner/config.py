@@ -14,6 +14,14 @@ class ProvisionerSettings(LoopSettings):
 
     app_name: str = "serverless-provisioner"
 
+    # The internal ensure API (no Route, no Ingress - a ClusterIP Service the
+    # API's namespace reaches).
+    port: int = 8080
+    # Shared secret the ensure call must present, from Vault via ESO. Empty
+    # disables the check: the NetworkPolicy is the primary control, and a dev
+    # cluster has no Vault to take a token from.
+    provisioner_token: str = ""
+
     # The tenant-templates ConfigMap mount. Whole-ConfigMap, never subPath:
     # subPath mounts are not refreshed, and the refresh is how a helm upgrade
     # reaches this loop.

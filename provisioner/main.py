@@ -1,16 +1,30 @@
-"""Provisioner entrypoint: run the reconcile loop until the pod is stopped."""
+"""Provisioner entrypoint: the reconcile loop, with the ensure API beside it.
+
+Two jobs, one process: the level-triggered loop that converges this cluster,
+and the HTTP call the API makes before a workload deploys. They share the
+cluster clients and the mounted template set, which is the whole reason they
+are not two deployments.
+"""
 
 from __future__ import annotations
 
+import threading
+
+import uvicorn
 from cloudlet_apis.logging import configure_logging, get_logger
 
 from common.cluster import Cluster, clusters_for, select_local
 from common.loop import install_terminate_handlers, run_loop
+from provisioner.api import create_app
 from provisioner.config import ProvisionerSettings, get_settings
 from provisioner.reconcile import reconcile_all
 from provisioner.templates import TemplateSet
 
 logger = get_logger(__name__)
+
+# How long a stopping pod lets an in-flight ensure finish. Short: the caller
+# retries, and the pod's own grace period is the ceiling either way.
+API_SHUTDOWN_SECONDS = 5.0
 
 
 def run_pass(cluster: Cluster, settings: ProvisionerSettings, *, force: bool = False) -> None:
@@ -63,23 +77,66 @@ def loop(cluster: Cluster, settings: ProvisionerSettings) -> None:
     )
 
 
+def serve(
+    settings: ProvisionerSettings, clusters: list[Cluster]
+) -> tuple[uvicorn.Server, threading.Thread]:
+    """Start the ensure API on a background thread.
+
+    Background, so the loop keeps the main thread: uvicorn installs no signal
+    handlers off it (it checks), leaving SIGTERM to unwind the loop as before.
+    Daemon, so a server that will not stop cannot hold the pod past its grace.
+
+    Args:
+        settings: For the listen port.
+        clusters: Every region's cluster - ensure fans out to all of them.
+
+    Returns:
+        The server and the thread running it, for :func:`stop`.
+    """
+    config = uvicorn.Config(
+        create_app(clusters, settings),
+        host="0.0.0.0",  # noqa: S104
+        port=settings.port,
+        # Ours is already configured; uvicorn's dictConfig would replace it.
+        log_config=None,
+        timeout_graceful_shutdown=int(API_SHUTDOWN_SECONDS),
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="ensure-api", daemon=True)
+    thread.start()
+    return server, thread
+
+
+def stop(server: uvicorn.Server, thread: threading.Thread) -> None:
+    """Let an in-flight ensure finish, then stop waiting for the server."""
+    server.should_exit = True
+    thread.join(timeout=API_SHUTDOWN_SECONDS)
+
+
 def run() -> None:
     """Configure logging and signals, then run the loop until terminated."""
     configure_logging()
     settings = get_settings()
     install_terminate_handlers()
 
-    # Local-only, like the build controller.
-    cluster = select_local(clusters_for(settings), settings.local_region)
+    # Every region: ensure writes to all of them. The loop below still takes
+    # only the local one - converging a peer cluster from here is what the
+    # local-only rule exists to prevent.
+    clusters = clusters_for(settings)
+    local = select_local(clusters, settings.local_region)
     logger.info(
-        "provisioner reconciling tenant namespaces in %s from %s",
-        cluster.region,
+        "provisioner reconciling tenant namespaces in %s from %s, ensure API on :%d",
+        local.region,
         settings.templates_dir,
+        settings.port,
     )
+    server, thread = serve(settings, list(clusters.values()))
     try:
-        loop(cluster, settings)
+        loop(local, settings)
     finally:
-        cluster.close()
+        stop(server, thread)
+        for cluster in clusters.values():
+            cluster.close()
 
 
 if __name__ == "__main__":

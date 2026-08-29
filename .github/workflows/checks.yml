@@ -159,20 +159,33 @@ jobs:
             -c "import controller.main as m; assert callable(m.run)"
           docker run --rm --entrypoint python serverless-provisioner:scan \
             -c "import provisioner.main as m; assert callable(m.run)"
-      # Neither the controller nor the provisioner serves HTTP, so their images
-      # must not carry a web stack. An import in `common` that quietly pulled
-      # fastapi back in would pass every other check (docs/BUILDING.md - Two images).
-      - name: The controller and provisioner images carry no web stack
+          docker run --rm --entrypoint python serverless-provisioner:scan \
+            -c "from provisioner.api import create_app; from provisioner.config import ProvisionerSettings; assert create_app([], ProvisionerSettings())"
+      # The controller serves nothing, so it must carry no web stack at all. An
+      # import in `common` that quietly pulled fastapi back in would pass every
+      # other check (docs/BUILDING.md - Two images).
+      - name: The controller image carries no web stack
         run: |
-          for img in serverless-build-controller:scan serverless-provisioner:scan; do
-            docker run --rm --entrypoint python "$img" -c "
+          docker run --rm --entrypoint python serverless-build-controller:scan -c "
           import importlib.util, sys
           leaked = [m for m in ('fastapi', 'starlette', 'uvicorn', 'jwt', 'cryptography')
                     if importlib.util.find_spec(m) is not None]
           if leaked:
               sys.exit(f'this image should not ship {leaked}')
           "
-          done
+      # The provisioner does serve HTTP - one internal endpoint - so a web
+      # server is expected. What it must never carry is the auth stack: its
+      # caller presents a shared token, and reaching cloudlet_apis.auth for the
+      # comparison would put pyjwt and cryptography in this image.
+      - name: The provisioner image carries no auth stack
+        run: |
+          docker run --rm --entrypoint python serverless-provisioner:scan -c "
+          import importlib.util, sys
+          leaked = [m for m in ('jwt', 'cryptography')
+                    if importlib.util.find_spec(m) is not None]
+          if leaked:
+              sys.exit(f'this image should not ship {leaked}')
+          "
       # Print HIGH + CRITICAL for visibility, but do not fail on them: base-image
       # HIGH advisories are published continuously, so a HIGH gate means red CI
       # even when nothing in our code changed. The python:3.14-slim base is

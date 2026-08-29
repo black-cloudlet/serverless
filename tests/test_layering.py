@@ -26,6 +26,7 @@ DOMAIN = [
     "common.config",
     "common.build",
     "common.kpack",
+    "common.loop",
     # httpx, no kubernetes: the registry client both services reclaim through.
     "common.registry",
     # The shared core, reached through this repository's re-exports: bare, it
@@ -92,6 +93,44 @@ def test_the_build_controller_serves_no_http_and_carries_no_web_framework(module
         f"{module} reaches a web framework; the controller exposes no endpoint and "
         "should not ship one"
     )
+
+
+@pytest.mark.parametrize(
+    "module", ["provisioner.reconcile", "provisioner.templates", "provisioner.ensure"]
+)
+def test_the_provisioner_loop_carries_no_web_framework(module):
+    """Only ``provisioner.api`` may reach FastAPI; the converge half must not.
+
+    The provisioner does serve one internal endpoint, so its image ships a web
+    server - but the loop, the template set and the fan-out are what the GC and
+    any future caller reuse, and none of them has a request to answer.
+    """
+    loaded = _imported_by(module)
+    assert not (loaded & FRAMEWORKS), (
+        f"{module} reaches a web framework; converging a namespace does not require serving HTTP"
+    )
+
+
+def test_the_provisioner_carries_no_auth_stack():
+    """Its caller presents a shared token, so pyjwt must stay out of the image.
+
+    ``cloudlet_apis.auth`` holds the constant-time key comparison this would
+    otherwise reuse, but importing anything from that package pulls the JWT
+    stack in - which is why ``provisioner.api`` spells the comparison out.
+    """
+    for module in ("provisioner.main", "provisioner.api"):
+        leaked = _imported_by(module) & AUTH_DEPS
+        assert not leaked, f"{module} reaches {sorted(leaked)}"
+
+
+def test_the_provisioner_never_imports_the_api():
+    """Siblings, like the controller: the fan-out is the deployer's shape, not its code."""
+    out = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["grep", "-rn", "-e", "from api", "-e", "import api", "--include=*.py", "provisioner/"],
+        capture_output=True,
+        text=True,
+    )
+    assert out.stdout == "", f"provisioner/ imports from api/:\n{out.stdout}"
 
 
 def test_the_build_controller_never_imports_the_api():
