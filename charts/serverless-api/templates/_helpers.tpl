@@ -1,3 +1,19 @@
+{{/*
+Chart layout. Anything shared by more than one component stays in this
+directory - the namespaces, the CA bundle, the identity the API and the build
+controller share, the regions ConfigMap all three read, and these partials.
+Everything a single component owns lives in that component's folder:
+
+  api/               the REST API: Deployment, Service, Route, its own secrets
+  build-controller/  the digest-propagation loop
+  provisioner/       per-group namespaces: the loop, the ensure API, its own
+                     identity, and the template set it applies
+  kpack/             the build subsystem: builders, SCC, CA policy, credentials
+
+Helm renders every file under templates/ regardless of depth and partials are
+global, so the folders are for readers, not for Helm.
+*/}}
+
 {{- define "serverless-api.labels" -}}
 app.kubernetes.io/name: {{ .Values.name }}
 app.kubernetes.io/instance: {{ .Release.Name }}

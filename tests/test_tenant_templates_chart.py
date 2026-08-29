@@ -49,7 +49,7 @@ def test_the_ca_policy_matches_the_label_the_provisioner_actually_stamps():
 def test_the_provisioner_may_write_every_kind_its_templates_can_render():
     """A kind the set can render but the ClusterRole cannot write fails every
     converge; one it can write but not delete can never be pruned."""
-    rbac = (TEMPLATES / "provisioner-rbac.yaml").read_text()
+    rbac = (TEMPLATES / "provisioner" / "rbac.yaml").read_text()
     for kind in TEMPLATE_KINDS:
         assert _plural(kind.kind) in rbac, (
             f"{kind.kind} is in TEMPLATE_KINDS but the provisioner ClusterRole "
@@ -59,7 +59,7 @@ def test_the_provisioner_may_write_every_kind_its_templates_can_render():
 
 def test_the_provisioner_writes_namespaces_and_the_api_does_not():
     """The separation the whole component exists for, asserted rather than assumed."""
-    rbac = (TEMPLATES / "provisioner-rbac.yaml").read_text()
+    rbac = (TEMPLATES / "provisioner" / "rbac.yaml").read_text()
     api_rbac = (TEMPLATES / "rbac.yaml").read_text()
     assert '"namespaces"' in rbac and "create" in rbac
     # The API reads namespaces cluster-wide (the host pre-flight) but must never

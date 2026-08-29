@@ -37,9 +37,9 @@ CHART = Path(__file__).resolve().parent.parent / "charts" / "serverless-api"
 # the provisioner declares - every settings class ignores extra env, so the
 # fields most likely to be mistyped are exactly the ones that would go unchecked.
 TEMPLATES = [
-    (CHART / "templates" / "deployment.yaml", Settings),
-    (CHART / "templates" / "build-controller.yaml", ControllerSettings),
-    (CHART / "templates" / "provisioner.yaml", ProvisionerSettings),
+    (CHART / "templates" / "api" / "deployment.yaml", Settings),
+    (CHART / "templates" / "build-controller" / "deployment.yaml", ControllerSettings),
+    (CHART / "templates" / "provisioner" / "deployment.yaml", ProvisionerSettings),
 ]
 
 # `- name: SERVERLESS_FOO` followed by `value: {{ .Values.a.b [| int64] | quote }}`.
@@ -189,7 +189,7 @@ def test_the_seconds_that_may_be_fractional_are_not_forced_to_integers():
     ``heartbeatSeconds: 0.5`` rendered through int64 is ``0``, which is a
     stream that heartbeats continuously rather than one that is misconfigured.
     """
-    deployment = (CHART / "templates" / "deployment.yaml").read_text()
+    deployment = (CHART / "templates" / "api" / "deployment.yaml").read_text()
     for name in ("intervalSeconds", "minIntervalSeconds", "maxIntervalSeconds", "heartbeatSeconds"):
         line = next(ln for ln in deployment.splitlines() if f".Values.stream.{name}" in ln)
         assert "int64" not in line, f"stream.{name} is float-typed; int64 would truncate it"
