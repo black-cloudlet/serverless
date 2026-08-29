@@ -13,6 +13,8 @@ Argo sync skew. The stamp protocol makes a converge crash-safe:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from cloudlet_apis.logging import get_logger
 
 from common.cluster import Cluster, ResourceKind
@@ -44,6 +46,9 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
     """Bring one tenant namespace to the template set (the stamp protocol above).
 
     Idempotent throughout, so the ensure call and the loop can both run it.
+    Every step is unconditional: the protocol has one shape, so a caller
+    cannot skip the opening apply - which is also the write that creates the
+    namespace - on a stale read of someone else's stamp.
 
     Args:
         cluster: The cluster to converge in (cluster-scoped client).
@@ -100,7 +105,7 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
 
 
 def reconcile_all(
-    cluster: Cluster, templates: TemplateSet, *, force: bool = False
+    cluster: Cluster, templates: TemplateSet, *, force: bool = False, workers: int = 1
 ) -> tuple[int, int, int]:
     """Converge every managed namespace in this cluster whose stamp is stale.
 
@@ -115,6 +120,9 @@ def reconcile_all(
         templates: The currently mounted template set.
         force: Converge even stamp-matching namespaces - the periodic drift
             repair, since a deleted object does not change the stamp.
+        workers: Converges run on a thread pool of this size - independent
+            per namespace, so a template rollout over many tenants is bounded
+            by the pool, not serialized.
 
     Returns:
         ``(seen, converged, failed)``, for the log line and the pass verdict.
@@ -128,7 +136,8 @@ def reconcile_all(
     namespaces = cluster.get(
         ResourceKind.NAMESPACE, label_selector=PROVISIONER_SELECTOR, namespace=None
     )
-    seen = converged = failed = 0
+    seen = failed = 0
+    stale: list[tuple[str, str]] = []
     for ns in namespaces:
         seen += 1
         meta = ns.get("metadata") or {}
@@ -142,12 +151,29 @@ def reconcile_all(
         stamp = (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH)
         if stamp == templates.digest and not force:
             continue
+        stale.append((name, group))
+
+    def one(entry: tuple[str, str]) -> bool:
+        name, group = entry
         try:
             converge(cluster, name, group, templates)
-            converged += 1
+            return True
         except Exception:  # noqa: BLE001 - the next namespace still gets its converge
             logger.exception("converging namespace '%s' failed; continuing", name)
-            failed += 1
+            return False
+
+    outcomes: list[bool] = []
+    if stale:
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(stale)))
+        try:
+            outcomes = list(pool.map(one, stale))
+        finally:
+            # cancel_futures, so a SIGTERM mid-pass drops the queue instead of
+            # working through every namespace map() already submitted - the
+            # pod has a grace period to respect.
+            pool.shutdown(wait=True, cancel_futures=True)
+    converged = outcomes.count(True)
+    failed += outcomes.count(False)
     logger.info(
         "reconciled %d managed namespace(s) in %s: %d converged, %d failed, set %s",
         seen,
@@ -187,7 +213,16 @@ def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None
     """Delete managed objects the current template set no longer renders.
 
     Only prunable kinds, only provisioner-labeled objects: the API's workload
-    Secrets and a tenant's own objects are invisible to it.
+    Secrets and a tenant's own objects are invisible to it. Listed here, per
+    namespace, rather than from a pass-wide cluster-wide listing: a
+    provisioner that could list every Secret in the cluster is a far larger
+    grant than one scoped to the namespaces it owns, and a listing read at
+    prune time cannot miss what another writer created mid-pass.
+
+    Args:
+        cluster: The cluster to prune in.
+        namespace: The tenant namespace.
+        keep: The (kind, name) pairs the current render produced.
     """
     for kind in PRUNABLE_KINDS:
         existing = cluster.get(kind, label_selector=PROVISIONER_SELECTOR, namespace=namespace)

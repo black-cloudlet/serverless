@@ -2,28 +2,15 @@
 
 from __future__ import annotations
 
-import signal
-import time
-
 from cloudlet_apis.logging import configure_logging, get_logger
 
 from common.cluster import Cluster, clusters_for, select_local
+from common.loop import install_terminate_handlers, run_loop
 from provisioner.config import ProvisionerSettings, get_settings
 from provisioner.reconcile import reconcile_all
 from provisioner.templates import TemplateSet
 
 logger = get_logger(__name__)
-
-
-def _terminate(signum: int, _frame) -> None:
-    """Raise, so a sleeping loop unwinds now rather than at the next pass."""
-    logger.info("received signal %s, shutting down", signum)
-    raise SystemExit(0)
-
-
-# The least a pass may take, so the loop can never degenerate into
-# back-to-back LISTs of every namespace at full speed.
-_MIN_PASS_SECONDS = 1.0
 
 
 def run_pass(cluster: Cluster, settings: ProvisionerSettings, *, force: bool = False) -> None:
@@ -43,43 +30,44 @@ def run_pass(cluster: Cluster, settings: ProvisionerSettings, *, force: bool = F
             full resync sleep.
     """
     templates = TemplateSet.load(settings.templates_dir)
-    seen, _converged, failed = reconcile_all(cluster, templates, force=force)
+    seen, _converged, failed = reconcile_all(
+        cluster, templates, force=force, workers=settings.converge_workers
+    )
     if seen and failed == seen:
         raise RuntimeError(f"all {seen} managed namespace(s) failed to converge")
 
 
 def loop(cluster: Cluster, settings: ProvisionerSettings) -> None:
-    """Reconcile, sleep, forever.
+    """Reconcile, sleep, forever (paced by ``common.loop``).
 
-    A raising pass backs off and retries; a clean pass waits the interval.
-    Per-namespace failures never reach here - ``reconcile_all`` contains them.
+    Per-namespace failures never reach the pacing - ``reconcile_all``
+    contains them; only an all-failed pass raises into the backoff.
 
     Args:
         cluster: The local cluster.
         settings: Pacing (resync interval, error backoff).
     """
     passes = 0
-    while True:
+
+    def one_pass() -> None:
+        nonlocal passes
         passes += 1
-        started = time.monotonic()
-        try:
-            # Every Nth pass forces a full converge, so drift in the objects
-            # themselves is repaired without waiting for a template change.
-            run_pass(cluster, settings, force=passes % settings.full_resync_passes == 0)
-        except Exception:  # noqa: BLE001 - the loop outlives any one pass
-            logger.exception("reconcile pass failed, retrying")
-            time.sleep(settings.error_backoff_seconds)
-            continue
-        elapsed = time.monotonic() - started
-        time.sleep(max(settings.resync_seconds - elapsed, _MIN_PASS_SECONDS))
+        # Every Nth pass forces a full converge, so drift in the objects
+        # themselves is repaired without waiting for a template change.
+        run_pass(cluster, settings, force=passes % settings.full_resync_passes == 0)
+
+    run_loop(
+        one_pass,
+        error_backoff_seconds=settings.error_backoff_seconds,
+        interval_seconds=settings.resync_seconds,
+    )
 
 
 def run() -> None:
     """Configure logging and signals, then run the loop until terminated."""
     configure_logging()
     settings = get_settings()
-    signal.signal(signal.SIGTERM, _terminate)
-    signal.signal(signal.SIGINT, _terminate)
+    install_terminate_handlers()
 
     # Local-only, like the build controller.
     cluster = select_local(clusters_for(settings), settings.local_region)

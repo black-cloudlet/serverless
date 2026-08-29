@@ -6,19 +6,17 @@ from functools import lru_cache
 
 from pydantic import Field
 
-from common.config import CommonSettings
+from common.config import LoopSettings
 
 
-class ControllerSettings(CommonSettings):
-    """Controller settings: the shared connection settings plus the loop's own."""
+class ControllerSettings(LoopSettings):
+    """Controller settings: the shared connection and pacing settings plus its own.
+
+    ``resync_seconds`` is how long each watch is held open, and so also the
+    relist interval - the stream ending is what starts the next resync.
+    """
 
     app_name: str = "serverless-build-controller"
-
-    # How long each watch is held open, and so also the relist interval - the
-    # stream ending is what starts the next resync.
-    resync_seconds: int = Field(default=300, gt=0)
-    # Only for a pass that raised; a watch that merely ended resyncs at once.
-    error_backoff_seconds: float = Field(default=5.0, ge=0)
 
     # Tag GC: prune the per-build tags kpack accumulates in this region's
     # registry (docs/BUILDING.md - Registry tag GC). Also needs the registry
