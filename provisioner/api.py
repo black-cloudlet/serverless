@@ -181,9 +181,14 @@ def _router(
         """
         return {"status": "ready", "templateHash": usable_templates().digest}
 
-    @router.post("/ensure/{group}", response_model=EnsureResponse)
+    @router.put("/groups/{group}/namespace", response_model=EnsureResponse)
     async def ensure_group(group: Group, request: Request) -> EnsureResponse:
         """Converge the group's namespace in every region, to the current set.
+
+        PUT, because the caller states a desired end state rather than asking
+        for a job: the API calls this before every create and retries it on
+        timeout, so "safe to repeat" belongs in the method, not only in the
+        paragraph below.
 
         Idempotent: a group that is already converged is applied again, which
         is how the caller learns it is converged to *this* hash rather than

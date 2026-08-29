@@ -98,8 +98,8 @@ def _settings(tmp_path, **overrides) -> ProvisionerSettings:
 
 
 def _endpoints(app) -> dict:
-    """Every route's handler, reaching through the wrapper FastAPI puts around
-    an included router (its shape has changed across versions)."""
+    """``{path: (handler, methods)}``, reaching through the wrapper FastAPI puts
+    around an included router (its shape has changed across versions)."""
     found, stack = {}, list(app.routes)
     while stack:
         route = stack.pop()
@@ -107,7 +107,7 @@ def _endpoints(app) -> dict:
         if inner is not None:
             stack.extend(inner.routes)
         elif isinstance(route, APIRoute):
-            found[route.path] = route.endpoint
+            found[route.path] = (route.endpoint, set(route.methods or ()))
     return found
 
 
@@ -177,7 +177,7 @@ def test_the_endpoint_reports_the_namespace_the_hash_and_every_region(tmp_path):
     clusters = [_Cluster("central"), _Cluster("south")]
     settings = _settings(tmp_path)
 
-    response = _client(clusters, settings).post("/ensure/payments")
+    response = _client(clusters, settings).put("/groups/payments/namespace")
 
     assert response.status_code == 200
     body = response.json()
@@ -193,7 +193,7 @@ def test_the_endpoint_reports_the_namespace_the_hash_and_every_region(tmp_path):
 def test_the_endpoint_normalizes_the_group_before_deriving_the_namespace(tmp_path):
     clusters = [_Cluster("central")]
 
-    response = _client(clusters, _settings(tmp_path)).post("/ensure/ggd-1234-My_Team")
+    response = _client(clusters, _settings(tmp_path)).put("/groups/ggd-1234-My_Team/namespace")
 
     assert response.status_code == 200
     assert response.json()["namespace"] == "my-team-serverless"
@@ -203,9 +203,9 @@ def test_a_second_ensure_is_a_no_op_beyond_re_applying(tmp_path):
     clusters = [_Cluster("central")]
     client = _client(clusters, _settings(tmp_path))
 
-    first = client.post("/ensure/payments").json()
+    first = client.put("/groups/payments/namespace").json()
     writes = len(clusters[0].applied)
-    second = client.post("/ensure/payments").json()
+    second = client.put("/groups/payments/namespace").json()
 
     assert first == second, "ensure is idempotent: same namespace, same hash, same rows"
     assert len(clusters[0].applied) == 2 * writes, "and it re-applies rather than skipping"
@@ -221,7 +221,7 @@ def test_a_second_ensure_is_a_no_op_beyond_re_applying(tmp_path):
 def test_a_group_that_cannot_name_a_namespace_is_refused_before_any_write(tmp_path, group):
     clusters = [_Cluster("central")]
 
-    response = _client(clusters, _settings(tmp_path)).post(f"/ensure/{group}")
+    response = _client(clusters, _settings(tmp_path)).put(f"/groups/{group}/namespace")
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
@@ -231,7 +231,7 @@ def test_a_group_that_cannot_name_a_namespace_is_refused_before_any_write(tmp_pa
 def test_the_endpoint_fails_the_call_only_when_no_region_landed(tmp_path):
     clusters = [_Cluster("central", fail="down"), _Cluster("south", fail="down")]
 
-    response = _client(clusters, _settings(tmp_path)).post("/ensure/payments")
+    response = _client(clusters, _settings(tmp_path)).put("/groups/payments/namespace")
 
     assert response.status_code == 502
     error = response.json()["error"]
@@ -242,7 +242,7 @@ def test_the_endpoint_fails_the_call_only_when_no_region_landed(tmp_path):
 def test_one_region_landing_is_still_a_success(tmp_path):
     clusters = [_Cluster("central", fail="down"), _Cluster("south")]
 
-    response = _client(clusters, _settings(tmp_path)).post("/ensure/payments")
+    response = _client(clusters, _settings(tmp_path)).put("/groups/payments/namespace")
 
     assert response.status_code == 200
     assert [row["status"] for row in response.json()["regions"]] == [FAILED, READY]
@@ -260,7 +260,7 @@ def test_a_configured_token_is_required(tmp_path, header):
     clusters = [_Cluster("central")]
     settings = _settings(tmp_path, provisioner_token="s3cret")
 
-    response = _client(clusters, settings).post("/ensure/payments", headers=header)
+    response = _client(clusters, settings).put("/groups/payments/namespace", headers=header)
 
     assert response.status_code == 401
     assert clusters[0].applied == []
@@ -270,8 +270,8 @@ def test_the_configured_token_admits_the_caller(tmp_path):
     clusters = [_Cluster("central")]
     settings = _settings(tmp_path, provisioner_token="s3cret")
 
-    response = _client(clusters, settings).post(
-        "/ensure/payments", headers={"Authorization": "Bearer s3cret"}
+    response = _client(clusters, settings).put(
+        "/groups/payments/namespace", headers={"Authorization": "Bearer s3cret"}
     )
 
     assert response.status_code == 200
@@ -280,7 +280,7 @@ def test_the_configured_token_admits_the_caller(tmp_path):
 def test_no_configured_token_leaves_the_endpoint_open(tmp_path):
     clusters = [_Cluster("central")]
 
-    response = _client(clusters, _settings(tmp_path)).post("/ensure/payments")
+    response = _client(clusters, _settings(tmp_path)).put("/groups/payments/namespace")
 
     assert response.status_code == 200
 
@@ -310,12 +310,12 @@ def test_readiness_fails_on_an_unusable_template_set(tmp_path, prepare, reason):
     assert response.status_code == 503, reason
 
 
-@pytest.mark.parametrize("path", ["/readyz", "/ensure/payments"])
+@pytest.mark.parametrize("path", ["/readyz", "/groups/payments/namespace"])
 def test_a_provisioner_with_no_regions_is_unavailable_not_broken(tmp_path, path):
     """Its own misconfiguration, so 503 - not a 500, and not the caller's fault."""
     client = _client([], _settings(tmp_path))
 
-    response = client.get(path) if path == "/readyz" else client.post(path)
+    response = client.get(path) if path == "/readyz" else client.put(path)
 
     assert response.status_code == 503
     assert "no regions are configured" in response.json()["error"]["message"]
@@ -327,7 +327,7 @@ def test_an_unusable_template_set_fails_ensure_the_way_it_fails_readiness(tmp_pa
     client = _client([_Cluster("central")], settings)
 
     assert client.get("/readyz").status_code == 503
-    assert client.post("/ensure/payments").status_code == 503
+    assert client.put("/groups/payments/namespace").status_code == 503
 
 
 def test_readiness_rejects_a_set_that_renders_only_a_namespace(tmp_path):
@@ -341,7 +341,7 @@ def test_readiness_rejects_a_set_that_renders_only_a_namespace(tmp_path):
     assert ready.status_code == 503
     assert "renders no namespaced contents" in ready.json()["error"]["message"]
     # And the endpoint answers for the same reason, rather than as a 502.
-    assert client.post("/ensure/payments").status_code == 503
+    assert client.put("/groups/payments/namespace").status_code == 503
 
 
 def test_no_endpoint_holds_one_of_the_servers_threads(tmp_path):
@@ -351,9 +351,17 @@ def test_no_endpoint_holds_one_of_the_servers_threads(tmp_path):
     app = create_app([_Cluster("central")], _settings(tmp_path))
 
     handlers = _endpoints(app)
-    assert set(handlers) == {"/healthz", "/readyz", "/ensure/{group}"}
-    for path, handler in handlers.items():
+    assert set(handlers) == {"/healthz", "/readyz", "/groups/{group}/namespace"}
+    for path, (handler, _methods) in handlers.items():
         assert inspect.iscoroutinefunction(handler), f"{path} would take a server thread"
+
+
+def test_converging_a_group_is_a_put():
+    """The method carries the contract: the API calls this before every create
+    and retries it on timeout, so a generic client must know it repeats safely."""
+    settings = ProvisionerSettings()
+    methods = _endpoints(create_app([_Cluster("central")], settings))
+    assert methods["/groups/{group}/namespace"][1] == {"PUT"}
 
 
 async def test_the_probes_answer_while_an_ensure_is_in_flight(tmp_path):
@@ -362,7 +370,7 @@ async def test_the_probes_answer_while_an_ensure_is_in_flight(tmp_path):
     transport = httpx.ASGITransport(app=app)
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://provisioner") as client:
-            in_flight = asyncio.ensure_future(client.post("/ensure/payments"))
+            in_flight = asyncio.ensure_future(client.put("/groups/payments/namespace"))
             await asyncio.sleep(0.05)  # let it reach the blocked converge
             assert (await client.get("/healthz")).status_code == 200
             assert (await client.get("/readyz")).status_code == 200
@@ -392,7 +400,7 @@ def test_the_app_drains_its_pool_before_the_process_lets_go(tmp_path, monkeypatc
 
     # Entering TestClient runs startup; leaving it runs shutdown.
     with TestClient(create_app([_Cluster("central")], settings)) as client:
-        assert client.post("/ensure/payments").status_code == 200
+        assert client.put("/groups/payments/namespace").status_code == 200
         assert "shutdown" not in built, "the pool must live as long as the app"
 
     assert built["max_workers"] == 3, "bounded by ensure_workers, not the default"

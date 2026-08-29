@@ -699,7 +699,7 @@ quietly pulled a framework back in would pass every other check
 
 The namespace provisioner is a third image on the same principle, one notch along:
 `Dockerfile.provisioner` installs a `[provisioner]` extra holding a web server and nothing
-else. It does serve HTTP - one internal endpoint, `POST /ensure/{group}` - so `fastapi`
+else. It does serve HTTP - one internal endpoint, `PUT /groups/{group}/namespace` - so `fastapi`
 there is expected; what it must never carry is the auth stack. Its caller presents a shared
 token, and the constant-time comparison for that is spelled out in `provisioner/api.py`
 rather than taken from `cloudlet_apis.auth`, because importing anything from that package
