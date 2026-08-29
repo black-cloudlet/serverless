@@ -10,13 +10,19 @@ landed anywhere.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
+import httpx
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from common.labels import ANNOTATION_TEMPLATE_HASH, LABEL_GROUP, LABEL_MANAGED_BY, PROVISIONER_VALUE
+from provisioner import api as provisioner_api
 from provisioner.api import create_app
 from provisioner.config import ProvisionerSettings
 from provisioner.ensure import FAILED, READY, TIMEOUT, ensure
@@ -74,6 +80,13 @@ class _Cluster:
         return [m for m, _ in self.applied if m["kind"] == "Namespace"]
 
 
+@pytest.fixture
+def pool():
+    """The app-owned pool ensure runs its converges on."""
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        yield executor
+
+
 def _templates() -> TemplateSet:
     return TemplateSet.from_sources(TEMPLATES.items())
 
@@ -84,17 +97,33 @@ def _settings(tmp_path, **overrides) -> ProvisionerSettings:
     return ProvisionerSettings(templates_dir=str(tmp_path), **overrides)
 
 
+def _endpoints(app) -> dict:
+    """Every route's handler, reaching through the wrapper FastAPI puts around
+    an included router (its shape has changed across versions)."""
+    found, stack = {}, list(app.routes)
+    while stack:
+        route = stack.pop()
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            stack.extend(inner.routes)
+        elif isinstance(route, APIRoute):
+            found[route.path] = route.endpoint
+    return found
+
+
 def _client(clusters, settings) -> TestClient:
     # raise_server_exceptions=False, so a handler bug surfaces as the 500 a
     # caller would see rather than as an exception the test never posted.
     return TestClient(create_app(clusters, settings), raise_server_exceptions=False)
 
 
-def test_ensure_converges_every_region():
+async def test_ensure_converges_every_region(pool):
     clusters = [_Cluster("central"), _Cluster("south")]
     templates = _templates()
 
-    outcomes = ensure(clusters, "payments-serverless", "payments", templates, timeout=10)
+    outcomes = await ensure(
+        clusters, "payments-serverless", "payments", templates, timeout=10, executor=pool
+    )
 
     assert [(o.region, o.status) for o in outcomes] == [("central", READY), ("south", READY)]
     for cluster in clusters:
@@ -107,10 +136,12 @@ def test_ensure_converges_every_region():
         assert last["metadata"]["labels"][LABEL_MANAGED_BY] == PROVISIONER_VALUE
 
 
-def test_a_failing_region_is_a_row_and_the_others_still_converge():
+async def test_a_failing_region_is_a_row_and_the_others_still_converge(pool):
     clusters = [_Cluster("central", fail="apiserver said no"), _Cluster("south")]
 
-    outcomes = ensure(clusters, "payments-serverless", "payments", _templates(), timeout=10)
+    outcomes = await ensure(
+        clusters, "payments-serverless", "payments", _templates(), timeout=10, executor=pool
+    )
 
     assert [(o.region, o.status) for o in outcomes] == [("central", FAILED), ("south", READY)]
     assert "apiserver said no" in outcomes[0].message
@@ -118,26 +149,28 @@ def test_a_failing_region_is_a_row_and_the_others_still_converge():
     assert clusters[1].namespaces, "the healthy region still got its converge"
 
 
-def test_regions_past_the_deadline_are_reported_as_timeout():
+async def test_regions_past_the_deadline_are_reported_as_timeout(pool):
     blocked = threading.Event()
     clusters = [_Cluster("central", block=blocked), _Cluster("south", block=blocked)]
     try:
         started = time.monotonic()
-        outcomes = ensure(clusters, "payments-serverless", "payments", _templates(), timeout=0.3)
+        outcomes = await ensure(
+            clusters, "payments-serverless", "payments", _templates(), timeout=0.3, executor=pool
+        )
         elapsed = time.monotonic() - started
     finally:
-        blocked.set()  # release the abandoned threads before the suite moves on
+        blocked.set()  # release the abandoned converges before the suite moves on
 
     assert [o.status for o in outcomes] == [TIMEOUT, TIMEOUT]
     assert "timed out after 0.3s" in outcomes[0].message
-    # The budget is the fan-out's, not each region's: two blocked regions cost
-    # one deadline, not two, and neither costs the 10s the fake would block for.
+    # One wait for the whole fan-out, so two blocked regions cost one deadline
+    # rather than one each - and neither costs the 10s the fake would block for.
     assert elapsed < 2.0
 
 
-def test_ensure_refuses_an_empty_region_list():
+async def test_ensure_refuses_an_empty_region_list(pool):
     with pytest.raises(ValueError, match="no regions are configured"):
-        ensure([], "payments-serverless", "payments", _templates(), timeout=10)
+        await ensure([], "payments-serverless", "payments", _templates(), timeout=10, executor=pool)
 
 
 def test_the_endpoint_reports_the_namespace_the_hash_and_every_region(tmp_path):
@@ -295,6 +328,75 @@ def test_an_unusable_template_set_fails_ensure_the_way_it_fails_readiness(tmp_pa
 
     assert client.get("/readyz").status_code == 503
     assert client.post("/ensure/payments").status_code == 503
+
+
+def test_readiness_rejects_a_set_that_renders_only_a_namespace(tmp_path):
+    """The rule converge refuses on. Unchecked here, the pod stays in rotation
+    and every ensure 502s, blaming the regions for this pod's own bad mount."""
+    (tmp_path / "10-namespace.yaml").write_text(TEMPLATES["10-namespace.yaml"])
+    settings = ProvisionerSettings(templates_dir=str(tmp_path))
+    client = _client([_Cluster("central")], settings)
+
+    ready = client.get("/readyz")
+    assert ready.status_code == 503
+    assert "renders no namespaced contents" in ready.json()["error"]["message"]
+    # And the endpoint answers for the same reason, rather than as a 502.
+    assert client.post("/ensure/payments").status_code == 503
+
+
+def test_no_endpoint_holds_one_of_the_servers_threads(tmp_path):
+    """All three are coroutines, so none consumes a slot of Starlette's thread
+    limiter - which an ensure would hold for the whole cluster op timeout,
+    starving the probes that keep this pod alive."""
+    app = create_app([_Cluster("central")], _settings(tmp_path))
+
+    handlers = _endpoints(app)
+    assert set(handlers) == {"/healthz", "/readyz", "/ensure/{group}"}
+    for path, handler in handlers.items():
+        assert inspect.iscoroutinefunction(handler), f"{path} would take a server thread"
+
+
+async def test_the_probes_answer_while_an_ensure_is_in_flight(tmp_path):
+    blocked = threading.Event()
+    app = create_app([_Cluster("central", block=blocked)], _settings(tmp_path))
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://provisioner") as client:
+            in_flight = asyncio.ensure_future(client.post("/ensure/payments"))
+            await asyncio.sleep(0.05)  # let it reach the blocked converge
+            assert (await client.get("/healthz")).status_code == 200
+            assert (await client.get("/readyz")).status_code == 200
+            blocked.set()
+            assert (await in_flight).status_code == 200
+    finally:
+        blocked.set()
+
+
+def test_the_app_drains_its_pool_before_the_process_lets_go(tmp_path, monkeypatch):
+    """Ordering that matters: main.py closes the cluster clients after this, so
+    an in-flight converge must not lose the connection it writes through."""
+    built = {}
+
+    class _RecordingPool(ThreadPoolExecutor):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built["pool"] = self
+            built["max_workers"] = kwargs.get("max_workers")
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            built["shutdown"] = {"wait": wait, "cancel_futures": cancel_futures}
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(provisioner_api, "ThreadPoolExecutor", _RecordingPool)
+    settings = _settings(tmp_path, ensure_workers=3)
+
+    # Entering TestClient runs startup; leaving it runs shutdown.
+    with TestClient(create_app([_Cluster("central")], settings)) as client:
+        assert client.post("/ensure/payments").status_code == 200
+        assert "shutdown" not in built, "the pool must live as long as the app"
+
+    assert built["max_workers"] == 3, "bounded by ensure_workers, not the default"
+    assert built["shutdown"] == {"wait": True, "cancel_futures": True}
 
 
 def test_readiness_never_touches_a_cluster(tmp_path):

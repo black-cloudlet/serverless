@@ -37,6 +37,11 @@ class ProvisionerSettings(LoopSettings):
     # is bounded by the pool, not serialized.
     converge_workers: int = Field(default=4, ge=1)
 
+    # The ensure API's own pool, separate from the loop's. It is the bound on
+    # how many converges a burst of creates can have in flight, and the reason
+    # a slow region cannot reach the server's threads and starve the probes.
+    ensure_workers: int = Field(default=8, ge=1)
+
 
 @lru_cache
 def get_settings() -> ProvisionerSettings:

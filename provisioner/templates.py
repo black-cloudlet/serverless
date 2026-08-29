@@ -116,6 +116,16 @@ class TemplateSet:
         """How many template files the set holds."""
         return len(self.sources)
 
+    @property
+    def renders_contents(self) -> bool:
+        """Whether the set holds anything below the Namespace itself.
+
+        The rule ``converge`` refuses on, readable without rendering: a set
+        that produces only a Namespace would prune every tenant namespace
+        bare, so readiness rejects it before the endpoint has to.
+        """
+        return any(doc.get("kind") != "Namespace" for _name, doc in self.docs)
+
     def render(self, *, namespace: str, group: str) -> list[dict]:
         """Swap the sentinels for their values, in set order.
 

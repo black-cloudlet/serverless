@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 
 from cloudlet_apis.logging import get_logger
 from cloudlet_apis.requestid import RequestIDMiddleware
@@ -82,24 +84,43 @@ def create_app(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> Fa
     Returns:
         The configured application.
     """
+    # The converges' own pool, not the server's threads: an ensure holds a
+    # pool slot for as long as the slowest region takes, and a probe must
+    # never have to queue behind one.
+    pool = ThreadPoolExecutor(max_workers=settings.ensure_workers, thread_name_prefix="ensure")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """Drain the ensure pool before the server lets go of the process."""
+        yield
+        # Queued converges are dropped; a running one is left to finish, and
+        # is bounded by the cluster client's own connect/read timeouts rather
+        # than by anything here. Draining before the caller in main.py closes
+        # the cluster clients is the point: an in-flight converge must not
+        # lose the connection it is writing through.
+        pool.shutdown(wait=True, cancel_futures=True)
+
     app = FastAPI(
         title="Serverless Provisioner",
         description="Internal API: converge a group's namespace in every region.",
         docs_url=None,
         redoc_url=None,
+        lifespan=lifespan,
     )
     app.add_middleware(RequestIDMiddleware)
     register_exception_handlers(app)
-    app.include_router(_router(clusters, settings))
+    app.include_router(_router(clusters, settings, pool))
     return app
 
 
-def _router(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> APIRouter:
-    """The three endpoints, closed over the clusters and settings."""
+def _router(
+    clusters: Sequence[Cluster], settings: ProvisionerSettings, pool: ThreadPoolExecutor
+) -> APIRouter:
+    """The three endpoints, closed over the clusters, settings and pool."""
     router = APIRouter()
 
     @router.get("/healthz")
-    def healthz() -> dict:
+    async def healthz() -> dict:
         """Liveness: the process is up.
 
         Returns:
@@ -122,12 +143,15 @@ def _router(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> APIRo
 
         Raises:
             ServiceUnavailableError: If no regions are configured, or the
-                mounted set is missing, unusable, or empty. Empty counts as
-                broken, the same judgement the reconcile loop makes.
+                mounted set is missing, unusable, empty, or renders nothing
+                below the Namespace. The last two count as broken, the same
+                judgement the reconcile loop and converge make.
         """
         if not clusters:
             raise ServiceUnavailableError("no regions are configured")
         try:
+            # Read on the event loop: the ConfigMap mount is a tmpfs holding a
+            # handful of small files, capped by the 1 MiB a ConfigMap may be.
             templates = TemplateSet.load(settings.templates_dir)
         except Exception as exc:  # noqa: BLE001 - any bad set means not ready
             logger.warning("not ready: %s", exc)
@@ -135,10 +159,18 @@ def _router(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> APIRo
         if len(templates) == 0:
             logger.warning("not ready: template set at %s is empty", settings.templates_dir)
             raise ServiceUnavailableError("template set is empty")
+        if not templates.renders_contents:
+            # The rule converge refuses on. Checked here too, or a truncated
+            # ConfigMap would leave the pod in rotation and turn every ensure
+            # into a 502 blaming the regions for this pod's own bad mount.
+            logger.warning(
+                "not ready: template set at %s renders only a Namespace", settings.templates_dir
+            )
+            raise ServiceUnavailableError("template set renders no namespaced contents")
         return templates
 
     @router.get("/readyz")
-    def readyz() -> dict:
+    async def readyz() -> dict:
         """Readiness: this pod can converge a namespace right now.
 
         Returns:
@@ -150,12 +182,16 @@ def _router(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> APIRo
         return {"status": "ready", "templateHash": usable_templates().digest}
 
     @router.post("/ensure/{group}", response_model=EnsureResponse)
-    def ensure_group(group: Group, request: Request) -> EnsureResponse:
+    async def ensure_group(group: Group, request: Request) -> EnsureResponse:
         """Converge the group's namespace in every region, to the current set.
 
         Idempotent: a group that is already converged is applied again, which
         is how the caller learns it is converged to *this* hash rather than
         last release's.
+
+        Async, and the converges run on the app's own pool, so a slow region
+        holds a pool slot rather than one of the server's threads - the
+        probes stay answerable through a peer region's outage.
 
         Args:
             group: The owning group (from the request path, normalized).
@@ -174,8 +210,13 @@ def _router(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> APIRo
         _check_token(request, settings.provisioner_token)
         namespace = _namespace_for(group)
         templates = usable_templates()
-        outcomes = ensure(
-            clusters, namespace, group, templates, timeout=settings.cluster_op_timeout
+        outcomes = await ensure(
+            clusters,
+            namespace,
+            group,
+            templates,
+            timeout=settings.cluster_op_timeout,
+            executor=pool,
         )
         rows = [RegionResult(region=o.region, status=o.status, message=o.message) for o in outcomes]
         if not any(outcome.ok for outcome in outcomes):

@@ -9,6 +9,7 @@ are not two deployments.
 from __future__ import annotations
 
 import threading
+import time
 
 import uvicorn
 from cloudlet_apis.logging import configure_logging, get_logger
@@ -22,9 +23,15 @@ from provisioner.templates import TemplateSet
 
 logger = get_logger(__name__)
 
-# How long a stopping pod lets an in-flight ensure finish. Short: the caller
-# retries, and the pod's own grace period is the ceiling either way.
+# How long uvicorn lets in-flight requests finish once asked to stop.
 API_SHUTDOWN_SECONDS = 5.0
+# How long the loop then waits for that thread. Deliberately longer than the
+# budget above: the join must normally outlast uvicorn's own graceful
+# shutdown, or it expires just as the server is finishing and the caller
+# closes the cluster clients out from under an in-flight converge.
+API_JOIN_SECONDS = 15.0
+# A server that cannot bind must not be discovered by the first ensure.
+API_STARTUP_SECONDS = 10.0
 
 
 def run_pass(cluster: Cluster, settings: ProvisionerSettings, *, force: bool = False) -> None:
@@ -104,13 +111,45 @@ def serve(
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="ensure-api", daemon=True)
     thread.start()
+    _await_startup(server, thread)
     return server, thread
 
 
+def _await_startup(server: uvicorn.Server, thread: threading.Thread) -> None:
+    """Block until the server is listening, or say why it never will be.
+
+    uvicorn answers a bind failure with ``sys.exit`` *inside this thread*,
+    which Python discards silently - so without this the loop would run on
+    beside a dead API and every ensure would be refused with nothing in the
+    log to say so. Raising instead crash-loops the pod, which is visible.
+
+    Raises:
+        RuntimeError: If the server stopped, or did not start in time.
+    """
+    deadline = time.monotonic() + API_STARTUP_SECONDS
+    while time.monotonic() < deadline:
+        if server.started:
+            return
+        if not thread.is_alive():
+            raise RuntimeError("the ensure API stopped before it began serving")
+        time.sleep(0.05)
+    raise RuntimeError(f"the ensure API did not start within {API_STARTUP_SECONDS}s")
+
+
 def stop(server: uvicorn.Server, thread: threading.Thread) -> None:
-    """Let an in-flight ensure finish, then stop waiting for the server."""
+    """Ask the server to stop and wait for it, so shutdown stays ordered.
+
+    The wait matters: the server's own shutdown drains the ensure pool, and
+    only once that returns may the caller close the cluster clients those
+    converges write through.
+    """
     server.should_exit = True
-    thread.join(timeout=API_SHUTDOWN_SECONDS)
+    thread.join(timeout=API_JOIN_SECONDS)
+    if thread.is_alive():
+        logger.warning(
+            "the ensure API did not stop within %ss; closing cluster clients anyway",
+            API_JOIN_SECONDS,
+        )
 
 
 def run() -> None:
