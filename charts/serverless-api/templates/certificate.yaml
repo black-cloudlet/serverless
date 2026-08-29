@@ -18,3 +18,29 @@ spec:
     encoding: PKCS1
     rotationPolicy: Always
     size: 4096
+{{- if .Values.tenantNamespaces.provisioner.enabled }}
+---
+# The provisioner's own identity. A separate CN from the API's because the two
+# hold different rights: this one creates namespaces and writes their policies,
+# which is precisely what the API must not be able to do.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.tenantNamespaces.provisioner.certificate.name }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.tenantNamespaces.provisioner.certificate.name }}
+  commonName: {{ .Values.tenantNamespaces.provisioner.certificate.user }}
+  dnsNames:
+    - {{ .Values.tenantNamespaces.provisioner.certificate.user }}
+  issuerRef:
+    name: {{ .Values.certificate.issuerRef.name }}
+    kind: {{ .Values.certificate.issuerRef.kind }}
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    rotationPolicy: Always
+    size: 4096
+{{- end }}

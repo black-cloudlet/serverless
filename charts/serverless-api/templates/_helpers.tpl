@@ -266,3 +266,225 @@ the Builder's own status - a chart-side check could only repeat that, from a
 chart that cannot see the cluster. */}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The two runtime facts the provisioner substitutes when it converges a tenant
+namespace. Emitted as literal text, so what lands in the ConfigMap is the token
+and not something Helm resolved (the same escaping the ESO templates use).
+*/}}
+{{- define "serverless-api.tenantNamespaceToken" -}}{{ `{{namespace}}` }}{{- end -}}
+{{- define "serverless-api.tenantGroupToken" -}}{{ `{{group}}` }}{{- end -}}
+{{- define "serverless-api.tenantRegionToken" -}}{{ `{{region}}` }}{{- end -}}
+{{- define "serverless-api.tenantRegistryToken" -}}{{ `{{registry}}` }}{{- end -}}
+
+{{/*
+The tenant-templates ConfigMap's name, needed by both the ConfigMap itself and
+the Deployment that mounts it.
+*/}}
+{{- define "serverless-api.tenantTemplatesName" -}}
+{{ .Values.name }}-tenant-templates
+{{- end -}}
+
+{{/*
+The provisioner's object name and selector labels, on the same reasoning as the
+build controller's: a distinct ``app.kubernetes.io/name`` keeps the API's
+Service from selecting its pods.
+*/}}
+{{- define "serverless-api.provisionerName" -}}
+{{ .Values.name }}-provisioner
+{{- end -}}
+
+{{- define "serverless-api.provisionerLabels" -}}
+app.kubernetes.io/name: {{ include "serverless-api.provisionerName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+A Vault path with this release's region put back as the provisioner's region
+token, so the tenant template set stays byte-identical in every region and the
+path is resolved against whichever cluster is being converged.
+
+  {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" $key) }}
+*/}}
+{{- define "serverless-api.tenantVaultKey" -}}
+{{- $root := .root -}}
+{{- $resolved := tpl .key $root -}}
+{{- $token := include "serverless-api.tenantRegionToken" $root -}}
+{{- replace $root.Values.global.region $token $resolved -}}
+{{- end -}}
+
+{{/*
+The segmentation for ONE workloads namespace. Rendered twice from this one body
+- into the legacy namespace by networkpolicy.yaml, and into the tenant template
+set with the namespace token in place of a name - so the two can never drift.
+Call with the root context and the namespace to write into:
+
+  {{ include "serverless-api.workloadNetworkPolicies" (dict "root" $ "namespace" $ns) }}
+*/}}
+{{- define "serverless-api.workloadNetworkPolicies" -}}
+{{- $root := .root -}}
+{{- $ns := .namespace -}}
+# Additive segmentation for the workloads namespace: default-deny, then each
+# allow-* reopens one path (Knative/OpenShift in; DNS/API/control-plane/off-cluster out).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+spec:
+  podSelector: {} # every pod in the namespace
+  policyTypes: [Ingress, Egress]
+---
+# Ingress: Knative + OpenShift only (same-namespace pods excluded -> no pod-to-pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-system
+  namespace: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range $root.Values.networkPolicy.ingressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+---
+# Egress: DNS resolution (openshift-dns).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-dns
+  namespace: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $root.Values.networkPolicy.dnsNamespace }}
+      ports:
+        {{- range $root.Values.networkPolicy.dnsPorts }}
+        - protocol: UDP
+          port: {{ . }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+---
+# Egress: the platform API ("our side") and the Knative control plane.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-internal
+  namespace: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $root.Values.namespaces.api }}
+        {{- range $root.Values.networkPolicy.egressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+---
+# Egress: off-cluster (LBs/Routes/external); internal CIDRs excluded so it can't
+# reach other pods/Services directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-external
+  namespace: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ $root.Values.networkPolicy.externalEgress.cidr }}
+            {{- with $root.Values.networkPolicy.externalEgress.exceptCIDRs }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+{{- $build := $root.Values.networkPolicy.build }}
+{{- if and $root.Values.build.enabled $build.enabled }}
+---
+# Build pods only (`kpack.io/build`), not tenant pods. Additive: the default-deny
+# and the tenant allowlist above are unchanged. docs/DEPLOYING.md - Network policy for build pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-build-pods
+  namespace: {{ $ns }}
+  labels:
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: kpack.io/build
+        operator: Exists
+  policyTypes: [Ingress, Egress]
+  {{- with $build.ingressNamespaces }}
+  ingress:
+    - from:
+        {{- range . }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+  {{- end }}
+  {{- if or $build.egressNamespaces $build.egressCIDRs }}
+  egress:
+    {{- with $build.egressNamespaces }}
+    - to:
+        {{- range . }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- with $build.egressCIDRs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+The OpenShift-injected CA bundle ConfigMap for ONE namespace. Same two-target
+reason as the policies above.
+*/}}
+{{- define "serverless-api.caBundleConfigMap" -}}
+{{- $root := .root -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $root.Values.caBundle.name }}
+  namespace: {{ .namespace }}
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"
+    {{- include "serverless-api.labels" $root | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+{{- end -}}

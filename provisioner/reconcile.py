@@ -61,7 +61,11 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         Exception: Any render or apply error; the caller decides whether it
             ends the pass.
     """
-    manifests = templates.render(namespace=namespace, group=group)
+    # Rendered for the cluster being written to, not for this pod: an ensure
+    # converges peers, and a per-region value must follow the target.
+    manifests = templates.render(
+        namespace=namespace, group=group, region=cluster.region, registry=cluster.registry.url
+    )
     ns_manifest = next((m for m in manifests if m["kind"] == "Namespace"), None)
     if ns_manifest is None:
         ns_manifest = {"apiVersion": "v1", "kind": "Namespace", "metadata": {}}

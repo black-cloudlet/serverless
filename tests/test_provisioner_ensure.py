@@ -15,6 +15,7 @@ import inspect
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -56,6 +57,9 @@ class _Cluster:
         self, region: str, *, fail: str | None = None, block: threading.Event | None = None
     ):
         self.region = region
+        # Resolved per region on the real client, which is what makes a
+        # per-region value in the set follow the cluster being written to.
+        self.registry = SimpleNamespace(url=f"registry.{region}.internal")
         self.applied: list[tuple[dict, str | None]] = []
         self._fail = fail
         self._block = block

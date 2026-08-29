@@ -96,7 +96,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: actions/setup-python@e9d6f990972a57673cdb72ec29e19d42ba28880f # v6.0.0
+        with:
+          python-version: "3.14"
+      # For dev/tenant_templates.py, which loads the chart's tenant template set
+      # through the provisioner's own loader below.
+      - run: pip install .
       - run: helm lint charts/serverless-api
+      - run: helm lint charts/serverless-api -f charts/serverless-api/ci/everything-values.yaml
       # Render with defaults and validate the manifests. Core Kubernetes kinds
       # use the built-in schemas; CRDs (Knative Service/DomainMapping,
       # cert-manager, ESO) are validated against the community CRDs-catalog, with
@@ -106,10 +113,44 @@ jobs:
         run: |
           curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
             | tar -xz -C /usr/local/bin kubeconform
-          helm template serverless-api charts/serverless-api \
-            | kubeconform -strict -summary -ignore-missing-schemas \
-                -schema-location default \
-                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          for values in "" "-f charts/serverless-api/ci/everything-values.yaml"; do
+            helm template serverless-api charts/serverless-api $values \
+              | kubeconform -strict -summary -ignore-missing-schemas \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          done
+      # The chart WRITES the tenant template set and the provisioner READS it.
+      # Until the two meet, a malformed NetworkPolicy or a mistyped placeholder
+      # is found by the first tenant onboarding. Loading applies every rule the
+      # running provisioner applies; validating the RENDERED objects is what
+      # catches a policy that is only wrong once a namespace is substituted in.
+      - name: The tenant template set loads and renders into valid objects
+        run: |
+          for values in "" "-f charts/serverless-api/ci/everything-values.yaml"; do
+            helm template serverless-api charts/serverless-api $values > /tmp/rendered.yaml
+            python dev/tenant_templates.py /tmp/rendered.yaml \
+              | kubeconform -strict -summary -ignore-missing-schemas \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          done
+      # The set must be byte-identical in every region. The ensure fan-out
+      # converges a peer's namespace from whichever provisioner took the
+      # request, so a per-region value baked in here - a Vault path, a registry
+      # host - would make that write wrong rather than merely redundant
+      # (provisioner/ensure.py). Region-varying values go in as placeholders the
+      # provisioner resolves against the cluster it is writing to.
+      - name: The tenant template set is region-neutral
+        run: |
+          for region in central south; do
+            helm template serverless-api charts/serverless-api --set global.region=$region \
+              | python dev/tenant_templates.py --digest - > "/tmp/digest-$region"
+          done
+          if ! diff -q /tmp/digest-central /tmp/digest-south; then
+            echo "::error::the tenant template set differs between regions:"
+            paste /tmp/digest-central /tmp/digest-south
+            exit 1
+          fi
+          echo "both regions render set $(cat /tmp/digest-central)"
 
   # Verify the Dockerfile builds and scan the image on every run; this gates
   # publishing (release.yml's push job `needs` this suite), so the pushed image

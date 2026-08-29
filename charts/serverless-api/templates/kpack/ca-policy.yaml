@@ -31,6 +31,21 @@ spec:
                   # namespace is full of tenant pods that must not be touched.
                   - key: kpack.io/build
                     operator: Exists
+          # And every per-group namespace, matched on the label the provisioner
+          # stamps rather than by name: they are created at runtime, so there is
+          # no list of names for this policy to hold. The key and value are
+          # common/labels.py's LABEL_MANAGED_BY and PROVISIONER_VALUE; a test
+          # asserts the three stay in step.
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchLabels:
+                  serverless.platform/managed-by: serverless-provisioner
+              selector:
+                matchExpressions:
+                  - key: kpack.io/build
+                    operator: Exists
       mutate:
         patchStrategicMerge:
           spec:

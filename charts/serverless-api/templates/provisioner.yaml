@@ -1,0 +1,194 @@
+{{- if .Values.tenantNamespaces.provisioner.enabled }}
+{{- $p := .Values.tenantNamespaces.provisioner }}
+# Creates and converges the per-group namespaces (docs/proposals/namespace-per-group.md).
+# Two jobs in one process, sharing the cluster clients and the mounted set: a
+# reconcile loop over THIS cluster, and the ensure endpoint the API calls before
+# a create - which writes to every region, because a create must not land in a
+# region whose namespace does not exist yet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "serverless-api.provisionerName" . }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.provisionerLabels" . | nindent 4 }}
+    {{- with $p.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $p.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ $p.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "serverless-api.provisionerLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "serverless-api.provisionerLabels" . | nindent 8 }}
+        {{- with $p.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $p.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      containers:
+        - name: {{ include "serverless-api.provisionerName" . }}
+          image: {{ include "serverless-api.image" (dict "root" $ "spec" $p) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: {{ $p.service.portName }}
+              containerPort: {{ $p.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: SERVERLESS_BASE_DOMAIN
+              value: {{ .Values.global.baseDomain | quote }}
+            # The region whose namespaces the LOOP converges. Ensure still
+            # writes to every region; only the loop is local, so the two sites
+            # never fight over one namespace during an Argo sync gap.
+            - name: SERVERLESS_LOCAL_REGION
+              value: {{ .Values.global.region | quote }}
+            - name: SERVERLESS_PORT
+              value: {{ .Values.tenantNamespaces.provisioner.service.targetPort | int64 | quote }}
+            - name: SERVERLESS_RESYNC_SECONDS
+              value: {{ .Values.tenantNamespaces.provisioner.resyncSeconds | int64 | quote }}
+            - name: SERVERLESS_FULL_RESYNC_PASSES
+              value: {{ .Values.tenantNamespaces.provisioner.fullResyncPasses | int64 | quote }}
+            - name: SERVERLESS_CONVERGE_WORKERS
+              value: {{ .Values.tenantNamespaces.provisioner.convergeWorkers | int64 | quote }}
+            - name: SERVERLESS_ENSURE_WORKERS
+              value: {{ .Values.tenantNamespaces.provisioner.ensureWorkers | int64 | quote }}
+            # Whole-ConfigMap mount, never subPath: a subPath mount is not
+            # refreshed by the kubelet, and that refresh is the only way a helm
+            # upgrade reaches namespaces Argo cannot see.
+            - name: SERVERLESS_TEMPLATES_DIR
+              value: /etc/serverless/tenant-templates
+            - name: SERVERLESS_CLIENT_CERT_DIR
+              value: {{ .Values.certificate.mountPath | quote }}
+            - name: SERVERLESS_CA_BUNDLE__CONFIG_MAP
+              value: {{ .Values.caBundle.name | quote }}
+            - name: SERVERLESS_CA_BUNDLE__KEY
+              value: {{ .Values.caBundle.key | quote }}
+            - name: SERVERLESS_CA_BUNDLE__MOUNT_PATH
+              value: {{ .Values.caBundle.mountPath | quote }}
+            - name: SSL_CERT_FILE
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+            - name: REQUESTS_CA_BUNDLE
+              value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
+          envFrom:
+            # The same regions list the API and the controller read: ensure
+            # needs a client for every region, not just this one.
+            - configMapRef:
+                name: "{{ .Values.name }}-regions"
+            {{- if $p.tokenSecret.create }}
+            # `optional`, like the controller's: an absent token disables the
+            # check rather than holding the pod down.
+            - secretRef:
+                name: {{ $p.tokenSecret.name }}
+                optional: true
+            {{- end }}
+          # Liveness is the process; readiness is whether this pod could
+          # actually converge a namespace right now - regions configured and a
+          # template set that loads and is not empty. Neither touches a cluster:
+          # a probe that did would take the pod out on someone else's outage.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ $p.service.portName }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ $p.service.portName }}
+          volumeMounts:
+            - name: tenant-templates
+              mountPath: /etc/serverless/tenant-templates
+              readOnly: true
+            - name: {{ $p.certificate.name }}
+              mountPath: {{ .Values.certificate.mountPath }}
+              readOnly: true
+            - name: {{ .Values.caBundle.name }}
+              mountPath: {{ .Values.caBundle.mountPath }}
+              readOnly: true
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+      volumes:
+        - name: tenant-templates
+          configMap:
+            name: {{ include "serverless-api.tenantTemplatesName" . }}
+        - name: {{ $p.certificate.name }}
+          secret:
+            secretName: {{ $p.certificate.name }}
+        - name: {{ .Values.caBundle.name }}
+          configMap:
+            name: {{ .Values.caBundle.name }}
+---
+# ClusterIP only. Nothing outside the cluster calls this, and there is
+# deliberately no Route: the caller is the API, one namespace away.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "serverless-api.provisionerName" . }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.provisionerLabels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "serverless-api.provisionerLabels" . | nindent 4 }}
+  ports:
+    - name: {{ $p.service.portName }}
+      port: {{ $p.service.port }}
+      targetPort: {{ $p.service.targetPort }}
+      protocol: TCP
+{{- if .Values.networkPolicy.enabled }}
+---
+# The primary control on the ensure endpoint: only the API's own pods may reach
+# it. The shared token is depth behind this, not instead of it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "serverless-api.provisionerName" . }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "serverless-api.provisionerLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "serverless-api.labels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $p.service.targetPort }}
+{{- end }}
+{{- if $p.tokenSecret.create }}
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: {{ $p.tokenSecret.name }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+spec:
+  refreshInterval: {{ .Values.externalSecrets.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.externalSecrets.clusterSecretStore }}
+    kind: ClusterSecretStore
+  target:
+    name: {{ $p.tokenSecret.name }}
+  data:
+    # Read by both ends: the provisioner checks it, and the API sends it.
+    - secretKey: SERVERLESS_PROVISIONER_TOKEN
+      remoteRef:
+        key: {{ tpl $p.tokenSecret.key $ }}
+        property: {{ $p.tokenSecret.property }}
+{{- end }}
+{{- end }}

@@ -69,11 +69,16 @@ def _set(files: dict[str, str] | None = None) -> TemplateSet:
     return TemplateSet.from_sources(files.items())
 
 
+class _Registry:
+    url = "registry.central.internal"
+
+
 class _Cluster:
     """A cluster-scoped fake: canned namespaces and labeled objects, recording writes."""
 
     region = "central"
     name = "central-0"
+    registry = _Registry()
 
     def __init__(self, namespaces=None, objects=None, fail_apply_at=None):
         self._namespaces = namespaces or []
@@ -136,14 +141,23 @@ def test_the_digest_names_the_set_not_the_group():
     # Every namespace converged from one ConfigMap carries one stamp: the
     # hash is over the raw text, before any substitution.
     templates = _set()
-    a = templates.render(namespace="a-serverless", group="a")
-    b = templates.render(namespace="b-serverless", group="b")
+    a = templates.render(
+        namespace="a-serverless", group="a", region="central", registry="registry.central.internal"
+    )
+    b = templates.render(
+        namespace="b-serverless", group="b", region="central", registry="registry.central.internal"
+    )
     assert a != b
     assert templates.digest == _set().digest
 
 
 def test_render_substitutes_both_placeholders():
-    manifests = _set().render(namespace="payments-serverless", group="payments")
+    manifests = _set().render(
+        namespace="payments-serverless",
+        group="payments",
+        region="central",
+        registry="registry.central.internal",
+    )
     ns = next(m for m in manifests if m["kind"] == "Namespace")
     assert ns["metadata"]["name"] == "payments-serverless"
     policy = next(m for m in manifests if m["kind"] == "NetworkPolicy")
@@ -164,7 +178,12 @@ def test_an_unquoted_placeholder_is_legal_yaml():
         }
     )
 
-    [cm] = templates.render(namespace="payments-serverless", group="payments")
+    [cm] = templates.render(
+        namespace="payments-serverless",
+        group="payments",
+        region="central",
+        registry="registry.central.internal",
+    )
 
     assert cm["metadata"]["name"] == "payments-serverless-ca"
     assert cm["metadata"]["namespace"] == "payments-serverless"
@@ -525,7 +544,9 @@ def test_payload_braces_are_not_placeholders():
             )
         }
     )
-    [cm] = templates.render(namespace="n", group="g")
+    [cm] = templates.render(
+        namespace="n", group="g", region="central", registry="registry.central.internal"
+    )
     assert cm["data"]["tmpl"] == "{{ .Values.x }}"
 
 

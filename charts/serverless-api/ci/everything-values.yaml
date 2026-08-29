@@ -1,0 +1,23 @@
+# Turns on everything the default values leave off, so CI renders the paths a
+# default install never reaches. Not a recommended configuration - a maximal
+# one: a template that only breaks when the SCC binding or the provisioner token
+# is enabled would otherwise reach a cluster before it reaches a reviewer.
+build:
+  enabled: true
+  scc:
+    enabled: true
+tenantNamespaces:
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+  provisioner:
+    enabled: true
+    tokenSecret:
+      create: true
+networkPolicy:
+  enabled: true
+  build:
+    enabled: true
+    egressNamespaces:
+      - internal-registry
+    egressCIDRs:
+      - 10.9.0.0/24
