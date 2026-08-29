@@ -190,14 +190,14 @@ Two things are cluster-scoped, and only these two. A **read-only** ClusterRole
 (`{name}-read`) covers Knative Services, DomainMappings, Revisions, namespaces and the
 kpack objects: host uniqueness has to be checked across every tenant namespace, and the
 build controller follows Images wherever they are built. It holds no verb that changes
-anything. And the **provisioner** has an identity of its own - a second certificate, a
+anything. And the **tenant_controller** has an identity of its own - a second certificate, a
 second CN - because it creates namespaces and writes their policies, which is exactly what
 the API must not be able to do. Neither can do the other's damage:
 
 | Identity | May | May not |
 |----------|-----|---------|
 | `serverless-api.clients.{domain}` | write workloads inside a tenant namespace; read Knative and kpack objects cluster-wide | create, change or delete a namespace; write a NetworkPolicy |
-| `serverless-provisioner.clients.{domain}` | create tenant namespaces and write the resources the template set renders; read Knative Services (for the GC) | touch a workload |
+| `serverless-tenant-controller.clients.{domain}` | create tenant namespaces and write the resources the template set renders; read Knative Services (for the GC) | touch a workload |
 
 ### Network policy for build pods
 

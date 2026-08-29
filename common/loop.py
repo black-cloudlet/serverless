@@ -1,6 +1,6 @@
 """The paced control loop the long-running services share.
 
-One pacing/backoff policy for the build controller and the provisioner, so a
+One pacing/backoff policy for the build controller and the tenant controller, so a
 hardening fix (jitter, a backoff cap, shutdown handling) lands once instead of
 in whichever copy the incident pointed at.
 """
@@ -49,7 +49,7 @@ def run_loop(
     the previous one started, and never sooner than ``MIN_PASS_SECONDS``. A
     pass that holds its own interval open (the controller's watch) passes no
     interval and gets only the floor; one that returns immediately (the
-    provisioner's reconcile) passes its resync interval. Either way a pass
+    tenant controller's reconcile) passes its resync interval. Either way a pass
     that overran its period simply starts again.
 
     A raising pass sleeps ``error_backoff_seconds``, doubling up to

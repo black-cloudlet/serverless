@@ -1,14 +1,14 @@
 {{- $ns := include "serverless-api.tenantNamespaceToken" . }}
 {{- $group := include "serverless-api.tenantGroupToken" . }}
 # The resource set every tenant namespace is converged to. Argo syncs this
-# ConfigMap; the provisioner mounts it whole, hashes it, and applies it into each
+# ConfigMap; the tenant controller mounts it whole, hashes it, and applies it into each
 # {group}{suffix} namespace with the two tokens substituted - which is how a
 # `helm upgrade` reaches namespaces that were created at runtime and that Argo
 # therefore cannot see (docs/proposals/namespace-per-group.md).
 #
 # NOTHING HERE MAY DEPEND ON THE REGION. Both regions render this chart with the
 # same values, so both hold identical bytes and the same hash; the ensure call
-# converges a peer's namespace from whichever provisioner took the request. A
+# converges a peer's namespace from whichever tenant controller took the request. A
 # per-region value would make that write wrong rather than merely redundant.
 #
 # The policy bodies come from the same partials the legacy namespace renders
@@ -21,7 +21,7 @@ metadata:
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
-  # The namespace itself. The provisioner adds its own managed-by and group
+  # The namespace itself. The tenant controller adds its own managed-by and group
   # labels in code - the prune and the GC select on those, so they are not left
   # to a template to get right.
   10-namespace.yaml: |
@@ -103,7 +103,7 @@ data:
   # Two values here are per region - the Vault path and the registry host - and
   # a per-region value is exactly what this set may not carry: the two regions
   # would render different bytes and their hashes would diverge. Both go in as
-  # provisioner tokens instead, resolved against the cluster being converged, so
+  # tenant-controller tokens instead, resolved against the cluster being converged, so
   # the set stays identical while its output does not. A Vault path, never a
   # credential: ESO reads it in the tenant namespace.
   70-registry-credentials.yaml: |

@@ -6,7 +6,7 @@ Everything a single component owns lives in that component's folder:
 
   api/               the REST API: Deployment, Service, Route, its own secrets
   build-controller/  the digest-propagation loop
-  provisioner/       per-group namespaces: the loop, the ensure API, its own
+  tenant-controller/ per-group namespaces: the loop, the ensure API, its own
                      identity, and the template set it applies
   kpack/             the build subsystem: builders, SCC, CA policy, credentials
 
@@ -284,7 +284,7 @@ chart that cannot see the cluster. */}}
 {{- end -}}
 
 {{/*
-The two runtime facts the provisioner substitutes when it converges a tenant
+The two runtime facts the tenant controller substitutes when it converges a tenant
 namespace. Emitted as literal text, so what lands in the ConfigMap is the token
 and not something Helm resolved (the same escaping the ESO templates use).
 */}}
@@ -302,21 +302,21 @@ the Deployment that mounts it.
 {{- end -}}
 
 {{/*
-The provisioner's object name and selector labels, on the same reasoning as the
+The tenant controller's object name and selector labels, on the same reasoning as the
 build controller's: a distinct ``app.kubernetes.io/name`` keeps the API's
 Service from selecting its pods.
 */}}
-{{- define "serverless-api.provisionerName" -}}
-{{ .Values.name }}-provisioner
+{{- define "serverless-api.tenantControllerName" -}}
+{{ .Values.name }}-tenant-controller
 {{- end -}}
 
-{{- define "serverless-api.provisionerLabels" -}}
-app.kubernetes.io/name: {{ include "serverless-api.provisionerName" . }}
+{{- define "serverless-api.tenantControllerLabels" -}}
+app.kubernetes.io/name: {{ include "serverless-api.tenantControllerName" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-A Vault path with this release's region put back as the provisioner's region
+A Vault path with this release's region put back as the tenant controller's region
 token, so the tenant template set stays byte-identical in every region and the
 path is resolved against whichever cluster is being converged.
 

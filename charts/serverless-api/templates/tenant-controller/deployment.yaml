@@ -1,5 +1,5 @@
-{{- if .Values.tenantNamespaces.provisioner.enabled }}
-{{- $p := .Values.tenantNamespaces.provisioner }}
+{{- if .Values.tenantNamespaces.controller.enabled }}
+{{- $p := .Values.tenantNamespaces.controller }}
 # Creates and converges the per-group namespaces (docs/proposals/namespace-per-group.md).
 # Two jobs in one process, sharing the cluster clients and the mounted set: a
 # reconcile loop over THIS cluster, and the ensure endpoint the API calls before
@@ -8,10 +8,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "serverless-api.provisionerName" . }}
+  name: {{ include "serverless-api.tenantControllerName" . }}
   namespace: {{ .Values.namespaces.api }}
   labels:
-    {{- include "serverless-api.provisionerLabels" . | nindent 4 }}
+    {{- include "serverless-api.tenantControllerLabels" . | nindent 4 }}
     {{- with $p.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -23,11 +23,11 @@ spec:
   replicas: {{ $p.replicaCount }}
   selector:
     matchLabels:
-      {{- include "serverless-api.provisionerLabels" . | nindent 6 }}
+      {{- include "serverless-api.tenantControllerLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "serverless-api.provisionerLabels" . | nindent 8 }}
+        {{- include "serverless-api.tenantControllerLabels" . | nindent 8 }}
         {{- with $p.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -37,7 +37,7 @@ spec:
       {{- end }}
     spec:
       containers:
-        - name: {{ include "serverless-api.provisionerName" . }}
+        - name: {{ include "serverless-api.tenantControllerName" . }}
           image: {{ include "serverless-api.image" (dict "root" $ "spec" $p) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -53,15 +53,15 @@ spec:
             - name: SERVERLESS_LOCAL_REGION
               value: {{ .Values.global.region | quote }}
             - name: SERVERLESS_PORT
-              value: {{ .Values.tenantNamespaces.provisioner.service.targetPort | int64 | quote }}
+              value: {{ .Values.tenantNamespaces.controller.service.targetPort | int64 | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
-              value: {{ .Values.tenantNamespaces.provisioner.resyncSeconds | int64 | quote }}
+              value: {{ .Values.tenantNamespaces.controller.resyncSeconds | int64 | quote }}
             - name: SERVERLESS_FULL_RESYNC_PASSES
-              value: {{ .Values.tenantNamespaces.provisioner.fullResyncPasses | int64 | quote }}
+              value: {{ .Values.tenantNamespaces.controller.fullResyncPasses | int64 | quote }}
             - name: SERVERLESS_CONVERGE_WORKERS
-              value: {{ .Values.tenantNamespaces.provisioner.convergeWorkers | int64 | quote }}
+              value: {{ .Values.tenantNamespaces.controller.convergeWorkers | int64 | quote }}
             - name: SERVERLESS_ENSURE_WORKERS
-              value: {{ .Values.tenantNamespaces.provisioner.ensureWorkers | int64 | quote }}
+              value: {{ .Values.tenantNamespaces.controller.ensureWorkers | int64 | quote }}
             # Whole-ConfigMap mount, never subPath: a subPath mount is not
             # refreshed by the kubelet, and that refresh is the only way a helm
             # upgrade reaches namespaces Argo cannot see.
@@ -131,13 +131,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "serverless-api.provisionerName" . }}
+  name: {{ include "serverless-api.tenantControllerName" . }}
   namespace: {{ .Values.namespaces.api }}
   labels:
-    {{- include "serverless-api.provisionerLabels" . | nindent 4 }}
+    {{- include "serverless-api.tenantControllerLabels" . | nindent 4 }}
 spec:
   selector:
-    {{- include "serverless-api.provisionerLabels" . | nindent 4 }}
+    {{- include "serverless-api.tenantControllerLabels" . | nindent 4 }}
   ports:
     - name: {{ $p.service.portName }}
       port: {{ $p.service.port }}
@@ -150,14 +150,14 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "serverless-api.provisionerName" . }}
+  name: {{ include "serverless-api.tenantControllerName" . }}
   namespace: {{ .Values.namespaces.api }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      {{- include "serverless-api.provisionerLabels" . | nindent 6 }}
+      {{- include "serverless-api.tenantControllerLabels" . | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -185,8 +185,8 @@ spec:
   target:
     name: {{ $p.tokenSecret.name }}
   data:
-    # Read by both ends: the provisioner checks it, and the API sends it.
-    - secretKey: SERVERLESS_PROVISIONER_TOKEN
+    # Read by both ends: the tenant controller checks it, and the API sends it.
+    - secretKey: SERVERLESS_TENANT_CONTROLLER_TOKEN
       remoteRef:
         key: {{ tpl $p.tokenSecret.key $ }}
         property: {{ $p.tokenSecret.property }}

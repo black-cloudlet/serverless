@@ -10,9 +10,9 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app
 COPY pyproject.toml ./
 COPY common ./common
-COPY provisioner ./provisioner
-RUN pip install ".[provisioner]"
+COPY tenant_controller ./tenant_controller
+RUN pip install ".[tenant-controller]"
 
 USER 1001
 
-ENTRYPOINT ["python", "-m", "provisioner.main"]
+ENTRYPOINT ["python", "-m", "tenant_controller.main"]

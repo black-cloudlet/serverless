@@ -50,7 +50,7 @@ TEMPLATE_KINDS = (
     ResourceKind.SECRET,
     ResourceKind.SERVICE_ACCOUNT,
     # A tenant namespace needs the region's registry credential, and ESO is how
-    # every other Secret on this platform arrives. The provisioner writes the
+    # every other Secret on this platform arrives. The tenant controller writes the
     # ExternalSecret; ESO fills the Secret it names.
     ResourceKind.EXTERNAL_SECRET,
 )
@@ -193,7 +193,7 @@ def _parse(sources: tuple[tuple[str, str], ...]) -> list[tuple[str, dict]]:
                 # What render admits, the prune must be able to collect.
                 raise ValueError(
                     f"template '{name}' holds kind '{kind}', which the "
-                    f"provisioner does not manage; allowed: "
+                    f"tenant controller does not manage; allowed: "
                     f"{', '.join(sorted(_ALLOWED_KINDS))}"
                 )
             docs.append((name, doc))

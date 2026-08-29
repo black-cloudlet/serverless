@@ -697,14 +697,14 @@ no `fastapi`, `starlette`, `uvicorn`, `jwt` or `cryptography`. An import in `com
 quietly pulled a framework back in would pass every other check
 (`tests/test_layering.py` catches it in the source; that step catches it in the artifact).
 
-The namespace provisioner is a third image on the same principle, one notch along:
-`Dockerfile.provisioner` installs a `[provisioner]` extra holding a web server and nothing
+The tenant controller is a third image on the same principle, one notch along:
+`Dockerfile.tenant-controller` installs a `[tenant-controller]` extra holding a web server and nothing
 else. It does serve HTTP - one internal endpoint, `PUT /groups/{group}/namespace` - so `fastapi`
 there is expected; what it must never carry is the auth stack. Its caller presents a shared
-token, and the constant-time comparison for that is spelled out in `provisioner/api.py`
+token, and the constant-time comparison for that is spelled out in `tenant_controller/api.py`
 rather than taken from `cloudlet_apis.auth`, because importing anything from that package
 pulls `pyjwt` and `cryptography` in behind it. CI asserts the absence, the
-same way it does for the controller. Only `provisioner/api.py` may reach the framework at
+same way it does for the controller. Only `tenant_controller/api.py` may reach the framework at
 all: the converge, the template set and the ensure fan-out have no request to answer, and
 `tests/test_layering.py` holds them to it.
 

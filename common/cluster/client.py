@@ -133,7 +133,7 @@ class Cluster:
                 is ignored.
             field_manager: The SSA field-manager name to write under. None
                 keeps the client library's default. A component that must own
-                its fields distinctly (the provisioner, whose re-applies
+                its fields distinctly (the tenant controller, whose re-applies
                 remove the fields it no longer declares) passes its own.
 
         Returns:

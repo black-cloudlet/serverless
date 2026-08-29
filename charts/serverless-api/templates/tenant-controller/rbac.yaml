@@ -1,15 +1,15 @@
-{{- if .Values.tenantNamespaces.provisioner.enabled }}
-# The provisioner's own rights, held by its own certificate user. Cluster-scoped
+{{- if .Values.tenantNamespaces.controller.enabled }}
+# The tenant controller's own rights, held by its own certificate user. Cluster-scoped
 # because the namespaces it manages do not exist when this is applied - it
 # creates them - so there is no namespace to bind a Role in.
 #
 # This is the grant that makes the split worth having: the API cannot create a
-# namespace or write a NetworkPolicy, and the provisioner cannot touch a
+# namespace or write a NetworkPolicy, and the tenant controller cannot touch a
 # workload. Neither can do the other's damage.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "serverless-api.provisionerName" . }}
+  name: {{ include "serverless-api.tenantControllerName" . }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 rules:
@@ -20,7 +20,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # The template set's own vocabulary - what a converge may write, and what the
   # prune may collect. Keep this in step with TEMPLATE_KINDS in
-  # provisioner/templates.py: a kind the set can render but this cannot write
+  # tenant_controller/templates.py: a kind the set can render but this cannot write
   # fails every converge, and one it can write but not delete cannot be pruned.
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
@@ -56,15 +56,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "serverless-api.provisionerName" . }}
+  name: {{ include "serverless-api.tenantControllerName" . }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 subjects:
   - kind: User
-    name: {{ .Values.tenantNamespaces.provisioner.certificate.user }}
+    name: {{ .Values.tenantNamespaces.controller.certificate.user }}
     apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
-  name: {{ include "serverless-api.provisionerName" . }}
+  name: {{ include "serverless-api.tenantControllerName" . }}
   apiGroup: rbac.authorization.k8s.io
 {{- end }}

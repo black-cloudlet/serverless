@@ -1,8 +1,8 @@
-"""Provisioner core: the template set, the converge protocol, and the loop.
+"""Tenant controller core: the template set, the converge protocol, and the loop.
 
 What matters here is the crash-safety contract (the hash is stamped last, so
 any interrupted converge redoes itself), the prune staying inside the
-provisioner's own labels, and an empty template set being refused rather than
+tenant controller's own labels, and an empty template set being refused rather than
 obeyed - each is a way tenant state could otherwise be lost silently.
 """
 
@@ -21,18 +21,18 @@ from common.labels import (
     LABEL_GROUP,
     LABEL_MANAGED_BY,
     MANAGED_BY_VALUE,
-    PROVISIONER_VALUE,
+    TENANT_CONTROLLER_VALUE,
 )
-from provisioner import main as provisioner_main
-from provisioner import reconcile as provisioner_reconcile
-from provisioner.config import ProvisionerSettings
-from provisioner.reconcile import (
+from tenant_controller import main as controller_main
+from tenant_controller import reconcile as controller_reconcile
+from tenant_controller.config import TenantControllerSettings
+from tenant_controller.reconcile import (
     FIELD_MANAGER,
-    PROVISIONER_SELECTOR,
+    TENANT_CONTROLLER_SELECTOR,
     converge,
     reconcile_all,
 )
-from provisioner.templates import TemplateSet
+from tenant_controller.templates import TemplateSet
 
 NS_TEMPLATE = """\
 apiVersion: v1
@@ -91,7 +91,7 @@ class _Cluster:
         self._applies = 0
 
     def get(self, kind, name=None, label_selector=None, *, namespace):
-        assert label_selector == PROVISIONER_SELECTOR
+        assert label_selector == TENANT_CONTROLLER_SELECTOR
         self.lists.append((kind, namespace))
         if kind is ResourceKind.NAMESPACE:
             assert namespace is None, "namespaces are cluster-scoped"
@@ -113,7 +113,7 @@ class _Cluster:
 def _leftover(name="stale-policy", kind_str="NetworkPolicy"):
     return {
         "kind": kind_str,
-        "metadata": {"name": name, "labels": {LABEL_MANAGED_BY: PROVISIONER_VALUE}},
+        "metadata": {"name": name, "labels": {LABEL_MANAGED_BY: TENANT_CONTROLLER_VALUE}},
     }
 
 
@@ -248,7 +248,7 @@ def test_converge_orders_namespace_contents_stamp():
     assert {ns for m, ns, _fm in cluster.applied if m["kind"] != "Namespace"} == {
         "payments-serverless"
     }
-    # Every write is the provisioner's own SSA identity.
+    # Every write is the tenant controller's own SSA identity.
     assert {fm for _m, _ns, fm in cluster.applied} == {FIELD_MANAGER}
 
 
@@ -291,7 +291,7 @@ def test_converge_injects_the_ownership_labels_everywhere():
 
     for manifest, _ns, _fm in cluster.applied:
         labels = manifest["metadata"]["labels"]
-        assert labels[LABEL_MANAGED_BY] == PROVISIONER_VALUE
+        assert labels[LABEL_MANAGED_BY] == TENANT_CONTROLLER_VALUE
         assert labels[LABEL_GROUP] == "payments"
     # The template's own labels survive beside them.
     ns = cluster.applied[0][0]
@@ -369,7 +369,7 @@ def test_prune_sweeps_kinds_the_set_dropped_entirely():
 def _namespace(name, group, stamp=None):
     meta = {
         "name": name,
-        "labels": {LABEL_MANAGED_BY: PROVISIONER_VALUE, LABEL_GROUP: group},
+        "labels": {LABEL_MANAGED_BY: TENANT_CONTROLLER_VALUE, LABEL_GROUP: group},
     }
     if stamp:
         meta["annotations"] = {ANNOTATION_TEMPLATE_HASH: stamp}
@@ -441,12 +441,12 @@ def test_an_empty_template_set_is_refused(caplog):
     assert "refusing" in caplog.text
 
 
-def test_the_api_stamp_is_not_the_provisioners():
+def test_the_api_stamp_is_not_the_controllers():
     # The selector is the fake's contract (it asserts on it), and the values
     # differ by construction - pinned so a refactor cannot quietly unify the
-    # API's managed-by with the provisioner's and let the prune eat workloads.
-    assert PROVISIONER_VALUE != MANAGED_BY_VALUE
-    assert PROVISIONER_SELECTOR.endswith(PROVISIONER_VALUE)
+    # API's managed-by with the tenant controller's and let the prune eat workloads.
+    assert TENANT_CONTROLLER_VALUE != MANAGED_BY_VALUE
+    assert TENANT_CONTROLLER_SELECTOR.endswith(TENANT_CONTROLLER_VALUE)
 
 
 # --------------------------------------------------------------------------- #
@@ -456,17 +456,17 @@ def test_the_api_stamp_is_not_the_provisioners():
 
 def test_run_pass_loads_the_mounted_set_fresh_each_time(tmp_path, monkeypatch):
     (tmp_path / "ns.yaml").write_text(NS_TEMPLATE)
-    settings = ProvisionerSettings(regions=[], templates_dir=str(tmp_path))
+    settings = TenantControllerSettings(regions=[], templates_dir=str(tmp_path))
     seen = []
     monkeypatch.setattr(
-        provisioner_main,
+        controller_main,
         "reconcile_all",
         lambda cluster, templates, **kw: (seen.append(templates.digest), (1, 1, 0))[1],
     )
 
-    provisioner_main.run_pass(object(), settings)
+    controller_main.run_pass(object(), settings)
     (tmp_path / "extra.yaml").write_text(POLICY_TEMPLATE)
-    provisioner_main.run_pass(object(), settings)
+    controller_main.run_pass(object(), settings)
 
     # The re-read is the hop that carries a helm upgrade to existing
     # namespaces: the second pass sees the changed set.
@@ -474,7 +474,7 @@ def test_run_pass_loads_the_mounted_set_fresh_each_time(tmp_path, monkeypatch):
 
 
 def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatch):
-    settings = ProvisionerSettings(regions=[], resync_seconds=300, error_backoff_seconds=5.0)
+    settings = TenantControllerSettings(regions=[], resync_seconds=300, error_backoff_seconds=5.0)
     outcomes = iter([RuntimeError("mount vanished"), None, SystemExit(0)])
     sleeps = []
 
@@ -483,24 +483,24 @@ def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatc
         if outcome is not None:
             raise outcome
 
-    monkeypatch.setattr(provisioner_main, "run_pass", fake_pass)
+    monkeypatch.setattr(controller_main, "run_pass", fake_pass)
     monkeypatch.setattr(common_loop.time, "sleep", sleeps.append)
 
     with pytest.raises(SystemExit):
-        provisioner_main.loop(object(), settings)
+        controller_main.loop(object(), settings)
 
     assert sleeps[0] == 5.0  # the raise took the backoff...
     assert sleeps[1] == pytest.approx(300, abs=2)  # ...the clean pass, the interval
 
 
 def test_missing_templates_dir_raises_into_the_loops_backoff(tmp_path):
-    settings = ProvisionerSettings(regions=[], templates_dir=str(tmp_path / "absent"))
+    settings = TenantControllerSettings(regions=[], templates_dir=str(tmp_path / "absent"))
     with pytest.raises(FileNotFoundError):
-        provisioner_main.run_pass(object(), settings)
+        controller_main.run_pass(object(), settings)
 
 
 def test_settings_defaults():
-    s = ProvisionerSettings(regions=[])
+    s = TenantControllerSettings(regions=[])
     assert s.resync_seconds == 300
     assert s.templates_dir == "/etc/serverless/tenant-templates"
     assert s.full_resync_passes == 12
@@ -585,22 +585,22 @@ def test_an_all_failed_pass_raises_into_the_backoff(tmp_path, monkeypatch):
     # Every namespace failing is one cause, not many: the pass fails, so the
     # loop backs off instead of sleeping a full resync on it.
     (tmp_path / "ns.yaml").write_text(NS_TEMPLATE)
-    settings = ProvisionerSettings(regions=[], templates_dir=str(tmp_path))
+    settings = TenantControllerSettings(regions=[], templates_dir=str(tmp_path))
     monkeypatch.setattr(
-        provisioner_main, "reconcile_all", lambda cluster, templates, **kw: (3, 0, 3)
+        controller_main, "reconcile_all", lambda cluster, templates, **kw: (3, 0, 3)
     )
     with pytest.raises(RuntimeError, match="all 3"):
-        provisioner_main.run_pass(object(), settings)
+        controller_main.run_pass(object(), settings)
 
     # A partial failure is namespaces' business, not the pass's.
     monkeypatch.setattr(
-        provisioner_main, "reconcile_all", lambda cluster, templates, **kw: (3, 2, 1)
+        controller_main, "reconcile_all", lambda cluster, templates, **kw: (3, 2, 1)
     )
-    provisioner_main.run_pass(object(), settings)
+    controller_main.run_pass(object(), settings)
 
 
 def test_objects_are_listed_per_namespace_never_cluster_wide():
-    # A provisioner that could list every Secret in the cluster is a far
+    # A tenant controller that could list every Secret in the cluster is a far
     # larger grant than one scoped to the namespaces it owns; only the
     # Namespace listing is cluster-scoped. (The fake asserts this too.)
     templates = _set()
@@ -680,7 +680,7 @@ def test_a_signal_mid_pass_drops_the_queued_converges(monkeypatch):
             shutdowns.append({"wait": wait, "cancel_futures": cancel_futures})
             super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr(provisioner_reconcile, "ThreadPoolExecutor", _RecordingPool)
+    monkeypatch.setattr(controller_reconcile, "ThreadPoolExecutor", _RecordingPool)
     real_apply = cluster.apply
     applied = []
 
@@ -746,8 +746,8 @@ def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypa
             events.append(f"closed {self.region}")
 
     clusters = {"central": _Cluster("central"), "south": _Cluster("south")}
-    monkeypatch.setattr(provisioner_main, "clusters_for", lambda s: clusters)
-    monkeypatch.setattr(provisioner_main, "select_local", lambda c, local: c["central"])
+    monkeypatch.setattr(controller_main, "clusters_for", lambda s: clusters)
+    monkeypatch.setattr(controller_main, "select_local", lambda c, local: c["central"])
 
     def _serve(settings, given):
         served["clusters"] = given
@@ -759,11 +759,11 @@ def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypa
         looped["cluster"] = cluster
         raise SystemExit(0)
 
-    monkeypatch.setattr(provisioner_main, "serve", _serve)
-    monkeypatch.setattr(provisioner_main, "loop", _loop)
+    monkeypatch.setattr(controller_main, "serve", _serve)
+    monkeypatch.setattr(controller_main, "loop", _loop)
 
     with pytest.raises(SystemExit):
-        provisioner_main.run()
+        controller_main.run()
 
     assert [c.region for c in served["clusters"]] == ["central", "south"]
     assert looped["cluster"].region == "central"
@@ -787,11 +787,11 @@ def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
             built["ran"] = True
             self.started = True
 
-    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _RecordingServer)
-    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
-    settings = ProvisionerSettings(port=9999)
+    monkeypatch.setattr(controller_main.uvicorn, "Server", _RecordingServer)
+    monkeypatch.setattr(controller_main, "create_app", lambda clusters, settings: "app")
+    settings = TenantControllerSettings(port=9999)
 
-    server, thread = provisioner_main.serve(settings, [])
+    server, thread = controller_main.serve(settings, [])
     thread.join(timeout=5)
 
     assert thread.daemon and thread.name == "ensure-api"
@@ -800,7 +800,7 @@ def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
     # Ours is already configured; uvicorn's dictConfig would replace it.
     assert built["config"].log_config is None
 
-    provisioner_main.stop(server, thread)
+    controller_main.stop(server, thread)
     assert server.should_exit is True
 
 
@@ -820,11 +820,11 @@ def test_a_server_that_never_binds_fails_the_pod_instead_of_hiding(monkeypatch):
         def run(self):
             raise SystemExit(3)  # what uvicorn does when the port is taken
 
-    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _DyingServer)
-    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
+    monkeypatch.setattr(controller_main.uvicorn, "Server", _DyingServer)
+    monkeypatch.setattr(controller_main, "create_app", lambda clusters, settings: "app")
 
     with pytest.raises(RuntimeError, match="stopped before it began serving"):
-        provisioner_main.serve(ProvisionerSettings(), [])
+        controller_main.serve(TenantControllerSettings(), [])
 
 
 def test_a_server_that_never_comes_up_is_not_waited_on_forever(monkeypatch):
@@ -838,9 +838,9 @@ def test_a_server_that_never_comes_up_is_not_waited_on_forever(monkeypatch):
         def run(self):
             time.sleep(5)  # alive, but never listening
 
-    monkeypatch.setattr(provisioner_main.uvicorn, "Server", _SilentServer)
-    monkeypatch.setattr(provisioner_main, "create_app", lambda clusters, settings: "app")
-    monkeypatch.setattr(provisioner_main, "API_STARTUP_SECONDS", 0.2)
+    monkeypatch.setattr(controller_main.uvicorn, "Server", _SilentServer)
+    monkeypatch.setattr(controller_main, "create_app", lambda clusters, settings: "app")
+    monkeypatch.setattr(controller_main, "API_STARTUP_SECONDS", 0.2)
 
     with pytest.raises(RuntimeError, match="did not start within"):
-        provisioner_main.serve(ProvisionerSettings(), [])
+        controller_main.serve(TenantControllerSettings(), [])

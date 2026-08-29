@@ -1,4 +1,4 @@
-"""Provisioner entrypoint: the reconcile loop, with the ensure API beside it.
+"""Tenant controller entrypoint: the reconcile loop, with the ensure API beside it.
 
 Two jobs, one process: the level-triggered loop that converges this cluster,
 and the HTTP call the API makes before a workload deploys. They share the
@@ -16,10 +16,10 @@ from cloudlet_apis.logging import configure_logging, get_logger
 
 from common.cluster import Cluster, clusters_for, select_local
 from common.loop import install_terminate_handlers, run_loop
-from provisioner.api import create_app
-from provisioner.config import ProvisionerSettings, get_settings
-from provisioner.reconcile import reconcile_all
-from provisioner.templates import TemplateSet
+from tenant_controller.api import create_app
+from tenant_controller.config import TenantControllerSettings, get_settings
+from tenant_controller.reconcile import reconcile_all
+from tenant_controller.templates import TemplateSet
 
 logger = get_logger(__name__)
 
@@ -34,7 +34,7 @@ API_JOIN_SECONDS = 15.0
 API_STARTUP_SECONDS = 10.0
 
 
-def run_pass(cluster: Cluster, settings: ProvisionerSettings, *, force: bool = False) -> None:
+def run_pass(cluster: Cluster, settings: TenantControllerSettings, *, force: bool = False) -> None:
     """One reconcile pass: load the mounted set fresh, converge the stale.
 
     Re-read every pass - the kubelet refreshes the mount in place, and that
@@ -58,7 +58,7 @@ def run_pass(cluster: Cluster, settings: ProvisionerSettings, *, force: bool = F
         raise RuntimeError(f"all {seen} managed namespace(s) failed to converge")
 
 
-def loop(cluster: Cluster, settings: ProvisionerSettings) -> None:
+def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
     """Reconcile, sleep, forever (paced by ``common.loop``).
 
     Per-namespace failures never reach the pacing - ``reconcile_all``
@@ -85,7 +85,7 @@ def loop(cluster: Cluster, settings: ProvisionerSettings) -> None:
 
 
 def serve(
-    settings: ProvisionerSettings, clusters: list[Cluster]
+    settings: TenantControllerSettings, clusters: list[Cluster]
 ) -> tuple[uvicorn.Server, threading.Thread]:
     """Start the ensure API on a background thread.
 
@@ -164,7 +164,7 @@ def run() -> None:
     clusters = clusters_for(settings)
     local = select_local(clusters, settings.local_region)
     logger.info(
-        "provisioner reconciling tenant namespaces in %s from %s, ensure API on :%d",
+        "tenant controller reconciling namespaces in %s from %s, ensure API on :%d",
         local.region,
         settings.templates_dir,
         settings.port,

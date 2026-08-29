@@ -1,6 +1,6 @@
 # Turns on everything the default values leave off, so CI renders the paths a
 # default install never reaches. Not a recommended configuration - a maximal
-# one: a template that only breaks when the SCC binding or the provisioner token
+# one: a template that only breaks when the SCC binding or the tenant controller token
 # is enabled would otherwise reach a cluster before it reaches a reviewer.
 build:
   enabled: true
@@ -9,7 +9,7 @@ build:
 tenantNamespaces:
   labels:
     pod-security.kubernetes.io/enforce: restricted
-  provisioner:
+  controller:
     enabled: true
     tokenSecret:
       create: true

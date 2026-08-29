@@ -1,6 +1,6 @@
 """Extract the chart's tenant template set and render it for one group.
 
-The seam this closes: the chart *writes* the set and the provisioner *reads*
+The seam this closes: the chart *writes* the set and the tenant controller *reads*
 it, and until they meet, a malformed NetworkPolicy or a mistyped placeholder is
 discovered by the first tenant onboarding. CI runs this over a real
 ``helm template`` so the failure lands on the pull request instead.
@@ -9,13 +9,13 @@ discovered by the first tenant onboarding. CI runs this over a real
     python dev/tenant_templates.py rendered.yaml > tenant-objects.yaml
 
 Loading is the first half of the check - it applies every rule the running
-provisioner applies (kinds, placeholders, parseable YAML). Rendering is the
+tenant controller applies (kinds, placeholders, parseable YAML). Rendering is the
 second: what it prints is what would land in a tenant namespace, ready for
 kubeconform.
 
 ``--digest`` prints the set's hash alone. Rendering the chart for each region
 and comparing the two is how the region-neutrality the ensure fan-out depends
-on gets asserted rather than assumed (provisioner/ensure.py).
+on gets asserted rather than assumed (tenant_controller/ensure.py).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import sys
 
 import yaml
 
-from provisioner.templates import TemplateSet
+from tenant_controller.templates import TemplateSet
 
 # What the ConfigMap is called, and a plausible tenant to render it for. The
 # group is arbitrary: rendering proves the placeholders resolve, not that any
@@ -37,7 +37,7 @@ SAMPLE_REGISTRY = "registry.example.internal"
 
 
 def template_set(rendered: str) -> TemplateSet:
-    """The template set the chart ships, loaded the way the provisioner loads it.
+    """The template set the chart ships, loaded the way the tenant controller loads it.
 
     Args:
         rendered: A whole ``helm template`` output.

@@ -1,4 +1,4 @@
-"""The provisioner's internal HTTP surface: ensure a group, plus the probes.
+"""The tenant controller's internal HTTP surface: ensure a group, plus the probes.
 
 Internal only. There is no SSO and no browser here: the caller is the platform
 API in its own namespace, reaching a Service that a NetworkPolicy scopes to it,
@@ -31,9 +31,9 @@ from common.errors import (
     ValidationError,
 )
 from common.names import Group, namespace_for_group
-from provisioner.config import ProvisionerSettings
-from provisioner.ensure import ensure
-from provisioner.templates import TemplateSet
+from tenant_controller.config import TenantControllerSettings
+from tenant_controller.ensure import ensure
+from tenant_controller.templates import TemplateSet
 
 logger = get_logger(__name__)
 
@@ -70,8 +70,8 @@ class EnsureResponse(BaseModel):
     regions: list[RegionResult]
 
 
-def create_app(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> FastAPI:
-    """Build the provisioner's HTTP app over an already-built set of clusters.
+def create_app(clusters: Sequence[Cluster], settings: TenantControllerSettings) -> FastAPI:
+    """Build the tenant controller's HTTP app over an already-built set of clusters.
 
     The clusters are passed in rather than built here: the reconcile loop in
     the same process holds the local one, and two sets would mean two pools of
@@ -79,7 +79,7 @@ def create_app(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> Fa
 
     Args:
         clusters: One cluster per configured region (the ensure fan-out).
-        settings: The provisioner's settings.
+        settings: The tenant controller's settings.
 
     Returns:
         The configured application.
@@ -101,7 +101,7 @@ def create_app(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> Fa
         pool.shutdown(wait=True, cancel_futures=True)
 
     app = FastAPI(
-        title="Serverless Provisioner",
+        title="Serverless Tenant Controller",
         description="Internal API: converge a group's namespace in every region.",
         docs_url=None,
         redoc_url=None,
@@ -114,7 +114,7 @@ def create_app(clusters: Sequence[Cluster], settings: ProvisionerSettings) -> Fa
 
 
 def _router(
-    clusters: Sequence[Cluster], settings: ProvisionerSettings, pool: ThreadPoolExecutor
+    clusters: Sequence[Cluster], settings: TenantControllerSettings, pool: ThreadPoolExecutor
 ) -> APIRouter:
     """The three endpoints, closed over the clusters, settings and pool."""
     router = APIRouter()
@@ -212,7 +212,7 @@ def _router(
                 anything (see :func:`usable_templates`).
             RegionTotalFailure: If every region failed.
         """
-        _check_token(request, settings.provisioner_token)
+        _check_token(request, settings.tenant_controller_token)
         namespace = _namespace_for(group)
         templates = usable_templates()
         outcomes = await ensure(
@@ -276,4 +276,4 @@ def _check_token(request: Request, configured: str) -> None:
     if scheme.lower() != "bearer" or not hmac.compare_digest(
         token.encode("utf-8"), configured.encode("utf-8")
     ):
-        raise UnauthenticatedError("a valid provisioner token is required")
+        raise UnauthenticatedError("a valid tenant-controller token is required")

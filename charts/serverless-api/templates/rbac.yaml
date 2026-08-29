@@ -5,7 +5,7 @@
 # unchanged and the writes stay namespace-bound - a RoleBinding to a ClusterRole
 # grants only inside its own namespace - but the *definition* has to be
 # cluster-scoped, because a tenant namespace created at runtime cannot carry a
-# copy of it and the provisioner only writes the binding.
+# copy of it and the tenant controller only writes the binding.
 #
 # Routes are NOT here: on OpenShift Serverless the operator auto-creates the
 # OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.

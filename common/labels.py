@@ -15,15 +15,15 @@ LABEL_OFFERING = "serverless.platform/offering"
 LABEL_WORKLOAD = "serverless.platform/workload"
 MANAGED_BY_VALUE = "serverless-api"
 
-# The provisioner's own identity on the tenant namespaces it manages. A distinct
+# The tenant controller's own identity on the tenant namespaces it manages. A distinct
 # managed-by value, not MANAGED_BY_VALUE: its reconcile and GC loops select on
 # this label, and they must never adopt (or delete) anything the API stamped.
-PROVISIONER_VALUE = "serverless-provisioner"
+TENANT_CONTROLLER_VALUE = "serverless-tenant-controller"
 
-# Stamped on a tenant namespace by the provisioner's converge. The hash names
+# Stamped on a tenant namespace by the tenant controller's converge. The hash names
 # the template set last applied there; a mismatch with the mounted set triggers
 # re-apply. The converge clears it first and rewrites it last (the protocol
-# lives in provisioner/reconcile.py), so a crashed converge leaves NO stamp
+# lives in tenant_controller/reconcile.py), so a crashed converge leaves NO stamp
 # and the next pass redoes the namespace.
 ANNOTATION_TEMPLATE_HASH = "serverless.platform/template-hash"
 # First observed empty of KSVCs (RFC 3339); cleared when a workload appears.

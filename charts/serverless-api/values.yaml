@@ -151,9 +151,9 @@ tenantNamespaces:
   # The service that creates those namespaces and keeps them converged to the
   # template set this chart ships. Two jobs in one process: a reconcile loop
   # over its own cluster, and the ensure call the API makes before a create.
-  provisioner:
+  controller:
     enabled: true
-    repository: serverless/provisioner
+    repository: serverless/tenant-controller
     tag: ""
     # Two, like the API: the ensure call is in the create path, so it needs to
     # survive a rolling restart. Replicas converge rather than race - the same
@@ -193,11 +193,11 @@ tenantNamespaces:
     ensureWorkers: 8
 
     # Its own client certificate, and therefore its own Kubernetes username -
-    # the provisioner writes namespaces and the API does not, so they must not
+    # the tenant controller writes namespaces and the API does not, so they must not
     # share an identity. Same ACME issuer and mount path as the API's.
     certificate:
-      name: serverless-provisioner-cert
-      user: serverless-provisioner.clients.example.com
+      name: serverless-tenant-controller-cert
+      user: serverless-tenant-controller.clients.example.com
 
     # Optional shared token on the ensure endpoint, depth behind the
     # NetworkPolicy that already scopes it to the API's pods. Off by default:
@@ -205,9 +205,9 @@ tenantNamespaces:
     # Vault needs.
     tokenSecret:
       create: false
-      name: serverless-provisioner-token
+      name: serverless-tenant-controller-token
       key: cloudlet/platforms/serverless
-      property: provisioner-token
+      property: tenant-controller-token
 
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com

@@ -29,17 +29,17 @@ import yaml
 
 from api.core.config import Settings
 from controller.config import ControllerSettings
-from provisioner.config import ProvisionerSettings
+from tenant_controller.config import TenantControllerSettings
 
 CHART = Path(__file__).resolve().parent.parent / "charts" / "serverless-api"
 # Each Deployment against the settings class ITS process builds. Checking them
 # all against the API's would pass vacuously for anything only the controller or
-# the provisioner declares - every settings class ignores extra env, so the
+# the tenant controller declares - every settings class ignores extra env, so the
 # fields most likely to be mistyped are exactly the ones that would go unchecked.
 TEMPLATES = [
     (CHART / "templates" / "api" / "deployment.yaml", Settings),
     (CHART / "templates" / "build-controller" / "deployment.yaml", ControllerSettings),
-    (CHART / "templates" / "provisioner" / "deployment.yaml", ProvisionerSettings),
+    (CHART / "templates" / "tenant-controller" / "deployment.yaml", TenantControllerSettings),
 ]
 
 # `- name: SERVERLESS_FOO` followed by `value: {{ .Values.a.b [| int64] | quote }}`.

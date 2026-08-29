@@ -24,7 +24,7 @@ jobs:
       - id: derive
         run: |
           req_py=$(grep -oP 'requires-python = ">=\K[0-9]+\.[0-9]+' pyproject.toml)
-          for df in Dockerfile Dockerfile.controller Dockerfile.provisioner; do
+          for df in Dockerfile Dockerfile.controller Dockerfile.tenant-controller; do
             docker_py=$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' "$df")
             if [ -z "$docker_py" ] || [ "$docker_py" != "$req_py" ]; then
               echo "::error::Python version drift: $df=$docker_py, requires-python=$req_py. Bump them together."
@@ -63,7 +63,7 @@ jobs:
           python-version: ${{ needs.version.outputs.python }}
           cache: pip
       - run: pip install -e ".[api,dev]"
-      - run: pytest -q --cov=api --cov=common --cov=controller --cov=provisioner --cov-report=term-missing --cov-fail-under=90
+      - run: pytest -q --cov=api --cov=common --cov=controller --cov=tenant_controller --cov-report=term-missing --cov-fail-under=90
 
   security:
     needs: version
@@ -100,7 +100,7 @@ jobs:
         with:
           python-version: "3.14"
       # For dev/tenant_templates.py, which loads the chart's tenant template set
-      # through the provisioner's own loader below.
+      # through the tenant controller's own loader below.
       - run: pip install .
       - run: helm lint charts/serverless-api
       - run: helm lint charts/serverless-api -f charts/serverless-api/ci/everything-values.yaml
@@ -119,10 +119,10 @@ jobs:
                   -schema-location default \
                   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
           done
-      # The chart WRITES the tenant template set and the provisioner READS it.
+      # The chart WRITES the tenant template set and the tenant controller READS it.
       # Until the two meet, a malformed NetworkPolicy or a mistyped placeholder
       # is found by the first tenant onboarding. Loading applies every rule the
-      # running provisioner applies; validating the RENDERED objects is what
+      # running tenant controller applies; validating the RENDERED objects is what
       # catches a policy that is only wrong once a namespace is substituted in.
       - name: The tenant template set loads and renders into valid objects
         run: |
@@ -134,11 +134,11 @@ jobs:
                   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
           done
       # The set must be byte-identical in every region. The ensure fan-out
-      # converges a peer's namespace from whichever provisioner took the
+      # converges a peer's namespace from whichever tenant controller took the
       # request, so a per-region value baked in here - a Vault path, a registry
       # host - would make that write wrong rather than merely redundant
-      # (provisioner/ensure.py). Region-varying values go in as placeholders the
-      # provisioner resolves against the cluster it is writing to.
+      # (tenant_controller/ensure.py). Region-varying values go in as placeholders the
+      # tenant controller resolves against the cluster it is writing to.
       - name: The tenant template set is region-neutral
         run: |
           for region in central south; do
@@ -179,13 +179,13 @@ jobs:
           tags: serverless-build-controller:scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Build the provisioner image (load, no push)
+      - name: Build the tenant-controller image (load, no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: ./Dockerfile.provisioner
+          file: ./Dockerfile.tenant-controller
           load: true
-          tags: serverless-provisioner:scan
+          tags: serverless-tenant-controller:scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Each image must actually start its own service. Nothing else in the
@@ -198,10 +198,10 @@ jobs:
             -c "import api.main as m; assert m.app"
           docker run --rm --entrypoint python serverless-build-controller:scan \
             -c "import controller.main as m; assert callable(m.run)"
-          docker run --rm --entrypoint python serverless-provisioner:scan \
-            -c "import provisioner.main as m; assert callable(m.run)"
-          docker run --rm --entrypoint python serverless-provisioner:scan \
-            -c "from provisioner.api import create_app; from provisioner.config import ProvisionerSettings; assert create_app([], ProvisionerSettings())"
+          docker run --rm --entrypoint python serverless-tenant-controller:scan \
+            -c "import tenant_controller.main as m; assert callable(m.run)"
+          docker run --rm --entrypoint python serverless-tenant-controller:scan \
+            -c "from tenant_controller.api import create_app; from tenant_controller.config import TenantControllerSettings; assert create_app([], TenantControllerSettings())"
       # The controller serves nothing, so it must carry no web stack at all. An
       # import in `common` that quietly pulled fastapi back in would pass every
       # other check (docs/BUILDING.md - Two images).
@@ -214,13 +214,13 @@ jobs:
           if leaked:
               sys.exit(f'this image should not ship {leaked}')
           "
-      # The provisioner does serve HTTP - one internal endpoint - so a web
+      # The tenant controller does serve HTTP - one internal endpoint - so a web
       # server is expected. What it must never carry is the auth stack: its
       # caller presents a shared token, and reaching cloudlet_apis.auth for the
       # comparison would put pyjwt and cryptography in this image.
-      - name: The provisioner image carries no auth stack
+      - name: The tenant-controller image carries no auth stack
         run: |
-          docker run --rm --entrypoint python serverless-provisioner:scan -c "
+          docker run --rm --entrypoint python serverless-tenant-controller:scan -c "
           import importlib.util, sys
           leaked = [m for m in ('jwt', 'cryptography')
                     if importlib.util.find_spec(m) is not None]
@@ -256,10 +256,10 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-      - name: Vulnerability gate (Trivy, CRITICAL, provisioner)
+      - name: Vulnerability gate (Trivy, CRITICAL, tenant-controller)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: serverless-provisioner:scan
+          image-ref: serverless-tenant-controller:scan
           format: table
           severity: CRITICAL
           ignore-unfixed: true

@@ -348,16 +348,16 @@ def test_the_view_forwards_field_manager_only_when_set():
     view = NamespacedCluster(raw, "wl")
 
     view.apply({"kind": "Secret"})
-    view.apply({"kind": "Secret"}, field_manager="serverless-provisioner")
+    view.apply({"kind": "Secret"}, field_manager="serverless-tenant-controller")
 
     assert raw.calls[0] == ("apply", "wl", None)
-    assert raw.calls[1] == ("apply", "wl", "serverless-provisioner")
+    assert raw.calls[1] == ("apply", "wl", "serverless-tenant-controller")
 
 
 def test_apply_with_a_field_manager_goes_through_the_dynamic_client():
     """utils.create_from_dict hardcodes its own field manager on the SSA call,
     so routing a caller-supplied one through it raises TypeError before any
-    request - the provisioner's writes must take the dynamic client directly."""
+    request - the tenant controller's writes must take the dynamic client directly."""
     from types import SimpleNamespace
 
     class _SsaApi:
@@ -377,10 +377,10 @@ def test_apply_with_a_field_manager_goes_through_the_dynamic_client():
     out = cluster.apply(
         {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "s"}},
         namespace="payments-serverless",
-        field_manager="serverless-provisioner",
+        field_manager="serverless-tenant-controller",
     )
 
-    assert api.kwargs["field_manager"] == "serverless-provisioner"
+    assert api.kwargs["field_manager"] == "serverless-tenant-controller"
     assert api.kwargs["force_conflicts"] is True
     assert api.kwargs["namespace"] == "payments-serverless"
     assert out == [{"kind": "Secret", "metadata": {"name": "s"}}]
