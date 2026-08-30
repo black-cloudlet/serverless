@@ -1,10 +1,15 @@
-"""Asking the tenant controller for a group's namespace, before a create.
+"""A group's namespace: asking the tenant controller to make it ready.
 
 The API cannot create namespaces - that is the whole point of the split - so
 before it writes a workload it asks the component that can. "Ensured" means
 *exists and converged to the current template set*, in every region, so a
 workload never deploys into a namespace still carrying last release's
 policies.
+
+Not under ``regions/``, though it is about every region: nothing here fans
+out. It makes one call to one Service, and the controller is what reaches the
+clusters. What it is about is the tenant namespace, so that is what it is
+called.
 
 This is a pre-flight check, and it obeys the rule the rest of them do: a check
 that could not be run has not passed. An unreachable tenant controller is a

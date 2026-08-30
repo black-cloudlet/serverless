@@ -55,7 +55,6 @@ from api.services.manifests.files import files_name, resolve_files
 from api.services.offering import DeleteContext, Offering
 from api.services.regions import preflight, region_apply, region_read
 from api.services.regions.deployer import Deployer
-from api.services.regions.ensure import ensure_namespace
 from api.services.regions.rollup import aggregate, overall_status_for_regions, status_code_for
 from api.services.state import describe as describe_svc
 from api.services.state import ksvc_state, ownership
@@ -68,6 +67,7 @@ from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
 from api.services.streams.capacity import StreamCapacity
 from api.services.streams.sse import StreamEvent
+from api.services.tenant_namespace import ensure_namespace
 from api.services.workloads.request import ApplyRequest
 from api.services.workloads.stream_guard import _slot_guarded
 from common.build import BuildBackend, BuildPlan

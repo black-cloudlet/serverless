@@ -14,8 +14,8 @@ import json
 
 import pytest
 
-from api.services.regions import ensure as ensure_mod
-from api.services.regions.ensure import ensure_namespace
+from api.services import tenant_namespace
+from api.services.tenant_namespace import ensure_namespace
 from common.config import TenantNamespaceConfig
 from common.errors import ServiceUnavailableError, ValidationError
 from tests.factories import _FakeCluster, _workload_service
@@ -49,7 +49,7 @@ class _Client:
 
     def install(self, monkeypatch):
         """Stand in for httpx.AsyncClient in the module under test."""
-        monkeypatch.setattr(ensure_mod.httpx, "AsyncClient", self)
+        monkeypatch.setattr(tenant_namespace.httpx, "AsyncClient", self)
         return self
 
     async def __aenter__(self):
