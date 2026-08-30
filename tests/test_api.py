@@ -114,7 +114,7 @@ class FakeContainers:
         return _accepted("container", name, group, image="reg/x:1")
 
     async def get(self, name, group, user):
-        return _ready("container", name, image="reg/x:1", registryUsername="svc-team")
+        return _ready("container", name, image="reg/x:1", registryUsername="svc")
 
     async def stats(self, name, group, user):
         return _stats()
@@ -342,16 +342,16 @@ def test_info_publishes_the_combined_name_and_group_limit():
     KSVC name. A form validating the fields separately would accept a pair the
     API rejects, so the rule is published for the client to apply.
     """
-    from common.names import MAX_OBJECT_NAME, object_name
+    from common.names import MAX_HOST_LABEL, default_host_label
 
     naming = TestClient(create_app()).get("/v1/containers/info").json()["naming"]
 
     # composed by the same function the platform names objects with
-    assert naming["template"] == object_name("{name}", "{group}")
-    assert naming["maxLength"] == MAX_OBJECT_NAME
+    assert naming["template"] == default_host_label("{name}", "{group}")
+    assert naming["maxLength"] == MAX_HOST_LABEL
     # the pair the rule exists to catch: both halves legal, the join is not
     assert len("n" * 40) <= 63 and len("g" * 40) <= 63
-    assert len(object_name("n" * 40, "g" * 40)) > naming["maxLength"]
+    assert len(default_host_label("n" * 40, "g" * 40)) > naming["maxLength"]
 
 
 def test_our_own_error_is_published_in_the_catalog():
@@ -405,7 +405,7 @@ def test_get_container_shape(client):
     body = r.json()
     # ContainerResponse mirrors the create body: image + registryUsername present,
     # function-only fields (gitRepo/runtime) absent.
-    assert body["image"] == "reg/x:1" and body["registryUsername"] == "svc-team"
+    assert body["image"] == "reg/x:1" and body["registryUsername"] == "svc"
     assert "gitRepo" not in body and "runtime" not in body
 
 

@@ -679,7 +679,7 @@ own terms.
 
 ### Two images
 
-`Dockerfile.controller` installs the base dependencies only - `pydantic`,
+`Dockerfile.build-controller` installs the base dependencies only - `pydantic`,
 `pydantic-settings`, `kubernetes`. `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` are the
 API's, behind a `[project.optional-dependencies] api` extra its own image installs with
 `pip install ".[api]"`.
@@ -1008,7 +1008,7 @@ even for functions nobody edits. They count against registry quota and, until th
 nothing reclaimed them short of deleting the function. A branch change leaks the same way:
 the old branch's projected tag stays behind permanently.
 
-The **build controller** prunes them (`controller/gc.py`), because the problem is shaped
+The **build controller** prunes them (`build_controller/gc.py`), because the problem is shaped
 like the controller:
 
 - **Per-region, local only.** A region builds what it runs into its own registry, so each

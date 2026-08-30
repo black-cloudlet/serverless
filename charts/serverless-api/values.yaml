@@ -146,7 +146,14 @@ tenantNamespaces:
   # A group's namespace is `{group}{suffix}`. Group-first so tenant namespaces
   # list under their group's name; the suffix is what keeps a group from naming
   # a namespace the cluster already has. Must match common/names.NAMESPACE_SUFFIX.
+  #
+  # Read by BOTH ends: the API derives the namespace it writes into, the tenant
+  # controller derives the one it creates. Configured differently on either
+  # side, the API would deploy into a namespace nobody provisions.
   suffix: -serverless
+  # How long the API waits for the ensure call before failing a create closed.
+  # A create waits on this, so it is well under the cluster op timeout.
+  ensureTimeout: 10
   # -- Labels added to every tenant namespace, on top of `namespaces.labels`.
   # labels:
   #   pod-security.kubernetes.io/enforce: restricted
@@ -209,7 +216,8 @@ tenantNamespaces:
     # Optional shared token on the ensure endpoint, depth behind the
     # NetworkPolicy that already scopes it to the API's pods. Off by default:
     # with no Secret the check is disabled, which is what a dev cluster with no
-    # Vault needs.
+    # Vault needs. One Secret, envFrom'd by both ends - the API sends what the
+    # controller checks.
     tokenSecret:
       create: false
       name: serverless-tenant-controller-token

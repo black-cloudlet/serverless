@@ -85,7 +85,13 @@ def test_the_cluster_layer_pulls_in_no_web_framework(module):
 
 
 @pytest.mark.parametrize(
-    "module", ["controller.main", "controller.reconciler", "controller.digest", "controller.gc"]
+    "module",
+    [
+        "build_controller.main",
+        "build_controller.reconciler",
+        "build_controller.digest",
+        "build_controller.gc",
+    ],
 )
 def test_the_build_controller_serves_no_http_and_carries_no_web_framework(module):
     loaded = _imported_by(module)
@@ -146,11 +152,20 @@ def test_the_tenant_controller_never_imports_the_api():
 def test_the_build_controller_never_imports_the_api():
     """The two services are siblings: both use common, neither uses the other."""
     out = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["grep", "-rn", "-e", "from api", "-e", "import api", "--include=*.py", "controller/"],
+        [
+            "grep",
+            "-rn",
+            "-e",
+            "from api",
+            "-e",
+            "import api",
+            "--include=*.py",
+            "build_controller/",
+        ],
         capture_output=True,
         text=True,
     )
-    assert out.stdout == "", f"controller/ imports from api/:\n{out.stdout}"
+    assert out.stdout == "", f"build_controller/ imports from api/:\n{out.stdout}"
 
 
 def test_the_build_controller_carries_no_auth_stack():
@@ -161,10 +176,10 @@ def test_the_build_controller_carries_no_auth_stack():
     start - it does not install that extra - and nothing else here would say why.
     """
     for module in (
-        "controller.main",
-        "controller.reconciler",
-        "controller.digest",
-        "controller.gc",
+        "build_controller.main",
+        "build_controller.reconciler",
+        "build_controller.digest",
+        "build_controller.gc",
     ):
         leaked = _imported_by(module) & AUTH_DEPS
         assert not leaked, f"{module} reaches {sorted(leaked)}"

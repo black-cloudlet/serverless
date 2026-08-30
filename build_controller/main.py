@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from cloudlet_apis.logging import configure_logging, get_logger
 
+from build_controller.config import BuildControllerSettings, get_settings
+from build_controller.gc import TagGC
+from build_controller.reconciler import Reconciler
 from common.loop import install_terminate_handlers, run_loop
-from controller.config import ControllerSettings, get_settings
-from controller.gc import TagGC
-from controller.reconciler import Reconciler
 
 logger = get_logger(__name__)
 
 
-def loop(reconciler: Reconciler, settings: ControllerSettings) -> None:
+def loop(reconciler: Reconciler, settings: BuildControllerSettings) -> None:
     """Resync and follow, forever (paced by ``common.loop``).
 
     The watch holds its own interval open, so no interval is passed - only

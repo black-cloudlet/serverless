@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from build_controller import main as controller_main
+from build_controller.config import BuildControllerSettings
+from build_controller.digest import deployed_image, needs_image, with_image
+from build_controller.reconciler import IMAGE_SELECTOR, Reconciler
 from common import loop as common_loop
 from common.cluster import NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings, RegionConfig
@@ -21,16 +25,12 @@ from common.labels import (
     OFFERING_CONTAINER,
     OFFERING_FUNCTION,
 )
-from controller import main as controller_main
-from controller.config import ControllerSettings
-from controller.digest import deployed_image, needs_image, with_image
-from controller.reconciler import IMAGE_SELECTOR, Reconciler
 
 REPO = "registry.internal/acme/serverless/builders/payments/hello"
 TAG = f"{REPO}:main"
 DIGEST = f"{REPO}@sha256:{'a' * 64}"
 NEWER = f"{REPO}@sha256:{'b' * 64}"
-WORKLOAD = "hello-payments"
+WORKLOAD = "hello"
 
 
 def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
@@ -50,7 +50,7 @@ def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
             "generation": 4,
             "managedFields": [{"manager": "serverless-api"}],
             "resourceVersion": "12345",
-            "selfLink": "/apis/serving.knative.dev/v1/services/hello-payments",
+            "selfLink": "/apis/serving.knative.dev/v1/services/hello",
             "uid": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
         },
         "spec": {
@@ -69,17 +69,29 @@ def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
             },
             "traffic": [{"latestRevision": True, "percent": 100}],
         },
-        "status": {"latestReadyRevisionName": "hello-payments-00003"},
+        "status": {"latestReadyRevisionName": "hello-00003"},
     }
 
 
-def _image(latest=DIGEST, workload=WORKLOAD, ready="True", created="2026-08-05T12:00:00Z"):
+# A tenant namespace: an Image lives in its group's now, and the roll-out
+# follows the object rather than a namespace the loop was bound to.
+TENANT_NAMESPACE = "payments-serverless"
+
+
+def _image(
+    latest=DIGEST,
+    workload=WORKLOAD,
+    ready="True",
+    created="2026-08-05T12:00:00Z",
+    namespace=TENANT_NAMESPACE,
+):
     """A kpack Image as the cluster hands it back."""
     status = {"conditions": [{"type": "Ready", "status": ready}]}
     if latest:
         status["latestImage"] = latest
     metadata = {
         "name": workload if workload else "orphan-image",
+        "namespace": namespace,
         "labels": ({LABEL_WORKLOAD: workload} if workload else {}),
     }
     if created:
@@ -106,13 +118,14 @@ class _FakeCluster:
         self._fail_apply = fail_apply
         self._fail_list = fail_list
         self.applied = []
+        self.applied_namespaces = []
         self.deleted = []
         self.watch_calls = []
         self.list_calls = []
         self.closed = False
         self.events = []
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         assert kind is ResourceKind.KNATIVE_SERVICE
         if name not in self._ksvcs:
             raise NotFoundError(f"Service '{name}' not found")
@@ -121,6 +134,7 @@ class _FakeCluster:
     def apply(self, manifest, namespace=None):
         if self._fail_apply:
             raise RuntimeError("apply refused")
+        self.applied_namespaces.append(namespace)
         self.applied.append(manifest)
         self._ksvcs[manifest["metadata"]["name"]] = manifest
         return [manifest]
@@ -128,7 +142,7 @@ class _FakeCluster:
     def list_resources(self, kind, *, label_selector=None, namespace=None):
         if self._fail_list:
             raise RuntimeError("apiserver unreachable")
-        self.list_calls.append((kind, label_selector))
+        self.list_calls.append((kind, label_selector, namespace))
         return list(self._images), self._version
 
     def delete(self, kind, name, namespace=None):
@@ -226,7 +240,7 @@ def test_with_image_drops_a_pinned_revision_name():
     # Knative rejects a template whose name is unchanged while its content is not,
     # so a hand-pinned name would wedge every roll-out of this function.
     ksvc = _ksvc()
-    ksvc["spec"]["template"]["metadata"]["name"] = "hello-payments-00003"
+    ksvc["spec"]["template"]["metadata"]["name"] = "hello-00003"
 
     assert "name" not in with_image(ksvc, DIGEST)["spec"]["template"]["metadata"]
 
@@ -326,7 +340,7 @@ def test_an_unreadable_workload_is_logged_and_skipped():
     """Not a 404 but a broken read: it must not take the watch down."""
 
     class _Unreadable(_FakeCluster):
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             raise RuntimeError("apiserver said no")
 
     unreadable = _Unreadable("central", {WORKLOAD: _ksvc()})
@@ -341,7 +355,7 @@ def test_an_unreadable_workload_is_logged_and_skipped():
 
 
 def test_resync_reconciles_every_local_image_and_returns_the_watch_position():
-    other = "second-payments"
+    other = "second"
     central = _FakeCluster(
         "central",
         {WORKLOAD: _ksvc(), other: _ksvc(name=other)},
@@ -352,7 +366,9 @@ def test_resync_reconciles_every_local_image_and_returns_the_watch_position():
     version = _reconciler({"central": central}).resync()
 
     assert version == "4242"
-    assert central.list_calls == [(ResourceKind.KPACK_IMAGE, IMAGE_SELECTOR)]
+    # namespace=None: Images live in their groups' namespaces now, so a loop
+    # bound to one would list nothing and no digest would ever reach a KSVC.
+    assert central.list_calls == [(ResourceKind.KPACK_IMAGE, IMAGE_SELECTOR, None)]
     assert {deployed_image(m) for m in central.applied} == {DIGEST, NEWER}
 
 
@@ -433,13 +449,13 @@ def test_the_reconciler_watches_the_configured_local_region():
 def test_resync_seconds_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv("SERVERLESS_RESYNC_SECONDS", "45")
 
-    assert ControllerSettings().resync_seconds == 45
+    assert BuildControllerSettings().resync_seconds == 45
 
 
 def test_a_zero_resync_interval_is_rejected():
     # It would busy-loop the apiserver with relists.
     with pytest.raises(ValueError):
-        ControllerSettings(resync_seconds=0)
+        BuildControllerSettings(resync_seconds=0)
 
 
 def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
@@ -454,7 +470,7 @@ def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
                 raise outcome
 
     with pytest.raises(SystemExit):
-        controller_main.loop(_Flaky(), ControllerSettings(error_backoff_seconds=2.5))
+        controller_main.loop(_Flaky(), BuildControllerSettings(error_backoff_seconds=2.5))
 
     # The failed pass sleeps the error backoff. The clean pass that follows ended
     # instantly, so it is paced to the minimum pass duration - the floor that
@@ -484,3 +500,37 @@ def test_run_installs_the_signal_handlers_and_releases_the_clusters(monkeypatch)
 
     assert set(signals) == {common_loop.signal.SIGTERM, common_loop.signal.SIGINT}
     assert closed == [True]
+
+
+def test_the_roll_out_writes_beside_the_image_not_into_a_bound_namespace():
+    """The Image carries its namespace; the KSVC it feeds is the one next to it.
+
+    Deriving the namespace instead - or binding one at construction, as this
+    loop used to - is how a digest lands in the wrong group's namespace, or in
+    none at all once workloads stopped sharing one.
+    """
+    ksvc = _ksvc()
+    central = _FakeCluster("central", ksvcs={WORKLOAD: ksvc})
+
+    _reconciler({"central": central}).reconcile(_image(namespace="payments-serverless"))
+
+    assert central.applied_namespaces == ["payments-serverless"]
+
+
+def test_an_image_without_a_namespace_is_skipped_rather_than_guessed_at():
+    """Every real object carries one; anything else is not ours to interpret."""
+    central = _FakeCluster("central", ksvcs={WORKLOAD: _ksvc()})
+
+    assert _reconciler({"central": central}).reconcile(_image(namespace=None)) is False
+    assert central.applied == []
+
+
+def test_two_groups_images_roll_into_their_own_namespaces():
+    """The case the single-namespace watch could not express at all."""
+    central = _FakeCluster("central", ksvcs={WORKLOAD: _ksvc()})
+    reconciler = _reconciler({"central": central})
+
+    reconciler.reconcile(_image(namespace="payments-serverless"))
+    reconciler.reconcile(_image(latest=NEWER, namespace="other-serverless"))
+
+    assert central.applied_namespaces == ["payments-serverless", "other-serverless"]

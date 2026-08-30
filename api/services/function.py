@@ -24,7 +24,6 @@ from common.build import BuildPlan, BuildRequest
 from common.config import RegistryConfig
 from common.errors import ValidationError
 from common.labels import OFFERING_FUNCTION, workload_labels
-from common.names import object_name
 
 
 class FunctionService:
@@ -109,7 +108,7 @@ class FunctionService:
         Returns:
             The build plan, one tag and one set of manifests per region.
         """
-        oname = object_name(req.name, req.group)
+        oname = req.name
         labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
         return self._engine.builder.plan(req, labels, registries)
 
@@ -146,7 +145,7 @@ class FunctionService:
         """
         self._assert_runtime(spec.runtime, spec.version)
         # No name check beyond the engine's shared one: the kpack Image is the
-        # workload's own `{name}-{group}` verbatim, so the 63-character label
+        # workload's own name verbatim, so the 63-character label
         # value it must fit is exactly the limit the engine already enforces
         # (common/kpack.py - build_image_name).
         return await self._engine.accept_create(

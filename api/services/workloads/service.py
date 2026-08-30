@@ -67,6 +67,7 @@ from api.services.streams import pods as pods_stream
 from api.services.streams import stats as stats_stream
 from api.services.streams.capacity import StreamCapacity
 from api.services.streams.sse import StreamEvent
+from api.services.tenant_namespace import ensure_namespace
 from api.services.workloads.request import ApplyRequest
 from api.services.workloads.stream_guard import _slot_guarded
 from common.build import BuildBackend, BuildPlan
@@ -76,8 +77,9 @@ from common.errors import (
     ForbiddenError,
     NotFoundError,
     RegionTotalFailure,
+    ValidationError,
 )
-from common.names import object_name
+from common.names import namespace_for_group
 
 logger = get_logger(__name__)
 
@@ -229,6 +231,29 @@ class WorkloadService:
         if not user.can_access_group(group):
             raise ForbiddenError(f"not a member of group '{group}'")
 
+    def namespace_for(self, group: str) -> str:
+        """The namespace this group's workloads live in.
+
+        The single resolution point. Every read and every write goes through
+        it, so "where does this land" has one answer per request and no caller
+        can bind a namespace of its own.
+
+        Args:
+            group: The owning (normalized) group.
+
+        Returns:
+            ``{group}{suffix}``.
+
+        Raises:
+            ValidationError: If the group cannot name a namespace - too long
+                with the suffix, or reserved. Both are refused at accept time,
+                not discovered by the tenant controller later.
+        """
+        try:
+            return namespace_for_group(group, self.settings.tenant_namespaces.suffix)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host, validating any custom one.
 
@@ -261,10 +286,21 @@ class WorkloadService:
         host: str | None = None,
         require_absent: bool = False,
     ) -> None:
-        """Assert a workload can be deployed: host free, and optionally name unused.
+        """Assert a workload can be deployed: namespace ready, host free, name unused.
 
-        See :func:`api.services.regions.preflight.assert_deployable`.
+        See :func:`api.services.regions.preflight.assert_deployable` for the
+        cluster checks. The namespace comes first and only on a create
+        (``require_absent`` is what marks one): an update's namespace exists by
+        definition, since its workload is already running there.
+
+        The call lives here rather than inside ``preflight`` because that
+        module is pure cluster probes - putting an HTTP client in it would drag
+        a dependency into every test that only wanted to check a host.
         """
+        if require_absent:
+            await ensure_namespace(
+                group, self.settings.tenant_namespaces, verify=self.settings.ca_bundle.file
+            )
         await preflight.assert_deployable(
             self.deployer, name, group, targets, host=host, require_absent=require_absent
         )
@@ -330,7 +366,7 @@ class WorkloadService:
             A Pending response with a ``statusUrl`` to poll.
         """
         self.assert_group(user, group)
-        targets = self.deployer.resolve_targets(spec.regions)
+        targets = self.deployer.resolve_targets(spec.regions, self.namespace_for(group))
         host = self.host_for(spec.name, spec.hostname, group)
         # Validate synchronously (400) before the 202, so bad input never reaches the
         # background deploy.
@@ -395,7 +431,9 @@ class WorkloadService:
         host = self.host_for(name, spec.hostname, group)
         # A host collision must be a synchronous 409, not a lost background failure.
         # The workload's own mapping counts as available.
-        await self.assert_host_available(host, name, group, self.deployer.resolve_targets(None))
+        await self.assert_host_available(
+            host, name, group, self.deployer.resolve_targets(None, self.namespace_for(group))
+        )
         background.add_task(run_background, work, group, name, spec, user, existing)
         return self.accepted(offering, name, group, host, **extra)
 
@@ -417,8 +455,8 @@ class WorkloadService:
             The response body and HTTP status code.
         """
         self.assert_group(req.user, req.group)
-        oname = object_name(req.name, req.group)
-        targets = self.deployer.resolve_targets(req.regions)
+        oname = req.name
+        targets = self.deployer.resolve_targets(req.regions, self.namespace_for(req.group))
         host = self.host_for(req.name, req.hostname, req.group)
         owner = req.user.username
 
@@ -530,7 +568,7 @@ class WorkloadService:
         Returns:
             ``{region: registry}`` for the targets.
         """
-        return {c.region: c.registry for c in self.deployer.resolve_targets(requested)}
+        return {c.region: c.registry for c in self.deployer.clusters(requested)}
 
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
         """Re-declare a workload's build in every region that runs it, then ask for one.
@@ -555,8 +593,8 @@ class WorkloadService:
             True if an existing build was triggered in any region; False if
             applying the plan is itself what starts them.
         """
-        oname = object_name(name, group)
-        targets = self.deployer.resolve_targets(None)
+        oname = name
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
         await self.retag_build(targets, plan.manifests_by_region)
 
         def work(cluster: NamespacedCluster) -> RegionStatus:
@@ -618,7 +656,7 @@ class WorkloadService:
         Returns:
             One status per region; ``Absent`` where the workload does not run.
         """
-        oname = object_name(name, group)
+        oname = name
         patch = {
             "metadata": {"annotations": {ANNOTATION_PULL_STAMP: stamp}},
             "spec": {"template": {"metadata": {"annotations": {ANNOTATION_PULL_STAMP: stamp}}}},
@@ -631,7 +669,8 @@ class WorkloadService:
                 return RegionStatus(region=cluster.region, status="Absent")
             return RegionStatus(region=cluster.region, status="Deploying")
 
-        return await self.deployer.fanout(self.deployer.resolve_targets(None), stamp_region)
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
+        return await self.deployer.fanout(targets, stamp_region)
 
     async def load_existing(
         self, name: str, offering: Offering, user: Principal, group: str
@@ -658,8 +697,8 @@ class WorkloadService:
                 region was unreachable.
         """
         self.assert_group(user, group)
-        oname = object_name(name, group)
-        targets = self.deployer.resolve_targets(None)
+        oname = name
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
         found: dict = {}
         images: dict[str, str] = {}
 
@@ -737,7 +776,7 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
+        oname = name
         meta_holder: dict[str, str] = {}
         # The spec is uniform across regions, so read it back once from one
         # representative region (local if it has the workload) after the fan-out.
@@ -783,7 +822,7 @@ class WorkloadService:
                 replicas=replicas,
             )
 
-        targets = self.deployer.resolve_targets(None)
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
         results = await self.deployer.fanout(targets, fetch, read=True)
         statuses = [s for s in results if s is not None]  # drop regions without it
 
@@ -885,7 +924,7 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
+        oname = name
         reps: dict[str, dict] = {}
         # Raw, because the workload total is summed from these rather than from
         # the rounded figures the response carries.
@@ -911,7 +950,7 @@ class WorkloadService:
                 reason=ksvc_state.failure_cause(rev, obj) if status == "Failed" else None,
             )
 
-        targets = self.deployer.resolve_targets(None)
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
         results = await self.deployer.fanout(targets, fetch, executor=executor, read=True)
         statuses = [s for s in results if s is not None]  # drop regions without it
 
@@ -987,7 +1026,7 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
+        oname = name
         denied: list[str] = []
 
         def remove(cluster: NamespacedCluster) -> RegionStatus:
@@ -1010,7 +1049,7 @@ class WorkloadService:
                 return RegionStatus(region=cluster.region, status="Absent")  # raced a peer
             return RegionStatus(region=cluster.region, status="Deleted")
 
-        targets = self.deployer.resolve_targets(None)
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
         statuses = await self.deployer.fanout(targets, remove)
 
         # An unreachable region cannot confirm the workload is gone. Fail closed (503)
@@ -1085,8 +1124,8 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
-        cluster = self.deployer.local_cluster()
+        oname = name
+        cluster = self.deployer.local_cluster(self.namespace_for(group))
 
         def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
@@ -1148,8 +1187,8 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
-        cluster = self.deployer.local_cluster()
+        oname = name
+        cluster = self.deployer.local_cluster(self.namespace_for(group))
 
         def read() -> list:
             obj = cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
@@ -1217,8 +1256,8 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
-        cluster = self.deployer.local_cluster()
+        oname = name
+        cluster = self.deployer.local_cluster(self.namespace_for(group))
         authorize = _pod_authorizer(cluster, oname, pod, kind, name, user)
 
         config = self.capacity.config
@@ -1316,8 +1355,8 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        oname = object_name(name, group)
-        cluster = self.deployer.local_cluster()
+        oname = name
+        cluster = self.deployer.local_cluster(self.namespace_for(group))
         authorize = _pod_authorizer(cluster, oname, pod, kind, name, user)
 
         slot = self.capacity.admit()
@@ -1453,7 +1492,8 @@ class WorkloadService:
                 return ksvcs, {}
             return ksvcs, offering.build_states(self.builder, cluster, group)
 
-        results = await self.deployer.gather_each(self.deployer.resolve_targets(None), fetch)
+        targets = self.deployer.resolve_targets(None, self.namespace_for(group))
+        results = await self.deployer.gather_each(targets, fetch)
         if all(read is None for _, read in results):
             # Same {region, message} shape as aggregate's total-failure; gather_each
             # keeps no per-region error, so message is None.

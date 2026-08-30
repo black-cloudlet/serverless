@@ -23,7 +23,7 @@ from api.services.workloads import ApplyRequest, WorkloadService
 from api.services.workloads.service import run_background
 from common.errors import ValidationError
 from common.labels import OFFERING_CONTAINER, workload_labels
-from common.names import digest_of, object_name
+from common.names import digest_of
 
 logger = get_logger(__name__)
 
@@ -140,7 +140,7 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        oname = object_name(spec.name, group)
+        oname = spec.name
         # Registry creds are optional (public image -> no pull secret).
         pull_name: str | None = None
         pull: dict | None = None
@@ -200,7 +200,7 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        oname = object_name(name, group)
+        oname = name
         # accept_update already fetched (and authorized) this; reuse it to avoid a
         # second multi-region fanout. Falls back to a fresh fetch for direct callers.
         if existing is None:

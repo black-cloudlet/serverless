@@ -10,9 +10,9 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 WORKDIR /app
 COPY pyproject.toml ./
 COPY common ./common
-COPY controller ./controller
+COPY build_controller ./build_controller
 RUN pip install .
 
 USER 1001
 
-ENTRYPOINT ["python", "-m", "controller.main"]
+ENTRYPOINT ["python", "-m", "build_controller.main"]

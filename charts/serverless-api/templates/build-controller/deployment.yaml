@@ -9,10 +9,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "serverless-api.controllerName" . }}
+  name: {{ include "serverless-api.buildControllerName" . }}
   namespace: {{ .Values.namespaces.api }}
   labels:
-    {{- include "serverless-api.controllerLabels" . | nindent 4 }}
+    {{- include "serverless-api.buildControllerLabels" . | nindent 4 }}
     {{- with .Values.buildController.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -24,11 +24,11 @@ spec:
   replicas: {{ .Values.buildController.replicaCount }}
   selector:
     matchLabels:
-      {{- include "serverless-api.controllerLabels" . | nindent 6 }}
+      {{- include "serverless-api.buildControllerLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "serverless-api.controllerLabels" . | nindent 8 }}
+        {{- include "serverless-api.buildControllerLabels" . | nindent 8 }}
         {{- with .Values.buildController.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -38,7 +38,7 @@ spec:
       {{- end }}
     spec:
       containers:
-        - name: {{ include "serverless-api.controllerName" . }}
+        - name: {{ include "serverless-api.buildControllerName" . }}
           image: {{ include "serverless-api.image" (dict "root" $ "spec" .Values.buildController) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:

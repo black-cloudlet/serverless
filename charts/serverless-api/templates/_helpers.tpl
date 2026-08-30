@@ -39,12 +39,12 @@ The build controller's object name and selector labels. A distinct
 ``app.kubernetes.io/name`` keeps the API's Service from selecting its pods;
 adding a component label to the API's own selector would fail every upgrade.
 */}}
-{{- define "serverless-api.controllerName" -}}
+{{- define "serverless-api.buildControllerName" -}}
 {{ .Values.name }}-build-controller
 {{- end -}}
 
-{{- define "serverless-api.controllerLabels" -}}
-app.kubernetes.io/name: {{ include "serverless-api.controllerName" . }}
+{{- define "serverless-api.buildControllerLabels" -}}
+app.kubernetes.io/name: {{ include "serverless-api.buildControllerName" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 

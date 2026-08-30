@@ -28,7 +28,7 @@ import pytest
 import yaml
 
 from api.core.config import Settings
-from controller.config import ControllerSettings
+from build_controller.config import BuildControllerSettings
 from tenant_controller.config import TenantControllerSettings
 
 CHART = Path(__file__).resolve().parent.parent / "charts" / "serverless-api"
@@ -38,7 +38,7 @@ CHART = Path(__file__).resolve().parent.parent / "charts" / "serverless-api"
 # fields most likely to be mistyped are exactly the ones that would go unchecked.
 TEMPLATES = [
     (CHART / "templates" / "api" / "deployment.yaml", Settings),
-    (CHART / "templates" / "build-controller" / "deployment.yaml", ControllerSettings),
+    (CHART / "templates" / "build-controller" / "deployment.yaml", BuildControllerSettings),
     (CHART / "templates" / "tenant-controller" / "deployment.yaml", TenantControllerSettings),
 ]
 

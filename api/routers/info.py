@@ -30,7 +30,7 @@ from api.models.info import (
 from api.services.manifests import route as route_svc
 from api.services.manifests.ksvc import workload_sizes
 from common.errors import error_catalog
-from common.names import MAX_OBJECT_NAME, object_name
+from common.names import MAX_HOST_LABEL, default_host_label
 
 router = APIRouter(tags=["info"])
 
@@ -66,7 +66,9 @@ def _base(settings: Settings) -> dict:
             reasons=list(STATUS_REASONS),
         ),
         errorCodes=[ErrorCode(code=c, status=s) for c, s in error_catalog()],
-        naming=NamingRule(template=object_name("{name}", "{group}"), maxLength=MAX_OBJECT_NAME),
+        naming=NamingRule(
+            template=default_host_label("{name}", "{group}"), maxLength=MAX_HOST_LABEL
+        ),
     )
 
 

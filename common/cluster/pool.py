@@ -3,7 +3,7 @@
 What every pool carries regardless of which resource is being talked about:
 TCP keepalive on the sockets, and a default connect timeout on the requests.
 Both exist for the calls that carry no per-request timeout - discovery and the
-controller's watch - and for the streams that deliberately never will.
+build controller's watch - and for the streams that deliberately never will.
 """
 
 from __future__ import annotations

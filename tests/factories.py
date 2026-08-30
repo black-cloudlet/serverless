@@ -20,9 +20,20 @@ class _FakeCluster:
         self.region = name
         self._existing = existing or {}
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.errors import NotFoundError as _NF
 
+        # No name is a LIST, and an empty cluster lists empty - it does not
+        # 404. The host pre-flight lists cluster-wide now, so a fake that
+        # raised here would read as an unreachable region.
+        if name is None:
+            items = list(self._existing.values())
+            # The apiserver applies the field selector; a fake that ignored it
+            # would hand the caller objects a real cluster never would.
+            if field_selector and field_selector.startswith("metadata.name="):
+                wanted = field_selector.split("=", 1)[1]
+                items = [o for o in items if (o.get("metadata") or {}).get("name") == wanted]
+            return items
         if name in self._existing:
             return self._existing[name]
         raise _NF(f"{name} not found")
@@ -74,10 +85,15 @@ class _ApplyCluster:
         self.applied = []
         self.deleted = []  # [(ResourceKind, name)] from prune / re-tag
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
+        # A LIST, not a get: the host pre-flight lists DomainMappings across
+        # every namespace now, and an empty cluster lists empty rather than
+        # 404ing - which a region would otherwise read as unreachable.
+        if name is None:
+            return []
         if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
             return self._existing[name]
         if kind == ResourceKind.SECRET and name in self._secrets:

@@ -16,6 +16,8 @@ from collections.abc import Callable
 from cloudlet_apis.logging import get_logger
 from kubernetes.client.exceptions import ApiException
 
+from build_controller.digest import needs_image, with_image
+from build_controller.gc import TagGC
 from common import kpack
 from common.cluster import Cluster, NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings
@@ -27,8 +29,6 @@ from common.labels import (
     MANAGED_BY_VALUE,
     OFFERING_FUNCTION,
 )
-from controller.digest import needs_image, with_image
-from controller.gc import TagGC
 
 logger = get_logger(__name__)
 
@@ -59,9 +59,11 @@ class Reconciler:
         # Every region is constructed only to pick this one out; the rest are
         # dropped unconnected, since nothing here touches a peer.
         self._local = select_local(clusters_for(settings), settings.local_region)
-        # The loop's one namespace binding; per-group namespaces widen this
-        # to an all-namespaces watch.
-        self._bound = NamespacedCluster(self._local, settings.workloads_namespace)
+        # No namespace binding: an Image now lives in its group's namespace,
+        # so the watch spans all of them and each roll-out uses the Image's own.
+        # Binding one namespace here is how this loop went blind the moment
+        # workloads moved - it would list zero Images and no digest would ever
+        # reach a KSVC.
         self._gc = gc_factory(self._local.region) if gc_factory else None
 
     @property
@@ -80,8 +82,8 @@ class Reconciler:
             The listing's resourceVersion, or None to watch from now - safe,
             since the relist just reconciled everything.
         """
-        images, version = self._bound.list_resources(
-            ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR
+        images, version = self._local.list_resources(
+            ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR, namespace=None
         )
         for image in images:
             self.reconcile(image)
@@ -101,11 +103,12 @@ class Reconciler:
         """
         version = self.resync()
         try:
-            for _event, image in self._bound.watch(
+            for _event, image in self._local.watch(
                 ResourceKind.KPACK_IMAGE,
                 resource_version=version,
                 label_selector=IMAGE_SELECTOR,
                 timeout_seconds=timeout_seconds,
+                namespace=None,
             ):
                 self.reconcile(image)
         except ApiException as exc:
@@ -128,25 +131,30 @@ class Reconciler:
         Returns:
             True if the KSVC was applied.
         """
-        workload = ((image.get("metadata") or {}).get("labels") or {}).get(LABEL_WORKLOAD)
+        meta = image.get("metadata") or {}
+        workload = (meta.get("labels") or {}).get(LABEL_WORKLOAD)
+        namespace = meta.get("namespace")
         _state, digest, _message = kpack.build_status(image)
-        if not workload or not digest:
+        if not workload or not digest or not namespace:
             return False  # never built, or not attributable to a workload
-        return self._roll_out(workload, digest)
+        return self._roll_out(workload, digest, namespace)
 
-    def _roll_out(self, workload: str, digest: str) -> bool:
-        """Apply the digest to the local KSVC, if that is what it needs.
+    def _roll_out(self, workload: str, digest: str, namespace: str) -> bool:
+        """Apply the digest to the KSVC beside the Image, if that is what it needs.
 
         Failures are logged, not raised; the next resync retries.
 
         Args:
-            workload: The object name (``{name}-{group}``).
+            workload: The workload's object name.
             digest: The image reference to run.
+            namespace: The Image's own namespace - taken from the object rather
+                than derived, so the KSVC this writes is always the one the
+                Image was built for.
 
         Returns:
             True if the KSVC was applied.
         """
-        cluster = self._bound
+        cluster = NamespacedCluster(self._local, namespace)
         try:
             ksvc = cluster.get(ResourceKind.KNATIVE_SERVICE, workload)
         except NotFoundError:

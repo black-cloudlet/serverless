@@ -531,7 +531,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   been exiting at startup with `RuntimeConfigError` unless the operator happened
   to have `/etc/serverless/runtimes/runtimes.yaml` on their machine.
   `.env.example` now points at it.
-- **The build controller** (`controller/`, `python -m controller.main`), a second
+- **The build controller** (`controller/`, `python -m build_controller.main`), a second
   Deployment that closes the last gap in the build path: a finished build now
   reaches the running function. It watches kpack `Image` objects in the local
   cluster and applies each `status.latestImage` to that function's Knative
@@ -551,7 +551,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   inherit its image). No leader election, by the same convergence rules as every
   other writer.
 
-  It ships as **its own image** (`Dockerfile.controller`), installing only the
+  It ships as **its own image** (`Dockerfile.build-controller`), installing only the
   base dependencies - `pydantic`, `pydantic-settings`, `kubernetes`. The API's
   `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` moved behind a new `api`
   extra that only its image installs. The controller holds a certificate that

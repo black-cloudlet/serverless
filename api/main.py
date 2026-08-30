@@ -44,7 +44,7 @@ async def _warmup(settings: Settings, deployer: Deployer) -> None:
     if settings.auth_enabled:
         tasks.append(_warm("SSO discovery", get_auth().warmup, timeout))
     if settings.regions:
-        for cluster in deployer.resolve_targets(None):
+        for cluster in deployer.clusters():
             tasks.append(_warm(f"cluster {cluster.region}", cluster.connect, timeout))
     if tasks:
         await asyncio.gather(*tasks)

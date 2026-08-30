@@ -41,7 +41,6 @@ from common.cluster import NamespacedCluster, ResourceKind
 from common.config import BuildConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
 from common.labels import LABEL_GROUP, LABEL_OFFERING, LABEL_WORKLOAD, OFFERING_FUNCTION
-from common.names import object_name
 
 logger = get_logger(__name__)
 
@@ -180,7 +179,7 @@ class KpackBackend:
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
-        oname = object_name(req.name, req.group)
+        oname = req.name
         builder, env = self._runtime_config(req.runtime, req.version)
         image_name = kpack.build_image_name(oname)
         sa_name = kpack.build_service_account_name(oname)
@@ -244,7 +243,7 @@ class KpackBackend:
                 Unlike a status read, this one is the whole point of the call: a
                 swallowed error is a rebuild that silently never happens.
         """
-        image_name = kpack.build_image_name(object_name(name, group))
+        image_name = kpack.build_image_name(name)
         builds = cluster.get(
             ResourceKind.KPACK_BUILD, label_selector=f"{kpack.IMAGE_LABEL}={image_name}"
         )
@@ -284,7 +283,7 @@ class KpackBackend:
             it, and must fall through to the KSVC status rather than read as a
             failure (docs/FUNCTIONS.md - Function Status Resolution).
         """
-        image_name = kpack.build_image_name(object_name(name, group))
+        image_name = kpack.build_image_name(name)
         try:
             image = cluster.get(ResourceKind.KPACK_IMAGE, image_name)
         except NotFoundError:

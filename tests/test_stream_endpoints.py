@@ -22,7 +22,7 @@ from api.services.streams.sse import StreamEvent
 
 KEY = "endpoint-test-signing-key-0123456"  # noqa: S105 - a fixture, not a credential
 PODS = "/v1/groups/team/functions/foo/pods"
-LOGS = "/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde"
+LOGS = "/v1/groups/team/functions/foo/logs/pods/foo-00001-abcde"
 STATS = "/v1/groups/team/functions/foo/stats/stream"
 CALLER = Principal(subject="u", username="alice", groups=["team"], is_admin=False)
 
@@ -55,7 +55,7 @@ class FakeStreams:
             group=group,
             type="function",
             region="central",
-            pods=[PodInfo(pod="foo-team-00001-abcde", phase="Running", ready=True)],
+            pods=[PodInfo(pod="foo-00001-abcde", phase="Running", ready=True)],
         )
 
     async def pod_logs(
@@ -228,7 +228,7 @@ def test_the_log_stream_passes_its_parameters_through():
     svc = FakeStreams(events=[])
     build(svc).get(f"{LOGS}?container=queue-proxy&sinceSeconds=30")
 
-    assert svc.seen["pod"] == "foo-team-00001-abcde"
+    assert svc.seen["pod"] == "foo-00001-abcde"
     assert svc.seen["container"] == "queue-proxy"
     assert svc.seen["since_seconds"] == 30
     assert svc.seen["name"] == "foo"
@@ -291,7 +291,7 @@ def test_both_offerings_stream():
         "/v1/groups/team/functions/foo",
         "/v1/groups/team/containers/foo",
     ):
-        for suffix in ("pods", "stats/stream", "logs/pods/foo-team-00001-abcde"):
+        for suffix in ("pods", "stats/stream", "logs/pods/foo-00001-abcde"):
             svc = FakeStreams(events=[])
             response = build(svc).get(f"{base}/{suffix}")
             assert response.status_code == 200, f"{base}/{suffix}"
@@ -450,7 +450,7 @@ def test_the_log_snapshot_is_json_not_an_event_stream():
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
     body = response.json()
-    assert body["pod"] == "foo-team-00001-abcde"
+    assert body["pod"] == "foo-00001-abcde"
     assert body["lines"][0]["message"] == "from the snapshot"
 
 
@@ -459,7 +459,7 @@ def test_the_pods_snapshot_is_json_not_an_event_stream():
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
-    assert response.json()["pods"][0]["pod"] == "foo-team-00001-abcde"
+    assert response.json()["pods"][0]["pod"] == "foo-00001-abcde"
 
 
 def test_following_is_the_default_on_both():

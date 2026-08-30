@@ -211,8 +211,8 @@ def test_manifests_share_one_git_secret_between_the_api_and_kpack():
     sa = _by_kind(manifests, "ServiceAccount")
     # exactly one Secret, and it is the workload's own {workload}-git
     assert len([m for m in manifests if m["kind"] == "Secret"]) == 1
-    assert secret["metadata"]["name"] == "hello-payments-git"
-    assert sa["secrets"][0]["name"] == "hello-payments-git"
+    assert secret["metadata"]["name"] == "hello-git"
+    assert sa["secrets"][0]["name"] == "hello-git"
     assert base64.b64decode(secret["data"]["password"]).decode() == "ghp_tok"
 
 
@@ -224,9 +224,9 @@ def test_image_is_named_the_workload_and_the_account_is_suffixed():
     _, manifests = _manifests()
     image = _by_kind(manifests, "Image")
     sa = _by_kind(manifests, "ServiceAccount")
-    assert image["metadata"]["name"] == "hello-payments"
-    assert sa["metadata"]["name"] == "hello-payments-build"
-    assert image["spec"]["serviceAccountName"] == "hello-payments-build"
+    assert image["metadata"]["name"] == "hello"
+    assert sa["metadata"]["name"] == "hello-build"
+    assert image["spec"]["serviceAccountName"] == "hello-build"
     assert image["spec"]["source"]["git"] == {
         "url": "https://git.internal/payments/hello.git",
         "revision": "main",
@@ -237,13 +237,13 @@ def test_the_longest_accepted_pair_still_fits_kpacks_image_label():
     """The platform's own 63-char check on `{name}-{group}` is exactly the
     label-value cap the Image name must fit, so no function-only limit exists -
     any prefix or suffix on the Image's name would shrink the name budget."""
-    from common.names import MAX_OBJECT_NAME, validate_object_name
+    from common.names import MAX_HOST_LABEL, validate_default_host_label
 
     name, group = "n" * 31, "g" * 31  # 63 with the hyphen - the platform maximum
-    workload = validate_object_name(name, group)
+    workload = validate_default_host_label(name, group)
 
-    assert len(kpack.build_image_name(workload)) <= MAX_OBJECT_NAME
-    assert kpack.build_service_account_name("hello-payments") == "hello-payments-build"
+    assert len(kpack.build_image_name(workload)) <= MAX_HOST_LABEL
+    assert kpack.build_service_account_name("hello") == "hello-build"
 
 
 def test_labels_are_stamped_on_every_manifest():
@@ -375,7 +375,7 @@ class _StatusCluster:
         self.region = self.name = "region-a"
         self._objects = objects or {}
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         try:
             return self._objects[(kind, name)]
         except KeyError:
@@ -392,7 +392,7 @@ def test_status_reads_the_image_by_its_derived_name():
 
     cluster = _StatusCluster(
         {
-            (ResourceKind.KPACK_IMAGE, "hello-payments"): {
+            (ResourceKind.KPACK_IMAGE, "hello"): {
                 "status": {
                     "latestImage": "reg/x@sha256:1",
                     "conditions": [{"type": "Ready", "status": "True"}],
@@ -475,11 +475,11 @@ def test_a_running_build_folds_into_the_per_region_rows_too():
         RegionStatus(
             region="a",
             status="Failed",
-            revision="fn-team-00001",
+            revision="fn-00001",
             reason="ImagePullFailed",
             message='Unable to fetch image "reg/team/fn:main": not found',
         ),
-        RegionStatus(region="b", status="Ready", revision="fn-team-00001"),
+        RegionStatus(region="b", status="Ready", revision="fn-00001"),
     ]
     folded = regions_with_build_status(
         regions, {"a": BuildStatusView(state="Building"), "b": BuildStatusView(state="Ready")}
@@ -491,7 +491,7 @@ def test_a_running_build_folds_into_the_per_region_rows_too():
     # which read as `Building` + `ImagePullFailed` on every surface.
     assert folded[0].reason is None
     assert folded[0].message is None
-    assert folded[0].revision == "fn-team-00001"  # everything else is untouched
+    assert folded[0].revision == "fn-00001"  # everything else is untouched
     assert folded[1].status == "Ready"  # a region that isn't failing is left alone
 
 
@@ -602,7 +602,7 @@ def _ksvc(image=DEPLOYED, branch="main", path="", version=None, port=None):
     from api.services.manifests.ksvc import build_ksvc
 
     return build_ksvc(
-        name="hello-payments",
+        name="hello",
         group="payments",
         owner="alice",
         image=image,
@@ -641,9 +641,7 @@ class _RecordingBuilder:
             registries,
             self.image_ref(req),
             replicated=[
-                secret_svc.build_git_secret(
-                    "hello-payments-git", labels, req.git_token, req.git_url
-                )
+                secret_svc.build_git_secret("hello-git", labels, req.git_token, req.git_url)
             ],
             image=True,
             labels=labels,
@@ -722,7 +720,7 @@ async def test_build_manifests_are_applied_and_owned_by_the_ksvc():
     # the ownerReference is what deletes the Image with the function - without it
     # an orphan keeps rebuilding a function that no longer exists
     owners = images[0]["metadata"]["ownerReferences"]
-    assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
+    assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello")]
 
 
 def _git_secrets(cluster):
@@ -793,18 +791,18 @@ async def test_an_update_keeps_each_regions_own_image_rather_than_one_regions():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     a_digest = "registry.a/acme/payments/hello@sha256:" + "a" * 64
     b_digest = "registry.b/acme/payments/hello@sha256:" + "b" * 64
     region_a = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(image=a_digest)},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(image=a_digest)},
+        secrets={"hello-git": stored},
     )
     region_b = _ApplyCluster(
         "region-b",
-        {"hello-payments": _ksvc(image=b_digest)},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(image=b_digest)},
+        secrets={"hello-git": stored},
     )
     svc = _function_service(
         {"region-a": region_a, "region-b": region_b}, _RecordingBuilder(), local_region="region-a"
@@ -834,7 +832,7 @@ async def test_every_regions_build_objects_are_owned_by_the_ksvc_beside_them():
 
     for cluster in (local, remote):
         image = _applied_kind(cluster, "Image")[0]
-        assert [o["name"] for o in image["metadata"]["ownerReferences"]] == ["hello-payments"]
+        assert [o["name"] for o in image["metadata"]["ownerReferences"]] == ["hello"]
 
 
 def test_reading_the_build_status_does_not_fan_out_when_the_local_region_has_it():
@@ -858,7 +856,9 @@ def test_reading_the_build_status_does_not_fan_out_when_the_local_region_has_it(
 
     from api.services.offering import FUNCTION
 
-    status = FUNCTION.build_status(svc.builder, svc.deployer.local_cluster(), "hello", "payments")
+    status = FUNCTION.build_status(
+        svc.builder, svc.deployer.local_cluster("payments-serverless"), "hello", "payments"
+    )
     assert status.state == "Ready"
     assert seen == ["region-a"]
 
@@ -870,10 +870,8 @@ async def test_config_only_update_reapplies_the_build_but_keeps_the_deployment()
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
-    cluster = _ApplyCluster(
-        "region-a", {"hello-payments": _ksvc()}, secrets={"hello-payments-git": stored}
-    )
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
+    cluster = _ApplyCluster("region-a", {"hello": _ksvc()}, secrets={"hello-git": stored})
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
         "payments",
@@ -901,11 +899,11 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(path="services/api")},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(path="services/api")},
+        secrets={"hello-git": stored},
     )
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
@@ -922,7 +920,7 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     assert builder.reqs[0].path == "services/worker"
     # The build is re-declared, but the workload keeps the digest it is serving:
     # the tag still resolves to that same digest until the build lands, so
-    # writing it would cut a revision of identical code. The controller supplies
+    # writing it would cut a revision of identical code. The build controller supplies
     # the new digest (docs/BUILDING.md - Digest propagation).
     assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
@@ -932,7 +930,7 @@ async def test_update_without_any_token_emits_no_build():
     from api.models.function import FunctionUpdate
     from tests.factories import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc()})
+    cluster = _ApplyCluster("region-a", {"hello": _ksvc()})
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
         "payments",
@@ -954,7 +952,7 @@ async def test_a_branch_change_rebuilds_without_disturbing_the_running_image():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc()})
+    cluster = _ApplyCluster("region-a", {"hello": _ksvc()})
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
         "payments",
@@ -1212,11 +1210,11 @@ async def test_changing_the_version_rebuilds_but_leaves_the_running_image():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(version="3.11")},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(version="3.11")},
+        secrets={"hello-git": stored},
     )
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
@@ -1244,11 +1242,11 @@ async def test_omitting_the_version_returns_to_the_default_and_rebuilds():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(version="3.11")},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(version="3.11")},
+        secrets={"hello-git": stored},
     )
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
@@ -1269,11 +1267,11 @@ async def test_resending_the_same_version_is_not_a_rebuild():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(version="3.11")},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(version="3.11")},
+        secrets={"hello-git": stored},
     )
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
@@ -1377,11 +1375,11 @@ async def test_a_function_port_is_replaced_on_update_not_kept():
     from api.models.function import FunctionUpdate
     from tests.factories import _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(port=9000)},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(port=9000)},
+        secrets={"hello-git": stored},
     )
     await _function_service({"region-a": cluster}, _RecordingBuilder()).update(
         "payments",
@@ -1400,7 +1398,7 @@ async def test_a_function_port_is_reported_on_read():
     from api.services.offering import FUNCTION
     from tests.factories import _ApplyCluster, _workload_service
 
-    cluster = _ApplyCluster("region-a", {"hello-payments": _ksvc(port=9000)})
+    cluster = _ApplyCluster("region-a", {"hello": _ksvc(port=9000)})
     engine = _workload_service({"region-a": cluster}, builder=_RecordingBuilder())
     body = await engine.get(FUNCTION, "hello", _principal(), "payments")
 
@@ -1451,11 +1449,11 @@ async def test_changing_only_the_port_does_not_rebuild():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc()},  # deployed at the digest a build resolved
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc()},  # deployed at the digest a build resolved
+        secrets={"hello-git": stored},
     )
     builder = _RecordingBuilder()
     await _function_service({"region-a": cluster}, builder).update(
@@ -1478,7 +1476,7 @@ async def test_changing_only_the_port_does_not_rebuild():
 # -------------------------------------------------------------------- build
 
 
-def _build_obj(number, image="hello-payments"):
+def _build_obj(number, image="hello"):
     return {
         "apiVersion": "kpack.io/v1alpha2",
         "kind": "Build",
@@ -1497,7 +1495,7 @@ def test_latest_build_orders_on_the_number_not_the_string():
     # kpack actually looks at - so a text order would trigger nothing at all
     builds = [_build_obj(9), _build_obj(10), _build_obj(2)]
 
-    assert kpack.latest_build(builds)["metadata"]["name"] == "hello-payments-build-10"
+    assert kpack.latest_build(builds)["metadata"]["name"] == "hello-build-10"
     assert kpack.latest_build([]) is None
     # an object that is not one of kpack's numbered Builds gives no ordering key
     assert kpack.latest_build([{"metadata": {"labels": {}}}]) is None
@@ -1512,11 +1510,11 @@ class _BuildCluster:
         self._builds = list(builds)
         self.patched = []
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
 
         assert kind == ResourceKind.KPACK_BUILD
-        assert label_selector == f"{kpack.IMAGE_LABEL}=hello-payments"
+        assert label_selector == f"{kpack.IMAGE_LABEL}=hello"
         return list(self._builds)
 
     def patch(self, kind, name, body, namespace=None):
@@ -1539,7 +1537,7 @@ def test_the_trigger_annotates_the_latest_build_and_leaves_the_image_alone():
     assert _builder().trigger(cluster, "hello", "payments") is True
 
     kind, name, body = cluster.patched[0]
-    assert (kind, name) == (ResourceKind.KPACK_BUILD, "hello-payments-build-2")
+    assert (kind, name) == (ResourceKind.KPACK_BUILD, "hello-build-2")
     assert kpack.BUILD_TRIGGER_ANNOTATION in body["metadata"]["annotations"]
     assert len(cluster.patched) == 1  # one request, one build
 
@@ -1567,7 +1565,7 @@ class _RebuildCluster:
     def __getattr__(self, item):
         return getattr(self._inner, item)  # applied/deleted/apply/delete
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
 
         if kind == ResourceKind.KPACK_BUILD:
@@ -1587,12 +1585,10 @@ def _deployed_ksvc(**over):
 
 
 def _build_cluster(**over):
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     kwargs = dict(
-        existing={
-            "hello-payments": _deployed_ksvc(branch="release", path="services/api", version="3.11")
-        },
-        secrets={"hello-payments-git": stored},
+        existing={"hello": _deployed_ksvc(branch="release", path="services/api", version="3.11")},
+        secrets={"hello-git": stored},
         builds=[_build_obj(1)],
     )
     kwargs.update(over)
@@ -1707,19 +1703,17 @@ async def test_a_rebuilt_functions_build_objects_stay_owned_by_its_ksvc():
     await _run_build(_build_service({"region-a": cluster}, _TriggeringBuilder()))
 
     owners = _applied_kind(cluster, "Image")[0]["metadata"]["ownerReferences"]
-    assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello-payments")]
+    assert [(o["kind"], o["name"]) for o in owners] == [("Service", "hello")]
 
 
 async def test_a_rebuild_skips_a_region_that_runs_no_copy_of_the_function():
     """No KSVC there means no build to re-declare - not an unowned one to apply."""
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
-    local = _RebuildCluster(existing={}, secrets={"hello-payments-git": stored}, builds=[])
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
+    local = _RebuildCluster(existing={}, secrets={"hello-git": stored}, builds=[])
     # the token is on every region, which is what lets any of them build later
-    remote = _ApplyCluster(
-        "region-b", {"hello-payments": _deployed_ksvc()}, secrets={"hello-payments-git": stored}
-    )
+    remote = _ApplyCluster("region-b", {"hello": _deployed_ksvc()}, secrets={"hello-git": stored})
     svc = _build_service(
         {"region-a": local, "region-b": remote}, _TriggeringBuilder(), local_region="region-a"
     )
@@ -1796,7 +1790,7 @@ async def test_a_container_of_the_same_name_cannot_be_rebuilt():
     from common.errors import NotFoundError
 
     container = build_ksvc(
-        name="hello-payments",
+        name="hello",
         group="payments",
         owner="alice",
         image="reg/x:1",
@@ -1807,7 +1801,7 @@ async def test_a_container_of_the_same_name_cannot_be_rebuilt():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _build_cluster(existing={"hello-payments": container})
+    cluster = _build_cluster(existing={"hello": container})
     svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
 
     with pytest.raises(NotFoundError):
@@ -1828,7 +1822,7 @@ async def test_build_of_a_workload_with_no_stored_source_is_rejected():
     from common.errors import ValidationError
 
     unstamped = build_ksvc(  # a function KSVC carrying no build metadata
-        name="hello-payments",
+        name="hello",
         group="payments",
         owner="alice",
         image="reg/fn:old",
@@ -1839,7 +1833,7 @@ async def test_build_of_a_workload_with_no_stored_source_is_rejected():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _build_cluster(existing={"hello-payments": unstamped})
+    cluster = _build_cluster(existing={"hello": unstamped})
     svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
     background = BackgroundTasks()
 
@@ -1933,7 +1927,7 @@ async def test_a_created_function_is_deployed_at_the_branch_tag():
 
 
 async def test_no_api_path_writes_the_image_after_the_create():
-    """The controller is the only writer once the function exists.
+    """The build controller is the only writer once the function exists.
 
     Every shape of update at once, because the rule is what keeps a revision
     from being cut for code already running, and it is one forgotten branch away
@@ -1944,13 +1938,13 @@ async def test_no_api_path_writes_the_image_after_the_create():
     from api.services.state.ksvc_state import extract_image
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
 
     def _region():
         return _ApplyCluster(
             "region-a",
-            {"hello-payments": _ksvc(image=DEPLOYED)},
-            secrets={"hello-payments-git": stored},
+            {"hello": _ksvc(image=DEPLOYED)},
+            secrets={"hello-git": stored},
         )
 
     # a config-only edit, a rebuild-triggering edit, and a rotated token
@@ -2000,12 +1994,12 @@ async def test_a_moved_registry_layout_re_tags_the_build_but_not_the_workload():
         def image_ref(self, req, registry=None):
             return "reg/acme/serverless/builders/payments/hello:main"
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         # deployed under the old layout, at a digest a finished build resolved
         "region-a",
-        {"hello-payments": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
-        secrets={"hello-payments-git": stored},
+        {"hello": _ksvc(image="reg/acme/payments/hello@sha256:" + "a" * 64)},
+        secrets={"hello-git": stored},
     )
     builder = _MovedBuilder()
     await _function_service({"region-a": cluster}, builder).update(
@@ -2041,9 +2035,9 @@ async def test_a_config_only_update_under_an_unchanged_layout_keeps_the_digest()
         def image_ref(self, req, registry=None):
             return "reg/acme/payments/hello:main"
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
-        "region-a", {"hello-payments": _ksvc(image=digest)}, secrets={"hello-payments-git": stored}
+        "region-a", {"hello": _ksvc(image=digest)}, secrets={"hello-git": stored}
     )
     await _function_service({"region-a": cluster}, _SameLayout()).update(
         "payments",
@@ -2072,7 +2066,7 @@ async def test_stored_inputs_that_no_longer_validate_are_a_400_not_a_500():
 
     ksvc = _deployed_ksvc()
     ksvc["metadata"]["annotations"][ANNOTATION_GIT_PATH] = "../etc"
-    cluster = _build_cluster(existing={"hello-payments": ksvc})
+    cluster = _build_cluster(existing={"hello": ksvc})
     svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
 
     with pytest.raises(ValidationError, match="stored build inputs are not valid"):
@@ -2093,8 +2087,8 @@ async def test_a_second_rebuild_annotates_whatever_build_is_latest_by_then():
     assert builder.trigger(cluster, "hello", "payments") is True
 
     assert [name for _, name, _ in cluster.patched] == [
-        "hello-payments-build-1",
-        "hello-payments-build-2",
+        "hello-build-1",
+        "hello-build-2",
     ]
 
 
@@ -2147,10 +2141,10 @@ async def test_a_rebuild_that_cannot_reach_the_local_region_does_not_fail_the_20
         def apply(self, manifest, namespace=None):
             raise RuntimeError("region down")
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _DownLocal(
-        existing={"hello-payments": _deployed_ksvc()},
-        secrets={"hello-payments-git": stored},
+        existing={"hello": _deployed_ksvc()},
+        secrets={"hello-git": stored},
         builds=[_build_obj(1)],
     )
     svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
@@ -2171,7 +2165,7 @@ def _kpack_image(tag):
     return {
         "apiVersion": "kpack.io/v1alpha2",
         "kind": "Image",
-        "metadata": {"name": "hello-payments"},
+        "metadata": {"name": "hello"},
         "spec": {"tag": tag},
     }
 
@@ -2198,12 +2192,12 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
     from api.models.function import FunctionUpdate
     from tests.factories import _applied_kind, _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(image=DEPLOYED)},
-        secrets={"hello-payments-git": stored},
-        images={"hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+        {"hello": _ksvc(image=DEPLOYED)},
+        secrets={"hello-git": stored},
+        images={"hello": _kpack_image("reg/acme/payments/hello:main")},
     )
     reclaimed = _reclaimed(monkeypatch)
 
@@ -2218,7 +2212,7 @@ async def test_a_moved_tag_deletes_the_image_before_re_applying_it(monkeypatch):
         _principal(),
     )
 
-    assert (ResourceKind.KPACK_IMAGE, "hello-payments") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello") in cluster.deleted
     applied = _applied_kind(cluster, "Image")[0]
     assert applied["spec"]["tag"] == "reg/acme/serverless/builders/payments/hello:main"
     # and the repositories the old tag pushed to are handed back
@@ -2230,12 +2224,12 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
     from api.models.function import FunctionUpdate
     from tests.factories import _ApplyCluster
 
-    stored = secret_svc.build_git_secret("hello-payments-git", {}, "ghp_stored")
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     cluster = _ApplyCluster(
         "region-a",
-        {"hello-payments": _ksvc(image=DEPLOYED)},
-        secrets={"hello-payments-git": stored},
-        images={"hello-payments": _kpack_image("reg/acme/payments/hello:main")},
+        {"hello": _ksvc(image=DEPLOYED)},
+        secrets={"hello-git": stored},
+        images={"hello": _kpack_image("reg/acme/payments/hello:main")},
     )
     reclaimed = _reclaimed(monkeypatch)
 
@@ -2246,7 +2240,7 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
         _principal(),
     )
 
-    assert (ResourceKind.KPACK_IMAGE, "hello-payments") not in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello") not in cluster.deleted
     assert reclaimed == []
 
 
@@ -2269,14 +2263,14 @@ async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
         _principal(),
     )
 
-    assert (ResourceKind.KPACK_IMAGE, "hello-payments") not in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello") not in cluster.deleted
     assert reclaimed == []
 
 
 async def test_the_build_endpoint_re_tags_too(monkeypatch):
     """It applies the same composed Image, so it hits the same immutable field."""
     cluster = _build_cluster()
-    cluster._inner._images = {"hello-payments": _kpack_image("reg/acme/payments/hello:main")}
+    cluster._inner._images = {"hello": _kpack_image("reg/acme/payments/hello:main")}
     reclaimed = _reclaimed(monkeypatch)
 
     class _MovedTriggering(_TriggeringBuilder):
@@ -2285,7 +2279,7 @@ async def test_the_build_endpoint_re_tags_too(monkeypatch):
 
     await _run_build(_build_service({"region-a": cluster}, _MovedTriggering()))
 
-    assert (ResourceKind.KPACK_IMAGE, "hello-payments") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "hello") in cluster.deleted
     assert reclaimed == ["reg/acme/payments/hello:main"]
 
 

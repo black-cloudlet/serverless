@@ -15,16 +15,16 @@ import logging
 import httpx
 import pytest
 
+from build_controller.config import BuildControllerSettings
+from build_controller.gc import TagGC, garbage
+from build_controller.reconciler import Reconciler
 from common.cluster import NamespacedCluster
 from common.config import RegionConfig, RegionRegistry
 from common.errors import NotFoundError
 from common.names import digest_of, tag_of
 from common.registry import TagInfo
-from controller.config import ControllerSettings
-from controller.gc import TagGC, garbage
-from controller.reconciler import Reconciler
 
-_LOGGER = "controller.gc"
+_LOGGER = "build_controller.gc"
 _CLIENT_LOGGER = "common.registry"
 
 REPO = "payments/hello"
@@ -60,17 +60,17 @@ def _settings(**overrides):
         registry=dict(url="registry.internal", api_token="oauth-token"),
     )
     values.update(overrides)
-    return ControllerSettings(**values)
+    return BuildControllerSettings(**values)
 
 
-def _image(tag=TAG, latest=f"registry.internal/{REPO}@{_D[6]}", workload="hello-payments"):
+def _image(tag=TAG, latest=f"registry.internal/{REPO}@{_D[6]}", workload="hello"):
     """A kpack Image carrying what the GC reads: spec.tag and latestImage."""
     status = {"conditions": [{"type": "Ready", "status": "True"}]}
     if latest:
         status["latestImage"] = latest
     return {
         "metadata": {
-            "name": "hello-payments",
+            "name": "hello",
             "labels": {"serverless.platform/workload": workload},
         },
         "spec": {"tag": tag},
@@ -334,7 +334,7 @@ def test_an_unreachable_registry_never_raises_into_the_loop(monkeypatch, caplog)
     gc.wait()
 
     messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
-    assert any("sweeping 'hello-payments' failed" in m for m in messages)
+    assert any("sweeping 'hello' failed" in m for m in messages)
     # and the pass still closes with its summary, counting the failure
     assert any("1 failed" in m for m in messages)
 
@@ -357,7 +357,7 @@ def test_one_failing_function_does_not_abort_the_rest(monkeypatch, caplog):
     gc.maybe_sweep(
         [
             _image(),  # sweeping this one times out, every sweep
-            _image(tag=f"registry.internal/{other_repo}:main", workload="world-payments"),
+            _image(tag=f"registry.internal/{other_repo}:main", workload="world"),
         ]
     )
     gc.wait()
@@ -365,7 +365,7 @@ def test_one_failing_function_does_not_abort_the_rest(monkeypatch, caplog):
     # the failing function is named, the next one is still pruned
     assert f"{other_repo}:dev" in quay.deleted
     messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
-    assert any("sweeping 'hello-payments' failed" in m for m in messages)
+    assert any("sweeping 'hello' failed" in m for m in messages)
 
 
 def test_an_image_naming_no_tag_is_skipped(monkeypatch):
@@ -404,7 +404,7 @@ def test_the_sweep_logs_a_per_function_verdict_and_a_summary(monkeypatch, caplog
 
     messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
     # the per-function verdict: what happened, to whom, and what was spared
-    assert any("'hello-payments': pruned 3 of 8 tag(s) in 'payments/hello'" in m for m in messages)
+    assert any("'hello': pruned 3 of 8 tag(s) in 'payments/hello'" in m for m in messages)
     # the sweep summary: the one line that says the pass ran and what it did
     assert any(
         "swept 1 function repositories in 'central', pruned 3 tag(s), 0 failed" in m
@@ -425,7 +425,7 @@ def test_a_sweep_with_nothing_to_prune_stays_quiet_per_function(monkeypatch, cap
 
     messages = [r.getMessage() for r in caplog.records if r.name == _LOGGER]
     assert quay.deleted == []
-    assert not any("pruned" in m and "of" in m for m in messages if "'hello-payments'" in m)
+    assert not any("pruned" in m and "of" in m for m in messages if "'hello'" in m)
     # the summary still reports the pass, so "quiet" is never "did not run"
     assert any("swept 1 function repositories" in m for m in messages)
 
@@ -507,7 +507,7 @@ def test_resync_hands_its_listing_to_the_gc():
         def list_resources(self, kind, *, label_selector=None, namespace=None):
             return [_image()], "7"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             raise NotFoundError(name or "")
 
     class _GC:
@@ -525,7 +525,7 @@ def test_resync_hands_its_listing_to_the_gc():
     reconciler.resync()
 
     # the same listing the rollouts just used - being due costs no second LIST
-    assert [i["metadata"]["name"] for i in reconciler._gc.calls[0]] == ["hello-payments"]
+    assert [i["metadata"]["name"] for i in reconciler._gc.calls[0]] == ["hello"]
 
 
 def test_the_gc_factory_receives_the_resolved_region_name():
@@ -549,7 +549,7 @@ def test_gc_settings_come_from_the_environment(monkeypatch):
     monkeypatch.setenv("SERVERLESS_GC_INTERVAL_SECONDS", "3600")
     monkeypatch.setenv("SERVERLESS_GC_KEEP_BUILDS", "5")
 
-    settings = ControllerSettings()
+    settings = BuildControllerSettings()
 
     assert settings.gc_enabled is False
     assert settings.gc_interval_seconds == 3600
@@ -559,9 +559,9 @@ def test_gc_settings_come_from_the_environment(monkeypatch):
 def test_a_zero_gc_interval_is_rejected():
     # it would sweep on every resync, hammering the registry's API
     with pytest.raises(ValueError):
-        ControllerSettings(gc_interval_seconds=0)
+        BuildControllerSettings(gc_interval_seconds=0)
 
 
 def test_a_negative_keep_is_rejected():
     with pytest.raises(ValueError):
-        ControllerSettings(gc_keep_builds=-1)
+        BuildControllerSettings(gc_keep_builds=-1)

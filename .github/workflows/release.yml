@@ -105,7 +105,7 @@ jobs:
           - name: api
             dockerfile: ./Dockerfile
           - name: build-controller
-            dockerfile: ./Dockerfile.controller
+            dockerfile: ./Dockerfile.build-controller
           - name: tenant-controller
             dockerfile: ./Dockerfile.tenant-controller
     permissions:

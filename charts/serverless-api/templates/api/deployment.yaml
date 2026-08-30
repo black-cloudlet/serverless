@@ -51,6 +51,20 @@ spec:
               value: {{ .Values.basePath | quote }}
             - name: SERVERLESS_WORKLOADS_NAMESPACE
               value: {{ .Values.namespaces.workloads | quote }}
+            # Where a group's workloads live, and how to reach the component
+            # that creates those namespaces. The suffix is read by both ends;
+            # an empty URL skips the ensure call, which is the dev posture.
+            - name: SERVERLESS_TENANT_NAMESPACES__SUFFIX
+              value: {{ .Values.tenantNamespaces.suffix | quote }}
+            - name: SERVERLESS_TENANT_NAMESPACES__TIMEOUT
+              value: {{ .Values.tenantNamespaces.ensureTimeout | int64 | quote }}
+            {{- if .Values.tenantNamespaces.controller.enabled }}
+            - name: SERVERLESS_TENANT_NAMESPACES__CONTROLLER_URL
+              value: {{ printf "http://%s.%s.svc:%v"
+                (include "serverless-api.tenantControllerName" .)
+                .Values.namespaces.api
+                .Values.tenantNamespaces.controller.service.port | quote }}
+            {{- end }}
             - name: SERVERLESS_CORS_ALLOW_ORIGINS
               {{- /* Each entry is templated, then JSON-encoded - tpl on the
                      encoded list instead would put rendered text inside JSON
@@ -139,6 +153,14 @@ spec:
             - name: REQUESTS_CA_BUNDLE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
+            {{- if and .Values.tenantNamespaces.controller.enabled .Values.tenantNamespaces.controller.tokenSecret.create }}
+            # The same Secret the tenant controller reads: it checks the token,
+            # this sends it. `optional`, so an absent one disables the check on
+            # both ends rather than holding either pod down.
+            - secretRef:
+                name: {{ .Values.tenantNamespaces.controller.tokenSecret.name }}
+                optional: true
+            {{- end }}
             # Non-secret regions list (SERVERLESS_REGIONS); edited without touching
             # the Deployment.
             - configMapRef:

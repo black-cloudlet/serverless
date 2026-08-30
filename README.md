@@ -51,10 +51,10 @@ api/        the control-plane API service (python -m api.main)
             manifests/ (build what gets applied), regions/ (fan-out + per-region
             read/write), state/ (interpret what came back), builder/ (image build)
   routers/  functions / containers / info (public) endpoints
-controller/ the build controller (python -m controller.main): watches kpack
+controller/ the build controller (python -m build_controller.main): watches kpack
             Images and rolls each finished build's digest onto the function's
             Knative Service in every region. Serves no HTTP; its own image, built
-            from Dockerfile.controller with no web stack installed.
+            from Dockerfile.build-controller with no web stack installed.
 common/     shared by api + controller: build domain, cluster client (mTLS),
             settings, labels, the platform's own naming rules, RegionTotalFailure
 charts/     Helm chart (2 Deployments, Route, RBAC, Certificate, ExternalSecret, NetworkPolicy)
@@ -62,7 +62,7 @@ tests/      unit + API tests
 dev/        sample runtimes file, for running the API locally
 .github/    CI/CD workflows: checks (reusable), ci, release
 Dockerfile            the API image
-Dockerfile.controller the build controller image
+Dockerfile.build-controller the build controller image
 ```
 
 What is shared with the platform's **other** APIs is installed, not vendored:

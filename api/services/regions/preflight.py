@@ -12,7 +12,13 @@ logic lives here so it can be read (and tested) without the deploy path around i
 
 from __future__ import annotations
 
-from api.models.common import LABEL_WORKLOAD, RegionStatus
+from api.models.common import (
+    LABEL_GROUP,
+    LABEL_MANAGED_BY,
+    LABEL_WORKLOAD,
+    MANAGED_BY_VALUE,
+    RegionStatus,
+)
 from api.services.manifests import route as route_svc
 from api.services.manifests.env import resolve_env
 from api.services.manifests.files import resolve_files
@@ -24,7 +30,7 @@ from common.errors import (
     ServiceUnavailableError,
     ValidationError,
 )
-from common.names import object_name, validate_object_name
+from common.names import validate_default_host_label
 
 
 def resolve_host(name: str, hostname: str | None, group: str, domain: str) -> str:
@@ -46,9 +52,17 @@ def resolve_host(name: str, hostname: str | None, group: str, domain: str) -> st
 
     Raises:
         ValidationError: If a custom host isn't exactly one label under the
-            platform base domain.
+            platform base domain, or if the default host's ``{name}-{group}``
+            label would be too long (pass a hostname instead).
     """
     if not hostname:
+        # The pair rule, at the one place the pair is still written. A name and
+        # group that no longer fit together are now only a reason to supply a
+        # hostname, not a reason the workload cannot exist.
+        try:
+            validate_default_host_label(name, group)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         return route_svc.host_for(name, group, domain)
     if "." not in hostname:
         label = hostname
@@ -88,15 +102,12 @@ def validate_spec(
             on (update only; empty/None on create).
 
     Raises:
-        ValidationError: If the env or files cannot be resolved, or if the
-            name and group are too long together to be a DNS label.
+        ValidationError: If the env or files cannot be resolved.
     """
-    try:
-        oname = validate_object_name(name, group)
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
-    resolve_files(oname, group, owner, files, kept_files)
-    resolve_env(oname, group, owner, env, kept_env)
+    # The name/group pair is no longer checked here: it binds the default host,
+    # not the object name, so `resolve_host` is where it belongs now.
+    resolve_files(name, group, owner, files, kept_files)
+    resolve_env(name, group, owner, env, kept_env)
 
 
 async def assert_deployable(
@@ -141,22 +152,17 @@ async def assert_deployable(
             already taken.
         ServiceUnavailableError: If any region was unreachable.
     """
-    oname = object_name(name, group)
 
     def probe(cluster: NamespacedCluster) -> RegionStatus:
         if host is not None:
-            try:
-                existing = cluster.get(ResourceKind.DOMAIN_MAPPING, host)
-            except NotFoundError:
-                existing = None
-            if existing is not None:
-                labels = (existing.get("metadata", {}) or {}).get("labels", {}) or {}
-                # The workload's own mapping counts as available (update path).
-                if labels.get(LABEL_WORKLOAD) != oname:
-                    return RegionStatus(region=cluster.region, status="Taken")
+            owner = _host_owner(cluster, host, name, group)
+            if owner is not None:
+                return RegionStatus(region=cluster.region, status="Taken", message=owner)
         if require_absent:
+            # Namespace-scoped, and that is the point: the same name in another
+            # group is a different workload now, living in another namespace.
             try:
-                cluster.get(ResourceKind.KNATIVE_SERVICE, oname)
+                cluster.get(ResourceKind.KNATIVE_SERVICE, name)
                 return RegionStatus(region=cluster.region, status="Exists")
             except NotFoundError:
                 pass
@@ -165,11 +171,59 @@ async def assert_deployable(
     statuses = await deployer.fanout(targets, probe)
     # The host conflict is reported first: it is the one an idempotent apply
     # would silently resolve by hijacking another workload's mapping.
-    if any(s.status == "Taken" for s in statuses):
-        raise ConflictError(f"hostname '{host}' is already assigned")
+    taken = next((s for s in statuses if s.status == "Taken"), None)
+    if taken is not None:
+        raise ConflictError(f"hostname '{host}' is already assigned to {taken.message}")
     if any(s.status == "Exists" for s in statuses):
         raise ConflictError(f"workload '{name}' already exists")
     assert_all_regions_checked(statuses, f"verify workload '{name}' can be deployed")
+
+
+def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) -> str | None:
+    """Whether ``host`` already belongs to a workload other than this one.
+
+    Cluster-scoped, not namespace-scoped: a host is a DNS name, so it is unique
+    across the whole platform, and with a namespace per group the workload
+    holding it may live in someone else's. A get by name cannot span namespaces,
+    so this lists the platform's own DomainMappings and matches on the name.
+
+    The owner is identified by workload AND group. The workload label alone
+    stopped being unique the moment two groups could each have an ``app``, and
+    "is this my own mapping?" answered on the workload label alone would let one
+    group's update quietly adopt another's host.
+
+    Args:
+        cluster: The region to ask, as a namespace-bound view - the underlying
+            cluster is used directly, because this question is not namespaced.
+        host: The host being claimed (and the DomainMapping's name).
+        name: The workload claiming it.
+        group: That workload's group.
+
+    Returns:
+        A description of the workload holding the host, or None when it is
+        free or already this workload's own.
+    """
+    # Both selectors go to the apiserver: the field one narrows a cluster-wide
+    # question to the single object that could answer it, so this stays one
+    # small query rather than a page of every DomainMapping on the platform.
+    mappings = cluster.cluster.get(
+        ResourceKind.DOMAIN_MAPPING,
+        label_selector=f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE}",
+        field_selector=f"metadata.name={host}",
+        namespace=None,
+    )
+    for mapping in mappings:
+        meta = mapping.get("metadata") or {}
+        labels = meta.get("labels") or {}
+        # The workload's own mapping counts as available (the update path).
+        if labels.get(LABEL_WORKLOAD) == name and labels.get(LABEL_GROUP) == group:
+            return None
+        # Who holds it, and where. The owner can be in a namespace the caller
+        # cannot see - including the legacy one, whose pre-cutover mappings
+        # still carry the old `{name}-{group}` workload label - so "already
+        # assigned" on its own would be a dead end to debug.
+        return f"{labels.get(LABEL_WORKLOAD) or '?'} in namespace {meta.get('namespace') or '?'}"
+    return None
 
 
 def assert_all_regions_checked(statuses: list[RegionStatus], action: str) -> None:

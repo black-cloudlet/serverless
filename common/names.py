@@ -62,8 +62,11 @@ IMAGE_REFERENCE = re.compile(
 # The distribution spec caps a repository name at 255; a digest adds ~80 more.
 _IMAGE_MAX = 512
 
-# A KSVC name and a DNS label are both capped here, and {name}-{group} is both.
-MAX_OBJECT_NAME = 63
+# A DNS label's cap, which the first label of the default host has to fit.
+# A workload's own name is capped by `validate_name` at the same 63; what needs
+# its own rule is the PAIR, and only where the pair still appears - see
+# `default_host_label`.
+MAX_HOST_LABEL = 63
 
 # A Namespace name is a DNS-1123 label, so it shares the 63-character cap.
 MAX_NAMESPACE_NAME = 63
@@ -358,52 +361,53 @@ def validate_mount_path(path: str) -> str:
     return cleaned
 
 
-def object_name(name: str, group: str) -> str:
-    """The cluster name of a workload and everything derived from it.
+def default_host_label(name: str, group: str) -> str:
+    """The first label of a workload's default host: ``{name}-{group}``.
 
-    ``{name}-{group}`` is the platform's primary key: the KSVC, its config Secrets,
-    its git Secret and its kpack Image all hang off it, and a service starting from
-    an Image has to get back to the KSVC. Written once, here.
+    The one place the pair is composed. It survives the move to a namespace per
+    group because DNS is global - two groups' ``app`` cannot both be
+    ``app.{routeDomain}`` - and because the platform's wildcard certificate
+    covers exactly one label, so a two-level host would not be covered.
 
     Args:
         name: The workload name.
         group: The owning group.
 
     Returns:
-        The derived object name.
+        The label, without the route domain.
     """
     return f"{name}-{group}"
 
 
-def validate_object_name(name: str, group: str, limit: int = MAX_OBJECT_NAME) -> str:
-    """Check that ``{name}-{group}`` still fits where it has to be written.
+def validate_default_host_label(name: str, group: str, limit: int = MAX_HOST_LABEL) -> str:
+    """Check that the default host's first label fits, and return it.
 
-    Each half is a legal DNS-1123 label, but the primary key is their concatenation,
-    and that becomes the KSVC name and the first label of the host. Both are capped
-    at 63, so two 63-character halves are individually valid and produce a
-    127-character name the cluster rejects. The pair has to be checked as a pair.
+    The old ``{name}-{group}`` object name is gone - the namespace scopes a
+    workload now, so its cluster name is plain ``{name}``. The pair rule did not
+    go with it: it MOVED here, to the one place the pair is still written. What
+    changes is the consequence. Over the limit used to mean the workload could
+    not be created at all; now it means only that the *default* host will not
+    fit, and a caller-supplied ``hostname`` is the way through.
 
     Args:
         name: The workload name.
         group: The owning group.
-        limit: The cap on the pair; an offering that prefixes the pair somewhere
-            a label value has to fit (a function's build objects) passes a
-            tighter one.
+        limit: The cap on the label.
 
     Returns:
-        The derived object name.
+        The label.
 
     Raises:
-        ValueError: If the pair exceeds ``limit`` characters together.
+        ValueError: If the pair exceeds ``limit`` together.
     """
-    oname = object_name(name, group)
-    if len(oname) > limit:
+    label = default_host_label(name, group)
+    if len(label) > limit:
         raise ValueError(
-            f"name and group are too long together: '{oname}' is {len(oname)} "
-            f"characters and the limit is {limit}; shorten the name by "
-            f"{len(oname) - limit}"
+            f"name and group are too long together for the default host: "
+            f"'{label}' is {len(label)} characters and the limit is {limit}; "
+            f"shorten the name by {len(label) - limit}, or pass a hostname"
         )
-    return oname
+    return label
 
 
 def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
