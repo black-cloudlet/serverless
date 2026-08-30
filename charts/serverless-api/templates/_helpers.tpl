@@ -1,3 +1,19 @@
+{{/*
+Chart layout. Anything shared by more than one component stays in this
+directory - the namespaces, the CA bundle, the identity the API and the build
+controller share, the regions ConfigMap all three read, and these partials.
+Everything a single component owns lives in that component's folder:
+
+  api/               the REST API: Deployment, Service, Route, its own secrets
+  build-controller/  the digest-propagation loop
+  tenant-controller/ per-group namespaces: the loop, the ensure API, its own
+                     identity, and the template set it applies
+  kpack/             the build subsystem: builders, SCC, CA policy, credentials
+
+Helm renders every file under templates/ regardless of depth and partials are
+global, so the folders are for readers, not for Helm.
+*/}}
+
 {{- define "serverless-api.labels" -}}
 app.kubernetes.io/name: {{ .Values.name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
@@ -265,4 +281,18 @@ objects in another release, and kpack already reports a wrong or missing one on
 the Builder's own status - a chart-side check could only repeat that, from a
 chart that cannot see the cluster. */}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+The tenant controller's object name and selector labels, on the same reasoning as the
+build controller's: a distinct ``app.kubernetes.io/name`` keeps the API's
+Service from selecting its pods.
+*/}}
+{{- define "serverless-api.tenantControllerName" -}}
+{{ .Values.name }}-tenant-controller
+{{- end -}}
+
+{{- define "serverless-api.tenantControllerLabels" -}}
+app.kubernetes.io/name: {{ include "serverless-api.tenantControllerName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}

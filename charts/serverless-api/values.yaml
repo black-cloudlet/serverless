@@ -34,17 +34,20 @@ api:
   #   prometheus.io/scrape: "true"
   podAnnotations: {}
 
+  # Platform convention: the CPU limit is 4x the request, and memory is
+  # requested at its limit. CPU is compressible, so the headroom is burst a pod
+  # takes only when the node has it; memory is not, so requesting less than the
+  # limit only buys an eviction under pressure.
   resources:
     requests:
-      cpu: 250m
+      # The 4x below has to land on "2", not on "1": the health probes share
+      # the process's one event loop with everything else it serves, a CPU
+      # limit is enforced as throttling, and at "1" a streaming burst stretched
+      # into multi-second stalls that missed the 5s probe timeout and restarted
+      # the pod. So the REQUEST is what moves to keep the ratio.
+      cpu: 500m
       memory: 512Mi
     limits:
-      # The health probes share the process's one event loop with everything
-      # else it serves, and a CPU limit is enforced as throttling - at "1" a
-      # streaming burst stretched into multi-second stalls that missed the 5s
-      # probe timeout and restarted the pod. "2" gives the loop headroom to
-      # answer while the stream threads work; the request stays low, so the
-      # slack is only used when the node has it.
       cpu: "2"
       memory: 512Mi
 
@@ -91,13 +94,14 @@ buildController:
   podLabels: {}
   podAnnotations: {}
 
-  # A watch and an occasional apply; far lighter than the API.
+  # A watch and an occasional apply; far lighter than the API. Serves no HTTP
+  # and has no probes, so throttling costs it latency and nothing else.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
-      cpu: 500m
+      cpu: 200m
       memory: 256Mi
 
   # How long each watch is held open, and so also the full-relist interval.
@@ -134,6 +138,83 @@ namespaces:
   #   pod-security.kubernetes.io/enforce: restricted
   apiLabels: {}
   workloadsLabels: {}
+
+# One namespace per SSO group, provisioned at runtime
+# (docs/proposals/namespace-per-group.md). Everything here is inert until the
+# API resolves workloads into these namespaces.
+tenantNamespaces:
+  # A group's namespace is `{group}{suffix}`. Group-first so tenant namespaces
+  # list under their group's name; the suffix is what keeps a group from naming
+  # a namespace the cluster already has. Must match common/names.NAMESPACE_SUFFIX.
+  suffix: -serverless
+  # -- Labels added to every tenant namespace, on top of `namespaces.labels`.
+  # labels:
+  #   pod-security.kubernetes.io/enforce: restricted
+  labels: {}
+
+  # The service that creates those namespaces and keeps them converged to the
+  # template set this chart ships. Two jobs in one process: a reconcile loop
+  # over its own cluster, and the ensure call the API makes before a create.
+  controller:
+    enabled: true
+    repository: serverless/tenant-controller
+    tag: ""
+    # Two, like the API: the ensure call is in the create path, so it needs to
+    # survive a rolling restart. Replicas converge rather than race - the same
+    # reason the build controller needs no leader election.
+    replicaCount: 2
+    labels: {}
+    annotations: {}
+    podLabels: {}
+    podAnnotations: {}
+
+    # A periodic list and an occasional apply, plus an endpoint a create waits
+    # on. More CPU than the build controller for that reason: this one answers
+    # probes, so throttling it hard has the failure mode the API's comment
+    # above records, not just slower convergence.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 400m
+        memory: 256Mi
+
+    service:
+      port: 8080
+      targetPort: 8080
+      portName: http
+
+    # The pause between reconcile passes, and so the worst case for a template
+    # change reaching an existing namespace (plus the kubelet's own ConfigMap
+    # refresh, which is about a minute).
+    resyncSeconds: 300
+    # Every Nth pass converges even namespaces whose stamp already matches,
+    # repairing drift in the objects themselves - a deleted NetworkPolicy does
+    # not change the hash. Roughly hourly at the default resync.
+    fullResyncPasses: 12
+    # Namespaces converged in parallel within one pass.
+    convergeWorkers: 4
+    # Converges in flight across ensure calls. The bound that keeps a slow
+    # region from starving the probes.
+    ensureWorkers: 8
+
+    # Its own client certificate, and therefore its own Kubernetes username -
+    # the tenant controller writes namespaces and the API does not, so they must not
+    # share an identity. Same ACME issuer and mount path as the API's.
+    certificate:
+      name: serverless-tenant-controller-cert
+      user: serverless-tenant-controller.clients.example.com
+
+    # Optional shared token on the ensure endpoint, depth behind the
+    # NetworkPolicy that already scopes it to the API's pods. Off by default:
+    # with no Secret the check is disabled, which is what a dev cluster with no
+    # Vault needs.
+    tokenSecret:
+      create: false
+      name: serverless-tenant-controller-token
+      key: cloudlet/platforms/serverless
+      property: tenant-controller-token
 
 # Wildcard domain for workload hosts ({name}-{group}.{routeDomain}).
 routeDomain: serverless.example.com

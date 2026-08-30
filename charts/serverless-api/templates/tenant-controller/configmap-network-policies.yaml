@@ -1,0 +1,29 @@
+{{- $ns := include "serverless-api.tenantNamespaceToken" . }}
+{{/*
+Part of the tenant template set: the namespace's segmentation.
+
+Argo syncs these ConfigMaps; the controller mounts them projected into one
+directory, hashes the whole set, and applies it into each {group}{suffix}
+namespace with the tokens substituted - which is how a `helm upgrade` reaches
+namespaces created at runtime, that Argo cannot see.
+
+NOTHING IN THE SET MAY DEPEND ON THE REGION. Both regions render this chart from
+the same values, so both hold identical bytes and the same hash, and an ensure
+converges a peer's namespace from whichever controller took the request. A
+per-region value goes in as a token the controller resolves against the cluster
+it is writing to - never baked in here.
+*/}}
+{{/*
+The bodies come from _network-policies.tpl at the chart root, which the legacy
+namespace renders from too, so the two cannot drift.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "serverless-api.tenantTemplatesName" (dict "root" $ "part" "network-policies") }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  20-network-policies.yaml: |
+    {{- include "serverless-api.workloadNetworkPolicies" (dict "root" $ "namespace" $ns) | nindent 4 }}

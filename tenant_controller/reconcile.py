@@ -1,6 +1,6 @@
 """Converging tenant namespaces to the template set, one cluster at a time.
 
-Local-only, like the build controller: each provisioner converges its own
+Local-only, like the build controller: each tenant controller converges its own
 cluster from its own cluster's ConfigMap, so the two sites never fight during
 Argo sync skew. The stamp protocol makes a converge crash-safe:
 
@@ -23,18 +23,18 @@ from common.labels import (
     ANNOTATION_TEMPLATE_HASH,
     LABEL_GROUP,
     LABEL_MANAGED_BY,
-    PROVISIONER_VALUE,
+    TENANT_CONTROLLER_VALUE,
 )
-from provisioner.templates import TEMPLATE_KINDS, TemplateSet
+from tenant_controller.templates import TEMPLATE_KINDS, TemplateSet
 
 logger = get_logger(__name__)
 
-# The SSA identity every provisioner write carries: what lets a re-apply
+# The SSA identity every tenant-controller write carries: what lets a re-apply
 # remove fields it no longer declares without touching anyone else's.
-FIELD_MANAGER = "serverless-provisioner"
+FIELD_MANAGER = "serverless-tenant-controller"
 
-# What the provisioner manages, and nothing else.
-PROVISIONER_SELECTOR = f"{LABEL_MANAGED_BY}={PROVISIONER_VALUE}"
+# What the tenant controller manages, and nothing else.
+TENANT_CONTROLLER_SELECTOR = f"{LABEL_MANAGED_BY}={TENANT_CONTROLLER_VALUE}"
 
 # What the prune sweeps: the same vocabulary the render gate admits, so a set
 # can never create what the prune could not collect - and a kind removed from
@@ -61,7 +61,11 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         Exception: Any render or apply error; the caller decides whether it
             ends the pass.
     """
-    manifests = templates.render(namespace=namespace, group=group)
+    # Rendered for the cluster being written to, not for this pod: an ensure
+    # converges peers, and a per-region value must follow the target.
+    manifests = templates.render(
+        namespace=namespace, group=group, region=cluster.region, registry=cluster.registry.url
+    )
     ns_manifest = next((m for m in manifests if m["kind"] == "Namespace"), None)
     if ns_manifest is None:
         ns_manifest = {"apiVersion": "v1", "kind": "Namespace", "metadata": {}}
@@ -134,7 +138,7 @@ def reconcile_all(
         )
         return (0, 0, 0)
     namespaces = cluster.get(
-        ResourceKind.NAMESPACE, label_selector=PROVISIONER_SELECTOR, namespace=None
+        ResourceKind.NAMESPACE, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=None
     )
     seen = failed = 0
     stale: list[tuple[str, str]] = []
@@ -186,14 +190,14 @@ def reconcile_all(
 
 
 def _stamped(manifest: dict, group: str) -> dict:
-    """A copy of ``manifest`` carrying the provisioner's ownership labels.
+    """A copy of ``manifest`` carrying the tenant controller's ownership labels.
 
     Injected in code, not trusted to templates: the prune and the GC select
     on these labels.
     """
     meta = dict(manifest.get("metadata") or {})
     labels = dict(meta.get("labels") or {})
-    labels[LABEL_MANAGED_BY] = PROVISIONER_VALUE
+    labels[LABEL_MANAGED_BY] = TENANT_CONTROLLER_VALUE
     labels[LABEL_GROUP] = group
     meta["labels"] = labels
     return {**manifest, "metadata": meta}
@@ -212,10 +216,10 @@ def _without_hash(ns_manifest: dict) -> dict:
 def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None:
     """Delete managed objects the current template set no longer renders.
 
-    Only prunable kinds, only provisioner-labeled objects: the API's workload
+    Only prunable kinds, only controller-labeled objects: the API's workload
     Secrets and a tenant's own objects are invisible to it. Listed here, per
     namespace, rather than from a pass-wide cluster-wide listing: a
-    provisioner that could list every Secret in the cluster is a far larger
+    tenant controller that could list every Secret in the cluster is a far larger
     grant than one scoped to the namespaces it owns, and a listing read at
     prune time cannot miss what another writer created mid-pass.
 
@@ -225,7 +229,7 @@ def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None
         keep: The (kind, name) pairs the current render produced.
     """
     for kind in PRUNABLE_KINDS:
-        existing = cluster.get(kind, label_selector=PROVISIONER_SELECTOR, namespace=namespace)
+        existing = cluster.get(kind, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=namespace)
         for obj in existing:
             name = (obj.get("metadata") or {}).get("name", "")
             if (kind.kind, name) in keep:

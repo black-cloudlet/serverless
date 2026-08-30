@@ -1,13 +1,18 @@
-# Least-privilege RBAC for the client-cert user (CN = DNS name) in the workloads
-# namespace. docs/DEPLOYING.md - RBAC.
+# Least-privilege RBAC for the client-cert user (CN = DNS name).
+# docs/DEPLOYING.md - RBAC.
 #
-# Routes are NOT in this Role: on OpenShift Serverless the operator auto-creates
-# the OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.
+# A ClusterRole holding namespaced rules, bound per namespace. The rules are
+# unchanged and the writes stay namespace-bound - a RoleBinding to a ClusterRole
+# grants only inside its own namespace - but the *definition* has to be
+# cluster-scoped, because a tenant namespace created at runtime cannot carry a
+# copy of it and the tenant controller only writes the binding.
+#
+# Routes are NOT here: on OpenShift Serverless the operator auto-creates the
+# OpenShift Route from the KSVC/DomainMapping, so the API never creates Routes.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: {{ .Values.name }}
-  namespace: {{ .Values.namespaces.workloads }}
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 rules:
@@ -66,6 +71,45 @@ subjects:
     name: {{ .Values.certificate.user }}
     apiGroup: rbac.authorization.k8s.io
 roleRef:
-  kind: Role
+  kind: ClusterRole
   name: {{ .Values.name }}
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cluster-wide READS, and nothing else. Two callers need them once workloads
+# live in one namespace per group: the host-uniqueness pre-flight, which must
+# see DomainMappings in every tenant namespace to know a host is free, and the
+# build controller's watch, which follows kpack Images wherever they are built.
+# Writes are deliberately not here - they stay bound per namespace above.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.name }}-read
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "domainmappings", "revisions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  {{- if .Values.build.enabled }}
+  - apiGroups: ["kpack.io"]
+    resources: ["images", "builds"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.name }}-read
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+subjects:
+  - kind: User
+    name: {{ .Values.certificate.user }}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: {{ .Values.name }}-read
   apiGroup: rbac.authorization.k8s.io

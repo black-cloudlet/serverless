@@ -96,12 +96,13 @@ def test_the_build_controller_serves_no_http_and_carries_no_web_framework(module
 
 
 @pytest.mark.parametrize(
-    "module", ["provisioner.reconcile", "provisioner.templates", "provisioner.ensure"]
+    "module",
+    ["tenant_controller.reconcile", "tenant_controller.templates", "tenant_controller.ensure"],
 )
-def test_the_provisioner_loop_carries_no_web_framework(module):
-    """Only ``provisioner.api`` may reach FastAPI; the converge half must not.
+def test_the_tenant_controller_loop_carries_no_web_framework(module):
+    """Only ``tenant_controller.api`` may reach FastAPI; the converge half must not.
 
-    The provisioner does serve one internal endpoint, so its image ships a web
+    The tenant controller does serve one internal endpoint, so its image ships a web
     server - but the loop, the template set and the fan-out are what the GC and
     any future caller reuse, and none of them has a request to answer.
     """
@@ -111,26 +112,35 @@ def test_the_provisioner_loop_carries_no_web_framework(module):
     )
 
 
-def test_the_provisioner_carries_no_auth_stack():
+def test_the_tenant_controller_carries_no_auth_stack():
     """Its caller presents a shared token, so pyjwt must stay out of the image.
 
     ``cloudlet_apis.auth`` holds the constant-time key comparison this would
     otherwise reuse, but importing anything from that package pulls the JWT
-    stack in - which is why ``provisioner.api`` spells the comparison out.
+    stack in - which is why ``tenant_controller.api`` spells the comparison out.
     """
-    for module in ("provisioner.main", "provisioner.api"):
+    for module in ("tenant_controller.main", "tenant_controller.api"):
         leaked = _imported_by(module) & AUTH_DEPS
         assert not leaked, f"{module} reaches {sorted(leaked)}"
 
 
-def test_the_provisioner_never_imports_the_api():
+def test_the_tenant_controller_never_imports_the_api():
     """Siblings, like the controller: the fan-out is the deployer's shape, not its code."""
     out = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["grep", "-rn", "-e", "from api", "-e", "import api", "--include=*.py", "provisioner/"],
+        [
+            "grep",
+            "-rn",
+            "-e",
+            "from api",
+            "-e",
+            "import api",
+            "--include=*.py",
+            "tenant_controller/",
+        ],
         capture_output=True,
         text=True,
     )
-    assert out.stdout == "", f"provisioner/ imports from api/:\n{out.stdout}"
+    assert out.stdout == "", f"tenant_controller/ imports from api/:\n{out.stdout}"
 
 
 def test_the_build_controller_never_imports_the_api():

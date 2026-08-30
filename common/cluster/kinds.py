@@ -19,6 +19,7 @@ class ResourceKind(Enum):
     SERVICE_ACCOUNT = ("v1", "ServiceAccount")
     POD = ("v1", "Pod")
     POD_METRICS = ("metrics.k8s.io/v1beta1", "PodMetrics")
+    EXTERNAL_SECRET = ("external-secrets.io/v1beta1", "ExternalSecret")
     KPACK_IMAGE = ("kpack.io/v1alpha2", "Image")
     KPACK_BUILD = ("kpack.io/v1alpha2", "Build")
 

@@ -1,0 +1,70 @@
+{{- if .Values.tenantNamespaces.controller.enabled }}
+# The tenant controller's own rights, held by its own certificate user. Cluster-scoped
+# because the namespaces it manages do not exist when this is applied - it
+# creates them - so there is no namespace to bind a Role in.
+#
+# This is the grant that makes the split worth having: the API cannot create a
+# namespace or write a NetworkPolicy, and the tenant controller cannot touch a
+# workload. Neither can do the other's damage.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "serverless-api.tenantControllerName" . }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+rules:
+  # The namespaces themselves: created by ensure, converged by the loop, and
+  # (from PR 7) deleted by the GC once they have been empty long enough.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The template set's own vocabulary - what a converge may write, and what the
+  # prune may collect. Keep this in step with TEMPLATE_KINDS in
+  # tenant_controller/templates.py: a kind the set can render but this cannot write
+  # fails every converge, and one it can write but not delete cannot be pruned.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # Granting a RoleBinding to a ClusterRole requires holding those rights, or
+  # being allowed to escalate. Binding the API's ClusterRole into each tenant
+  # namespace is the whole job, so the narrow permission is the right one - not
+  # a copy of every rule the API holds.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames:
+      - {{ .Values.name }}
+      {{- if and .Values.build.enabled .Values.build.scc.enabled }}
+      - {{ .Values.name }}-use-{{ .Values.build.scc.name }}
+      {{- end }}
+  # Read-only, for the namespace GC: a namespace is collectable only while it
+  # holds no Knative Service. Read, never write - deleting a workload is the
+  # API's job and must not be reachable from here.
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "serverless-api.tenantControllerName" . }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+subjects:
+  - kind: User
+    name: {{ .Values.tenantNamespaces.controller.certificate.user }}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: {{ include "serverless-api.tenantControllerName" . }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -28,9 +28,19 @@ import pytest
 import yaml
 
 from api.core.config import Settings
+from controller.config import ControllerSettings
+from tenant_controller.config import TenantControllerSettings
 
 CHART = Path(__file__).resolve().parent.parent / "charts" / "serverless-api"
-TEMPLATES = [CHART / "templates" / "deployment.yaml", CHART / "templates" / "build-controller.yaml"]
+# Each Deployment against the settings class ITS process builds. Checking them
+# all against the API's would pass vacuously for anything only the controller or
+# the tenant controller declares - every settings class ignores extra env, so the
+# fields most likely to be mistyped are exactly the ones that would go unchecked.
+TEMPLATES = [
+    (CHART / "templates" / "api" / "deployment.yaml", Settings),
+    (CHART / "templates" / "build-controller" / "deployment.yaml", ControllerSettings),
+    (CHART / "templates" / "tenant-controller" / "deployment.yaml", TenantControllerSettings),
+]
 
 # `- name: SERVERLESS_FOO` followed by `value: {{ .Values.a.b [| int64] | quote }}`.
 # Deliberately narrow: anything rendered through tpl/toJson/printf is a shape
@@ -55,14 +65,14 @@ def _resolve(values: dict, path: str):
 
 
 def _rendered_pairs():
-    """Every ``(env, values-path, value, int64)`` the two Deployments render."""
+    """Every ``(env, values-path, value, int64, settings)`` the Deployments render."""
     values = _values()
-    for template in TEMPLATES:
+    for template, settings in TEMPLATES:
         for m in _PAIR.finditer(template.read_text()):
             value = _resolve(values, m["path"])
             if value is None:  # templated default, or not in values.yaml
                 continue
-            yield m["env"], m["path"], value, bool(m["int64"])
+            yield m["env"], m["path"], value, bool(m["int64"]), settings
 
 
 def _go_v_float64(x) -> str:
@@ -112,17 +122,20 @@ def test_the_templates_and_values_still_line_up():
     assert len(pairs) > 15, (
         f"only matched {len(pairs)} env/value pairs; has the chart changed shape?"
     )
-    assert "SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES" in {env for env, _, _, _ in pairs}
+    names = {env for env, *_ in pairs}
+    assert "SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES" in names
+    # One per deployment, so a template dropping out of the list is visible.
+    assert {"SERVERLESS_RESYNC_SECONDS", "SERVERLESS_ENSURE_WORKERS"} <= names
 
 
 @pytest.mark.parametrize(
-    ("env", "path", "value", "int64"),
-    [pytest.param(*p, id=p[0]) for p in _rendered_pairs()],
+    ("env", "path", "value", "int64", "settings"),
+    [pytest.param(*p, id=f"{p[4].__name__}-{p[0]}") for p in _rendered_pairs()],
 )
-def test_every_rendered_value_loads_into_settings(monkeypatch, env, path, value, int64):
-    """What the chart sends for one value, Settings must accept."""
+def test_every_rendered_value_loads_into_settings(monkeypatch, env, path, value, int64, settings):
+    """What the chart sends for one value, that process's settings must accept."""
     monkeypatch.setenv(env, _as_helm_renders(value, int64))
-    Settings()  # raises if the chart's value is not loadable
+    settings()  # raises if the chart's value is not loadable
 
 
 def test_an_integer_over_a_million_survives_the_render():
@@ -140,7 +153,7 @@ def test_an_integer_over_a_million_survives_the_render():
         "SERVERLESS_STREAM__QUEUE_SIZE",
         "SERVERLESS_STREAM__MAX_SECONDS",
     ):
-        int64 = next(i for e, _, _, i in _rendered_pairs() if e == env)
+        int64 = next(i for e, _, _, i, _s in _rendered_pairs() if e == env)
         assert int64, f"{env} is int-typed and must render through int64"
 
 
@@ -176,7 +189,7 @@ def test_the_seconds_that_may_be_fractional_are_not_forced_to_integers():
     ``heartbeatSeconds: 0.5`` rendered through int64 is ``0``, which is a
     stream that heartbeats continuously rather than one that is misconfigured.
     """
-    deployment = (CHART / "templates" / "deployment.yaml").read_text()
+    deployment = (CHART / "templates" / "api" / "deployment.yaml").read_text()
     for name in ("intervalSeconds", "minIntervalSeconds", "maxIntervalSeconds", "heartbeatSeconds"):
         line = next(ln for ln in deployment.splitlines() if f".Values.stream.{name}" in ln)
         assert "int64" not in line, f"stream.{name} is float-typed; int64 would truncate it"

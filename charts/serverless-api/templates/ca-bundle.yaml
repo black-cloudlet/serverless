@@ -6,14 +6,5 @@
 # (separate GitOps repo) to ignoreDifferences on this ConfigMap's data.
 {{- range $ns := (list .Values.namespaces.api .Values.namespaces.workloads) }}
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $.Values.caBundle.name }}
-  namespace: {{ $ns }}
-  labels:
-    config.openshift.io/inject-trusted-cabundle: "true"
-    {{- include "serverless-api.labels" $ | nindent 4 }}
-  annotations:
-    argocd.argoproj.io/sync-options: Prune=false
+{{ include "serverless-api.caBundleConfigMap" (dict "root" $ "namespace" $ns) }}
 {{- end }}

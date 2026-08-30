@@ -29,8 +29,8 @@ from dataclasses import dataclass
 from cloudlet_apis.logging import get_logger
 
 from common.cluster import Cluster
-from provisioner.reconcile import converge
-from provisioner.templates import TemplateSet
+from tenant_controller.reconcile import converge
+from tenant_controller.templates import TemplateSet
 
 logger = get_logger(__name__)
 

@@ -168,7 +168,10 @@ ArgoCD, keep the engine in an earlier sync wave than serverless-api.
 ## RBAC
 
 The API and build controller share one identity (per ARCHITECTURE.md: Authentication & Authorization, the cert CN
-user) and one Role. They need, in the workloads namespace of every cluster:
+user) and one set of rules. Those rules live in a **ClusterRole**, bound by a RoleBinding in
+each namespace the identity may write - which keeps the writes namespace-scoped while
+letting a namespace created at runtime carry the binding without carrying a copy of the
+rules. In every such namespace, in every cluster, they need:
 
 | Resource | Verbs | Used by |
 |----------|-------|---------|
@@ -181,7 +184,20 @@ user) and one Role. They need, in the workloads namespace of every cluster:
 No second Role and no extra Secret rights: the git Secret is one of the workload's own
 derived Secrets, which this identity already manages. The build controller reuses the same
 client certificate rather than minting its own - it is a subset of the API's verbs, on the
-same two resources, in the same namespace.
+same two resources.
+
+Two things are cluster-scoped, and only these two. A **read-only** ClusterRole
+(`{name}-read`) covers Knative Services, DomainMappings, Revisions, namespaces and the
+kpack objects: host uniqueness has to be checked across every tenant namespace, and the
+build controller follows Images wherever they are built. It holds no verb that changes
+anything. And the **tenant_controller** has an identity of its own - a second certificate, a
+second CN - because it creates namespaces and writes their policies, which is exactly what
+the API must not be able to do. Neither can do the other's damage:
+
+| Identity | May | May not |
+|----------|-----|---------|
+| `serverless-api.clients.{domain}` | write workloads inside a tenant namespace; read Knative and kpack objects cluster-wide | create, change or delete a namespace; write a NetworkPolicy |
+| `serverless-tenant-controller.clients.{domain}` | create tenant namespaces and write the resources the template set renders; read Knative Services (for the GC) | touch a workload |
 
 ### Network policy for build pods
 
@@ -363,14 +379,13 @@ spec:
     kind: ClusterIssuer
 ```
 
-### RBAC for the CN user (per region, shared workload namespace)
+### RBAC for the CN user (per region; the rules cluster-scoped, the grant per namespace)
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: serverless-api-workloads
-  namespace: serverless-workloads
 rules:
   - apiGroups: ["serving.knative.dev"]
     resources: ["services", "domainmappings"]
@@ -411,7 +426,7 @@ subjects:
     name: serverless-api.clients.example.com   # matches the Certificate CN (DNS name)
     apiGroup: rbac.authorization.k8s.io
 roleRef:
-  kind: Role
+  kind: ClusterRole            # the rules; this binding grants them in THIS namespace only
   name: serverless-api-workloads
   apiGroup: rbac.authorization.k8s.io
 ```

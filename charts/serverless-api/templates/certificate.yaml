@@ -1,3 +1,5 @@
+# The identity the API and the build controller share (docs/DEPLOYING.md - RBAC).
+# The tenant controller has its own, in tenant-controller/certificate.yaml.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

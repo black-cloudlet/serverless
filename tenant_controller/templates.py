@@ -28,7 +28,14 @@ from common.cluster import ResourceKind
 # legal; render swaps the sentinels back. Any other `{{token}}` of this shape
 # is a template bug and fails at load; braces that are not this shape (a
 # Go-template payload in a ConfigMap) pass through untouched.
-PLACEHOLDERS = ("namespace", "group")
+#
+# `region` and `registry` are what keep the SET region-neutral while its OUTPUT
+# is not: both regions' charts render the same bytes, so the hash matches
+# everywhere, and the values are resolved against whichever cluster is being
+# written to. Without them a per-region value - a Vault path, a registry host -
+# would be baked in at chart render, the two regions' sets would never share a
+# hash, and an ensure writing a peer's namespace would write the wrong one.
+PLACEHOLDERS = ("namespace", "group", "region", "registry")
 _SENTINELS = {name: f"__serverless_placeholder_{name}__" for name in PLACEHOLDERS}
 _TOKEN = re.compile(r"\{\{([a-z]+)\}\}")
 
@@ -42,6 +49,10 @@ TEMPLATE_KINDS = (
     ResourceKind.ROLE_BINDING,
     ResourceKind.SECRET,
     ResourceKind.SERVICE_ACCOUNT,
+    # A tenant namespace needs the region's registry credential, and ESO is how
+    # every other Secret on this platform arrives. The tenant controller writes the
+    # ExternalSecret; ESO fills the Secret it names.
+    ResourceKind.EXTERNAL_SECRET,
 )
 _ALLOWED_KINDS = {k.kind for k in TEMPLATE_KINDS} | {"Namespace"}
 
@@ -126,7 +137,7 @@ class TemplateSet:
         """
         return any(doc.get("kind") != "Namespace" for _name, doc in self.docs)
 
-    def render(self, *, namespace: str, group: str) -> list[dict]:
+    def render(self, *, namespace: str, group: str, region: str, registry: str) -> list[dict]:
         """Swap the sentinels for their values, in set order.
 
         Pure mechanism - the set was validated at load. Returns fresh
@@ -135,11 +146,19 @@ class TemplateSet:
         Args:
             namespace: The tenant namespace being converged.
             group: The owning (normalized) group.
+            region: The region of the cluster being written to - not
+                necessarily this pod's own, since ensure converges peers.
+            registry: That region's registry host.
 
         Returns:
             The manifests, in filename order then document order.
         """
-        values = {_SENTINELS["namespace"]: namespace, _SENTINELS["group"]: group}
+        values = {
+            _SENTINELS["namespace"]: namespace,
+            _SENTINELS["group"]: group,
+            _SENTINELS["region"]: region,
+            _SENTINELS["registry"]: registry,
+        }
         return [_substitute(doc, values) for _name, doc in self.docs]
 
 
@@ -174,7 +193,7 @@ def _parse(sources: tuple[tuple[str, str], ...]) -> list[tuple[str, dict]]:
                 # What render admits, the prune must be able to collect.
                 raise ValueError(
                     f"template '{name}' holds kind '{kind}', which the "
-                    f"provisioner does not manage; allowed: "
+                    f"tenant controller does not manage; allowed: "
                     f"{', '.join(sorted(_ALLOWED_KINDS))}"
                 )
             docs.append((name, doc))

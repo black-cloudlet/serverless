@@ -1,6 +1,6 @@
-"""The ensure fan-out and the provisioner's internal HTTP surface.
+"""The ensure fan-out and the tenant controller's internal HTTP surface.
 
-Ensure is the one provisioner path that writes to every region, and the one a
+Ensure is the one tenant-controller path that writes to every region, and the one a
 create blocks on, so what matters here is that a single region's trouble stays
 a *row* rather than an exception that loses the regions that worked - and that
 the endpoint's verdicts are the ones the API is written against: 400 for a
@@ -15,18 +15,24 @@ import inspect
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from common.labels import ANNOTATION_TEMPLATE_HASH, LABEL_GROUP, LABEL_MANAGED_BY, PROVISIONER_VALUE
-from provisioner import api as provisioner_api
-from provisioner.api import create_app
-from provisioner.config import ProvisionerSettings
-from provisioner.ensure import FAILED, READY, TIMEOUT, ensure
-from provisioner.templates import TemplateSet
+from common.labels import (
+    ANNOTATION_TEMPLATE_HASH,
+    LABEL_GROUP,
+    LABEL_MANAGED_BY,
+    TENANT_CONTROLLER_VALUE,
+)
+from tenant_controller import api as controller_api
+from tenant_controller.api import create_app
+from tenant_controller.config import TenantControllerSettings
+from tenant_controller.ensure import FAILED, READY, TIMEOUT, ensure
+from tenant_controller.templates import TemplateSet
 
 TEMPLATES = {
     "10-namespace.yaml": """\
@@ -56,6 +62,9 @@ class _Cluster:
         self, region: str, *, fail: str | None = None, block: threading.Event | None = None
     ):
         self.region = region
+        # Resolved per region on the real client, which is what makes a
+        # per-region value in the set follow the cluster being written to.
+        self.registry = SimpleNamespace(url=f"registry.{region}.internal")
         self.applied: list[tuple[dict, str | None]] = []
         self._fail = fail
         self._block = block
@@ -91,10 +100,10 @@ def _templates() -> TemplateSet:
     return TemplateSet.from_sources(TEMPLATES.items())
 
 
-def _settings(tmp_path, **overrides) -> ProvisionerSettings:
+def _settings(tmp_path, **overrides) -> TenantControllerSettings:
     for name, text in TEMPLATES.items():
         (tmp_path / name).write_text(text)
-    return ProvisionerSettings(templates_dir=str(tmp_path), **overrides)
+    return TenantControllerSettings(templates_dir=str(tmp_path), **overrides)
 
 
 def _endpoints(app) -> dict:
@@ -133,7 +142,7 @@ async def test_ensure_converges_every_region(pool):
         assert last["metadata"]["annotations"][ANNOTATION_TEMPLATE_HASH] == templates.digest
         assert last["metadata"]["name"] == "payments-serverless"
         assert last["metadata"]["labels"][LABEL_GROUP] == "payments"
-        assert last["metadata"]["labels"][LABEL_MANAGED_BY] == PROVISIONER_VALUE
+        assert last["metadata"]["labels"][LABEL_MANAGED_BY] == TENANT_CONTROLLER_VALUE
 
 
 async def test_a_failing_region_is_a_row_and_the_others_still_converge(pool):
@@ -258,7 +267,7 @@ def test_one_region_landing_is_still_a_success(tmp_path):
 )
 def test_a_configured_token_is_required(tmp_path, header):
     clusters = [_Cluster("central")]
-    settings = _settings(tmp_path, provisioner_token="s3cret")
+    settings = _settings(tmp_path, tenant_controller_token="s3cret")
 
     response = _client(clusters, settings).put("/groups/payments/namespace", headers=header)
 
@@ -268,7 +277,7 @@ def test_a_configured_token_is_required(tmp_path, header):
 
 def test_the_configured_token_admits_the_caller(tmp_path):
     clusters = [_Cluster("central")]
-    settings = _settings(tmp_path, provisioner_token="s3cret")
+    settings = _settings(tmp_path, tenant_controller_token="s3cret")
 
     response = _client(clusters, settings).put(
         "/groups/payments/namespace", headers={"Authorization": "Bearer s3cret"}
@@ -303,7 +312,7 @@ def test_liveness_is_constant_and_readiness_names_the_loaded_set(tmp_path):
     ],
 )
 def test_readiness_fails_on_an_unusable_template_set(tmp_path, prepare, reason):
-    settings = ProvisionerSettings(templates_dir=str(prepare(tmp_path)))
+    settings = TenantControllerSettings(templates_dir=str(prepare(tmp_path)))
 
     response = _client([_Cluster("central")], settings).get("/readyz")
 
@@ -311,7 +320,7 @@ def test_readiness_fails_on_an_unusable_template_set(tmp_path, prepare, reason):
 
 
 @pytest.mark.parametrize("path", ["/readyz", "/groups/payments/namespace"])
-def test_a_provisioner_with_no_regions_is_unavailable_not_broken(tmp_path, path):
+def test_a_tenant_controller_with_no_regions_is_unavailable_not_broken(tmp_path, path):
     """Its own misconfiguration, so 503 - not a 500, and not the caller's fault."""
     client = _client([], _settings(tmp_path))
 
@@ -323,7 +332,7 @@ def test_a_provisioner_with_no_regions_is_unavailable_not_broken(tmp_path, path)
 
 def test_an_unusable_template_set_fails_ensure_the_way_it_fails_readiness(tmp_path):
     """One gate for both, so readiness can never say ready on a set ensure refuses."""
-    settings = ProvisionerSettings(templates_dir=str(tmp_path / "missing"))
+    settings = TenantControllerSettings(templates_dir=str(tmp_path / "missing"))
     client = _client([_Cluster("central")], settings)
 
     assert client.get("/readyz").status_code == 503
@@ -334,7 +343,7 @@ def test_readiness_rejects_a_set_that_renders_only_a_namespace(tmp_path):
     """The rule converge refuses on. Unchecked here, the pod stays in rotation
     and every ensure 502s, blaming the regions for this pod's own bad mount."""
     (tmp_path / "10-namespace.yaml").write_text(TEMPLATES["10-namespace.yaml"])
-    settings = ProvisionerSettings(templates_dir=str(tmp_path))
+    settings = TenantControllerSettings(templates_dir=str(tmp_path))
     client = _client([_Cluster("central")], settings)
 
     ready = client.get("/readyz")
@@ -359,7 +368,7 @@ def test_no_endpoint_holds_one_of_the_servers_threads(tmp_path):
 def test_converging_a_group_is_a_put():
     """The method carries the contract: the API calls this before every create
     and retries it on timeout, so a generic client must know it repeats safely."""
-    settings = ProvisionerSettings()
+    settings = TenantControllerSettings()
     methods = _endpoints(create_app([_Cluster("central")], settings))
     assert methods["/groups/{group}/namespace"][1] == {"PUT"}
 
@@ -369,7 +378,9 @@ async def test_the_probes_answer_while_an_ensure_is_in_flight(tmp_path):
     app = create_app([_Cluster("central", block=blocked)], _settings(tmp_path))
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://provisioner") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://tenant-controller"
+        ) as client:
             in_flight = asyncio.ensure_future(client.put("/groups/payments/namespace"))
             await asyncio.sleep(0.05)  # let it reach the blocked converge
             assert (await client.get("/healthz")).status_code == 200
@@ -395,7 +406,7 @@ def test_the_app_drains_its_pool_before_the_process_lets_go(tmp_path, monkeypatc
             built["shutdown"] = {"wait": wait, "cancel_futures": cancel_futures}
             super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr(provisioner_api, "ThreadPoolExecutor", _RecordingPool)
+    monkeypatch.setattr(controller_api, "ThreadPoolExecutor", _RecordingPool)
     settings = _settings(tmp_path, ensure_workers=3)
 
     # Entering TestClient runs startup; leaving it runs shutdown.
