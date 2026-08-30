@@ -64,6 +64,12 @@ spec:
               value: {{ .Values.tenantNamespaces.controller.convergeWorkers | int64 | quote }}
             - name: SERVERLESS_PROVISION_WORKERS
               value: {{ .Values.tenantNamespaces.controller.provisionWorkers | int64 | quote }}
+            - name: SERVERLESS_GC_ENABLED
+              value: {{ .Values.tenantNamespaces.gc.enabled | quote }}
+            - name: SERVERLESS_GC_INTERVAL_SECONDS
+              value: {{ .Values.tenantNamespaces.gc.intervalSeconds | int64 | quote }}
+            - name: SERVERLESS_GC_GRACE_SECONDS
+              value: {{ .Values.tenantNamespaces.gc.graceSeconds | int64 | quote }}
             # Whole-ConfigMap mount, never subPath: a subPath mount is not
             # refreshed by the kubelet, and that refresh is the only way a helm
             # upgrade reaches namespaces Argo cannot see.

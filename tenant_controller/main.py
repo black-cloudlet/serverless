@@ -18,6 +18,7 @@ from common.cluster import Cluster, clusters_for, select_local
 from common.loop import install_terminate_handlers, run_loop
 from tenant_controller.api import create_app
 from tenant_controller.config import TenantControllerSettings, get_settings
+from tenant_controller.gc import NamespaceGC
 from tenant_controller.reconcile import reconcile_all
 from tenant_controller.templates import TemplateSet
 
@@ -58,7 +59,7 @@ def run_pass(cluster: Cluster, settings: TenantControllerSettings, *, force: boo
         raise RuntimeError(f"all {seen} managed namespace(s) failed to converge")
 
 
-def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
+def loop(cluster: Cluster, settings: TenantControllerSettings, gc: NamespaceGC) -> None:
     """Reconcile, sleep, forever (paced by ``common.loop``).
 
     Per-namespace failures never reach the pacing - ``reconcile_all``
@@ -67,6 +68,7 @@ def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
     Args:
         cluster: The local cluster.
         settings: Pacing (resync interval, error backoff).
+        gc: The namespace GC, offered a sweep each pass (it paces itself).
     """
     passes = 0
 
@@ -76,6 +78,8 @@ def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
         # Every Nth pass forces a full converge, so drift in the objects
         # themselves is repaired without waiting for a template change.
         run_pass(cluster, settings, force=passes % settings.full_resync_passes == 0)
+        # After the converge, on its own thread: never inside the pass's time.
+        gc.maybe_sweep()
 
     run_loop(
         one_pass,
@@ -171,7 +175,7 @@ def run() -> None:
     )
     server, thread = serve(settings, list(clusters.values()))
     try:
-        loop(local, settings)
+        loop(local, settings, NamespaceGC(settings, local))
     finally:
         stop(server, thread)
         for cluster in clusters.values():

@@ -161,6 +161,22 @@ tenantNamespaces:
   #   pod-security.kubernetes.io/enforce: restricted
   labels: {}
 
+  # Collect a group's namespace once it has been continuously empty of
+  # workloads for the whole grace period (deleting it cascades everything
+  # inside; the group's next deploy provisions a fresh one). "May the platform
+  # delete things" is the operator's call - the registry.deleteOnFunctionDelete
+  # precedent - so deletion is off by default; the empty-since stamping runs
+  # either way, and a namespace annotated `serverless.platform/keep` is never
+  # collected. Local per cluster: a region a group stopped using is collected
+  # there alone.
+  gc:
+    enabled: false
+    # Hours-scale: every sweep re-derives emptiness from live state, so
+    # nothing is lost by waiting.
+    intervalSeconds: 3600
+    # A day of continuous emptiness before deletion.
+    graceSeconds: 86400
+
   # The service that creates those namespaces and keeps them converged to the
   # template set this chart ships. Two jobs in one process: a reconcile loop
   # over its own cluster, and the provision call the API makes before a deploy.

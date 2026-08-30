@@ -473,6 +473,11 @@ def test_run_pass_loads_the_mounted_set_fresh_each_time(tmp_path, monkeypatch):
     assert len(seen) == 2 and seen[0] != seen[1]
 
 
+class _NoopGC:
+    def maybe_sweep(self):
+        pass
+
+
 def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatch):
     settings = TenantControllerSettings(regions=[], resync_seconds=300, error_backoff_seconds=5.0)
     outcomes = iter([RuntimeError("mount vanished"), None, SystemExit(0)])
@@ -487,7 +492,7 @@ def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatc
     monkeypatch.setattr(common_loop.time, "sleep", sleeps.append)
 
     with pytest.raises(SystemExit):
-        controller_main.loop(object(), settings)
+        controller_main.loop(object(), settings, _NoopGC())
 
     assert sleeps[0] == 5.0  # the raise took the backoff...
     assert sleeps[1] == pytest.approx(300, abs=2)  # ...the clean pass, the interval
@@ -755,7 +760,7 @@ def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypa
         events.append("served")
         return served["server"], _Thread(events)
 
-    def _loop(cluster, settings):
+    def _loop(cluster, settings, gc):
         looped["cluster"] = cluster
         raise SystemExit(0)
 
