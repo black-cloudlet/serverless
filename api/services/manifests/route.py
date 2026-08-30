@@ -9,6 +9,7 @@ Route. A wildcard DNS record forwards to the active region.
 from __future__ import annotations
 
 from common.labels import workload_labels
+from common.names import default_host_label
 
 DOMAIN_MAPPING_API = "serving.knative.dev/v1beta1"
 
@@ -18,8 +19,14 @@ HOST_TEMPLATE = "{name}-{group}.{routeDomain}"
 
 
 def host_for(name: str, group: str, route_domain: str) -> str:
-    """The default external host for a workload: ``{name}-{group}.{route_domain}``."""
-    return f"{name}-{group}.{route_domain}"
+    """The default external host for a workload: ``{name}-{group}.{route_domain}``.
+
+    Deliberately does not check the pair's length: read paths recompute a
+    default host for workloads that already exist, and a read is no place to
+    discover a create-time rule. The check lives on the create path, in
+    ``preflight.resolve_host``.
+    """
+    return f"{default_host_label(name, group)}.{route_domain}"
 
 
 def build_domain_mapping(

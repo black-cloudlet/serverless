@@ -30,7 +30,7 @@ REPO = "registry.internal/acme/serverless/builders/payments/hello"
 TAG = f"{REPO}:main"
 DIGEST = f"{REPO}@sha256:{'a' * 64}"
 NEWER = f"{REPO}@sha256:{'b' * 64}"
-WORKLOAD = "hello-payments"
+WORKLOAD = "hello"
 
 
 def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
@@ -50,7 +50,7 @@ def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
             "generation": 4,
             "managedFields": [{"manager": "serverless-api"}],
             "resourceVersion": "12345",
-            "selfLink": "/apis/serving.knative.dev/v1/services/hello-payments",
+            "selfLink": "/apis/serving.knative.dev/v1/services/hello",
             "uid": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
         },
         "spec": {
@@ -69,7 +69,7 @@ def _ksvc(image=TAG, offering=OFFERING_FUNCTION, name=WORKLOAD):
             },
             "traffic": [{"latestRevision": True, "percent": 100}],
         },
-        "status": {"latestReadyRevisionName": "hello-payments-00003"},
+        "status": {"latestReadyRevisionName": "hello-00003"},
     }
 
 
@@ -226,7 +226,7 @@ def test_with_image_drops_a_pinned_revision_name():
     # Knative rejects a template whose name is unchanged while its content is not,
     # so a hand-pinned name would wedge every roll-out of this function.
     ksvc = _ksvc()
-    ksvc["spec"]["template"]["metadata"]["name"] = "hello-payments-00003"
+    ksvc["spec"]["template"]["metadata"]["name"] = "hello-00003"
 
     assert "name" not in with_image(ksvc, DIGEST)["spec"]["template"]["metadata"]
 
@@ -341,7 +341,7 @@ def test_an_unreadable_workload_is_logged_and_skipped():
 
 
 def test_resync_reconciles_every_local_image_and_returns_the_watch_position():
-    other = "second-payments"
+    other = "second"
     central = _FakeCluster(
         "central",
         {WORKLOAD: _ksvc(), other: _ksvc(name=other)},

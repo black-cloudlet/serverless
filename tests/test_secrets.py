@@ -40,8 +40,8 @@ def test_registry_field_decode_handles_missing_secret():
 
 
 def test_git_secret_roundtrips_token():
-    name = git_secret_name("app-team")
-    assert name == "app-team-git"
+    name = git_secret_name("app")
+    assert name == "app-git"
     s = build_git_secret(name, {"app": "x"}, "ghp_secret")
     # basic-auth, not Opaque: kpack clones with this same Secret
     assert s["kind"] == "Secret" and s["type"] == "kubernetes.io/basic-auth"

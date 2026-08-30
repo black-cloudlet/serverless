@@ -60,7 +60,7 @@ def plan_for(regions, tag, *, replicated=(), image=False, labels=None):
             {
                 "apiVersion": "kpack.io/v1alpha2",
                 "kind": "Image",
-                "metadata": {"name": "hello-payments", "labels": dict(labels or {})},
+                "metadata": {"name": "hello", "labels": dict(labels or {})},
                 # A real tag: the engine compares it against the deployed
                 # Image's, since kpack makes spec.tag immutable.
                 "spec": {"tag": tag},

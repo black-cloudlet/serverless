@@ -42,10 +42,6 @@ class Deployer:
         self._read_timeout = settings.cluster_read_op_timeout
         self._local_region = settings.local_region
         self._clusters: dict[str, Cluster] = clusters_for(settings)
-        # The one boundary where the namespace is bound: everything downstream
-        # gets a view that cannot mix namespaces. Namespace-per-group changes
-        # what is bound here, not who binds it.
-        self._namespace: str = settings.workloads_namespace
         self._read_pool = ReadPool(settings.cluster_read_workers, settings.cluster_read_max_queued)
 
     def close(self) -> None:
@@ -76,13 +72,16 @@ class Deployer:
                 f"the cluster did not answer within {self._read_timeout}s; retry shortly"
             ) from exc
 
-    def local_cluster(self) -> NamespacedCluster:
-        """The cluster this API instance sits in, bound to the workloads namespace.
+    def local_cluster(self, namespace: str) -> NamespacedCluster:
+        """The cluster this API instance sits in, bound to ``namespace``.
 
         Selected by config ``local_region`` (matched by region name then cluster
         name), falling back to the first configured region. Used for reads of data
         that is uniform across regions (active/active), to avoid a cross-cluster
         round trip.
+
+        Args:
+            namespace: The namespace to bind - the caller's group namespace.
 
         Returns:
             The local cluster, as a namespace-bound view.
@@ -90,20 +89,27 @@ class Deployer:
         Raises:
             ValidationError: If no regions are configured.
         """
-        return NamespacedCluster(select_local(self._clusters, self._local_region), self._namespace)
+        return NamespacedCluster(select_local(self._clusters, self._local_region), namespace)
 
     def local_region(self) -> str:
-        """The name of the local region (see :meth:`local_cluster`)."""
-        return self.local_cluster().region
+        """The name of the local region (see :meth:`local_cluster`).
 
-    def resolve_targets(self, requested: list[str] | None) -> list[NamespacedCluster]:
-        """Resolve the clusters to act on for a request, namespace-bound.
+        Namespace-free: which region this instance is in has nothing to do with
+        whose workloads it is serving.
+        """
+        return select_local(self._clusters, self._local_region).region
+
+    def clusters(self, requested: list[str] | None = None) -> list[Cluster]:
+        """The configured clusters, unbound.
+
+        For work that is about a *region* rather than about a namespace -
+        warming connections at startup, reading a region's registry.
 
         Args:
-            requested: Explicit region names, or None for all configured regions.
+            requested: Explicit region names, or None for all of them.
 
         Returns:
-            The target clusters, as namespace-bound views.
+            The clusters, as connections rather than namespace views.
 
         Raises:
             ValidationError: If no regions are configured or a name is unknown.
@@ -111,14 +117,37 @@ class Deployer:
         if not self._clusters:
             raise ValidationError("no regions are configured")
         if not requested:
-            return [NamespacedCluster(c, self._namespace) for c in self._clusters.values()]
+            return list(self._clusters.values())
         targets = []
         for name in requested:
             cluster = self._clusters.get(name)
             if cluster is None:
                 raise ValidationError(f"unknown region: {name}")
-            targets.append(NamespacedCluster(cluster, self._namespace))
+            targets.append(cluster)
         return targets
+
+    def resolve_targets(
+        self, requested: list[str] | None, namespace: str
+    ) -> list[NamespacedCluster]:
+        """Resolve the clusters to act on for a request, bound to ``namespace``.
+
+        The one boundary where the namespace is bound: everything downstream
+        gets a view that cannot mix namespaces. The namespace is now the
+        caller's group namespace, passed in per request rather than fixed at
+        construction - which is the whole of what namespace-per-group changes
+        about where writes land.
+
+        Args:
+            requested: Explicit region names, or None for all configured regions.
+            namespace: The namespace to bind.
+
+        Returns:
+            The target clusters, as namespace-bound views.
+
+        Raises:
+            ValidationError: If no regions are configured or a name is unknown.
+        """
+        return [NamespacedCluster(c, namespace) for c in self.clusters(requested)]
 
     async def fanout(
         self,

@@ -23,6 +23,11 @@ class _FakeCluster:
     def get(self, kind, name=None, label_selector=None, namespace=None):
         from common.errors import NotFoundError as _NF
 
+        # No name is a LIST, and an empty cluster lists empty - it does not
+        # 404. The host pre-flight lists cluster-wide now, so a fake that
+        # raised here would read as an unreachable region.
+        if name is None:
+            return list(self._existing.values())
         if name in self._existing:
             return self._existing[name]
         raise _NF(f"{name} not found")
@@ -78,6 +83,11 @@ class _ApplyCluster:
         from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
+        # A LIST, not a get: the host pre-flight lists DomainMappings across
+        # every namespace now, and an empty cluster lists empty rather than
+        # 404ing - which a region would otherwise read as unreachable.
+        if name is None:
+            return []
         if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
             return self._existing[name]
         if kind == ResourceKind.SECRET and name in self._secrets:

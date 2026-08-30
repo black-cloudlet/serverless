@@ -17,7 +17,7 @@ from api.services.manifests.ksvc import ContainerEnv
 def test_build_ksvc_basic():
     files = resolve_files("app", "team", "alice", [])
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/x:1",
@@ -29,7 +29,7 @@ def test_build_ksvc_basic():
         pull_secret="app-pull",
     )
     assert m["apiVersion"] == "serving.knative.dev/v1"
-    assert m["metadata"]["name"] == "app-team"
+    assert m["metadata"]["name"] == "app"
     assert (
         m["metadata"]["annotations"]["serverless.platform/host"]
         == "app-team.serverless.example.com"
@@ -49,7 +49,7 @@ def test_build_ksvc_basic():
 
 def test_build_ksvc_port_sets_container_port():
     common = dict(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -68,7 +68,7 @@ def test_build_ksvc_port_sets_container_port():
 
 def test_build_ksvc_size_sets_resources():
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -88,7 +88,7 @@ def test_build_ksvc_size_sets_resources():
 
 def test_build_ksvc_cpu_metric_sets_hpa_class():
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -106,7 +106,7 @@ def test_build_ksvc_cpu_metric_sets_hpa_class():
 
 def test_build_ksvc_scale_down_delay_annotation():
     common = dict(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -128,7 +128,7 @@ def test_build_ksvc_scale_down_delay_annotation():
 
 def test_build_ksvc_mounts_ca_bundle():
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -152,7 +152,7 @@ def test_build_ksvc_injects_ca_env_pointed_at_the_bundle():
     from api.services.manifests.ksvc import CA_ENV_VARS
 
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -180,7 +180,7 @@ def test_build_ksvc_ca_env_user_override_wins_and_is_not_marked_injected():
     from api.services.manifests.ksvc import CA_ENV_VARS
 
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -206,7 +206,7 @@ def test_build_ksvc_no_ca_env_without_ca_file():
 
     # No ca_file -> no injection, no injected-env annotation (mount still added).
     m = ksvc_svc.build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="o",
         image="i",
@@ -493,7 +493,7 @@ def test_binary_secret_file_survives_create_and_keep_on_update():
         secret=True,
     )
 
-    resolved = resolve_files("app-team", "team", "alice", [mount])
+    resolved = resolve_files("app", "team", "alice", [mount])
     secret = next(m for m in resolved.backing if m["kind"] == "Secret")
     stored = secret["data"]["etc-certs-keystore.p12"]
     assert base64.b64decode(stored) == blob  # byte-exact, not mangled through str
@@ -502,7 +502,7 @@ def test_binary_secret_file_survives_create_and_keep_on_update():
     # the stored bytes (as read back by region_read.secret_data) are written out unchanged.
     kept = {k: base64.b64decode(v) for k, v in secret["data"].items()}
     keep = FileMount(mountPath="/etc/certs/keystore.p12", secret=True)
-    again = resolve_files("app-team", "team", "alice", [keep], kept=kept)
+    again = resolve_files("app", "team", "alice", [keep], kept=kept)
     kept_secret = next(m for m in again.backing if m["kind"] == "Secret")
     assert base64.b64decode(kept_secret["data"]["etc-certs-keystore.p12"]) == blob
 

@@ -32,7 +32,7 @@ def _ksvc(image="reg/x:1", offering=OFFERING_CONTAINER, stamp=None):
         annotations[ANNOTATION_PULL_STAMP] = stamp
     return {
         "metadata": {
-            "name": "app-team",
+            "name": "app",
             "labels": {LABEL_GROUP: "team", LABEL_OFFERING: offering},
             "annotations": annotations,
         },
@@ -96,7 +96,7 @@ async def test_every_region_is_stamped_with_the_same_value():
 
     for cluster in (central, south):
         _kind, name, body = cluster.patches[0]
-        assert name == "app-team"
+        assert name == "app"
         assert body["metadata"]["annotations"][ANNOTATION_PULL_STAMP] == STAMP
         template = body["spec"]["template"]["metadata"]["annotations"]
         assert template[ANNOTATION_PULL_STAMP] == STAMP
@@ -183,7 +183,7 @@ async def test_the_background_work_stamps_a_fresh_value():
 
 def _built(stamp):
     return build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/x:1",
@@ -214,7 +214,7 @@ def test_a_container_that_was_never_pulled_carries_no_stamp():
 
 def test_the_stamp_survives_a_round_trip_through_read_back():
     # Dropped here, the next ordinary update would cut a revision nobody asked for.
-    state = existing_state(_ksvc(stamp=STAMP), _FakeCluster("central", None), CONTAINER, "app-team")
+    state = existing_state(_ksvc(stamp=STAMP), _FakeCluster("central", None), CONTAINER, "app")
 
     assert state["pull_stamp"] == STAMP
     assert _built(state["pull_stamp"]) == _built(STAMP)

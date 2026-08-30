@@ -34,22 +34,30 @@ def test_host_for_resolution_and_validation():
         svc.host_for("app", "a.b.serverless.example.com", "team")
 
 
-def test_a_name_and_group_each_legal_alone_are_rejected_when_too_long_together():
-    """{name}-{group} is the KSVC name and the first label of the host: max 63.
+def test_a_name_and_group_too_long_together_cost_only_the_default_host():
+    """The pair rule moved with the object name; it did not go away.
 
-    Each half passes its own <=63 check, so without a combined one the request is
-    accepted (202) and the API server rejects the KSVC later, in the background
-    deploy - after the config Secrets for it have already been written.
+    The KSVC is plain `{name}` now, scoped by the namespace, so a long pair no
+    longer makes a workload impossible. What it still cannot fit is the default
+    host's first label - DNS is global and the wildcard certificate covers one
+    label - so the create is refused only when it wants the default, and a
+    supplied hostname is the way through. Without the check the request would
+    be accepted (202) and the DomainMapping refused later, in the background.
     """
-
     svc = _workload_service({})
     name, group = "n" * 40, "g" * 40
 
-    with pytest.raises(ValidationError, match="too long together"):
-        svc.validate_spec(name, group, "alice", [], [])
+    # The spec itself is fine now: the namespace carries the group.
+    svc.validate_spec(name, group, "alice", [], [])
+
+    with pytest.raises(ValidationError, match="too long together for the default host"):
+        svc.host_for(name, None, group)
+
+    # ...and a custom hostname makes the pair's length irrelevant.
+    assert svc.host_for(name, "checkout", group) == "checkout.serverless.example.com"
 
     # 63 exactly is the boundary and must still pass.
-    svc.validate_spec("n" * 31, "g" * 31, "alice", [], [])
+    assert svc.host_for("n" * 31, None, "g" * 31).startswith("n" * 31 + "-" + "g" * 31 + ".")
 
 
 async def test_host_available_when_unused():
@@ -58,7 +66,10 @@ async def test_host_available_when_unused():
     )
     # no DomainMapping exists -> no raise
     await svc.assert_host_available(
-        "app-team.serverless.example.com", "app", "team", svc.deployer.resolve_targets(None)
+        "app-team.serverless.example.com",
+        "app",
+        "team",
+        svc.deployer.resolve_targets(None, "team-serverless"),
     )
 
 
@@ -67,7 +78,7 @@ async def test_host_taken_by_other_workload_conflicts():
     from common.errors import ConflictError
 
     host = "shared.example.com"
-    dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}
+    dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other"}}}
     svc = _workload_service(
         {
             "region-a": _FakeCluster("region-a", existing={host: dm}),
@@ -75,14 +86,18 @@ async def test_host_taken_by_other_workload_conflicts():
         }
     )
     with pytest.raises(ConflictError):
-        await svc.assert_host_available(host, "app", "team", svc.deployer.resolve_targets(None))
+        await svc.assert_host_available(
+            host, "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+        )
 
 
 async def test_host_owned_by_same_workload_ok():
-    from api.models.common import LABEL_WORKLOAD
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
 
     host = "app-team.serverless.example.com"
-    dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}}
+    # Workload AND group: the workload label alone stopped being unique the
+    # moment two groups could each have an "app".
+    dm = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app", LABEL_GROUP: "team"}}}
     svc = _workload_service(
         {
             "region-a": _FakeCluster("region-a", existing={host: dm}),
@@ -90,35 +105,65 @@ async def test_host_owned_by_same_workload_ok():
         }
     )
     # same owner -> update, no conflict
-    await svc.assert_host_available(host, "app", "team", svc.deployer.resolve_targets(None))
+    await svc.assert_host_available(
+        host, "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+    )
+
+
+async def test_a_host_held_by_the_same_name_in_another_group_still_conflicts():
+    """The case a namespace per group creates, and the one the old check missed.
+
+    Two groups can now each own a workload called "app", so a DomainMapping
+    labelled with the workload alone no longer says whose it is. Matching on
+    the workload label only, this update would adopt another group's host.
+    """
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
+    from common.errors import ConflictError
+
+    host = "app-other.serverless.example.com"
+    theirs = {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app", LABEL_GROUP: "other"}}}
+    svc = _workload_service(
+        {
+            "region-a": _FakeCluster("region-a", existing={host: theirs}),
+            "region-b": _FakeCluster("region-b"),
+        }
+    )
+    with pytest.raises(ConflictError):
+        await svc.assert_host_available(
+            host, "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+        )
 
 
 async def test_workload_absent_ok():
     svc = _workload_service(
         {"region-a": _FakeCluster("region-a"), "region-b": _FakeCluster("region-b")}
     )
-    await svc.assert_workload_absent("app", "team", svc.deployer.resolve_targets(None))
+    await svc.assert_workload_absent(
+        "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+    )
 
 
 async def test_workload_already_exists_conflicts():
     from common.errors import ConflictError
 
-    ksvc = {"metadata": {"name": "app-team"}}
+    ksvc = {"metadata": {"name": "app"}}
     svc = _workload_service(
         {
-            "region-a": _FakeCluster("region-a", existing={"app-team": ksvc}),
+            "region-a": _FakeCluster("region-a", existing={"app": ksvc}),
             "region-b": _FakeCluster("region-b"),
         }
     )
     with pytest.raises(ConflictError):
-        await svc.assert_workload_absent("app", "team", svc.deployer.resolve_targets(None))
+        await svc.assert_workload_absent(
+            "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+        )
 
 
 def _ksvc(offering, image="reg/x:1", group="team"):
     from api.models.common import LABEL_GROUP, LABEL_OFFERING
 
     return {
-        "metadata": {"name": "app-team", "labels": {LABEL_GROUP: group, LABEL_OFFERING: offering}},
+        "metadata": {"name": "app", "labels": {LABEL_GROUP: group, LABEL_OFFERING: offering}},
         "spec": {"template": {"spec": {"containers": [{"image": image}]}}},
     }
 
@@ -128,8 +173,8 @@ async def test_load_existing_returns_image():
 
     svc = _workload_service(
         {
-            "region-a": _FakeCluster("region-a", existing={"app-team": _ksvc("container")}),
-            "region-b": _FakeCluster("region-b", existing={"app-team": _ksvc("container")}),
+            "region-a": _FakeCluster("region-a", existing={"app": _ksvc("container")}),
+            "region-b": _FakeCluster("region-b", existing={"app": _ksvc("container")}),
         }
     )
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -144,7 +189,7 @@ async def test_load_existing_offering_mismatch_404():
 
     svc = _workload_service(
         {
-            "region-a": _FakeCluster("region-a", existing={"app-team": _ksvc("container")}),
+            "region-a": _FakeCluster("region-a", existing={"app": _ksvc("container")}),
             "region-b": _FakeCluster("region-b"),
         }
     )
@@ -206,11 +251,11 @@ async def test_get_reports_size_and_replicas_but_carries_no_usage():
                     },
                     "status": {
                         "conditions": [{"type": "Ready", "status": "True"}],
-                        "latestReadyRevisionName": "app-team-00001",
+                        "latestReadyRevisionName": "app-00001",
                     },
                 }
             if kind == ResourceKind.KNATIVE_REVISION:
-                assert name == "app-team-00001"
+                assert name == "app-00001"
                 return {"status": {"actualReplicas": 3}}
             raise AssertionError(f"the full GET must not read {kind}")
 
@@ -251,13 +296,13 @@ class _StatsCluster:
                 },
                 "status": {
                     "conditions": [{"type": "Ready", "status": "True"}],
-                    "latestReadyRevisionName": "app-team-00002",
+                    "latestReadyRevisionName": "app-00002",
                 },
             }
         if kind == ResourceKind.KNATIVE_REVISION:
             return {"status": {"actualReplicas": self._replicas}}
         if kind == ResourceKind.POD_METRICS:
-            assert label_selector == "serving.knative.dev/service=app-team"
+            assert label_selector == "serving.knative.dev/service=app"
             return list(self._pods or [])
         raise AssertionError(f"the stats view must not read {kind}")
 
@@ -470,7 +515,7 @@ async def test_get_returns_redacted_spec():
     from common.cluster import ResourceKind
 
     ksvc = build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -478,17 +523,15 @@ async def test_get_returns_redacted_spec():
         host="app-team.ex.com",
         env=[
             ContainerEnv(name="LOG", value="debug"),
-            ContainerEnv(name="API_KEY", secret_ref=("app-team-env", "API_KEY")),
+            ContainerEnv(name="API_KEY", secret_ref=("app-env", "API_KEY")),
         ],
         volumes=[
-            VolumeSpec(
-                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf"
-            ),
-            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret"),
+            VolumeSpec("files-config", "configmap", "app-files", "/etc/app.conf", "etc-app.conf"),
+            VolumeSpec("files-secret", "secret", "app-files", "/etc/secret", "etc-secret"),
         ],
         scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
         size="medium",
-        pull_secret="app-team-pull",
+        pull_secret="app-pull",
         ca_config_map="trusted-ca",
         ca_mount_path="/etc/pki/tls/certs/ca.crt",
     )
@@ -503,10 +546,10 @@ async def test_get_returns_redacted_spec():
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             if kind == ResourceKind.CONFIG_MAP:
-                assert name == "app-team-files"
+                assert name == "app-files"
                 return {"data": {"etc-app.conf": "level=debug"}}
             if kind == ResourceKind.SECRET:
-                assert name == "app-team-pull"
+                assert name == "app-pull"
                 return build_pull_secret(name, {}, "reg.example.com", "bob", "s3cr3t")
             raise RuntimeError("revision/metrics are best-effort here")
 
@@ -527,7 +570,7 @@ async def test_get_returns_redacted_spec():
     assert body.registryUsername == "bob"
 
 
-def _bare_ksvc(name="app-team", offering="container"):
+def _bare_ksvc(name="app", offering="container"):
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
 
@@ -560,7 +603,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
     from common.cluster import ResourceKind
 
     ksvc = build_ksvc(
-        name="fn-team",
+        name="fn",
         group="team",
         owner="alice",
         image="reg/team/fn:main",
@@ -578,7 +621,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
     )
     ksvc["status"] = {
         "conditions": [{"type": "Ready", "status": "True"}],
-        "latestReadyRevisionName": "fn-team-00001",
+        "latestReadyRevisionName": "fn-00001",
     }
 
     class _C:
@@ -622,7 +665,7 @@ async def test_get_function_building_image_reports_building():
     from common.cluster import ResourceKind
 
     ksvc = build_ksvc(
-        name="fn-team",
+        name="fn",
         group="team",
         owner="alice",
         image="reg/team/fn:main",
@@ -720,7 +763,7 @@ async def test_get_failed_region_surfaces_ready_condition_message():
                 "type": "Ready",
                 "status": "False",
                 "reason": "RevisionFailed",
-                "message": 'Revision "app-team-00001" failed: image pull backoff',
+                "message": 'Revision "app-00001" failed: image pull backoff',
             }
         ]
     }
@@ -740,7 +783,7 @@ async def test_get_failed_region_surfaces_ready_condition_message():
 
     region = body.regions[0]
     assert region.status == "Failed"
-    assert region.message == 'Revision "app-team-00001" failed: image pull backoff'
+    assert region.message == 'Revision "app-00001" failed: image pull backoff'
 
     # Falls back to the reason code when the condition carries no message.
     ksvc["status"]["conditions"][0].pop("message")
@@ -757,19 +800,19 @@ async def test_get_failed_region_prefers_revision_specific_reason():
 
     ksvc = _bare_ksvc()
     ksvc["status"] = {
-        "latestCreatedRevisionName": "app-team-00001",
+        "latestCreatedRevisionName": "app-00001",
         "conditions": [
             # Generic aggregate at the Service level.
             {
                 "type": "Ready",
                 "status": "False",
                 "reason": "RevisionFailed",
-                "message": "Revision app-team-00001 is not ready.",
+                "message": "Revision app-00001 is not ready.",
             },
         ],
     }
     revision = {
-        "metadata": {"name": "app-team-00001"},
+        "metadata": {"name": "app-00001"},
         "status": {
             "actualReplicas": 0,
             "conditions": [
@@ -792,7 +835,7 @@ async def test_get_failed_region_prefers_revision_specific_reason():
         def get(self, kind, name=None, label_selector=None, namespace=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
-            if kind == ResourceKind.KNATIVE_REVISION and name == "app-team-00001":
+            if kind == ResourceKind.KNATIVE_REVISION and name == "app-00001":
                 return revision
             raise RuntimeError("usage/spec extras are best-effort here")
 
@@ -833,8 +876,8 @@ async def test_get_ready_region_has_no_error():
 async def test_list_overall_status_per_workload():
     from cloudlet_apis.auth import Principal
 
-    deploying = _bare_ksvc("app-team")  # no conditions -> Deploying
-    failed = _bare_ksvc("bad-team")
+    deploying = _bare_ksvc("app")  # no conditions -> Deploying
+    failed = _bare_ksvc("bad")
     failed["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
 
     engine = _workload_service(
@@ -859,11 +902,11 @@ async def test_list_folds_the_build_state_in_like_get_does():
 
     from common.build import BuildStatus
 
-    building = _bare_ksvc("fn-team", offering="function")
+    building = _bare_ksvc("fn", offering="function")
     building["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
-    broken = _bare_ksvc("bad-team", offering="function")
+    broken = _bare_ksvc("bad", offering="function")
     broken["status"] = {"conditions": [{"type": "Ready", "status": "False"}]}
-    serving = _bare_ksvc("old-team", offering="function")
+    serving = _bare_ksvc("old", offering="function")
     serving["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
 
     reads = []
@@ -873,8 +916,8 @@ async def test_list_folds_the_build_state_in_like_get_does():
             # One read for the whole listing, not one per function.
             reads.append((cluster.region, group))
             return {
-                "fn-team": BuildStatus(state="Building"),
-                "bad-team": BuildStatus(state="Failed", message="compile error"),
+                "fn": BuildStatus(state="Building"),
+                "bad": BuildStatus(state="Failed", message="compile error"),
             }
 
     engine = _workload_service(
@@ -902,7 +945,7 @@ async def test_list_of_containers_reads_no_build():
             raise AssertionError("a container listing must not read the build backend")
 
     engine = _workload_service(
-        {"region-a": _ListCluster("region-a", [_bare_ksvc("app-team")])},
+        {"region-a": _ListCluster("region-a", [_bare_ksvc("app")])},
         builder=_Builder(),
         local_region="region-a",
     )
@@ -925,7 +968,7 @@ async def test_update_prunes_backing_no_longer_referenced():
     from common.cluster import ResourceKind
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -936,7 +979,7 @@ async def test_update_prunes_backing_no_longer_referenced():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    cluster = _ApplyCluster("region-a", {"api": existing})
     engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -956,13 +999,12 @@ async def test_update_prunes_backing_no_longer_referenced():
     )
 
     deleted = set(cluster.deleted)
-    assert (ResourceKind.SECRET, "api-team-env") in deleted  # no secret env -> pruned
-    assert (ResourceKind.SECRET, "api-team-files") in deleted  # no secret files -> pruned
+    assert (ResourceKind.SECRET, "api-env") in deleted  # no secret env -> pruned
+    assert (ResourceKind.SECRET, "api-files") in deleted  # no secret files -> pruned
     # the files ConfigMap is still referenced -> applied, never pruned
-    assert (ResourceKind.CONFIG_MAP, "api-team-files") not in deleted
+    assert (ResourceKind.CONFIG_MAP, "api-files") not in deleted
     assert any(
-        m["kind"] == "ConfigMap" and m["metadata"]["name"] == "api-team-files"
-        for m in cluster.applied
+        m["kind"] == "ConfigMap" and m["metadata"]["name"] == "api-files" for m in cluster.applied
     )
 
 
@@ -991,7 +1033,7 @@ async def test_container_update_rotates_pull_secret():
     from api.services.manifests.ksvc import build_ksvc
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg.acme.com/api:1",
@@ -1002,7 +1044,7 @@ async def test_container_update_rotates_pull_secret():
         scaling=Scaling(),
         size="small",  # public image: no pull secret
     )
-    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    cluster = _ApplyCluster("region-a", {"api": existing})
     engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1023,7 +1065,7 @@ async def test_container_update_rotates_pull_secret():
         for m in _applied_kind(cluster, "Secret")
         if m.get("type") == "kubernetes.io/dockerconfigjson"
     ]
-    assert secrets and secrets[0]["metadata"]["name"] == "api-team-pull"
+    assert secrets and secrets[0]["metadata"]["name"] == "api-pull"
     # the pull secret is keyed to the client image's registry, not our platform one
     import base64 as _b64
     import json as _json
@@ -1031,7 +1073,7 @@ async def test_container_update_rotates_pull_secret():
     cfg = _json.loads(_b64.b64decode(secrets[0]["data"][".dockerconfigjson"]))
     assert set(cfg["auths"]) == {"reg.acme.com"}
     ksvc = _applied_kind(cluster, "Service")[0]
-    assert ksvc["spec"]["template"]["spec"]["imagePullSecrets"] == [{"name": "api-team-pull"}]
+    assert ksvc["spec"]["template"]["spec"]["imagePullSecrets"] == [{"name": "api-pull"}]
 
 
 async def test_function_update_rebuilds_without_touching_the_running_image():
@@ -1057,7 +1099,7 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
             return plan_for(registries, self.image_ref(req))
 
     existing = build_ksvc(
-        name="fn-team",
+        name="fn",
         group="team",
         owner="alice",
         image="reg/fn:old",
@@ -1071,7 +1113,7 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         git_url="https://git/old.git",
         branch="main",
     )
-    cluster = _ApplyCluster("region-a", {"fn-team": existing})
+    cluster = _ApplyCluster("region-a", {"fn": existing})
     builder = _StubBuilder()
     engine = _workload_service({"region-a": cluster}, builder=builder)
     fsvc = FunctionService(engine, runtime_registry())
@@ -1114,7 +1156,7 @@ async def test_function_update_without_token_keeps_image():
             raise AssertionError("no token stored -> nothing to declare a build with")
 
     existing = build_ksvc(
-        name="fn-team",
+        name="fn",
         group="team",
         owner="alice",
         image="reg/fn:old",
@@ -1128,7 +1170,7 @@ async def test_function_update_without_token_keeps_image():
         git_url="https://git/old.git",
         branch="main",
     )
-    cluster = _ApplyCluster("region-a", {"fn-team": existing})
+    cluster = _ApplyCluster("region-a", {"fn": existing})
     builder = _StubBuilder()
     engine = _workload_service({"region-a": cluster}, builder=builder)
     fsvc = FunctionService(engine, runtime_registry())
@@ -1166,7 +1208,7 @@ async def test_function_create_persists_git_secret():
             return plan_for(
                 registries,
                 self.image_ref(req),
-                replicated=[build_git_secret("fn-team-git", labels, req.git_token, req.git_url)],
+                replicated=[build_git_secret("fn-git", labels, req.git_token, req.git_url)],
             )
 
     cluster = _ApplyCluster("region-a", {})  # nothing exists yet
@@ -1181,7 +1223,7 @@ async def test_function_create_persists_git_secret():
         ),
         user,
     )
-    git = [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "fn-team-git"]
+    git = [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "fn-git"]
     assert git, "expected a persisted git secret"
     assert base64.b64decode(git[0]["data"][GIT_TOKEN_KEY]).decode() == "ghp_tok"
 
@@ -1206,7 +1248,7 @@ async def test_function_update_reuses_stored_git_token():
             return plan_for(registries, "reg/built:rel")
 
     existing = build_ksvc(
-        name="fn-team",
+        name="fn",
         group="team",
         owner="alice",
         image="reg/fn:old",
@@ -1220,8 +1262,8 @@ async def test_function_update_reuses_stored_git_token():
         git_url="https://git/old.git",
         branch="main",
     )
-    stored = build_git_secret(git_secret_name("fn-team"), {}, "ghp_stored")
-    cluster = _ApplyCluster("region-a", {"fn-team": existing}, secrets={"fn-team-git": stored})
+    stored = build_git_secret(git_secret_name("fn"), {}, "ghp_stored")
+    cluster = _ApplyCluster("region-a", {"fn": existing}, secrets={"fn-git": stored})
     builder = _StubBuilder()
     engine = _workload_service({"region-a": cluster}, builder=builder)
     fsvc = FunctionService(engine, runtime_registry())
@@ -1251,21 +1293,19 @@ async def test_container_update_keeps_secret_env_value_when_omitted():
     from api.services.manifests.ksvc import ContainerEnv, build_ksvc
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/app:1",
         offering="container",
         host="api-team.ex.com",
-        env=[ContainerEnv(name="API_KEY", secret_ref=("api-team-env", "API_KEY"))],
+        env=[ContainerEnv(name="API_KEY", secret_ref=("api-env", "API_KEY"))],
         volumes=[],
         scaling=Scaling(),
         size="small",
     )
-    env_secret = res.build_secret("api-team-env", {}, {"API_KEY": "stored-secret"})
-    cluster = _ApplyCluster(
-        "region-a", {"api-team": existing}, secrets={"api-team-env": env_secret}
-    )
+    env_secret = res.build_secret("api-env", {}, {"API_KEY": "stored-secret"})
+    cluster = _ApplyCluster("region-a", {"api": existing}, secrets={"api-env": env_secret})
     engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1278,7 +1318,7 @@ async def test_container_update_keeps_secret_env_value_when_omitted():
         user,
     )
     applied_env = [
-        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-env"
+        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-env"
     ]
     assert applied_env, "expected the env secret to be re-applied"
     assert base64.b64decode(applied_env[0]["data"]["API_KEY"]).decode() == "stored-secret"
@@ -1298,7 +1338,7 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
 
     # Existing container pulls from reg-a with stored creds bob/s3cret.
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg-a.example.com/team/app:1",
@@ -1308,10 +1348,10 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
         volumes=[],
         scaling=Scaling(),
         size="small",
-        pull_secret="api-team-pull",
+        pull_secret="api-pull",
     )
-    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
-    cluster = _ApplyCluster("region-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    pull = build_pull_secret("api-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("region-a", {"api": existing}, secrets={"api-pull": pull})
     engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1325,7 +1365,7 @@ async def test_container_update_keeps_creds_rekeyed_to_new_image_registry():
         user,
     )
     applied_pull = [
-        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-pull"
+        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-pull"
     ]
     assert applied_pull, "expected the pull secret to be re-materialized on keep"
     cfg = json.loads(base64.b64decode(applied_pull[0]["data"][".dockerconfigjson"]))
@@ -1347,7 +1387,7 @@ async def test_update_container_username_change_without_token_rejected():
     from api.services.manifests.secrets import build_pull_secret
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg-a.example.com/team/app:1",
@@ -1357,10 +1397,10 @@ async def test_update_container_username_change_without_token_rejected():
         volumes=[],
         scaling=Scaling(),
         size="small",
-        pull_secret="api-team-pull",
+        pull_secret="api-pull",
     )
-    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
-    cluster = _ApplyCluster("region-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    pull = build_pull_secret("api-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("region-a", {"api": existing}, secrets={"api-pull": pull})
     csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -1396,7 +1436,7 @@ async def test_container_update_both_creds_null_removes_pull_secret():
     from common.cluster import ResourceKind
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg-a.example.com/team/app:1",
@@ -1406,10 +1446,10 @@ async def test_container_update_both_creds_null_removes_pull_secret():
         volumes=[],
         scaling=Scaling(),
         size="small",
-        pull_secret="api-team-pull",
+        pull_secret="api-pull",
     )
-    pull = build_pull_secret("api-team-pull", {}, "reg-a.example.com", "bob", "s3cret")
-    cluster = _ApplyCluster("region-a", {"api-team": existing}, secrets={"api-team-pull": pull})
+    pull = build_pull_secret("api-pull", {}, "reg-a.example.com", "bob", "s3cret")
+    cluster = _ApplyCluster("region-a", {"api": existing}, secrets={"api-pull": pull})
     engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1418,14 +1458,12 @@ async def test_container_update_both_creds_null_removes_pull_secret():
     await csvc.update("team", "api", ContainerUpdate(image="reg/x:1", port=8080), user)
 
     # the stale pull secret is pruned...
-    assert (ResourceKind.SECRET, "api-team-pull") in cluster.deleted
+    assert (ResourceKind.SECRET, "api-pull") in cluster.deleted
     # ...and the re-applied KSVC references no pull secret
     ksvc = _applied_kind(cluster, "Service")[0]
     assert pull_secret_name(ksvc) is None
     # nothing re-applied it
-    assert not [
-        s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-team-pull"
-    ]
+    assert not [s for s in _applied_kind(cluster, "Secret") if s["metadata"]["name"] == "api-pull"]
 
 
 async def test_load_existing_surfaces_transient_secret_read_as_503():
@@ -1438,7 +1476,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
     from common.errors import NotFoundError, ServiceUnavailableError
 
     ksvc = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/x:1",
@@ -1455,7 +1493,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
         name = "region-a"
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
-            if kind == ResourceKind.KNATIVE_SERVICE and name == "api-team":
+            if kind == ResourceKind.KNATIVE_SERVICE and name == "api":
                 return ksvc
             if kind == ResourceKind.SECRET:
                 raise RuntimeError("etcd read timeout")  # transient, not a 404
@@ -1477,7 +1515,7 @@ async def test_load_existing_reads_secrets_from_local_region():
     from api.services.manifests.ksvc import build_ksvc
 
     ksvc = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/x:1",
@@ -1492,13 +1530,13 @@ async def test_load_existing_reads_secrets_from_local_region():
     # must come from the local region (the cheapest, most reliable hop).
     local = _ApplyCluster(
         "region-a",
-        {"api-team": ksvc},
-        secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "local-val"})},
+        {"api": ksvc},
+        secrets={"api-env": res.build_secret("api-env", {}, {"K": "local-val"})},
     )
     remote = _ApplyCluster(
         "region-b",
-        {"api-team": ksvc},
-        secrets={"api-team-env": res.build_secret("api-team-env", {}, {"K": "remote-val"})},
+        {"api": ksvc},
+        secrets={"api-env": res.build_secret("api-env", {}, {"K": "remote-val"})},
     )
     engine = _workload_service({"region-a": local, "region-b": remote}, local_region="region-a")
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1514,14 +1552,14 @@ async def test_list_fans_out_and_merges_regions():
     region_a = _ListCluster(
         "region-a",
         [
-            _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
-            _list_ksvc("web-team", "small", "web-team.ex.com"),
+            _list_ksvc("orders", "medium", "orders-team.ex.com"),
+            _list_ksvc("web", "small", "web-team.ex.com"),
         ],
     )
     region_b = _ListCluster(
         "region-b",
         [
-            _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
+            _list_ksvc("orders", "medium", "orders-team.ex.com"),
         ],
     )
     engine = _workload_service({"region-a": region_a, "region-b": region_b})
@@ -1557,7 +1595,7 @@ async def test_list_skips_unreachable_region_best_effort():
     region_a = _ListCluster(
         "region-a",
         [
-            _list_ksvc("orders-team", "medium", "orders-team.ex.com"),
+            _list_ksvc("orders", "medium", "orders-team.ex.com"),
         ],
     )
     engine = _workload_service({"region-a": region_a, "region-b": _Boom("region-b")})
@@ -1579,8 +1617,8 @@ async def test_list_sort_by_created_at():
     local = _ListCluster(
         "region-a",
         [
-            _with_created("aaa-team", "2026-01-02T00:00:00Z"),  # name first, created newer
-            _with_created("bbb-team", "2026-01-01T00:00:00Z"),  # name last, created older
+            _with_created("aaa", "2026-01-02T00:00:00Z"),  # name first, created newer
+            _with_created("bbb", "2026-01-01T00:00:00Z"),  # name last, created older
         ],
     )
     engine = _workload_service({"region-a": local}, local_region="region-a")
@@ -1670,7 +1708,7 @@ async def test_delete_removes_ksvc_and_relies_on_gc():
 
     await engine.delete(CONTAINER, "app", user, "team")
 
-    assert cluster.deleted == [(ResourceKind.KNATIVE_SERVICE, "app-team")]
+    assert cluster.deleted == [(ResourceKind.KNATIVE_SERVICE, "app")]
 
 
 async def test_delete_missing_workload_is_404():
@@ -1733,9 +1771,9 @@ async def test_delete_reaps_orphaned_build_objects_once_every_region_answers():
     with pytest.raises(NotFoundError):
         await engine.delete(FUNCTION, "app", user, "team")
 
-    assert (ResourceKind.KPACK_IMAGE, "app-team") in cluster.deleted
-    assert (ResourceKind.SERVICE_ACCOUNT, "app-team-build") in cluster.deleted
-    assert (ResourceKind.SECRET, "app-team-git") in cluster.deleted
+    assert (ResourceKind.KPACK_IMAGE, "app") in cluster.deleted
+    assert (ResourceKind.SERVICE_ACCOUNT, "app-build") in cluster.deleted
+    assert (ResourceKind.SECRET, "app-git") in cluster.deleted
 
 
 async def test_delete_reclaims_every_regions_registry_with_that_regions_token(monkeypatch):
@@ -1803,40 +1841,54 @@ async def test_deployable_check_reports_host_and_name_conflicts_in_one_pass():
     different instants. Merging them must not weaken either verdict, so both
     conflicts and the fail-closed behaviour are pinned here.
     """
-    from api.models.common import LABEL_WORKLOAD
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
     from common.errors import ConflictError, ServiceUnavailableError
 
     host = "app-team.serverless.example.com"
 
     # host held by someone else -> conflict, even though the name is free
-    taken = {host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other-team"}}}}
+    taken = {host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "other"}}}}
     svc = _workload_service({"region-a": _FakeCluster("region-a", existing=taken)})
     with pytest.raises(ConflictError, match="hostname"):
         await svc.assert_deployable(
-            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+            "app",
+            "team",
+            svc.deployer.resolve_targets(None, "team-serverless"),
+            host=host,
+            require_absent=True,
         )
 
     # name already used -> conflict, even though the host is free
-    exists = {"app-team": {"metadata": {"name": "app-team"}}}
+    exists = {"app": {"metadata": {"name": "app"}}}
     svc = _workload_service({"region-a": _FakeCluster("region-a", existing=exists)})
     with pytest.raises(ConflictError, match="already exists"):
         await svc.assert_deployable(
-            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+            "app",
+            "team",
+            svc.deployer.resolve_targets(None, "team-serverless"),
+            host=host,
+            require_absent=True,
         )
 
     # an update does not require absence: its own KSVC and mapping are expected
     own = {
-        "app-team": {"metadata": {"name": "app-team"}},
-        host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app-team"}}},
+        "app": {"metadata": {"name": "app"}},
+        host: {"metadata": {"name": host, "labels": {LABEL_WORKLOAD: "app", LABEL_GROUP: "team"}}},
     }
     svc = _workload_service({"region-a": _FakeCluster("region-a", existing=own)})
-    await svc.assert_deployable("app", "team", svc.deployer.resolve_targets(None), host=host)
+    await svc.assert_deployable(
+        "app", "team", svc.deployer.resolve_targets(None, "team-serverless"), host=host
+    )
 
     # a region that cannot answer proves neither -> 503, not a silent pass
     svc = _workload_service({"region-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_deployable(
-            "app", "team", svc.deployer.resolve_targets(None), host=host, require_absent=True
+            "app",
+            "team",
+            svc.deployer.resolve_targets(None, "team-serverless"),
+            host=host,
+            require_absent=True,
         )
 
 
@@ -1852,7 +1904,7 @@ async def test_apply_sets_owner_references_on_derived():
     from api.services.manifests.ksvc import build_ksvc
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg.acme.com/api:1",
@@ -1863,7 +1915,7 @@ async def test_apply_sets_owner_references_on_derived():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    cluster = _ApplyCluster("region-a", {"api": existing})
     engine = _workload_service({"region-a": cluster})
     csvc = ContainerService(engine)
     user = Principal(subject="u", username="alice", groups=["team"])
@@ -1894,8 +1946,8 @@ async def test_apply_sets_owner_references_on_derived():
         assert refs, f"{m['kind']}/{m['metadata']['name']} missing ownerReference"
         ref = refs[0]
         assert ref["kind"] == "Service"
-        assert ref["name"] == "api-team"
-        assert ref["uid"] == "uid-api-team"
+        assert ref["name"] == "api"
+        assert ref["uid"] == "uid-api"
         assert ref["blockOwnerDeletion"] is False
 
 
@@ -1917,7 +1969,7 @@ async def test_host_check_fails_closed_when_region_unreachable():
     svc = _workload_service({"region-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
         await svc.assert_host_available(
-            "h.example.com", "app", "team", svc.deployer.resolve_targets(None)
+            "h.example.com", "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
         )
 
 
@@ -1926,14 +1978,16 @@ async def test_absent_check_fails_closed_when_region_unreachable():
 
     svc = _workload_service({"region-a": _DownCluster()})
     with pytest.raises(ServiceUnavailableError):
-        await svc.assert_workload_absent("app", "team", svc.deployer.resolve_targets(None))
+        await svc.assert_workload_absent(
+            "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+        )
 
 
 async def test_host_check_still_available_on_real_404():
     # A genuine NotFound (404) still reads as available across a reachable region.
     svc = _workload_service({"region-a": _FakeCluster("region-a")})  # get -> NotFoundError
     await svc.assert_host_available(
-        "h.example.com", "app", "team", svc.deployer.resolve_targets(None)
+        "h.example.com", "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
     )
 
 
@@ -1975,7 +2029,7 @@ async def test_update_reuses_existing_without_refetch():
     from api.services.manifests.ksvc import build_ksvc
 
     existing_ksvc = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -1986,7 +2040,7 @@ async def test_update_reuses_existing_without_refetch():
         scaling=Scaling(),
         size="small",
     )
-    engine = _workload_service({"region-a": _ApplyCluster("region-a", {"api-team": existing_ksvc})})
+    engine = _workload_service({"region-a": _ApplyCluster("region-a", {"api": existing_ksvc})})
 
     calls = {"n": 0}
     original = engine.load_existing
@@ -2029,7 +2083,7 @@ async def test_load_existing_truly_absent_is_404():
         await svc.load_existing("app", CONTAINER, user, "team")
 
 
-def _ready_ksvc(name="app-team"):
+def _ready_ksvc(name="app"):
     k = _bare_ksvc(name)
     k["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
     return k
@@ -2042,7 +2096,7 @@ async def test_get_omits_404_region_and_stays_healthy():
 
     engine = _workload_service(
         {
-            "region-a": _FakeCluster("region-a", existing={"app-team": _ready_ksvc()}),
+            "region-a": _FakeCluster("region-a", existing={"app": _ready_ksvc()}),
             "region-b": _FakeCluster("region-b"),  # 404 here
         }
     )
@@ -2058,7 +2112,7 @@ async def test_get_down_region_still_degrades():
 
     engine = _workload_service(
         {
-            "region-a": _FakeCluster("region-a", existing={"app-team": _ready_ksvc()}),
+            "region-a": _FakeCluster("region-a", existing={"app": _ready_ksvc()}),
             "region-b": _DownCluster("region-b"),  # unreachable
         }
     )
@@ -2103,7 +2157,7 @@ def _existing_container_ksvc():
     from api.services.manifests.ksvc import build_ksvc
 
     return build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -2129,7 +2183,7 @@ async def test_prune_failure_aborts_update_fail_closed():
         def delete(self, kind, name, namespace=None):  # a real API error, not a 404
             raise RuntimeError("boom: API error, not a 404")
 
-    cluster = _PruneFails("region-a", {"api-team": _existing_container_ksvc()})
+    cluster = _PruneFails("region-a", {"api": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -2159,7 +2213,7 @@ async def test_prune_not_found_is_tolerated():
             self.deleted.append((kind, name))
             raise NotFoundError("already gone")
 
-    cluster = _PruneMissing("region-a", {"api-team": _existing_container_ksvc()})
+    cluster = _PruneMissing("region-a", {"api": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -2196,7 +2250,7 @@ async def test_prune_runs_before_apply_on_update():
             self.ops.append(("delete", kind))
             return super().delete(kind, name)
 
-    cluster = _OpLog("region-a", {"api-team": _existing_container_ksvc()})
+    cluster = _OpLog("region-a", {"api": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -2231,7 +2285,7 @@ async def test_accept_update_rejects_taken_host_synchronously():
     from cloudlet_apis.auth import Principal
     from fastapi import BackgroundTasks
 
-    from api.models.common import LABEL_WORKLOAD
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
     from api.models.container import ContainerUpdate
     from api.services.container import ContainerService
     from common.cluster import ResourceKind
@@ -2245,11 +2299,20 @@ async def test_accept_update_rejects_taken_host_synchronously():
             self.name = name
 
         def get(self, kind, name=None, label_selector=None, namespace=None):
-            if kind == ResourceKind.KNATIVE_SERVICE and name == "api-team":
+            if kind == ResourceKind.KNATIVE_SERVICE and name == "api":
                 return existing
-            if kind == ResourceKind.DOMAIN_MAPPING and name == "shop.serverless.example.com":
+            # The host check LISTS across namespaces now - a host is a DNS name,
+            # so its owner may sit in another group's namespace entirely.
+            if kind == ResourceKind.DOMAIN_MAPPING and name is None:
                 # owned by a DIFFERENT workload -> the host is taken
-                return {"metadata": {"name": name, "labels": {LABEL_WORKLOAD: "shop-team"}}}
+                return [
+                    {
+                        "metadata": {
+                            "name": "shop.serverless.example.com",
+                            "labels": {LABEL_WORKLOAD: "shop", LABEL_GROUP: "team"},
+                        }
+                    }
+                ]
             raise NotFoundError("not found")
 
     csvc = ContainerService(_workload_service({"region-a": _HostTaken("region-a")}))
@@ -2273,7 +2336,7 @@ async def test_update_unchanged_host_retires_no_mapping():
     from common.cluster import ResourceKind
 
     existing = build_ksvc(
-        name="api-team",
+        name="api",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -2284,7 +2347,7 @@ async def test_update_unchanged_host_retires_no_mapping():
         scaling=Scaling(),
         size="small",
     )
-    cluster = _ApplyCluster("region-a", {"api-team": existing})
+    cluster = _ApplyCluster("region-a", {"api": existing})
     csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -2324,7 +2387,7 @@ async def test_get_reports_terminating_during_delete():
     terminating["metadata"]["deletionTimestamp"] = "2026-06-29T12:00:00Z"
     engine = _workload_service(
         {
-            "region-a": _FakeCluster("region-a", existing={"app-team": terminating}),
+            "region-a": _FakeCluster("region-a", existing={"app": terminating}),
             "region-b": _FakeCluster("region-b"),  # 404 here
         }
     )
@@ -2380,7 +2443,7 @@ async def test_create_rolls_back_ksvc_on_backing_failure():
 
     with pytest.raises(RegionTotalFailure):  # single region failed
         await csvc.create("team", ContainerCreate(name="api", image="reg/x:1", port=8080), user)
-    assert (ResourceKind.KNATIVE_SERVICE, "api-team") in cluster.deleted
+    assert (ResourceKind.KNATIVE_SERVICE, "api") in cluster.deleted
 
 
 async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
@@ -2393,7 +2456,7 @@ async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
     from api.services.container import ContainerService
     from common.cluster import ResourceKind
 
-    cluster = _BackingFails("region-a", {"api-team": _existing_container_ksvc()})
+    cluster = _BackingFails("region-a", {"api": _existing_container_ksvc()})
     csvc = ContainerService(_workload_service({"region-a": cluster}))
     user = Principal(subject="u", username="alice", groups=["team"])
 
@@ -2404,7 +2467,7 @@ async def test_update_does_not_roll_back_live_ksvc_on_backing_failure():
             ContainerUpdate(image="reg/x:1", port=8080, env=[EnvVar(name="LOG", value="debug")]),
             user,
         )
-    assert (ResourceKind.KNATIVE_SERVICE, "api-team") not in cluster.deleted
+    assert (ResourceKind.KNATIVE_SERVICE, "api") not in cluster.deleted
 
 
 # --- runtime validation against the registry (config-driven) ---------------
@@ -2531,7 +2594,7 @@ def _thread_recording_cluster(seen):
     # a revision name is what makes the Revision read happen at all
     ksvc["status"] = {
         "conditions": [{"type": "Ready", "status": "True"}],
-        "latestReadyRevisionName": "app-team-00001",
+        "latestReadyRevisionName": "app-00001",
     }
 
     class _ThreadRecordingCluster:
@@ -2611,7 +2674,7 @@ async def test_get_reads_every_regions_build_concurrently():
     from common.cluster import ResourceKind
 
     ksvc = build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/app:main",

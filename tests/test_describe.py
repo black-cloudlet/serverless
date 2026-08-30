@@ -6,7 +6,7 @@ from api.services.state.describe import configmap_refs, parse_spec
 
 def _ksvc():
     return build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -14,24 +14,22 @@ def _ksvc():
         host="app-team.ex.com",
         env=[
             ContainerEnv(name="LOG", value="debug"),
-            ContainerEnv(name="API_KEY", secret_ref=("app-team-env", "API_KEY")),
+            ContainerEnv(name="API_KEY", secret_ref=("app-env", "API_KEY")),
         ],
         volumes=[
-            VolumeSpec(
-                "files-config", "configmap", "app-team-files", "/etc/app.conf", "etc-app.conf"
-            ),
-            VolumeSpec("files-secret", "secret", "app-team-files", "/etc/secret", "etc-secret"),
+            VolumeSpec("files-config", "configmap", "app-files", "/etc/app.conf", "etc-app.conf"),
+            VolumeSpec("files-secret", "secret", "app-files", "/etc/secret", "etc-secret"),
         ],
         scaling=Scaling(minScale=1, maxScale=4, metric="cpu", target=80),
         size="medium",
-        pull_secret="app-team-pull",
+        pull_secret="app-pull",
         ca_config_map="trusted-ca",
         ca_mount_path="/etc/pki/tls/certs/ca.crt",
     )
 
 
 def test_configmap_refs_excludes_platform_ca():
-    assert configmap_refs(_ksvc()) == {"app-team-files"}
+    assert configmap_refs(_ksvc()) == {"app-files"}
 
 
 def test_parse_spec_hides_injected_ca_env_but_keeps_user_override():
@@ -39,7 +37,7 @@ def test_parse_spec_hides_injected_ca_env_but_keeps_user_override():
 
     # The user sets SSL_CERT_FILE themselves; the rest are platform-injected.
     ksvc = build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/app:1",
@@ -66,7 +64,7 @@ def test_parse_spec_hides_injected_ca_env_but_keeps_user_override():
 def test_parse_spec_redacts_secrets_and_returns_plain_config():
     spec = parse_spec(
         _ksvc(),
-        {"app-team-files": {"etc-app.conf": "level=debug"}},
+        {"app-files": {"etc-app.conf": "level=debug"}},
         registry_username="bob",
     )
 
@@ -93,7 +91,7 @@ def test_parse_spec_reports_function_build_inputs():
     from api.models.common import Scaling as _Scaling
 
     ksvc = build_ksvc(
-        name="fn-team",
+        name="fn",
         group="team",
         owner="alice",
         image="reg/fn:main",
@@ -121,12 +119,12 @@ def test_parse_spec_returns_binary_configmap_content_as_base64():
     # region_read hands binaryData entries over as bytes; the view reports them
     # base64-encoded with encoding "base64", mirroring how they are submitted.
     blob = bytes([0xFF, 0xFE, 0x00])
-    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": blob}})
+    spec = parse_spec(_ksvc(), {"app-files": {"etc-app.conf": blob}})
     plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
     assert plain.encoding == "base64"
     assert base64.b64decode(plain.content) == blob
     # text entries stay str -> text encoding
-    spec = parse_spec(_ksvc(), {"app-team-files": {"etc-app.conf": "level=debug"}})
+    spec = parse_spec(_ksvc(), {"app-files": {"etc-app.conf": "level=debug"}})
     plain = next(f for f in spec.files if f.mountPath == "/etc/app.conf")
     assert plain.encoding == "text" and plain.content == "level=debug"
 
@@ -147,7 +145,7 @@ def test_parse_spec_reads_back_container_port():
     assert parse_spec(_ksvc()).port == 8080
     # an explicit port round-trips through the KSVC
     ksvc = build_ksvc(
-        name="app-team",
+        name="app",
         group="team",
         owner="alice",
         image="reg/app:1",

@@ -11,6 +11,9 @@ from api.services.regions.rollup import aggregate, status_code_for
 from common.errors import RegionTotalFailure, ValidationError
 from tests.factories import settings_with_regions
 
+# The namespace a request binds; the Deployer no longer holds one.
+NS = "team-serverless"
+
 
 def test_aggregate_all_ok():
     statuses = [RegionStatus(region="a", status="Ready"), RegionStatus(region="b", status="Ready")]
@@ -85,30 +88,30 @@ def test_global_cert_and_ca_paths():
 
 def test_resolve_targets_default_all():
     d = Deployer(settings_with_regions())
-    assert [z.region for z in d.resolve_targets(None)] == ["region-a", "region-b"]
+    assert [z.region for z in d.resolve_targets(None, NS)] == ["region-a", "region-b"]
 
 
 def test_resolve_targets_unknown_region():
     d = Deployer(settings_with_regions())
     with pytest.raises(ValidationError):
-        d.resolve_targets(["region-c"])
+        d.resolve_targets(["region-c"], NS)
 
 
 def test_local_cluster_selection():
     d = Deployer(settings_with_regions())
     # unset -> first configured region
-    assert d.local_cluster().region == "region-a"
+    assert d.local_cluster(NS).region == "region-a"
     # match by region name
     d._local_region = "region-b"
-    assert d.local_cluster().region == "region-b"
+    assert d.local_cluster(NS).region == "region-b"
     # match by cluster name (Cluster.name), not just region name
     d._local_region = "region-b-0"
-    assert d.local_cluster().region == "region-b"
+    assert d.local_cluster(NS).region == "region-b"
     # unknown value -> an error, not a silent adoption of the first region: a
     # process serving as a region it is not would build and reconcile wrongly.
     d._local_region = "nope"
     with pytest.raises(ValidationError):
-        d.local_cluster()
+        d.local_cluster(NS)
 
 
 async def test_fanout_captures_per_region_errors():
@@ -119,7 +122,7 @@ async def test_fanout_captures_per_region_errors():
             raise RuntimeError("kaboom")
         return RegionStatus(region=cluster.region, status="Ready")
 
-    statuses = await d.fanout(d.resolve_targets(None), fn)
+    statuses = await d.fanout(d.resolve_targets(None, NS), fn)
     by_region = {s.region: s for s in statuses}
     assert by_region["region-a"].status == "Ready"
     assert by_region["region-b"].message == "kaboom"
@@ -136,7 +139,7 @@ async def test_fanout_times_out_unreachable_region():
             time.sleep(0.5)  # simulate an unreachable/slow cluster
         return RegionStatus(region=cluster.region, status="Ready")
 
-    statuses = await d.fanout(d.resolve_targets(None), fn)
+    statuses = await d.fanout(d.resolve_targets(None, NS), fn)
     by_region = {s.region: s for s in statuses}
     # the healthy region still returns; the slow one is reported, not blocking
     assert by_region["region-a"].status == "Ready"
@@ -159,7 +162,7 @@ async def test_a_read_fanout_gives_up_on_a_slow_region_quickly():
         return RegionStatus(region=cluster.region, status="Ready")
 
     start = time.monotonic()
-    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
+    statuses = await d.fanout(d.resolve_targets(None, NS), fn, read=True)
     assert time.monotonic() - start < 0.4  # gave up at the read timeout, not the op one
     by_region = {s.region: s for s in statuses}
     assert by_region["region-a"].status == "Ready"
@@ -178,7 +181,7 @@ async def test_gather_each_is_bounded_by_the_read_timeout():
         return ["item"]
 
     start = time.monotonic()
-    results = dict(await d.gather_each(d.resolve_targets(None), fn))
+    results = dict(await d.gather_each(d.resolve_targets(None, NS), fn))
     assert time.monotonic() - start < 0.4
     assert results["region-a"] == ["item"]
     assert results["region-b"] is None  # skipped, not fatal
@@ -219,7 +222,7 @@ async def test_a_region_function_raising_503_stays_a_region_failure():
             raise ServiceUnavailableError("registry down")
         return RegionStatus(region=cluster.region, status="Ready")
 
-    statuses = await d.fanout(d.resolve_targets(None), fn, read=True)
+    statuses = await d.fanout(d.resolve_targets(None, NS), fn, read=True)
     by_region = {s.region: s for s in statuses}
     assert by_region["region-a"].status == "Ready"
     assert by_region["region-b"].status == "Failed"
@@ -245,7 +248,7 @@ async def test_a_read_fanout_is_admitted_whole_or_not_at_all():
 
     try:
         with pytest.raises(ServiceUnavailableError):
-            await d.fanout(d.resolve_targets(None), fn, read=True)
+            await d.fanout(d.resolve_targets(None, NS), fn, read=True)
         assert started == []
         # ...and the refusal left nothing behind: the whole reservation is back.
         assert d._read_pool._inflight == 0

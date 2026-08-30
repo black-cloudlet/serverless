@@ -22,10 +22,10 @@ from api.models.stream import validate_stream_path
     [
         "/v1/groups/team/functions/foo/pods",
         "/v1/groups/team/functions/foo/stats/stream",
-        "/v1/groups/team/functions/foo/logs/pods/foo-team-00001-abcde",
+        "/v1/groups/team/functions/foo/logs/pods/foo-00001-abcde",
         "/v1/groups/team/containers/foo/pods",
         "/v1/groups/team/containers/foo/stats/stream",
-        "/v1/groups/team/containers/foo/logs/pods/foo-team-00001-abcde",
+        "/v1/groups/team/containers/foo/logs/pods/foo-00001-abcde",
     ],
 )
 def test_the_streaming_paths_are_accepted(path):

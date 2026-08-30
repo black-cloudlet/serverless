@@ -381,7 +381,7 @@ class FakeCluster:
     """A local region: a scripted pod roster, and scripted per-pod log chunks."""
 
     region = "central"
-    oname = "foo-team"
+    oname = "foo"
 
     def __init__(self, pods=None, chunks=None, *, live=False):
         self._pods = dict(pods or {})
@@ -487,17 +487,15 @@ async def test_the_stream_opens_by_saying_which_pod_it_is_following(capacity):
 async def test_log_lines_arrive_as_rendered_frames_carrying_their_pod_and_revision(capacity):
     """Lines cross pre-rendered (str), so the loop only forwards bytes."""
     cluster = FakeCluster(
-        {"p1": "foo-team-00007"},
+        {"p1": "foo-00007"},
         {"p1": [b"2024-03-01T10:00:00Z first\n2024-03-01T10:00:01Z second\n"]},
     )
-    events = [
-        e async for e in _follow(cluster, capacity, opening=_opening(revision="foo-team-00007"))
-    ]
+    events = [e async for e in _follow(cluster, capacity, opening=_opening(revision="foo-00007"))]
 
     lines = log_lines(events)
     assert [line["message"] for line in lines] == ["first", "second"]
     assert lines[0]["pod"] == "p1"
-    assert lines[0]["revision"] == "foo-team-00007"
+    assert lines[0]["revision"] == "foo-00007"
     assert lines[0]["container"] == "user-container"
     assert lines[0]["time"] is not None
 
@@ -576,7 +574,7 @@ async def test_a_log_stream_ends_itself_at_the_lifetime_cap(capacity):
 
 def test_the_roster_reports_what_a_client_needs_to_pick_a_pod():
     cluster = FakeCluster({"p2": "r1", "p1": "r1"})
-    roster = pods_stream.read_roster(cluster, "foo-team")
+    roster = pods_stream.read_roster(cluster, "foo")
 
     assert [p.pod for p in roster] == ["p1", "p2"]  # ordered, not listing order
     assert roster[0].revision == "r1"
@@ -588,7 +586,7 @@ def test_the_roster_reports_what_a_client_needs_to_pick_a_pod():
 
 def test_the_roster_excludes_the_sidecar_from_usage():
     """Same rule as /stats: the queue-proxy's usage is the platform's, not the user's."""
-    roster = pods_stream.read_roster(FakeCluster({"p1": "r1"}), "foo-team")
+    roster = pods_stream.read_roster(FakeCluster({"p1": "r1"}), "foo")
     assert roster[0].usage.cpu == "100m"  # not 1000m
     assert roster[0].usage.memory == "64Mi"
 
@@ -605,7 +603,7 @@ def test_a_pod_with_no_metrics_yet_is_still_listed():
                 return []
             return super().get(kind, name, label_selector)
 
-    roster = pods_stream.read_roster(NoMetrics({"p1": "r1"}), "foo-team")
+    roster = pods_stream.read_roster(NoMetrics({"p1": "r1"}), "foo")
     assert [p.pod for p in roster] == ["p1"]
     assert roster[0].usage is None
 
@@ -619,7 +617,7 @@ def test_an_unreadable_metrics_api_does_not_empty_the_roster():
                 raise RuntimeError("metrics-server is down")
             return super().get(kind, name, label_selector)
 
-    roster = pods_stream.read_roster(BrokenMetrics({"p1": "r1"}), "foo-team")
+    roster = pods_stream.read_roster(BrokenMetrics({"p1": "r1"}), "foo")
     assert [p.pod for p in roster] == ["p1"]
     assert roster[0].usage is None
 
@@ -631,7 +629,7 @@ def test_a_pod_that_is_running_but_not_ready_says_so():
             obj["status"]["conditions"] = [{"type": "Ready", "status": "False"}]
             return obj
 
-    roster = pods_stream.read_roster(NotReady({"p1": "r1"}), "foo-team")
+    roster = pods_stream.read_roster(NotReady({"p1": "r1"}), "foo")
     assert roster[0].phase == "Running"
     assert roster[0].ready is False
 
@@ -646,7 +644,7 @@ def _pods_follow(cluster, capacity, **over):
         capacity=capacity,
         config=FAST,
         first=_roster(),
-        oname="foo-team",
+        oname="foo",
         interval=FAST.interval_seconds,
     )
     args.update(over)
@@ -656,7 +654,7 @@ def _pods_follow(cluster, capacity, **over):
 async def test_the_first_roster_is_sent_immediately(capacity):
     """A client must be able to open a log stream without waiting an interval."""
     cluster = FakeCluster({"p1": "r1"})
-    first = _roster(pods_stream.read_roster(cluster, "foo-team"))
+    first = _roster(pods_stream.read_roster(cluster, "foo"))
     events = await collect(_pods_follow(cluster, capacity, first=first), 1)
 
     assert events[0].name == "pods"
@@ -827,7 +825,7 @@ def _engine(cluster, capacity, *, owner_group="team", offering="function"):
     deployer._local_region = "central"
     cluster.ksvc = {
         "metadata": {
-            "name": "foo-team",
+            "name": "foo",
             "labels": {LABEL_GROUP: owner_group, LABEL_OFFERING: offering},
         }
     }

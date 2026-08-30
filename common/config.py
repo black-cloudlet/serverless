@@ -12,6 +12,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from common.names import NAMESPACE_SUFFIX
+
 
 class RegionRegistry(BaseModel):
     """A region's own registry, overriding the platform default for that region.
@@ -179,6 +181,31 @@ class BuildConfig(BaseModel):
     failed_history_limit: int = Field(default=3, ge=1)
 
 
+class TenantNamespaceConfig(BaseModel):
+    """Where a group's workloads live, and how the API reaches the controller.
+
+    One block, shared, because the two ends must agree: the API derives the
+    namespace it writes into and the tenant controller derives the one it
+    creates, and a suffix configured differently on either side would have the
+    API deploying into a namespace nobody provisions.
+
+    Attributes:
+        suffix: Appended to the group. Must match the chart's
+            ``tenantNamespaces.suffix``.
+        controller_url: The tenant controller's in-cluster Service. Empty
+            disables the ensure call, which is the dev-cluster posture.
+        token: Shared token presented to (and checked by) the ensure endpoint.
+            Empty disables the check; the NetworkPolicy is the primary control.
+        timeout: Budget for one ensure call. A create waits on it, so it is
+            deliberately shorter than the cluster op timeout.
+    """
+
+    suffix: str = NAMESPACE_SUFFIX
+    controller_url: str = ""
+    token: str = ""
+    timeout: float = 10.0
+
+
 class CommonSettings(BaseSettings):
     """Settings any cluster-talking service needs, loaded from ``SERVERLESS_`` env.
 
@@ -194,7 +221,11 @@ class CommonSettings(BaseSettings):
     )
 
     base_domain: str = "example.com"
+    # The legacy shared namespace. Nothing deploys here any more - workloads
+    # resolve to `{group}{tenant_namespaces.suffix}` - and it goes away with the
+    # rest of the cutover cleanup.
     workloads_namespace: str = "serverless-workloads"
+    tenant_namespaces: TenantNamespaceConfig = Field(default_factory=TenantNamespaceConfig)
 
     client_cert_dir: str = "/etc/serverless/client"
     ca_bundle: CABundleConfig = Field(default_factory=CABundleConfig)
