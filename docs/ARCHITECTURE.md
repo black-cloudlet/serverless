@@ -1121,7 +1121,7 @@ Serverless/
 ├── charts/serverless-api # the Helm chart (API + build controller + kpack objects)
 ├── tests/                # flat pytest modules
 ├── Dockerfile            # the API image
-└── Dockerfile.controller # the build controller image
+└── Dockerfile.build-controller # the build controller image
 ```
 
 The repo is organized as services + a shared library so a builder microservice

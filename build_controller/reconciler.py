@@ -16,6 +16,8 @@ from collections.abc import Callable
 from cloudlet_apis.logging import get_logger
 from kubernetes.client.exceptions import ApiException
 
+from build_controller.digest import needs_image, with_image
+from build_controller.gc import TagGC
 from common import kpack
 from common.cluster import Cluster, NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings
@@ -27,8 +29,6 @@ from common.labels import (
     MANAGED_BY_VALUE,
     OFFERING_FUNCTION,
 )
-from controller.digest import needs_image, with_image
-from controller.gc import TagGC
 
 logger = get_logger(__name__)
 

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from build_controller import main as controller_main
+from build_controller.config import BuildControllerSettings
+from build_controller.digest import deployed_image, needs_image, with_image
+from build_controller.reconciler import IMAGE_SELECTOR, Reconciler
 from common import loop as common_loop
 from common.cluster import NamespacedCluster, ResourceKind, clusters_for, select_local
 from common.config import CommonSettings, RegionConfig
@@ -21,10 +25,6 @@ from common.labels import (
     OFFERING_CONTAINER,
     OFFERING_FUNCTION,
 )
-from controller import main as controller_main
-from controller.config import ControllerSettings
-from controller.digest import deployed_image, needs_image, with_image
-from controller.reconciler import IMAGE_SELECTOR, Reconciler
 
 REPO = "registry.internal/acme/serverless/builders/payments/hello"
 TAG = f"{REPO}:main"
@@ -433,13 +433,13 @@ def test_the_reconciler_watches_the_configured_local_region():
 def test_resync_seconds_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv("SERVERLESS_RESYNC_SECONDS", "45")
 
-    assert ControllerSettings().resync_seconds == 45
+    assert BuildControllerSettings().resync_seconds == 45
 
 
 def test_a_zero_resync_interval_is_rejected():
     # It would busy-loop the apiserver with relists.
     with pytest.raises(ValueError):
-        ControllerSettings(resync_seconds=0)
+        BuildControllerSettings(resync_seconds=0)
 
 
 def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
@@ -454,7 +454,7 @@ def test_the_loop_backs_off_after_a_failed_pass_and_keeps_going(monkeypatch):
                 raise outcome
 
     with pytest.raises(SystemExit):
-        controller_main.loop(_Flaky(), ControllerSettings(error_backoff_seconds=2.5))
+        controller_main.loop(_Flaky(), BuildControllerSettings(error_backoff_seconds=2.5))
 
     # The failed pass sleeps the error backoff. The clean pass that follows ended
     # instantly, so it is paced to the minimum pass duration - the floor that

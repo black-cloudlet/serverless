@@ -24,7 +24,7 @@ jobs:
       - id: derive
         run: |
           req_py=$(grep -oP 'requires-python = ">=\K[0-9]+\.[0-9]+' pyproject.toml)
-          for df in Dockerfile Dockerfile.controller Dockerfile.tenant-controller; do
+          for df in Dockerfile Dockerfile.build-controller Dockerfile.tenant-controller; do
             docker_py=$(grep -oP 'FROM python:\K[0-9]+\.[0-9]+' "$df")
             if [ -z "$docker_py" ] || [ "$docker_py" != "$req_py" ]; then
               echo "::error::Python version drift: $df=$docker_py, requires-python=$req_py. Bump them together."
@@ -63,7 +63,7 @@ jobs:
           python-version: ${{ needs.version.outputs.python }}
           cache: pip
       - run: pip install -e ".[api,dev]"
-      - run: pytest -q --cov=api --cov=common --cov=controller --cov=tenant_controller --cov-report=term-missing --cov-fail-under=90
+      - run: pytest -q --cov=api --cov=common --cov=build_controller --cov=tenant_controller --cov-report=term-missing --cov-fail-under=90
 
   security:
     needs: version
@@ -174,7 +174,7 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: ./Dockerfile.controller
+          file: ./Dockerfile.build-controller
           load: true
           tags: serverless-build-controller:scan
           cache-from: type=gha
@@ -197,15 +197,16 @@ jobs:
           docker run --rm --entrypoint python serverless-api:scan \
             -c "import api.main as m; assert m.app"
           docker run --rm --entrypoint python serverless-build-controller:scan \
-            -c "import controller.main as m; assert callable(m.run)"
+            -c "import build_controller.main as m; assert callable(m.run)"
           docker run --rm --entrypoint python serverless-tenant-controller:scan \
             -c "import tenant_controller.main as m; assert callable(m.run)"
           docker run --rm --entrypoint python serverless-tenant-controller:scan \
             -c "from tenant_controller.api import create_app; from tenant_controller.config import TenantControllerSettings; assert create_app([], TenantControllerSettings())"
-      # The controller serves nothing, so it must carry no web stack at all. An
+      # The build controller serves nothing, so it must carry no web stack at
+      # all. An
       # import in `common` that quietly pulled fastapi back in would pass every
       # other check (docs/BUILDING.md - Two images).
-      - name: The controller image carries no web stack
+      - name: The build-controller image carries no web stack
         run: |
           docker run --rm --entrypoint python serverless-build-controller:scan -c "
           import importlib.util, sys

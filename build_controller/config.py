@@ -9,7 +9,7 @@ from pydantic import Field
 from common.config import LoopSettings
 
 
-class ControllerSettings(LoopSettings):
+class BuildControllerSettings(LoopSettings):
     """Controller settings: the shared connection and pacing settings plus its own.
 
     ``resync_seconds`` is how long each watch is held open, and so also the
@@ -31,6 +31,6 @@ class ControllerSettings(LoopSettings):
 
 
 @lru_cache
-def get_settings() -> ControllerSettings:
+def get_settings() -> BuildControllerSettings:
     """Cached settings singleton."""
-    return ControllerSettings()
+    return BuildControllerSettings()

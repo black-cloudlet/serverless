@@ -245,7 +245,7 @@ def test_the_connection_pool_enables_tcp_keepalive():
     """The streams that deliberately carry no read timeout (watch, log follow)
     have no other defence against a silently dead connection: the server-side
     timeout cannot arrive over dead TCP, and the blocked thread is the build
-    controller's whole reconcile loop."""
+    build controller's whole reconcile loop."""
     import socket as socket_mod
 
     from common.cluster import Cluster

@@ -47,11 +47,11 @@ from collections.abc import Iterable
 
 from cloudlet_apis.logging import get_logger
 
+from build_controller.config import BuildControllerSettings
 from common import kpack
 from common.labels import LABEL_WORKLOAD
 from common.names import digest_of, tag_of
 from common.registry import RegistryClient, TagInfo, repository_path
-from controller.config import ControllerSettings
 
 logger = get_logger(__name__)
 
@@ -110,7 +110,7 @@ class TagGC:
     where every minute spent is a minute no digest rolls out.
     """
 
-    def __init__(self, settings: ControllerSettings, region: str):
+    def __init__(self, settings: BuildControllerSettings, region: str):
         """Resolve the region's registry and decide, audibly, whether to run.
 
         Args:
@@ -142,7 +142,7 @@ class TagGC:
                 self._keep,
             )
 
-    def _blocked(self, settings: ControllerSettings, region: str) -> str | None:
+    def _blocked(self, settings: BuildControllerSettings, region: str) -> str | None:
         """Why the GC must not delete anything here, or None to run.
 
         Args:

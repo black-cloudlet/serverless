@@ -1,7 +1,7 @@
 """Workloads live in one namespace per group, and a create waits for it.
 
 The cutover's own seams: where a request resolves to, that the tenant
-controller is asked before anything is written, and that the answer is
+tenant controller is asked before anything is written, and that the answer is
 believed only when every region says Ready. The last one is the reason this
 call exists at all - a create that lands in a namespace nobody prepared is
 exactly what it is meant to prevent, and "the check could not be run" has to
@@ -137,7 +137,7 @@ async def test_a_configured_token_is_presented(monkeypatch):
 
 
 async def test_no_controller_configured_skips_the_call(monkeypatch):
-    """A dev cluster has no controller; the namespace is whatever was made by hand."""
+    """A dev cluster has no tenant controller; the namespace is whatever was made by hand."""
     client = _Client(response=_ok())
     client.install(monkeypatch)
     await ensure_namespace("payments", TenantNamespaceConfig())
@@ -152,7 +152,7 @@ async def test_an_unreachable_controller_fails_the_create_closed(monkeypatch):
 
 
 async def test_a_partial_ensure_is_not_a_success(monkeypatch):
-    """The controller answers 200 with per-region rows; a create writes to all
+    """The tenant controller answers 200 with per-region rows; a create writes to all
     of them, so anything short of every region Ready would put a workload in a
     namespace that is not prepared."""
     partial = _Response(

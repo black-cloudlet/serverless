@@ -7,7 +7,8 @@ workload never deploys into a namespace still carrying last release's
 policies.
 
 This is a pre-flight check, and it obeys the rule the rest of them do: a check
-that could not be run has not passed. An unreachable controller is a 503, not
+that could not be run has not passed. An unreachable tenant controller is a
+503, not
 a shrug - deploying into a namespace nobody has confirmed is the failure the
 call exists to prevent.
 """
@@ -43,7 +44,7 @@ async def ensure_namespace(
             create is refused rather than landing somewhere unprepared.
     """
     if not config.controller_url:
-        # No controller configured - a dev cluster, where the namespace is
+        # No tenant controller configured - a dev cluster, where the namespace is
         # whatever the operator made by hand. Skipping is a decision, so it is
         # logged rather than silent.
         logger.debug("no tenant controller configured; skipping ensure for group '%s'", group)
@@ -66,7 +67,7 @@ async def ensure_namespace(
         row.get("region", "?") for row in body.get("regions", []) if row.get("status") != READY
     ]
     if unconverged:
-        # A partial ensure is not a success. The controller reports per region
+        # A partial ensure is not a success. The tenant controller reports per region
         # and a create writes to all of them, so anything short of every region
         # ready would put a workload in a namespace that is not prepared.
         raise ServiceUnavailableError(

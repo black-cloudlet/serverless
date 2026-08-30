@@ -920,7 +920,7 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     assert builder.reqs[0].path == "services/worker"
     # The build is re-declared, but the workload keeps the digest it is serving:
     # the tag still resolves to that same digest until the build lands, so
-    # writing it would cut a revision of identical code. The controller supplies
+    # writing it would cut a revision of identical code. The build controller supplies
     # the new digest (docs/BUILDING.md - Digest propagation).
     assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
@@ -1927,7 +1927,7 @@ async def test_a_created_function_is_deployed_at_the_branch_tag():
 
 
 async def test_no_api_path_writes_the_image_after_the_create():
-    """The controller is the only writer once the function exists.
+    """The build controller is the only writer once the function exists.
 
     Every shape of update at once, because the rule is what keeps a revision
     from being cut for code already running, and it is one forgotten branch away

@@ -15,16 +15,16 @@ import logging
 import httpx
 import pytest
 
+from build_controller.config import BuildControllerSettings
+from build_controller.gc import TagGC, garbage
+from build_controller.reconciler import Reconciler
 from common.cluster import NamespacedCluster
 from common.config import RegionConfig, RegionRegistry
 from common.errors import NotFoundError
 from common.names import digest_of, tag_of
 from common.registry import TagInfo
-from controller.config import ControllerSettings
-from controller.gc import TagGC, garbage
-from controller.reconciler import Reconciler
 
-_LOGGER = "controller.gc"
+_LOGGER = "build_controller.gc"
 _CLIENT_LOGGER = "common.registry"
 
 REPO = "payments/hello"
@@ -60,7 +60,7 @@ def _settings(**overrides):
         registry=dict(url="registry.internal", api_token="oauth-token"),
     )
     values.update(overrides)
-    return ControllerSettings(**values)
+    return BuildControllerSettings(**values)
 
 
 def _image(tag=TAG, latest=f"registry.internal/{REPO}@{_D[6]}", workload="hello"):
@@ -549,7 +549,7 @@ def test_gc_settings_come_from_the_environment(monkeypatch):
     monkeypatch.setenv("SERVERLESS_GC_INTERVAL_SECONDS", "3600")
     monkeypatch.setenv("SERVERLESS_GC_KEEP_BUILDS", "5")
 
-    settings = ControllerSettings()
+    settings = BuildControllerSettings()
 
     assert settings.gc_enabled is False
     assert settings.gc_interval_seconds == 3600
@@ -559,9 +559,9 @@ def test_gc_settings_come_from_the_environment(monkeypatch):
 def test_a_zero_gc_interval_is_rejected():
     # it would sweep on every resync, hammering the registry's API
     with pytest.raises(ValueError):
-        ControllerSettings(gc_interval_seconds=0)
+        BuildControllerSettings(gc_interval_seconds=0)
 
 
 def test_a_negative_keep_is_rejected():
     with pytest.raises(ValueError):
-        ControllerSettings(gc_keep_builds=-1)
+        BuildControllerSettings(gc_keep_builds=-1)
