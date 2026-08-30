@@ -63,9 +63,16 @@ async def ensure_namespace(
             f"could not prepare the namespace for group '{group}'; retry shortly"
         ) from exc
 
-    unconverged = [
-        row.get("region", "?") for row in body.get("regions", []) if row.get("status") != READY
-    ]
+    rows = body.get("regions") or []
+    unconverged = [row.get("region", "?") for row in rows if row.get("status") != READY]
+    if not rows:
+        # A 200 that names no region is not a converged namespace - it is an
+        # answer this code does not understand, and the rule here is that what
+        # could not be confirmed has not passed. Defaulting to "no rows, so
+        # nothing unconverged" would have read silence as consent.
+        raise ServiceUnavailableError(
+            f"the tenant controller gave no per-region answer for group '{group}'"
+        )
     if unconverged:
         # A partial ensure is not a success. The tenant controller reports per region
         # and a create writes to all of them, so anything short of every region

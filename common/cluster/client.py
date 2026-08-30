@@ -172,8 +172,9 @@ class Cluster:
         label_selector: str | None = None,
         *,
         namespace: str | None,
+        field_selector: str | None = None,
     ) -> dict | list[dict]:
-        """Get a resource by name, or list a kind by label selector.
+        """Get a resource by name, or list a kind by label and field selector.
 
         Args:
             kind: The resource kind to fetch.
@@ -182,6 +183,10 @@ class Cluster:
             namespace: The namespace to read. None lists across *all*
                 namespaces (or addresses a cluster-scoped kind); a named get
                 of a namespaced kind needs a real namespace.
+            field_selector: Field selector for the list form, e.g.
+                ``metadata.name=x``. The apiserver applies it, so a
+                cluster-wide question about one object stays one narrow query
+                instead of a page of everything filtered here.
 
         Returns:
             The object dict (named get) or a list of object dicts (list form).
@@ -192,7 +197,10 @@ class Cluster:
         dynamic_api = self._dynamic_api(kind)
         if name is None:
             results = dynamic_api.get(
-                namespace=namespace, label_selector=label_selector, **self._opts
+                namespace=namespace,
+                label_selector=label_selector,
+                field_selector=field_selector,
+                **self._opts,
             )
             return [i.to_dict() for i in results.items]
         try:

@@ -1117,7 +1117,7 @@ Serverless/
 │   └── services/         # orchestration: manifests/ (pure builders), regions/
 │                         # (cluster I/O + fan-out), state/ (interpretation), streams/ (SSE)
 ├── common/               # shared library: config, cluster client, build backend, errors
-├── controller/           # the build controller (watches kpack, rolls digests onto KSVCs)
+├── build_controller/     # watches kpack Images, rolls digests onto KSVCs
 ├── charts/serverless-api # the Helm chart (API + build controller + kpack objects)
 ├── tests/                # flat pytest modules
 ├── Dockerfile            # the API image

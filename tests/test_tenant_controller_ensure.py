@@ -430,3 +430,19 @@ def test_readiness_never_touches_a_cluster(tmp_path):
     response = _client([_Unreachable()], _settings(tmp_path)).get("/readyz")
 
     assert response.status_code == 200
+
+
+def test_ensure_uses_the_configured_suffix_not_the_default(tmp_path):
+    """The one value both ends must agree on.
+
+    Derived from the module default here, the controller would provision
+    `{group}-serverless` and report Ready while the API deployed into
+    `{group}{suffix}` - each side correct on its own, and nothing running.
+    """
+    clusters = [_Cluster("central")]
+    settings = _settings(tmp_path, tenant_namespaces={"suffix": "-apps"})
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 200
+    assert response.json()["namespace"] == "payments-apps"

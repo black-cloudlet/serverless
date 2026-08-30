@@ -154,8 +154,10 @@ async def assert_deployable(
     """
 
     def probe(cluster: NamespacedCluster) -> RegionStatus:
-        if host is not None and _host_taken(cluster, host, name, group):
-            return RegionStatus(region=cluster.region, status="Taken")
+        if host is not None:
+            owner = _host_owner(cluster, host, name, group)
+            if owner is not None:
+                return RegionStatus(region=cluster.region, status="Taken", message=owner)
         if require_absent:
             # Namespace-scoped, and that is the point: the same name in another
             # group is a different workload now, living in another namespace.
@@ -169,14 +171,15 @@ async def assert_deployable(
     statuses = await deployer.fanout(targets, probe)
     # The host conflict is reported first: it is the one an idempotent apply
     # would silently resolve by hijacking another workload's mapping.
-    if any(s.status == "Taken" for s in statuses):
-        raise ConflictError(f"hostname '{host}' is already assigned")
+    taken = next((s for s in statuses if s.status == "Taken"), None)
+    if taken is not None:
+        raise ConflictError(f"hostname '{host}' is already assigned to {taken.message}")
     if any(s.status == "Exists" for s in statuses):
         raise ConflictError(f"workload '{name}' already exists")
     assert_all_regions_checked(statuses, f"verify workload '{name}' can be deployed")
 
 
-def _host_taken(cluster: NamespacedCluster, host: str, name: str, group: str) -> bool:
+def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) -> str | None:
     """Whether ``host`` already belongs to a workload other than this one.
 
     Cluster-scoped, not namespace-scoped: a host is a DNS name, so it is unique
@@ -197,20 +200,30 @@ def _host_taken(cluster: NamespacedCluster, host: str, name: str, group: str) ->
         group: That workload's group.
 
     Returns:
-        True if another workload holds the host.
+        A description of the workload holding the host, or None when it is
+        free or already this workload's own.
     """
-    selector = f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE}"
+    # Both selectors go to the apiserver: the field one narrows a cluster-wide
+    # question to the single object that could answer it, so this stays one
+    # small query rather than a page of every DomainMapping on the platform.
     mappings = cluster.cluster.get(
-        ResourceKind.DOMAIN_MAPPING, label_selector=selector, namespace=None
+        ResourceKind.DOMAIN_MAPPING,
+        label_selector=f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE}",
+        field_selector=f"metadata.name={host}",
+        namespace=None,
     )
     for mapping in mappings:
         meta = mapping.get("metadata") or {}
-        if meta.get("name") != host:
-            continue
         labels = meta.get("labels") or {}
         # The workload's own mapping counts as available (the update path).
-        return labels.get(LABEL_WORKLOAD) != name or labels.get(LABEL_GROUP) != group
-    return False
+        if labels.get(LABEL_WORKLOAD) == name and labels.get(LABEL_GROUP) == group:
+            return None
+        # Who holds it, and where. The owner can be in a namespace the caller
+        # cannot see - including the legacy one, whose pre-cutover mappings
+        # still carry the old `{name}-{group}` workload label - so "already
+        # assigned" on its own would be a dead end to debug.
+        return f"{labels.get(LABEL_WORKLOAD) or '?'} in namespace {meta.get('namespace') or '?'}"
+    return None
 
 
 def assert_all_regions_checked(statuses: list[RegionStatus], action: str) -> None:

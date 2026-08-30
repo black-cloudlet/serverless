@@ -118,3 +118,31 @@ def test_a_workload_with_no_creation_time_sorts_last():
 
 def test_nothing_deployed_anywhere_is_an_empty_list():
     assert _merge([("central", []), ("south", None)]) == []
+
+
+def test_a_name_that_ends_in_the_group_is_not_shortened():
+    """The listing used to strip a "-{group}" suffix to recover a display name.
+
+    Object names are plain now, so that strip renames anyone unlucky enough to
+    end in their own group: `api-team` in group `team` would list as `api`, and
+    the GET the caller made from that listing would 404.
+    """
+    ksvc = {
+        "metadata": {
+            "name": "api-team",
+            "labels": {"serverless.platform/group": "team"},
+            "creationTimestamp": "2026-08-05T12:00:00Z",
+        },
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+    }
+
+    rows = merge(
+        [("region-a", [ksvc])],
+        group="team",
+        offering="container",
+        builds={},
+        route_domain="serverless.example.com",
+        sort="name",
+    )
+
+    assert [r.name for r in rows] == ["api-team"]

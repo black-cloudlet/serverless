@@ -134,6 +134,32 @@ async def test_a_host_held_by_the_same_name_in_another_group_still_conflicts():
         )
 
 
+async def test_the_host_conflict_says_who_holds_it_and_where():
+    """The owner can sit in a namespace the caller cannot see.
+
+    Including the legacy one: a pre-cutover DomainMapping still carries the old
+    `{name}-{group}` workload label, so a re-create after the cutover conflicts
+    with something the caller has no way to find from "already assigned".
+    """
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
+    from common.errors import ConflictError
+
+    host = "app-team.serverless.example.com"
+    legacy = {
+        "metadata": {
+            "name": host,
+            "namespace": "serverless-workloads",
+            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "team"},
+        }
+    }
+    svc = _workload_service({"region-a": _FakeCluster("region-a", existing={host: legacy})})
+
+    with pytest.raises(ConflictError, match="app-team in namespace serverless-workloads"):
+        await svc.assert_host_available(
+            host, "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
+        )
+
+
 async def test_workload_absent_ok():
     svc = _workload_service(
         {"region-a": _FakeCluster("region-a"), "region-b": _FakeCluster("region-b")}
@@ -238,7 +264,7 @@ async def test_get_reports_size_and_replicas_but_carries_no_usage():
             self.region = name
             self.name = name
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return {
                     "metadata": {
@@ -284,7 +310,7 @@ class _StatsCluster:
         self._offering = offering
         self._group = group
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from api.models.common import LABEL_GROUP, LABEL_OFFERING
         from common.cluster import ResourceKind
 
@@ -358,7 +384,7 @@ async def test_stats_total_is_null_when_a_region_could_not_be_measured():
     from common.cluster import ResourceKind
 
     class _NoMetrics(_StatsCluster):
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.POD_METRICS:
                 raise RuntimeError("metrics API unavailable")
             return super().get(kind, name, label_selector, namespace)
@@ -422,7 +448,7 @@ async def test_stats_folds_a_running_build_into_the_rollup_and_the_regions():
     class _C:
         region = name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             from api.models.common import LABEL_GROUP, LABEL_OFFERING
 
             if kind == ResourceKind.KNATIVE_SERVICE:
@@ -499,7 +525,7 @@ class _ListCluster:
         self.name = name
         self._items = items
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
 
         assert kind == ResourceKind.KNATIVE_SERVICE
@@ -540,7 +566,7 @@ async def test_get_returns_redacted_spec():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             from api.services.manifests.secrets import build_pull_secret
 
             if kind == ResourceKind.KNATIVE_SERVICE:
@@ -628,7 +654,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("revision/metrics/configmaps are best-effort here")
@@ -694,7 +720,7 @@ async def test_get_function_building_image_reports_building():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("best-effort reads")
@@ -728,7 +754,7 @@ async def test_get_overall_status_reflects_rollout_state():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("replicas/usage/spec extras are best-effort here")
@@ -772,7 +798,7 @@ async def test_get_failed_region_surfaces_ready_condition_message():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("replicas/usage/spec extras are best-effort here")
@@ -832,7 +858,7 @@ async def test_get_failed_region_prefers_revision_specific_reason():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             if kind == ResourceKind.KNATIVE_REVISION and name == "app-00001":
@@ -862,7 +888,7 @@ async def test_get_ready_region_has_no_error():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             raise RuntimeError("best-effort extras")
@@ -1492,7 +1518,7 @@ async def test_load_existing_surfaces_transient_secret_read_as_503():
         region = "region-a"
         name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE and name == "api":
                 return ksvc
             if kind == ResourceKind.SECRET:
@@ -1682,7 +1708,7 @@ class _DeleteCluster:
         self._ksvc = ksvc  # the KSVC dict, or None if absent
         self.deleted = []  # [(ResourceKind, name)]
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
@@ -2298,7 +2324,7 @@ async def test_accept_update_rejects_taken_host_synchronously():
             self.region = name
             self.name = name
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE and name == "api":
                 return existing
             # The host check LISTS across namespaces now - a host is a DNS name,
@@ -2565,7 +2591,7 @@ async def test_apply_takes_status_from_the_apply_response_not_a_second_read():
     class _CountingApply(_ApplyCluster):
         ksvc_gets = 0
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 type(self).ksvc_gets += 1
             return super().get(kind, name, label_selector, namespace)
@@ -2600,7 +2626,7 @@ def _thread_recording_cluster(seen):
     class _ThreadRecordingCluster:
         region = name = "region-a"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             here = threading.current_thread().name
             if kind == ResourceKind.KNATIVE_SERVICE:
                 seen["ksvc"] = here
@@ -2694,7 +2720,7 @@ async def test_get_reads_every_regions_build_concurrently():
         def __init__(self, region):
             self.region = self.name = region
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             if kind == ResourceKind.KNATIVE_SERVICE:
                 return ksvc
             from common.errors import NotFoundError as _NF

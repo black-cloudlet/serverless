@@ -375,7 +375,7 @@ class _StatusCluster:
         self.region = self.name = "region-a"
         self._objects = objects or {}
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         try:
             return self._objects[(kind, name)]
         except KeyError:
@@ -1510,7 +1510,7 @@ class _BuildCluster:
         self._builds = list(builds)
         self.patched = []
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
 
         assert kind == ResourceKind.KPACK_BUILD
@@ -1565,7 +1565,7 @@ class _RebuildCluster:
     def __getattr__(self, item):
         return getattr(self._inner, item)  # applied/deleted/apply/delete
 
-    def get(self, kind, name=None, label_selector=None, namespace=None):
+    def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
         from common.cluster import ResourceKind
 
         if kind == ResourceKind.KPACK_BUILD:

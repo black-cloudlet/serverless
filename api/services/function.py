@@ -145,7 +145,7 @@ class FunctionService:
         """
         self._assert_runtime(spec.runtime, spec.version)
         # No name check beyond the engine's shared one: the kpack Image is the
-        # workload's own `{name}-{group}` verbatim, so the 63-character label
+        # workload's own name verbatim, so the 63-character label
         # value it must fit is exactly the limit the engine already enforces
         # (common/kpack.py - build_image_name).
         return await self._engine.accept_create(

@@ -213,7 +213,7 @@ def _router(
             RegionTotalFailure: If every region failed.
         """
         _check_token(request, settings.tenant_namespaces.token)
-        namespace = _namespace_for(group)
+        namespace = _namespace_for(group, settings.tenant_namespaces.suffix)
         templates = usable_templates()
         outcomes = await ensure(
             clusters,
@@ -239,14 +239,20 @@ def _router(
     return router
 
 
-def _namespace_for(group: str) -> str:
+def _namespace_for(group: str, suffix: str) -> str:
     """The group's namespace, as a request-time failure rather than a 500.
+
+    The suffix comes from settings, not from the module default: it is the one
+    value the API and this controller must agree on, and deriving it two
+    different ways here would provision `{group}-serverless` while the API
+    deployed into `{group}{suffix}` - the exact split the shared config block
+    exists to prevent.
 
     Raises:
         ValidationError: If the group is too long or reserved.
     """
     try:
-        return namespace_for_group(group)
+        return namespace_for_group(group, suffix)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
 

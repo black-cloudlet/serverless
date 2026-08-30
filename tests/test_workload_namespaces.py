@@ -228,3 +228,14 @@ async def test_an_update_does_not_ask_again(monkeypatch):
     )
 
     assert _Client.calls == []
+
+
+async def test_a_200_with_no_region_rows_is_not_a_converged_namespace(monkeypatch):
+    """An answer this code does not understand is a failed check, not a passed one.
+
+    Defaulting the missing list to empty would have made "nothing unconverged"
+    true by vacuum, letting a create through into a namespace nobody confirmed.
+    """
+    _Client(response=_Response({"namespace": "payments-serverless"})).install(monkeypatch)
+    with pytest.raises(ServiceUnavailableError, match="no per-region answer"):
+        await ensure_namespace("payments", _config())

@@ -507,7 +507,7 @@ def test_resync_hands_its_listing_to_the_gc():
         def list_resources(self, kind, *, label_selector=None, namespace=None):
             return [_image()], "7"
 
-        def get(self, kind, name=None, label_selector=None, namespace=None):
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
             raise NotFoundError(name or "")
 
     class _GC:

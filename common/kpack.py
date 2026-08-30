@@ -28,7 +28,7 @@ BUILD_NUMBER_LABEL = "image.kpack.io/buildNumber"
 # kpack stamps the Image *name* onto every Build as the `image.kpack.io/image`
 # label value - the exact label this platform selects builds by - and a label
 # value caps at 63 characters: the same DNS-label limit the shared check
-# (`common.names.MAX_OBJECT_NAME`) already enforces on `{name}-{group}`. Naming
+# (`cloudlet_apis.names.MAX_LABEL`) already enforces on a workload's name. Naming
 # the Image the workload's object name *verbatim* is what keeps those two
 # limits the same limit - any pair the API accepts is a name kpack can label
 # with, and functions get no tighter a name budget than any other workload.
@@ -38,7 +38,7 @@ BUILD_NUMBER_LABEL = "image.kpack.io/buildNumber"
 
 
 def build_image_name(workload: str) -> str:
-    """The kpack Image's name: the workload's own ``{name}-{group}``, verbatim.
+    """The kpack Image's name: the workload's own name, verbatim.
 
     An identity, kept as a function so the rule has one home - the code that
     applies an Image and the code that deletes one must agree on it exactly -
@@ -118,7 +118,7 @@ def build_image(
     apply look like a change and rebuild forever.
 
     Args:
-        name: The Image name (the workload's own ``{name}-{group}``).
+        name: The Image name (the workload's own name).
         labels: Labels to stamp on it.
         tag: Where the built image is pushed.
         builder: Name of the namespaced Builder to build with.

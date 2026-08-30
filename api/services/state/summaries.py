@@ -54,16 +54,17 @@ def merge(
     Returns:
         The sorted summaries.
     """
-    suffix = f"-{group}"
     merged: dict[str, dict] = {}
     for region, items in results:
         if items is None:
             continue
         for obj in items:
             meta = obj.get("metadata", {}) or {}
-            oname = meta.get("name", "")
-            # object name is "{name}-{group}"; recover the display name
-            name = oname[: -len(suffix)] if oname.endswith(suffix) else oname
+            # The object name IS the workload name now - the namespace carries
+            # the group. Stripping a "-{group}" suffix here would rename a
+            # workload that happens to end in one: `api-team` in group `team`
+            # would list as `api`, and the GET that followed would 404.
+            name = oname = meta.get("name", "")
             annotations = meta.get("annotations", {}) or {}
             status, _ = ksvc_state.ksvc_status(obj)
             entry = merged.setdefault(
