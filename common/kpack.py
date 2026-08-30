@@ -121,7 +121,7 @@ def build_image(
         name: The Image name (the workload's own name).
         labels: Labels to stamp on it.
         tag: Where the built image is pushed.
-        builder: Name of the namespaced Builder to build with.
+        builder: Name of the ClusterBuilder to build with.
         service_account: The per-function build ServiceAccount.
         git_url: Source repository URL.
         revision: Branch or commit SHA to build.
@@ -143,9 +143,11 @@ def build_image(
     """
     spec: dict = {
         "tag": tag,
-        # Namespace omitted: kpack resolves a namespaced Builder in the Image's
-        # own namespace, which is where the chart puts them.
-        "builder": {"kind": "Builder", "name": builder},
+        # ClusterBuilder, so every tenant namespace's Images resolve the same
+        # chart-shipped builders: a namespaced Builder would have to exist in
+        # each `{group}-serverless` namespace, composed and pushed once per
+        # tenant.
+        "builder": {"kind": "ClusterBuilder", "name": builder},
         "serviceAccountName": service_account,
         "source": {"git": {"url": git_url, "revision": revision}},
     }

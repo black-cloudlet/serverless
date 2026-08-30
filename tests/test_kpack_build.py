@@ -159,7 +159,7 @@ def test_image_never_sets_creation_time():
     # creationTime is a nonce: setting it makes every apply look like a change
     # and rebuilds forever under active/active.
     assert "creationTime" not in image["spec"]
-    assert image["spec"]["builder"] == {"kind": "Builder", "name": "python"}
+    assert image["spec"]["builder"] == {"kind": "ClusterBuilder", "name": "python"}
     assert "build" not in image["spec"]  # omitted when there is no env/resources
 
 

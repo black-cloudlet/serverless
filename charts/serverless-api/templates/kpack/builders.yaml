@@ -1,19 +1,27 @@
 {{- if .Values.build.enabled }}
-# A Builder must be Ready before any Image using it will build.
+# A builder must be Ready before any Image using it will build.
 # docs/BUILDING.md - Buildpack Topology.
 # The ClusterStack and ClusterStore it binds to are created by the kpack chart;
 # this composes them into a builder image and pushes it to the registry.
+#
+# ClusterBuilder, not a namespaced Builder: workloads live in one namespace per
+# group, created at runtime, and an Image resolves a namespaced builder only in
+# its own namespace - the chart cannot put one in namespaces it has never heard
+# of. Cluster scope means one composed builder image serves every tenant. The
+# credential for the compose-and-push comes from serviceAccountRef; the kpack
+# controller does that work itself, so no build pod and no SCC are involved.
 {{- range .Values.build.builders }}
 ---
 apiVersion: kpack.io/v1alpha2
-kind: Builder
+kind: ClusterBuilder
 metadata:
   name: {{ .name }}
-  namespace: {{ $.Values.namespaces.workloads }}
   labels:
     {{- include "serverless-api.labels" $ | nindent 4 }}
 spec:
-  serviceAccountName: {{ $.Values.build.serviceAccount.name }}
+  serviceAccountRef:
+    name: {{ $.Values.build.serviceAccount.name }}
+    namespace: {{ $.Values.namespaces.api }}
   tag: {{ include "serverless-api.builderImage" (dict "root" $ "name" .name) | quote }}
   stack:
     name: {{ $.Values.build.stack.name }}
