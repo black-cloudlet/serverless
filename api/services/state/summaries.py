@@ -64,14 +64,12 @@ def merge(
             # the group. Stripping a "-{group}" suffix here would rename a
             # workload that happens to end in one: `api-team` in group `team`
             # would list as `api`, and the GET that followed would 404.
-            name = oname = meta.get("name", "")
+            name = meta.get("name", "")
             annotations = meta.get("annotations", {}) or {}
             status, _ = ksvc_state.ksvc_status(obj)
             entry = merged.setdefault(
                 name,
                 {
-                    # the object name, which is what a build state is keyed by
-                    "oname": oname,
                     "host": None,
                     "size": None,
                     "createdAt": None,
@@ -85,7 +83,7 @@ def merge(
             entry["createdAt"] = entry["createdAt"] or ksvc_state.creation_time(obj)
             entry["regions"].append(region)
             entry["statuses"].append(status)
-            entry["builds"].append(builds.get(region, {}).get(oname))
+            entry["builds"].append(builds.get(region, {}).get(name))
 
     summaries = [
         WorkloadSummary(

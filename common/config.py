@@ -12,7 +12,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from common.names import NAMESPACE_SUFFIX
+from common.errors import ValidationError
+from common.names import NAMESPACE_SUFFIX, namespace_for_group
 
 
 class RegionRegistry(BaseModel):
@@ -181,6 +182,15 @@ class BuildConfig(BaseModel):
     failed_history_limit: int = Field(default=3, ge=1)
 
 
+# The provision endpoint's per-region status vocabulary - the same words the
+# API's RegionStatus uses, since provision rows render beside deploy rows.
+# Shared here because both ends of the HTTP contract read them: the tenant
+# controller reports these values and the API checks for READY.
+PROVISION_READY = "Ready"
+PROVISION_FAILED = "Failed"
+PROVISION_TIMEOUT = "Timeout"
+
+
 class TenantNamespaceConfig(BaseModel):
     """Where a group's workloads live, and how the API reaches the controller.
 
@@ -193,17 +203,42 @@ class TenantNamespaceConfig(BaseModel):
         suffix: Appended to the group. Must match the chart's
             ``tenantNamespaces.suffix``.
         controller_url: The tenant controller's in-cluster Service. Empty
-            disables the ensure call, which is the dev-cluster posture.
-        token: Shared token presented to (and checked by) the ensure endpoint.
-            Empty disables the check; the NetworkPolicy is the primary control.
-        timeout: Budget for one ensure call. A create waits on it, so it is
-            deliberately shorter than the cluster op timeout.
+            disables the provision call, which is the dev-cluster posture.
+        token: Shared token presented to (and checked by) the provision
+            endpoint. Empty disables the check; the NetworkPolicy is the
+            primary control.
+        timeout: Budget for one provision call. A create waits on it, so it
+            stays under the cluster op timeout - but a brand-new group's first
+            provision applies the full template set in every region, so it is
+            not seconds either.
     """
 
     suffix: str = NAMESPACE_SUFFIX
     controller_url: str = ""
     token: str = ""
-    timeout: float = 10.0
+    timeout: float = 30.0
+
+    def namespace_for(self, group: str) -> str:
+        """The group's namespace under this config's suffix.
+
+        The one adapter from the naming rule's ``ValueError`` to the
+        API-facing 4xx, used by both ends so they reject the same groups with
+        the same words.
+
+        Args:
+            group: The owning (normalized) group.
+
+        Returns:
+            ``{group}{suffix}``.
+
+        Raises:
+            ValidationError: If the group cannot name a namespace - too long
+                with the suffix, or reserved.
+        """
+        try:
+            return namespace_for_group(group, self.suffix)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
 
 class CommonSettings(BaseSettings):

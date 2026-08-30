@@ -8,7 +8,7 @@ namespace with the tokens substituted - which is how a `helm upgrade` reaches
 namespaces created at runtime, that Argo cannot see.
 
 NOTHING IN THE SET MAY DEPEND ON THE REGION. Both regions render this chart from
-the same values, so both hold identical bytes and the same hash, and an ensure
+the same values, so both hold identical bytes and the same hash, and a provision
 converges a peer's namespace from whichever controller took the request. A
 per-region value goes in as a token the controller resolves against the cluster
 it is writing to - never baked in here.

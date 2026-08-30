@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 def apply_to_region(
     cluster: NamespacedCluster,
     *,
-    oname: str,
+    name: str,
     ksvc: dict,
     backing: list[dict],
     pull_secret_manifest: dict | None,
@@ -57,7 +57,7 @@ def apply_to_region(
 
     Args:
         cluster: The target region's cluster client.
-        oname: The object name (``{name}-{group}``).
+        name: The workload's name (and its KSVC's).
         ksvc: The Knative Service manifest.
         backing: The derived backing manifests (env/files Secret/ConfigMap).
         pull_secret_manifest: The image-pull Secret manifest, if any.
@@ -97,9 +97,9 @@ def apply_to_region(
         # workload holds the name; leave an update, which is still serving.
         if created:
             try:
-                cluster.delete(ResourceKind.KNATIVE_SERVICE, oname)
+                cluster.delete(ResourceKind.KNATIVE_SERVICE, name)
             except Exception:  # noqa: BLE001 - rollback is best-effort
-                logger.exception("rollback of %s failed in %s", oname, cluster.region)
+                logger.exception("rollback of %s failed in %s", name, cluster.region)
         raise
 
     # The new mapping is live, so retire the old host's. Best-effort: a leftover
@@ -114,7 +114,7 @@ def apply_to_region(
             logger.exception(
                 "retiring old host %s for %s failed in %s",
                 prev_host,
-                oname,
+                name,
                 cluster.region,
             )
 
@@ -130,7 +130,7 @@ def apply_to_region(
     return RegionStatus(region=cluster.region, status=status, revision=revision)
 
 
-def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, oname: str) -> bool:
+def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, name: str) -> bool:
     """Re-declare a function's build in one region, outside a workload apply.
 
     The rebuild path (``POST .../build``), which touches no KSVC. A region builds
@@ -141,7 +141,7 @@ def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, on
     Args:
         cluster: The region to write to.
         manifests: The git Secret, build ServiceAccount and Image.
-        oname: The object name (``{name}-{group}``) that owns them.
+        name: The workload whose KSVC owns them.
 
     Returns:
         True if the objects were applied; False if the workload does not run here.
@@ -152,7 +152,7 @@ def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, on
             tag nothing ever pushes.
     """
     try:
-        owner = res.owner_reference(cluster.get(ResourceKind.KNATIVE_SERVICE, oname))
+        owner = res.owner_reference(cluster.get(ResourceKind.KNATIVE_SERVICE, name))
     except NotFoundError:
         return False
     for manifest in manifests:
@@ -160,7 +160,7 @@ def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, on
     return True
 
 
-def delete_build_objects(cluster: NamespacedCluster, oname: str) -> None:
+def delete_build_objects(cluster: NamespacedCluster, name: str) -> None:
     """Remove a function's build objects from one region, by name.
 
     Normally every call is a no-op 404: the objects are owned by the KSVC, so
@@ -172,12 +172,12 @@ def delete_build_objects(cluster: NamespacedCluster, oname: str) -> None:
 
     Args:
         cluster: The region to clean up.
-        oname: The object name (``{name}-{group}``).
+        name: The workload's name (and its KSVC's).
     """
     for kind, obj in (
-        (ResourceKind.KPACK_IMAGE, kpack.build_image_name(oname)),
-        (ResourceKind.SERVICE_ACCOUNT, kpack.build_service_account_name(oname)),
-        (ResourceKind.SECRET, secret_svc.git_secret_name(oname)),
+        (ResourceKind.KPACK_IMAGE, kpack.build_image_name(name)),
+        (ResourceKind.SERVICE_ACCOUNT, kpack.build_service_account_name(name)),
+        (ResourceKind.SECRET, secret_svc.git_secret_name(name)),
     ):
         try:
             cluster.delete(kind, obj)

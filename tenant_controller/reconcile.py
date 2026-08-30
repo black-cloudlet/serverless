@@ -45,7 +45,7 @@ PRUNABLE_KINDS = TEMPLATE_KINDS
 def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
     """Bring one tenant namespace to the template set (the stamp protocol above).
 
-    Idempotent throughout, so the ensure call and the loop can both run it.
+    Idempotent throughout, so the provision call and the loop can both run it.
     Every step is unconditional: the protocol has one shape, so a caller
     cannot skip the opening apply - which is also the write that creates the
     namespace - on a stale read of someone else's stamp.
@@ -61,7 +61,7 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         Exception: Any render or apply error; the caller decides whether it
             ends the pass.
     """
-    # Rendered for the cluster being written to, not for this pod: an ensure
+    # Rendered for the cluster being written to, not for this pod: a provision
     # converges peers, and a per-region value must follow the target.
     manifests = templates.render(
         namespace=namespace, group=group, region=cluster.region, registry=cluster.registry.url
@@ -106,6 +106,34 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         templates.digest,
         cluster.region,
     )
+
+
+def converge_if_stale(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
+    """Converge, unless the namespace already carries the current stamp.
+
+    The stamp is written last, so a matching stamp proves a completed converge
+    to this exact set - which makes the read-first fast path safe, and makes
+    provisioning a warm namespace one GET per region instead of a full apply.
+    Drift inside a stamped namespace is repaired by the loop's full resync,
+    not here.
+
+    Args:
+        cluster: The cluster to converge in (cluster-scoped client).
+        namespace: The namespace's name.
+        group: The owning (normalized) group.
+        templates: The loaded template set.
+    """
+    try:
+        existing = cluster.get(ResourceKind.NAMESPACE, namespace, namespace=None)
+    except NotFoundError:
+        existing = None
+    if existing is not None:
+        stamp = ((existing.get("metadata") or {}).get("annotations") or {}).get(
+            ANNOTATION_TEMPLATE_HASH
+        )
+        if stamp == templates.digest:
+            return
+    converge(cluster, namespace, group, templates)
 
 
 def reconcile_all(

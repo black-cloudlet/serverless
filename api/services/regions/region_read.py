@@ -45,7 +45,7 @@ if TYPE_CHECKING:  # a type hint only - offering imports this module at runtime
     from api.services.offering import Offering
 
 
-def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, oname: str) -> dict:
+def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, name: str) -> dict:
     """Read an existing workload's carried-forward state + backing secret values.
 
     Runs off the event loop (blocking cluster reads). ``env_values``/
@@ -58,7 +58,7 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, on
         cluster: The region to read the backing Secrets from.
         offering: The offering, for whatever it carries that this doesn't
             (:meth:`~api.services.offering.Offering.read_extra_state`).
-        oname: The object name (``{name}-{group}``).
+        name: The workload's name (and its KSVC's).
 
     Returns:
         The carried-forward state.
@@ -78,8 +78,8 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, on
         # Existing secret values, so an update can keep a redacted secret the
         # client sent back without a value (see resolve_env/_files). Env values
         # are text; file content is bytes, which is why they read differently.
-        "env_values": secret_text(cluster, env_secret_name(oname)),
-        "files_values": secret_data(cluster, files_name(oname)),
+        "env_values": secret_text(cluster, env_secret_name(name)),
+        "files_values": secret_data(cluster, files_name(name)),
     }
     # Existing registry creds (decoded from the pull secret), so a keep (token
     # omitted) can re-key them to the current image's registry.
@@ -92,7 +92,7 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, on
             pass
     # Whatever else this offering carries forward - a function's stored git token,
     # so a build-input change can rebuild without the client re-supplying it.
-    state.update(offering.read_extra_state(cluster, oname))
+    state.update(offering.read_extra_state(cluster, name))
     return state
 
 
@@ -210,7 +210,7 @@ class RegionUsage:
     total: metrics_svc.Usage | None
 
 
-def region_usage(cluster: NamespacedCluster, oname: str) -> RegionUsage:
+def region_usage(cluster: NamespacedCluster, name: str) -> RegionUsage:
     """Best-effort live cpu/memory summed over one region's running pods.
 
     Never raises: an unreadable metrics API must not fail a status that is
@@ -226,7 +226,7 @@ def region_usage(cluster: NamespacedCluster, oname: str) -> RegionUsage:
     try:
         items = cluster.get(
             ResourceKind.POD_METRICS,
-            label_selector=f"serving.knative.dev/service={oname}",
+            label_selector=f"serving.knative.dev/service={name}",
         )
         return RegionUsage(measured=True, total=metrics_svc.total_usage(items))
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal

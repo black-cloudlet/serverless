@@ -108,8 +108,7 @@ class FunctionService:
         Returns:
             The build plan, one tag and one set of manifests per region.
         """
-        oname = req.name
-        labels = workload_labels(req.group, user.username, oname, OFFERING_FUNCTION)
+        labels = workload_labels(req.group, user.username, req.name, OFFERING_FUNCTION)
         return self._engine.builder.plan(req, labels, registries)
 
     # Validate synchronously for an immediate 400/404/409, then build and deploy

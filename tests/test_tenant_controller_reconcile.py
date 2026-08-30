@@ -733,7 +733,7 @@ class _Thread:
 
 
 def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypatch):
-    """The split the design turns on: ensure fans out, the loop never does."""
+    """The split the design turns on: provision fans out, the loop never does."""
     events = []
     served = {}
     looped = {}
@@ -768,7 +768,7 @@ def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypa
     assert [c.region for c in served["clusters"]] == ["central", "south"]
     assert looped["cluster"].region == "central"
     # Shut down in order, even when the loop ends by signal: the API is asked
-    # to stop before the clients an in-flight ensure is still writing through.
+    # to stop before the clients an in-flight provision is still writing through.
     assert served["server"].should_exit is True
     assert events == ["served", "joined", "closed central", "closed south"]
 
@@ -794,7 +794,7 @@ def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
     server, thread = controller_main.serve(settings, [])
     thread.join(timeout=5)
 
-    assert thread.daemon and thread.name == "ensure-api"
+    assert thread.daemon and thread.name == "provision-api"
     assert built["ran"], "the thread actually served"
     assert built["config"].port == 9999
     # Ours is already configured; uvicorn's dictConfig would replace it.
@@ -810,7 +810,7 @@ def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
 def test_a_server_that_never_binds_fails_the_pod_instead_of_hiding(monkeypatch):
     """uvicorn answers a bind failure with sys.exit *in the thread*, and Python
     discards that silently - so without this check the loop would run on beside
-    a dead API and every ensure would be refused with nothing in the log."""
+    a dead API and every provision would be refused with nothing in the log."""
 
     class _DyingServer:
         def __init__(self, config):

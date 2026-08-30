@@ -705,7 +705,7 @@ token, and the constant-time comparison for that is spelled out in `tenant_contr
 rather than taken from `cloudlet_apis.auth`, because importing anything from that package
 pulls `pyjwt` and `cryptography` in behind it. CI asserts the absence, the
 same way it does for the controller. Only `tenant_controller/api.py` may reach the framework at
-all: the converge, the template set and the ensure fan-out have no request to answer, and
+all: the converge, the template set and the provision fan-out have no request to answer, and
 `tests/test_layering.py` holds them to it.
 
 ### One pass

@@ -125,7 +125,7 @@ def test_the_templates_and_values_still_line_up():
     names = {env for env, *_ in pairs}
     assert "SERVERLESS_STREAM__SNAPSHOT_MAX_BYTES" in names
     # One per deployment, so a template dropping out of the list is visible.
-    assert {"SERVERLESS_RESYNC_SECONDS", "SERVERLESS_ENSURE_WORKERS"} <= names
+    assert {"SERVERLESS_RESYNC_SECONDS", "SERVERLESS_PROVISION_WORKERS"} <= names
 
 
 @pytest.mark.parametrize(

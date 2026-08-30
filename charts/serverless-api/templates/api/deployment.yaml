@@ -53,11 +53,11 @@ spec:
               value: {{ .Values.namespaces.workloads | quote }}
             # Where a group's workloads live, and how to reach the component
             # that creates those namespaces. The suffix is read by both ends;
-            # an empty URL skips the ensure call, which is the dev posture.
+            # an empty URL skips the provision call, which is the dev posture.
             - name: SERVERLESS_TENANT_NAMESPACES__SUFFIX
               value: {{ .Values.tenantNamespaces.suffix | quote }}
             - name: SERVERLESS_TENANT_NAMESPACES__TIMEOUT
-              value: {{ .Values.tenantNamespaces.ensureTimeout | int64 | quote }}
+              value: {{ .Values.tenantNamespaces.provisionTimeout | int64 | quote }}
             {{- if .Values.tenantNamespaces.controller.enabled }}
             - name: SERVERLESS_TENANT_NAMESPACES__CONTROLLER_URL
               value: {{ printf "http://%s.%s.svc:%v"

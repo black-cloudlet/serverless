@@ -46,9 +46,9 @@ SERVICE_LABEL = "serving.knative.dev/service"
 _SIDECAR = "queue-proxy"
 
 
-def _selector(oname: str) -> str:
+def _selector(workload: str) -> str:
     """The label selector matching one workload's pods."""
-    return f"{SERVICE_LABEL}={oname}"
+    return f"{SERVICE_LABEL}={workload}"
 
 
 def _started(pod: dict) -> datetime | None:
@@ -106,21 +106,21 @@ def _usage_by_pod(items: list[dict]) -> dict[str, metrics_svc.Usage]:
     return measured
 
 
-def read_roster(cluster: NamespacedCluster, oname: str) -> list[PodInfo]:
+def read_roster(cluster: NamespacedCluster, workload: str) -> list[PodInfo]:
     """The workload's pods on this region, with usage joined on (blocking).
 
     Args:
         cluster: The local region.
-        oname: The object name (``{name}-{group}``).
+        workload: The workload's name (the KSVC label value).
 
     Returns:
         The pods, ordered by name. Empty when scaled to zero.
     """
-    pods = cluster.get(ResourceKind.POD, label_selector=_selector(oname))
+    pods = cluster.get(ResourceKind.POD, label_selector=_selector(workload))
     # Best-effort, and deliberately after the authoritative list: usage is a
     # decoration, and an unreadable metrics API must not empty the roster.
     try:
-        measured = cluster.get(ResourceKind.POD_METRICS, label_selector=_selector(oname))
+        measured = cluster.get(ResourceKind.POD_METRICS, label_selector=_selector(workload))
         usage = _usage_by_pod(measured)
     except Exception:  # noqa: BLE001 - usage is best-effort, never fatal
         usage = {}
@@ -152,7 +152,7 @@ async def follow(
     capacity: StreamCapacity,
     config: StreamConfig,
     first: PodRoster,
-    oname: str,
+    workload: str,
     interval: float,
 ) -> AsyncIterator[StreamEvent]:
     """Push the pod roster on an interval until the client leaves or time is up.
@@ -164,7 +164,7 @@ async def follow(
         first: The roster the caller already read to authorize the request,
             emitted immediately so a client can open a log stream without waiting
             out an interval first.
-        oname: The object name (``{name}-{group}``).
+        workload: The workload's name (the KSVC label value).
         interval: Seconds between listings.
 
     Yields:
@@ -197,14 +197,14 @@ async def follow(
             return
 
         try:
-            pods = await capacity.run(read_roster, cluster, oname)
+            pods = await capacity.run(read_roster, cluster, workload)
         except APIError as exc:
             # The workload was deleted, or the region stopped answering. The
             # response has long since started, so the status code is spent.
             yield StreamEvent("error", StreamError(code=exc.code, message=exc.message))
             return
         except Exception:  # noqa: BLE001 - mirrors the catch-all the envelope has
-            logger.exception("pod roster read failed for '%s'", oname)
+            logger.exception("pod roster read failed for '%s'", workload)
             yield StreamEvent(
                 "error", StreamError(code=APIError.code, message="Internal server error.")
             )

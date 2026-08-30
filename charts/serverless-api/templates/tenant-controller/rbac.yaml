@@ -13,7 +13,7 @@ metadata:
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 rules:
-  # The namespaces themselves: created by ensure, converged by the loop, and
+  # The namespaces themselves: created on provision, converged by the loop, and
   # (from PR 7) deleted by the GC once they have been empty long enough.
   - apiGroups: [""]
     resources: ["namespaces"]

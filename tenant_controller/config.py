@@ -14,8 +14,8 @@ class TenantControllerSettings(LoopSettings):
 
     app_name: str = "serverless-tenant-controller"
 
-    # The internal ensure API (no Route, no Ingress - a ClusterIP Service the
-    # API's namespace reaches).
+    # The internal provision API (no Route, no Ingress - a ClusterIP Service
+    # the API's namespace reaches).
     port: int = 8080
 
     # The tenant-templates ConfigMap mount. Whole-ConfigMap, never subPath:
@@ -33,10 +33,19 @@ class TenantControllerSettings(LoopSettings):
     # is bounded by the pool, not serialized.
     converge_workers: int = Field(default=4, ge=1)
 
-    # The ensure API's own pool, separate from the loop's. It is the bound on
-    # how many converges a burst of creates can have in flight, and the reason
-    # a slow region cannot reach the server's threads and starve the probes.
-    ensure_workers: int = Field(default=8, ge=1)
+    # The provision API's own pool, separate from the loop's. It is the bound
+    # on how many converges a burst of creates can have in flight, and the
+    # reason a slow region cannot reach the server's threads and starve the
+    # probes.
+    provision_workers: int = Field(default=8, ge=1)
+
+    # Namespace GC: collect tenant namespaces that have stayed empty of
+    # workloads for the whole grace period. Off by default - "may the platform
+    # delete things" is the operator's call (the registry.deleteOnFunctionDelete
+    # precedent).
+    gc_enabled: bool = False
+    gc_interval_seconds: int = Field(default=3600, gt=0)
+    gc_grace_seconds: int = Field(default=86400, gt=0)
 
 
 @lru_cache

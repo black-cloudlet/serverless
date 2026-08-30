@@ -212,16 +212,18 @@ def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) ->
         field_selector=f"metadata.name={host}",
         namespace=None,
     )
+    # Same-named mappings can coexist across namespaces (Knative marks the
+    # loser DomainAlreadyClaimed, but the object exists), so the verdict must
+    # come from the whole listing: any foreign mapping means taken, whatever
+    # position the apiserver listed it at.
     for mapping in mappings:
         meta = mapping.get("metadata") or {}
         labels = meta.get("labels") or {}
         # The workload's own mapping counts as available (the update path).
         if labels.get(LABEL_WORKLOAD) == name and labels.get(LABEL_GROUP) == group:
-            return None
-        # Who holds it, and where. The owner can be in a namespace the caller
-        # cannot see - including the legacy one, whose pre-cutover mappings
-        # still carry the old `{name}-{group}` workload label - so "already
-        # assigned" on its own would be a dead end to debug.
+            continue
+        # Who holds it, and where: the owner can be in a namespace the caller
+        # cannot see, so "already assigned" alone would be a dead end to debug.
         return f"{labels.get(LABEL_WORKLOAD) or '?'} in namespace {meta.get('namespace') or '?'}"
     return None
 

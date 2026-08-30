@@ -179,11 +179,10 @@ class KpackBackend:
         Raises:
             ValidationError: If the runtime is unknown or maps to no Builder.
         """
-        oname = req.name
         builder, env = self._runtime_config(req.runtime, req.version)
-        image_name = kpack.build_image_name(oname)
-        sa_name = kpack.build_service_account_name(oname)
-        git_secret = secret_svc.git_secret_name(oname)
+        image_name = kpack.build_image_name(req.name)
+        sa_name = kpack.build_service_account_name(req.name)
+        git_secret = secret_svc.git_secret_name(req.name)
         per_region: dict[str, RegionBuild] = {}
         for region, registry in registries.items():
             tag = self.image_ref(req, registry)

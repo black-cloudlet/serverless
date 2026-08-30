@@ -1,4 +1,4 @@
-"""The tenant controller's internal HTTP surface: ensure a group, plus the probes.
+"""The tenant controller's internal HTTP surface: provision a group, plus the probes.
 
 Internal only. There is no SSO and no browser here: the caller is the platform
 API in its own namespace, reaching a Service that a NetworkPolicy scopes to it,
@@ -28,18 +28,17 @@ from common.errors import (
     RegionTotalFailure,
     ServiceUnavailableError,
     UnauthenticatedError,
-    ValidationError,
 )
-from common.names import Group, namespace_for_group
+from common.names import Group
 from tenant_controller.config import TenantControllerSettings
-from tenant_controller.ensure import ensure
+from tenant_controller.provision import provision
 from tenant_controller.templates import TemplateSet
 
 logger = get_logger(__name__)
 
 
 class RegionResult(BaseModel):
-    """One region's ensure outcome.
+    """One region's provisioning outcome.
 
     Attributes:
         region: The region name.
@@ -52,8 +51,8 @@ class RegionResult(BaseModel):
     message: str | None = None
 
 
-class EnsureResponse(BaseModel):
-    """What ensure converged, and where.
+class ProvisionResponse(BaseModel):
+    """What was provisioned, and where.
 
     Attributes:
         group: The normalized group.
@@ -78,20 +77,22 @@ def create_app(clusters: Sequence[Cluster], settings: TenantControllerSettings) 
     connections to the same API servers.
 
     Args:
-        clusters: One cluster per configured region (the ensure fan-out).
+        clusters: One cluster per configured region (the provision fan-out).
         settings: The tenant controller's settings.
 
     Returns:
         The configured application.
     """
-    # The converges' own pool, not the server's threads: an ensure holds a
+    # The converges' own pool, not the server's threads: a provision holds a
     # pool slot for as long as the slowest region takes, and a probe must
     # never have to queue behind one.
-    pool = ThreadPoolExecutor(max_workers=settings.ensure_workers, thread_name_prefix="ensure")
+    pool = ThreadPoolExecutor(
+        max_workers=settings.provision_workers, thread_name_prefix="provision"
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """Drain the ensure pool before the server lets go of the process."""
+        """Drain the provision pool before the server lets go of the process."""
         yield
         # Queued converges are dropped; a running one is left to finish, and
         # is bounded by the cluster client's own connect/read timeouts rather
@@ -102,7 +103,7 @@ def create_app(clusters: Sequence[Cluster], settings: TenantControllerSettings) 
 
     app = FastAPI(
         title="Serverless Tenant Controller",
-        description="Internal API: converge a group's namespace in every region.",
+        description="Internal API: provision a group's namespace in every region.",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -129,14 +130,15 @@ def _router(
         return {"status": "ok"}
 
     def usable_templates() -> TemplateSet:
-        """The mounted set, or the reason this pod cannot ensure anything.
+        """The mounted set, or the reason this pod cannot provision anything.
 
-        Readiness and ensure both go through it, so the probe cannot report
-        ready on a set the endpoint would then refuse. Nothing here touches a
-        cluster, per the platform's probe rule - a probe that did would take
-        the pod out on someone else's outage. Every condition it does check is
-        this pod's own configuration, which is exactly what readiness is for:
-        a bad ConfigMap stalls its own rollout instead of failing every create.
+        Readiness and provisioning both go through it, so the probe cannot
+        report ready on a set the endpoint would then refuse. Nothing here
+        touches a cluster, per the platform's probe rule - a probe that did
+        would take the pod out on someone else's outage. Every condition it
+        does check is this pod's own configuration, which is exactly what
+        readiness is for: a bad ConfigMap stalls its own rollout instead of
+        failing every create.
 
         Returns:
             The loaded template set.
@@ -161,8 +163,9 @@ def _router(
             raise ServiceUnavailableError("template set is empty")
         if not templates.renders_contents:
             # The rule converge refuses on. Checked here too, or a truncated
-            # ConfigMap would leave the pod in rotation and turn every ensure
-            # into a 502 blaming the regions for this pod's own bad mount.
+            # ConfigMap would leave the pod in rotation and turn every
+            # provision into a 502 blaming the regions for this pod's own bad
+            # mount.
             logger.warning(
                 "not ready: template set at %s renders only a Namespace", settings.templates_dir
             )
@@ -181,18 +184,17 @@ def _router(
         """
         return {"status": "ready", "templateHash": usable_templates().digest}
 
-    @router.put("/groups/{group}/namespace", response_model=EnsureResponse)
-    async def ensure_group(group: Group, request: Request) -> EnsureResponse:
-        """Converge the group's namespace in every region, to the current set.
+    @router.put("/groups/{group}/namespace", response_model=ProvisionResponse)
+    async def provision_group(group: Group, request: Request) -> ProvisionResponse:
+        """Provision the group's namespace in every region, to the current set.
 
         PUT, because the caller states a desired end state rather than asking
-        for a job: the API calls this before every create and retries it on
+        for a job: the API calls this before every deploy and retries it on
         timeout, so "safe to repeat" belongs in the method, not only in the
         paragraph below.
 
-        Idempotent: a group that is already converged is applied again, which
-        is how the caller learns it is converged to *this* hash rather than
-        last release's.
+        Idempotent, and cheap when there is nothing to do: a namespace already
+        stamped with the current template hash costs one read per region.
 
         Async, and the converges run on the app's own pool, so a slow region
         holds a pool slot rather than one of the server's threads - the
@@ -208,14 +210,14 @@ def _router(
         Raises:
             ValidationError: If the group cannot name a namespace.
             UnauthenticatedError: If the shared token is set and not matched.
-            ServiceUnavailableError: If this pod is not in a state to ensure
-                anything (see :func:`usable_templates`).
+            ServiceUnavailableError: If this pod is not in a state to
+                provision anything (see :func:`usable_templates`).
             RegionTotalFailure: If every region failed.
         """
         _check_token(request, settings.tenant_namespaces.token)
-        namespace = _namespace_for(group, settings.tenant_namespaces.suffix)
+        namespace = settings.tenant_namespaces.namespace_for(group)
         templates = usable_templates()
-        outcomes = await ensure(
+        outcomes = await provision(
             clusters,
             namespace,
             group,
@@ -229,32 +231,14 @@ def _router(
             # landed, so the API's preflight fails the create the same way a
             # total deploy failure does.
             raise RegionTotalFailure(
-                f"could not ensure namespace '{namespace}' in any region",
+                f"could not provision namespace '{namespace}' in any region",
                 details=[row.model_dump() for row in rows],
             )
-        return EnsureResponse(
+        return ProvisionResponse(
             group=group, namespace=namespace, templateHash=templates.digest, regions=rows
         )
 
     return router
-
-
-def _namespace_for(group: str, suffix: str) -> str:
-    """The group's namespace, as a request-time failure rather than a 500.
-
-    The suffix comes from settings, not from the module default: it is the one
-    value the API and this controller must agree on, and deriving it two
-    different ways here would provision `{group}-serverless` while the API
-    deployed into `{group}{suffix}` - the exact split the shared config block
-    exists to prevent.
-
-    Raises:
-        ValidationError: If the group is too long or reserved.
-    """
-    try:
-        return namespace_for_group(group, suffix)
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
 
 
 def _check_token(request: Request, configured: str) -> None:

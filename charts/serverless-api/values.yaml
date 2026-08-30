@@ -151,9 +151,11 @@ tenantNamespaces:
   # controller derives the one it creates. Configured differently on either
   # side, the API would deploy into a namespace nobody provisions.
   suffix: -serverless
-  # How long the API waits for the ensure call before failing a create closed.
-  # A create waits on this, so it is well under the cluster op timeout.
-  ensureTimeout: 10
+  # How long the API waits for the provision call before failing a deploy
+  # closed. A create waits on this, so it stays under the cluster op timeout -
+  # but a brand-new group's first provision applies the full template set in
+  # every region, so it is not seconds either.
+  provisionTimeout: 30
   # -- Labels added to every tenant namespace, on top of `namespaces.labels`.
   # labels:
   #   pod-security.kubernetes.io/enforce: restricted
@@ -161,12 +163,12 @@ tenantNamespaces:
 
   # The service that creates those namespaces and keeps them converged to the
   # template set this chart ships. Two jobs in one process: a reconcile loop
-  # over its own cluster, and the ensure call the API makes before a create.
+  # over its own cluster, and the provision call the API makes before a deploy.
   controller:
     enabled: true
     repository: serverless/tenant-controller
     tag: ""
-    # Two, like the API: the ensure call is in the create path, so it needs to
+    # Two, like the API: the provision call is in the create path, so it needs to
     # survive a rolling restart. Replicas converge rather than race - the same
     # reason the build controller needs no leader election.
     replicaCount: 2
@@ -202,9 +204,9 @@ tenantNamespaces:
     fullResyncPasses: 12
     # Namespaces converged in parallel within one pass.
     convergeWorkers: 4
-    # Converges in flight across ensure calls. The bound that keeps a slow
+    # Converges in flight across provision calls. The bound that keeps a slow
     # region from starving the probes.
-    ensureWorkers: 8
+    provisionWorkers: 8
 
     # Its own client certificate, and therefore its own Kubernetes username -
     # the tenant controller writes namespaces and the API does not, so they must not
@@ -213,7 +215,7 @@ tenantNamespaces:
       name: serverless-tenant-controller-cert
       user: serverless-tenant-controller.clients.example.com
 
-    # Optional shared token on the ensure endpoint, depth behind the
+    # Optional shared token on the provision endpoint, depth behind the
     # NetworkPolicy that already scopes it to the API's pods. Off by default:
     # with no Secret the check is disabled, which is what a dev cluster with no
     # Vault needs. One Secret, envFrom'd by both ends - the API sends what the
