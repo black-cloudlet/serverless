@@ -296,8 +296,8 @@ class KpackBackend:
     def statuses(self, cluster: NamespacedCluster, group: str) -> dict[str, BuildStatus]:
         """Read every function build state a group has on one cluster, in one call.
 
-        Keyed by the ``workload`` label - the object name ``{name}-{group}`` -
-        because that is what the Image carries and what the caller already has
+        Keyed by the ``workload`` label - the workload's name - because that is
+        what the Image carries and what the caller already has
         from the KSVC it is annotating. The Image's name is the same string
         (:func:`common.kpack.build_image_name`), but the label is the
         selection contract, so it is what this read stands on.
@@ -310,7 +310,7 @@ class KpackBackend:
             group: The owning group.
 
         Returns:
-            ``{object_name: BuildStatus}``; empty when the group has no builds or
+            ``{workload: BuildStatus}``; empty when the group has no builds or
             kpack could not be read.
         """
         selector = f"{LABEL_GROUP}={group},{LABEL_OFFERING}={OFFERING_FUNCTION}"

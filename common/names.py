@@ -413,7 +413,7 @@ def validate_default_host_label(name: str, group: str, limit: int = MAX_HOST_LAB
 def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
     """The namespace a group's workloads live in: ``{group}{suffix}``.
 
-    One home for the mapping, like :func:`object_name`: the API, the
+    One home for the mapping, like :func:`default_host_label`: the API, the
     tenant controller and the GC must derive the same name. The group arrives
     normalized; the checks here are the namespace's own, on the suffixed
     whole.

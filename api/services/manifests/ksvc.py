@@ -138,7 +138,7 @@ def build_ksvc(
     resource sizing, the optional pull secret, and the trusted-CA mount.
 
     Args:
-        name: The object name (``{name}-{group}``).
+        name: The workload's name (and the KSVC's).
         group: Owning group.
         owner: Creating username.
         image: The image (or digest) to run.

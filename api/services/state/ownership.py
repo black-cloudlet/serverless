@@ -25,8 +25,9 @@ def owned_by(obj: dict, user: Principal, offering: str) -> bool:
     """Whether ``obj`` belongs to a group ``user`` may act for, in this offering.
 
     Both halves matter. The group is the tenancy boundary. The offering is
-    checked too because the object name is ``{name}-{group}`` for both of them,
-    so a container could otherwise be reached through the functions path.
+    checked too because functions and containers share one namespace and one
+    name space, so a container could otherwise be reached through the
+    functions path.
 
     A caller who fails this must be told the workload does not exist rather than
     that they may not have it - the callers do that, since a 404 is right for a

@@ -73,7 +73,7 @@ def workload_labels(
     Args:
         group: The owning group.
         owner: The creating username.
-        workload: The object name (``{name}-{group}``).
+        workload: The workload's name.
         offering: The offering, when applicable.
 
     Returns:

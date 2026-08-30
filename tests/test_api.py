@@ -339,8 +339,9 @@ def test_info_publishes_the_combined_name_and_group_limit():
     """No per-field schema can carry this, so /info has to.
 
     Each half may be 63 characters on its own; it is the join that becomes the
-    KSVC name. A form validating the fields separately would accept a pair the
-    API rejects, so the rule is published for the client to apply.
+    default host's first label. A form validating the fields separately would
+    not see the pair - but the rule binds only the default host, so a client
+    should treat it as "supply a hostname", not as a hard reject.
     """
     from common.names import MAX_HOST_LABEL, default_host_label
 

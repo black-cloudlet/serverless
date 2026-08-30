@@ -736,8 +736,8 @@ class WorkloadService:
 
         obj = found.get("obj")
         if obj is not None:
-            # An object_name collision could resolve to another group's workload or
-            # the other offering; both mean "not this workload" -> hide as 404.
+            # The name could belong to the other offering (or, if labels ever
+            # drifted, another owner); both mean "not this workload" -> hide as 404.
             if not ownership.owned_by(obj, user, offering.name):
                 raise NotFoundError(f"{offering.name} workload '{name}' not found")
             # Read the backing Secrets from the local region when it has the workload,

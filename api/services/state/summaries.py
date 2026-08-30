@@ -43,7 +43,7 @@ def merge(
         results: ``(region, ksvcs_or_None)`` per region; None means it did not answer.
         group: The owning group.
         offering: The offering being listed ("function"/"container").
-        builds: Build states per region (``{region: {object_name: state}}``), for
+        builds: Build states per region (``{region: {workload: state}}``), for
             the build-first rollup. Each region builds its own copy, so a
             workload's state is rolled up across the regions that returned it.
             Empty for an offering with no build.

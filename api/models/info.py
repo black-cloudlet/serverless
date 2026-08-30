@@ -25,17 +25,18 @@ class RuntimeCapability(BaseModel):
 
 
 class NamingRule(BaseModel):
-    """The limit on ``name`` and ``group`` *together*.
+    """The limit on ``name`` and ``group`` *together* - the default host's label.
 
     No per-field schema can express this: the halves are validated separately
-    and each may be 63 characters, but it is their join that becomes the KSVC
-    name and the first DNS label. ``group`` is a path parameter besides, so it
-    is not even in the body being validated. Published so a form can catch the
-    pair before submitting, instead of the API rejecting it at the edge.
+    and each may be 63 characters, but their join is the default host's first
+    DNS label. It binds only the *default* host - a create that supplies its
+    own ``hostname`` is free of it - so a form should warn on the pair, not
+    block it. Published because ``group`` is a path parameter, so it is not
+    even in the body being validated.
 
     Attributes:
-        template: How the object name is composed.
-        maxLength: Longest permitted result, in characters.
+        template: How the default host's first label is composed.
+        maxLength: Longest permitted label; over it, supply a hostname.
     """
 
     template: str
