@@ -55,6 +55,7 @@ from api.services.manifests.files import files_name, resolve_files
 from api.services.offering import DeleteContext, Offering
 from api.services.regions import preflight, region_apply, region_read
 from api.services.regions.deployer import Deployer
+from api.services.regions.ensure import ensure_namespace
 from api.services.regions.rollup import aggregate, overall_status_for_regions, status_code_for
 from api.services.state import describe as describe_svc
 from api.services.state import ksvc_state, ownership
@@ -285,10 +286,21 @@ class WorkloadService:
         host: str | None = None,
         require_absent: bool = False,
     ) -> None:
-        """Assert a workload can be deployed: host free, and optionally name unused.
+        """Assert a workload can be deployed: namespace ready, host free, name unused.
 
-        See :func:`api.services.regions.preflight.assert_deployable`.
+        See :func:`api.services.regions.preflight.assert_deployable` for the
+        cluster checks. The namespace comes first and only on a create
+        (``require_absent`` is what marks one): an update's namespace exists by
+        definition, since its workload is already running there.
+
+        The call lives here rather than inside ``preflight`` because that
+        module is pure cluster probes - putting an HTTP client in it would drag
+        a dependency into every test that only wanted to check a host.
         """
+        if require_absent:
+            await ensure_namespace(
+                group, self.settings.tenant_namespaces, verify=self.settings.ca_bundle.file
+            )
         await preflight.assert_deployable(
             self.deployer, name, group, targets, host=host, require_absent=require_absent
         )

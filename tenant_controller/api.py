@@ -212,7 +212,7 @@ def _router(
                 anything (see :func:`usable_templates`).
             RegionTotalFailure: If every region failed.
         """
-        _check_token(request, settings.tenant_controller_token)
+        _check_token(request, settings.tenant_namespaces.token)
         namespace = _namespace_for(group)
         templates = usable_templates()
         outcomes = await ensure(

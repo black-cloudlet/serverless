@@ -267,7 +267,7 @@ def test_one_region_landing_is_still_a_success(tmp_path):
 )
 def test_a_configured_token_is_required(tmp_path, header):
     clusters = [_Cluster("central")]
-    settings = _settings(tmp_path, tenant_controller_token="s3cret")
+    settings = _settings(tmp_path, tenant_namespaces={"token": "s3cret"})
 
     response = _client(clusters, settings).put("/groups/payments/namespace", headers=header)
 
@@ -277,7 +277,7 @@ def test_a_configured_token_is_required(tmp_path, header):
 
 def test_the_configured_token_admits_the_caller(tmp_path):
     clusters = [_Cluster("central")]
-    settings = _settings(tmp_path, tenant_controller_token="s3cret")
+    settings = _settings(tmp_path, tenant_namespaces={"token": "s3cret"})
 
     response = _client(clusters, settings).put(
         "/groups/payments/namespace", headers={"Authorization": "Bearer s3cret"}

@@ -52,6 +52,8 @@ spec:
             # never fight over one namespace during an Argo sync gap.
             - name: SERVERLESS_LOCAL_REGION
               value: {{ .Values.global.region | quote }}
+            - name: SERVERLESS_TENANT_NAMESPACES__SUFFIX
+              value: {{ .Values.tenantNamespaces.suffix | quote }}
             - name: SERVERLESS_PORT
               value: {{ .Values.tenantNamespaces.controller.service.targetPort | int64 | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
@@ -211,7 +213,7 @@ spec:
     name: {{ $p.tokenSecret.name }}
   data:
     # Read by both ends: the tenant controller checks it, and the API sends it.
-    - secretKey: SERVERLESS_TENANT_CONTROLLER_TOKEN
+    - secretKey: SERVERLESS_TENANT_NAMESPACES__TOKEN
       remoteRef:
         key: {{ tpl $p.tokenSecret.key $ }}
         property: {{ $p.tokenSecret.property }}
