@@ -126,6 +126,23 @@ def managed_namespaces(cluster: Cluster) -> list[dict]:
     )
 
 
+def is_converged(meta: dict, templates: TemplateSet) -> bool:
+    """Whether a namespace's stamp says it already holds this template set.
+
+    The stamp is written last (the protocol above), so a matching one proves a
+    completed converge - one spelling of that rule, or the provision fast path
+    and the loop's staleness check could disagree about what "current" means.
+
+    Args:
+        meta: The Namespace's ``metadata``.
+        templates: The currently mounted template set.
+
+    Returns:
+        True when the stamp matches the set's digest.
+    """
+    return (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH) == templates.digest
+
+
 def converge_if_stale(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
     """Converge for a provision, unless the namespace already carries the stamp.
 
@@ -160,7 +177,7 @@ def converge_if_stale(cluster: Cluster, namespace: str, group: str, templates: T
     if meta.get("deletionTimestamp"):
         raise RuntimeError(f"namespace '{namespace}' is terminating; retry once it is gone")
     annotations = meta.get("annotations") or {}
-    if annotations.get(ANNOTATION_TEMPLATE_HASH) != templates.digest:
+    if not is_converged(meta, templates):
         converge(cluster, namespace, group, templates)
     if ANNOTATION_EMPTY_SINCE in annotations:
         # Deleted underneath us raises NotFoundError into a Failed row, which
@@ -215,8 +232,7 @@ def reconcile_all(
             logger.warning("managed namespace '%s' carries no group label; skipping", name)
             failed += 1
             continue
-        stamp = (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH)
-        if stamp == templates.digest and not force:
+        if is_converged(meta, templates) and not force:
             continue
         stale.append((name, group))
 
