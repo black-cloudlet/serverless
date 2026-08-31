@@ -20,6 +20,8 @@ as such rather than as something a retry would fix.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from cloudlet_apis.logging import get_logger
 
@@ -30,15 +32,20 @@ logger = get_logger(__name__)
 
 # One client for the process: connection pooling across creates, and the CA
 # bundle is read and parsed once instead of on every call (building an SSL
-# context is blocking file I/O, and this code runs on the event loop).
+# context is blocking file I/O, and this code runs on the event loop). Built
+# from the first call's settings - which are process-constant - under a lock,
+# so a burst of first calls cannot each build (and leak) a pool.
 _client: httpx.AsyncClient | None = None
+_client_lock = asyncio.Lock()
 
 
-def _shared_client(config: TenantNamespaceConfig, verify: str | bool) -> httpx.AsyncClient:
+async def _shared_client(config: TenantNamespaceConfig, verify: str | bool) -> httpx.AsyncClient:
     """The process-wide client, built on first use from the stable settings."""
     global _client  # noqa: PLW0603 - a deliberate process-wide singleton
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=config.timeout, verify=verify)
+        async with _client_lock:
+            if _client is None or _client.is_closed:
+                _client = httpx.AsyncClient(timeout=config.timeout, verify=verify)
     return _client
 
 
@@ -73,7 +80,8 @@ async def provision_namespace(
     url = f"{config.controller_url.rstrip('/')}/groups/{group}/namespace"
     headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
     try:
-        response = await _shared_client(config, verify).put(url, headers=headers)
+        client = await _shared_client(config, verify)
+        response = await client.put(url, headers=headers)
         response.raise_for_status()
         body = response.json()
     except httpx.HTTPStatusError as exc:

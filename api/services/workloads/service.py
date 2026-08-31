@@ -77,6 +77,7 @@ from common.errors import (
     ForbiddenError,
     NotFoundError,
     RegionTotalFailure,
+    ServiceUnavailableError,
 )
 
 logger = get_logger(__name__)
@@ -141,9 +142,8 @@ def _pod_authorizer(cluster: NamespacedCluster, name: str, pod: str, kind: str, 
     """The check both log reads run, as one blocking callable.
 
     Shared rather than written twice because the second half is the security
-    boundary: owning the workload is not owning every pod, and the pods of
-    every workload on the platform sit in one namespace. Two copies of that
-    rule is one copy that gets fixed.
+    boundary: owning the workload is not owning every pod in its namespace.
+    Two copies of that rule is one copy that gets fixed.
 
     Args:
         cluster: The local region.
@@ -446,8 +446,17 @@ class WorkloadService:
         )
         host = self.host_for(name, spec.hostname, group)
         # Provisioned on update too: normally a cheap no-op, but a region added
-        # after the group's first create gets its namespace exactly here.
-        await self.provision_namespace(group)
+        # after the group's first create gets its namespace exactly here. Best
+        # effort, unlike a create's: the workload just loaded above proves the
+        # namespace exists, and a controller outage must not block an update -
+        # or a rollback - of something already running. A refusal (4xx) still
+        # propagates: that is config, not outage.
+        try:
+            await self.provision_namespace(group)
+        except ServiceUnavailableError as exc:
+            logger.warning(
+                "updating '%s' without provisioning for group '%s': %s", name, group, exc
+            )
         # A host collision must be a synchronous 409, not a lost background failure.
         # The workload's own mapping counts as available.
         await self.assert_host_available(host, name, group, self.targets_for(group))

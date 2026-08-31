@@ -62,13 +62,20 @@ class _Cluster:
     name = "cluster-0"
 
     def __init__(
-        self, region: str, *, fail: str | None = None, block: threading.Event | None = None
+        self,
+        region: str,
+        *,
+        fail: str | None = None,
+        block: threading.Event | None = None,
+        live_namespace: dict | None = None,
     ):
         self.region = region
         # Resolved per region on the real client, which is what makes a
         # per-region value in the set follow the cluster being written to.
         self.registry = SimpleNamespace(url=f"registry.{region}.internal")
         self.applied: list[tuple[dict, str | None]] = []
+        self.patched: list[tuple[str, dict]] = []
+        self._live_namespace = live_namespace
         self._fail = fail
         self._block = block
 
@@ -83,14 +90,21 @@ class _Cluster:
     def get(self, kind, name=None, label_selector=None, *, namespace):
         if name is None:
             return []  # nothing left over, so the prune deletes nothing
-        # A named get serves the last applied object, like the apiserver: the
-        # stamp fast path reads the Namespace back before deciding to converge.
+        # A named get serves the last applied object (or the preset live one),
+        # like the apiserver: the stamp fast path reads the Namespace back
+        # before deciding to converge.
         from common.errors import NotFoundError
 
         for manifest, _ns in reversed(self.applied):
             if manifest["kind"] == kind.kind and manifest["metadata"].get("name") == name:
                 return manifest
+        live = self._live_namespace
+        if live is not None and kind.kind == "Namespace" and live["metadata"].get("name") == name:
+            return live
         raise NotFoundError(f"{name} not found")
+
+    def patch(self, kind, name, body, *, namespace):
+        self.patched.append((name, body))
 
     def delete(self, kind, name, *, namespace):
         raise AssertionError("nothing should be pruned in these fixtures")
@@ -236,6 +250,80 @@ def test_a_second_provision_reads_the_stamp_and_skips_the_apply(tmp_path):
 
     assert first == second, "provision is idempotent: same namespace, same hash, same rows"
     assert len(clusters[0].applied) == writes, "the stamped namespace is not re-applied"
+
+
+def _live_namespace(name, *, stamp=None, annotations=None, deleting=False):
+    meta: dict = {"name": name, "annotations": dict(annotations or {})}
+    if stamp is not None:
+        meta["annotations"][ANNOTATION_TEMPLATE_HASH] = stamp
+    if deleting:
+        meta["deletionTimestamp"] = "2026-08-30T11:00:00+00:00"
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": meta}
+
+
+def test_a_terminating_namespace_fails_provision_not_ready(tmp_path):
+    """Its stamp is still readable, but nothing can be created in it: Ready
+    here would break the fail-closed contract the provision call exists for -
+    the accepted deploy would die against a namespace being deleted."""
+    settings = _settings(tmp_path)
+    digest = TemplateSet.load(settings.templates_dir).digest
+    live = _live_namespace("payments-serverless", stamp=digest, deleting=True)
+    clusters = [_Cluster("central", live_namespace=live)]
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 502
+    assert "terminating" in response.json()["error"]["details"][0]["message"]
+    assert clusters[0].applied == []
+
+
+def test_provision_clears_the_gc_clock(tmp_path):
+    """The caller is about to deploy: an empty-since clock left running would
+    let the sweep delete the namespace under the just-accepted deploy."""
+    from common.labels import ANNOTATION_EMPTY_SINCE
+
+    settings = _settings(tmp_path)
+    digest = TemplateSet.load(settings.templates_dir).digest
+    live = _live_namespace(
+        "payments-serverless",
+        stamp=digest,
+        annotations={ANNOTATION_EMPTY_SINCE: "2026-08-01T00:00:00+00:00"},
+    )
+    clusters = [_Cluster("central", live_namespace=live)]
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 200
+    assert clusters[0].applied == [], "the warm path stays a read plus the clock clear"
+    assert clusters[0].patched == [
+        (
+            "payments-serverless",
+            {"metadata": {"annotations": {ANNOTATION_EMPTY_SINCE: None}}},
+        )
+    ]
+
+
+def test_a_cold_converge_also_clears_the_gc_clock(tmp_path):
+    from common.labels import ANNOTATION_EMPTY_SINCE
+
+    settings = _settings(tmp_path)
+    live = _live_namespace(
+        "payments-serverless",
+        stamp="stale-hash",
+        annotations={ANNOTATION_EMPTY_SINCE: "2026-08-01T00:00:00+00:00"},
+    )
+    clusters = [_Cluster("central", live_namespace=live)]
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 200
+    assert clusters[0].namespaces, "the stale stamp forced a real converge"
+    assert clusters[0].patched == [
+        (
+            "payments-serverless",
+            {"metadata": {"annotations": {ANNOTATION_EMPTY_SINCE: None}}},
+        )
+    ]
 
 
 @pytest.mark.parametrize(

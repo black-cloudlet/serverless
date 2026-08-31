@@ -206,16 +206,18 @@ class TenantNamespaceConfig(BaseModel):
         token: Shared token presented to (and checked by) the provision
             endpoint. Empty disables the check; the NetworkPolicy is the
             primary control.
-        timeout: Budget for one provision call. A create waits on it, so it
-            stays under the cluster op timeout - but a brand-new group's first
-            provision applies the full template set in every region, so it is
-            not seconds either.
+        timeout: Budget for one provision call. It must exceed the
+            controller's own converge budget (``cluster_op_timeout``, 60s for
+            the whole fan-out): a brand-new group's first provision applies
+            the full template set in every region, and a caller that gives up
+            before the work it asked for can finish turns that first create
+            into a guaranteed 503.
     """
 
     suffix: str = NAMESPACE_SUFFIX
     controller_url: str = ""
     token: str = ""
-    timeout: float = 30.0
+    timeout: float = 75.0
 
     def namespace_for(self, group: str) -> str:
         """The group's namespace under this config's suffix.

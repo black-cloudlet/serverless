@@ -214,18 +214,23 @@ def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) ->
     )
     # Same-named mappings can coexist across namespaces (Knative marks the
     # loser DomainAlreadyClaimed, but the object exists), so the verdict must
-    # come from the whole listing: any foreign mapping means taken, whatever
-    # position the apiserver listed it at.
+    # come from the whole listing, in whatever order the apiserver returns it:
+    # the caller's OWN mapping anywhere means available - a leftover loser
+    # object must not lock the winner out of its own updates - and otherwise
+    # any foreign mapping means taken.
+    foreign = None
     for mapping in mappings:
         meta = mapping.get("metadata") or {}
         labels = meta.get("labels") or {}
-        # The workload's own mapping counts as available (the update path).
         if labels.get(LABEL_WORKLOAD) == name and labels.get(LABEL_GROUP) == group:
-            continue
+            return None
         # Who holds it, and where: the owner can be in a namespace the caller
         # cannot see, so "already assigned" alone would be a dead end to debug.
-        return f"{labels.get(LABEL_WORKLOAD) or '?'} in namespace {meta.get('namespace') or '?'}"
-    return None
+        if foreign is None:
+            foreign = (
+                f"{labels.get(LABEL_WORKLOAD) or '?'} in namespace {meta.get('namespace') or '?'}"
+            )
+    return foreign
 
 
 def assert_all_regions_checked(statuses: list[RegionStatus], action: str) -> None:

@@ -41,7 +41,6 @@ the accepted backstop for one that re-pulls after its tags are pruned
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Iterable
 
@@ -50,6 +49,7 @@ from cloudlet_apis.logging import get_logger
 from build_controller.config import BuildControllerSettings
 from common import kpack
 from common.labels import LABEL_WORKLOAD
+from common.loop import PeriodicSweep
 from common.names import digest_of, tag_of
 from common.registry import RegistryClient, TagInfo, repository_path
 
@@ -91,7 +91,7 @@ def garbage(
     return deletable[keep:]
 
 
-class TagGC:
+class TagGC(PeriodicSweep):
     """The periodic sweep: every function's repository, against live state.
 
     Constructed with the *resolved* region name - which cluster this controller
@@ -105,10 +105,13 @@ class TagGC:
     per interval - so an operator reads the state off the log instead of
     deducing it from silence.
 
-    The sweep itself runs on its own daemon thread: it is registry-bound I/O
-    that must never sit between the reconcile loop's relist and its watch,
-    where every minute spent is a minute no digest rolls out.
+    The pacing and thread scaffolding live on :class:`common.loop.PeriodicSweep`:
+    the sweep is registry-bound I/O that must never sit between the reconcile
+    loop's relist and its watch, where every minute spent is a minute no digest
+    rolls out.
     """
+
+    label = "tag GC"
 
     def __init__(self, settings: BuildControllerSettings, region: str):
         """Resolve the region's registry and decide, audibly, whether to run.
@@ -117,18 +120,13 @@ class TagGC:
             settings: Controller settings (registry, regions, pacing, GC knobs).
             region: The resolved local region name.
         """
-        self._region = region
+        super().__init__(settings.gc_interval_seconds, region, "tag-gc")
         self._registry = settings.registry_for(region)
         self._keep = settings.gc_keep_builds
-        self._interval = settings.gc_interval_seconds
         # Silent off: the operator asked for no GC, once at startup is enough.
         self._configured_off = not settings.gc_enabled
         # Loud off: a state the operator likely wants fixed, re-said per interval.
         self._off_reason = self._blocked(settings, region)
-        # Monotonic deadline; zero means the first resync sweeps immediately,
-        # so a restarted controller shows its GC working within one pass.
-        self._next_sweep = 0.0
-        self._thread: threading.Thread | None = None
         if self._configured_off:
             logger.info("tag GC off: disabled by configuration")
         elif self._off_reason:
@@ -181,62 +179,13 @@ class TagGC:
             )
         return None
 
-    def maybe_sweep(self, images: list[dict]) -> None:
-        """Start a sweep when due, and never raise into the reconcile loop.
+    def enabled(self) -> bool:
+        """Silent when the operator turned deletion off."""
+        return not self._configured_off
 
-        Called with each resync's listing, so being due costs no second LIST.
-        The sweep runs on its own daemon thread - the reconcile loop's job,
-        rolling out digests, must not wait on registry I/O - and the next
-        deadline is set when one *starts*, so a failing registry retries at
-        the next due resync rather than every resync.
-
-        Args:
-            images: The kpack Images the resync just listed.
-        """
-        if self._configured_off:
-            return
-        now = time.monotonic()
-        if now < self._next_sweep:
-            return
-        self._next_sweep = now + self._interval
-        if self._off_reason:
-            logger.warning("tag GC off: %s", self._off_reason)
-            return
-        if self._thread is not None and self._thread.is_alive():
-            # A sweep outliving its own interval is a registry problem worth a
-            # line; starting a second would race the first over the same tags.
-            logger.warning(
-                "tag GC: previous sweep in '%s' still running after %ds; not starting another",
-                self._region,
-                self._interval,
-            )
-            return
-        self._thread = threading.Thread(
-            target=self._run, args=(list(images),), name="tag-gc", daemon=True
-        )
-        self._thread.start()
-
-    def wait(self, timeout: float | None = None) -> None:
-        """Block until the running sweep (if any) finishes.
-
-        For tests and for anyone sequencing against the sweep; the loop itself
-        never calls it.
-
-        Args:
-            timeout: Seconds to wait at most, or None for as long as it takes.
-        """
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout)
-
-    def _run(self, images: list[dict]) -> None:
-        """The thread body: one sweep, with the loop's no-raise guarantee."""
-        try:
-            self.sweep(images)
-        except Exception:  # noqa: BLE001 - a failed sweep is logged, not the loop's end
-            logger.exception(
-                "tag GC: sweep failed in '%s'; retrying in ~%ds", self._region, self._interval
-            )
+    def blocked(self) -> str | None:
+        """The loud off-reasons, re-said per interval (see the class docstring)."""
+        return self._off_reason
 
     def sweep(self, images: Iterable[dict]) -> None:
         """Prune every function's repository, one connection for the lot.

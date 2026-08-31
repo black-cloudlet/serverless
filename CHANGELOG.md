@@ -36,14 +36,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   also materializes the kpack-registry pull credential per namespace, which the
   per-function build accounts reference.
 - **The provisioning vocabulary replaces "ensure"** in config and the chart:
-  `tenantNamespaces.ensureTimeout` is `provisionTimeout` (default raised to 30s
-  - a new group's first provision applies the full template set in every
-  region), and `controller.ensureWorkers` is `provisionWorkers`. The API now
-  provisions once per accepted request - updates included, so a region added
-  after a group's first create gets its namespace - and a provision of an
-  up-to-date namespace costs the controller one read per region. A controller
-  that answers a provision with a 4xx surfaces as `PROVISIONING_REJECTED`
-  (config mismatch between the two ends), no longer as a retryable 503.
+  `tenantNamespaces.ensureTimeout` is `provisionTimeout` (default raised to
+  75s, past the controller's own 60s converge budget - a new group's first
+  provision applies the full template set in every region), and
+  `controller.ensureWorkers` is `provisionWorkers`. The API now provisions
+  once per accepted request - updates included, so a region added after a
+  group's first create gets its namespace, though an update tolerates a
+  controller outage (the workload's existence proves the namespace) where a
+  create still fails closed. A provision of an up-to-date namespace costs the
+  controller one read per region, refuses a namespace that is terminating,
+  and clears the GC's empty-since clock so the sweep can never delete a
+  namespace under a just-accepted deploy. A controller that answers a
+  provision with a 4xx surfaces as `PROVISIONING_REJECTED` (config mismatch
+  between the two ends), no longer as a retryable 503.
 
 ### Added (namespace GC)
 

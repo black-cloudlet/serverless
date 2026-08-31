@@ -150,10 +150,11 @@ tenantNamespaces:
   # side, the API would deploy into a namespace nobody provisions.
   suffix: -serverless
   # How long the API waits for the provision call before failing a deploy
-  # closed. A create waits on this, so it stays under the cluster op timeout -
-  # but a brand-new group's first provision applies the full template set in
-  # every region, so it is not seconds either.
-  provisionTimeout: 30
+  # closed. Must exceed the controller's own converge budget (the cluster op
+  # timeout, 60s for the whole fan-out): a brand-new group's first provision
+  # applies the full template set in every region, and giving up before the
+  # controller can finish would turn exactly that first create into a 503.
+  provisionTimeout: 75
   # -- Labels added to every tenant namespace, on top of `namespaces.labels`.
   # labels:
   #   pod-security.kubernetes.io/enforce: restricted
@@ -423,7 +424,8 @@ build:
     # Pull-only, and needed on BOTH build accounts: `export` pulls the run image.
     pullSecret:
       name: kpack-registry-creds
-      # False when the Secret is provided out-of-band.
+      # Same caveat as registrySecret.create: out-of-band now means every
+      # runtime-created tenant namespace, not one static one.
       create: true
       key: cloudlet/platforms/serverless
       usernameProperty: kpack-registry-username
@@ -439,7 +441,11 @@ build:
     # path is per region.
     registrySecret:
       name: serverless-registry-creds
-      # False when the Secret is provided out-of-band.
+      # False renders no ExternalSecret - but tenant namespaces are created at
+      # runtime, so out-of-band means something of yours must place this
+      # Secret in EVERY {group}{suffix} namespace as it appears. With nothing
+      # doing that, every function build and image pull fails; leave this true
+      # unless you have such a replicator.
       create: true
       key: "cloudlet/platforms/serverless/{{ .Values.global.region }}"
       usernameProperty: registry-username

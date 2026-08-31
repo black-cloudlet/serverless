@@ -248,3 +248,132 @@ async def test_the_cluster_probes_never_call_the_controller(monkeypatch):
     )
 
     assert _Client.calls == []
+
+
+# --- the accept paths are actually wired to the controller ------------------
+
+
+def _container_service(monkeypatch, client, existing=None):
+    from api.services.container import ContainerService
+    from tests.factories import _ApplyCluster
+
+    client.install(monkeypatch)
+    cluster = _ApplyCluster("region-a", dict(existing or {}))
+    svc = _workload_service({"region-a": cluster})
+    svc.settings.tenant_namespaces.controller_url = "http://tenant-controller:8080"
+    return ContainerService(svc), cluster
+
+
+def _existing_ksvc(name, group):
+    from api.models.common import Scaling
+    from api.services.manifests.ksvc import build_ksvc
+    from common.config import CABundleConfig
+
+    ca = CABundleConfig()
+    return build_ksvc(
+        name=name,
+        group=group,
+        owner="alice",
+        image="reg/x:1",
+        offering="container",
+        host=f"{name}-{group}.serverless.example.com",
+        env=[],
+        volumes=[],
+        scaling=Scaling(),
+        size="small",
+        ca_config_map=ca.config_map,
+        ca_mount_path=ca.mount_path,
+        ca_file=ca.file,
+    )
+
+
+async def test_a_create_provisions_before_it_is_accepted(monkeypatch):
+    """The wiring itself: dropping the provision call from accept would pass
+    every isolated test while creates landed in unprovisioned namespaces."""
+    from cloudlet_apis.auth import Principal
+    from fastapi import BackgroundTasks
+
+    from api.models.container import ContainerCreate
+
+    csvc, _cluster = _container_service(
+        monkeypatch, _Client(response=_ok(("region-a",), namespace="team-serverless"))
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await csvc.accept(
+        "team", ContainerCreate(name="app", image="reg/x:1", port=8080), user, BackgroundTasks()
+    )
+
+    assert [c["url"] for c in _Client.calls] == [
+        "http://tenant-controller:8080/groups/team/namespace"
+    ]
+
+
+async def test_an_update_provisions_too(monkeypatch):
+    """A region added after the group's first create gets its namespace here."""
+    from cloudlet_apis.auth import Principal
+    from fastapi import BackgroundTasks
+
+    from api.models.container import ContainerUpdate
+
+    csvc, _cluster = _container_service(
+        monkeypatch,
+        _Client(response=_ok(("region-a",), namespace="team-serverless")),
+        existing={"app": _existing_ksvc("app", "team")},
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    await csvc.accept_update(
+        "team", "app", ContainerUpdate(image="reg/x:2", port=8080), user, BackgroundTasks()
+    )
+
+    assert [c["url"] for c in _Client.calls] == [
+        "http://tenant-controller:8080/groups/team/namespace"
+    ]
+
+
+async def test_an_update_tolerates_a_controller_outage(monkeypatch):
+    """The workload just loaded proves the namespace exists: an unreachable
+    controller must not block an update - or a rollback - of something already
+    running. A create still fails closed; a refusal (4xx) still propagates."""
+    from cloudlet_apis.auth import Principal
+    from fastapi import BackgroundTasks
+
+    from api.models.container import ContainerUpdate
+
+    csvc, _cluster = _container_service(
+        monkeypatch,
+        _Client(boom=RuntimeError("connection refused")),
+        existing={"app": _existing_ksvc("app", "team")},
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+    background = BackgroundTasks()
+
+    resp = await csvc.accept_update(
+        "team", "app", ContainerUpdate(image="reg/x:2", port=8080), user, background
+    )
+
+    assert resp.status == "Pending"
+    assert background.tasks, "the update proceeded despite the outage"
+
+
+async def test_a_rejection_still_blocks_an_update(monkeypatch):
+    """Outage tolerance is not rejection tolerance: a 4xx means the two ends
+    disagree about configuration, and deploying anyway could land wrong."""
+    from cloudlet_apis.auth import Principal
+    from fastapi import BackgroundTasks
+
+    from api.models.container import ContainerUpdate
+
+    refusal = _Response({"error": {"message": "bad token"}}, status=401)
+    csvc, _cluster = _container_service(
+        monkeypatch,
+        _Client(response=refusal),
+        existing={"app": _existing_ksvc("app", "team")},
+    )
+    user = Principal(subject="u", username="alice", groups=["team"])
+
+    with pytest.raises(ProvisioningRejectedError):
+        await csvc.accept_update(
+            "team", "app", ContainerUpdate(image="reg/x:2", port=8080), user, BackgroundTasks()
+        )

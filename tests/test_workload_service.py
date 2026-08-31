@@ -2741,3 +2741,33 @@ async def test_get_reads_every_regions_build_concurrently():
 
     (a_start, a_end), (b_start, b_end) = spans["region-a"], spans["region-b"]
     assert a_start < b_end and b_start < a_end, "the per-region build reads did not overlap"
+
+
+async def test_the_callers_own_mapping_wins_over_a_leftover_loser():
+    """Two groups raced a create; Knative marked one mapping the loser but the
+    object survives. The caller's own mapping anywhere in the listing means
+    available - a leftover loser must not lock the winner out of its own
+    updates - whatever order the apiserver lists them in."""
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
+
+    host = "app-team.serverless.example.com"
+    loser = {
+        "metadata": {
+            "name": host,
+            "namespace": "other-serverless",
+            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "other"},
+        }
+    }
+    own = {
+        "metadata": {
+            "name": host,
+            "namespace": "team-serverless",
+            "labels": {LABEL_WORKLOAD: "app", LABEL_GROUP: "team"},
+        }
+    }
+    # The foreign mapping listed FIRST - the order that used to decide.
+    svc = _workload_service(
+        {"region-a": _FakeCluster("region-a", existing={"a-loser": loser, "b-own": own})}
+    )
+
+    await svc.assert_host_available(host, "app", "team", svc.targets_for("team"))

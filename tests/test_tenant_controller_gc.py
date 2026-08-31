@@ -53,7 +53,13 @@ class _Cluster:
             assert label_selector == f"{LABEL_MANAGED_BY}={TENANT_CONTROLLER_VALUE}"
             return list(self._namespaces)
         if kind == ResourceKind.KNATIVE_SERVICE:
-            return list(self._workloads.get(namespace, []))
+            # The sweep reads one cluster-wide listing, never per namespace.
+            assert namespace is None
+            return [
+                {**w, "metadata": {**(w.get("metadata") or {}), "namespace": ns}}
+                for ns, items in self._workloads.items()
+                for w in items
+            ]
         raise AssertionError(f"unexpected read of {kind}")
 
     def patch(self, kind, name, body, *, namespace):
@@ -190,19 +196,17 @@ def test_only_the_managed_label_selector_is_ever_listed():
 def test_one_failing_namespace_does_not_end_the_sweep(monkeypatch):
     """The listing order is stable, so an aborting error would starve every
     namespace after the failing one, deterministically."""
-    boom = _namespace("boom-serverless", annotations=_stamped(4000))
+    boom = _namespace("boom-serverless")  # unstamped: the sweep will try to stamp it
     fine = _namespace("fine-serverless", annotations=_stamped(4000))
     cluster = _Cluster([boom, fine])
-    real_get = cluster.get
+    real_patch = cluster.patch
 
-    def get(kind, name=None, label_selector=None, *, namespace, field_selector=None):
-        if kind == ResourceKind.KNATIVE_SERVICE and namespace == "boom-serverless":
+    def patch(kind, name, body, *, namespace):
+        if name == "boom-serverless":
             raise RuntimeError("apiserver hiccup")
-        return real_get(
-            kind, name, label_selector, namespace=namespace, field_selector=field_selector
-        )
+        return real_patch(kind, name, body, namespace=namespace)
 
-    cluster.get = get
+    cluster.patch = patch
     _gc(cluster, monkeypatch=monkeypatch).sweep()
 
     assert cluster.deleted == ["fine-serverless"]
@@ -210,9 +214,9 @@ def test_one_failing_namespace_does_not_end_the_sweep(monkeypatch):
 
 def test_a_read_failure_never_deletes(monkeypatch):
     """An unreadable workload listing is not an empty one - the fail-closed
-    rule, on the destructive side."""
+    rule, on the destructive side: the whole sweep aborts (and is contained
+    by the thread body), deleting nothing."""
     cluster = _Cluster([_namespace("team-serverless", annotations=_stamped(4000))])
-    cluster._workloads = None  # any read of it raises
 
     def get(kind, name=None, label_selector=None, *, namespace, field_selector=None):
         if kind == ResourceKind.NAMESPACE:
@@ -220,7 +224,8 @@ def test_a_read_failure_never_deletes(monkeypatch):
         raise RuntimeError("apiserver unreachable")
 
     cluster.get = get
-    _gc(cluster, monkeypatch=monkeypatch).sweep()
+    with pytest.raises(RuntimeError, match="apiserver unreachable"):
+        _gc(cluster, monkeypatch=monkeypatch).sweep()
 
     assert cluster.deleted == []
 

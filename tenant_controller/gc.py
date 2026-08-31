@@ -27,7 +27,6 @@ erase a stamp this sweep wrote.
 
 from __future__ import annotations
 
-import threading
 import time
 from datetime import UTC, datetime
 
@@ -36,19 +35,24 @@ from cloudlet_apis.logging import get_logger
 from common.cluster import Cluster, ResourceKind
 from common.errors import NotFoundError
 from common.labels import ANNOTATION_EMPTY_SINCE, ANNOTATION_KEEP
+from common.loop import PeriodicSweep
 from tenant_controller.config import TenantControllerSettings
-from tenant_controller.reconcile import TENANT_CONTROLLER_SELECTOR
+from tenant_controller.reconcile import managed_namespaces
 
 logger = get_logger(__name__)
 
 
-class NamespaceGC:
+class NamespaceGC(PeriodicSweep):
     """The periodic sweep over this cluster's managed namespaces.
 
-    The sweep runs on its own daemon thread, like ``TagGC``: it is apiserver
-    I/O that must never sit inside the reconcile loop's pass, where every
-    minute spent is a minute no template change rolls out.
+    The pacing and thread scaffolding live on :class:`common.loop.PeriodicSweep`:
+    the sweep is apiserver I/O that must never sit inside the reconcile loop's
+    pass, where every minute spent is a minute no template change rolls out.
+    Never disabled outright - stamping runs even when deletion is off, so an
+    operator enabling GC later does not restart every clock.
     """
+
+    label = "namespace GC"
 
     def __init__(self, settings: TenantControllerSettings, cluster: Cluster):
         """Hold the knobs and say, audibly, whether this GC will delete.
@@ -57,13 +61,10 @@ class NamespaceGC:
             settings: The GC knobs (enabled, interval, grace).
             cluster: The local cluster - the only one this GC touches.
         """
+        super().__init__(settings.gc_interval_seconds, cluster.region, "namespace-gc")
         self._cluster = cluster
         self._enabled = settings.gc_enabled
-        self._interval = settings.gc_interval_seconds
         self._grace = settings.gc_grace_seconds
-        # Zero: the first pass sweeps immediately.
-        self._next_sweep = 0.0
-        self._thread: threading.Thread | None = None
         if not self._enabled:
             logger.info(
                 "namespace GC off: disabled by configuration (tenantNamespaces.gc.enabled); "
@@ -77,47 +78,6 @@ class NamespaceGC:
                 self._interval,
             )
 
-    def maybe_sweep(self) -> None:
-        """Start a sweep when due; never raise into the reconcile loop.
-
-        The next deadline is set when a sweep *starts*, so a failing apiserver
-        retries at the next due pass rather than every pass. Stamping runs
-        even with deletion disabled - the record of "empty since" is what lets
-        an operator enable GC later without restarting the clock.
-        """
-        now = time.monotonic()
-        if now < self._next_sweep:
-            return
-        self._next_sweep = now + self._interval
-        if self._thread is not None and self._thread.is_alive():
-            # A second sweep would race the first over the same namespaces.
-            logger.warning(
-                "namespace GC: previous sweep in '%s' still running after %ds; "
-                "not starting another",
-                self._cluster.region,
-                self._interval,
-            )
-            return
-        self._thread = threading.Thread(target=self._run, name="namespace-gc", daemon=True)
-        self._thread.start()
-
-    def wait(self, timeout: float | None = None) -> None:
-        """Block until the running sweep (if any) finishes - for tests."""
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout)
-
-    def _run(self) -> None:
-        """The thread body: one sweep, with the loop's no-raise guarantee."""
-        try:
-            self.sweep()
-        except Exception:  # noqa: BLE001 - a failed sweep is logged, not the loop's end
-            logger.exception(
-                "namespace GC: sweep failed in '%s'; retrying in ~%ds",
-                self._cluster.region,
-                self._interval,
-            )
-
     def sweep(self) -> None:
         """One pass over every managed namespace in the local cluster.
 
@@ -126,15 +86,20 @@ class NamespaceGC:
         every namespace after the failing one, deterministically.
         """
         started = time.monotonic()
-        namespaces = self._cluster.get(
-            ResourceKind.NAMESPACE, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=None
-        )
+        namespaces = managed_namespaces(self._cluster)
+        # One cluster-wide list; each namespace's emptiness is then a set
+        # lookup instead of its own apiserver round trip. A failed list ends
+        # the sweep (caught by the caller) - unreadable is not empty.
+        occupied = {
+            (w.get("metadata") or {}).get("namespace")
+            for w in self._cluster.get(ResourceKind.KNATIVE_SERVICE, namespace=None)
+        }
         seen = deleted = failed = 0
         for ns in namespaces:
             seen += 1
             name = (ns.get("metadata") or {}).get("name", "")
             try:
-                deleted += self._sweep_one(ns, name)
+                deleted += self._sweep_one(ns, name, name in occupied)
             except Exception:  # noqa: BLE001 - the next namespace still gets its sweep
                 failed += 1
                 logger.exception(
@@ -149,12 +114,16 @@ class NamespaceGC:
             time.monotonic() - started,
         )
 
-    def _sweep_one(self, ns: dict, name: str) -> int:
+    def _sweep_one(self, ns: dict, name: str, occupied: bool) -> int:
         """Stamp, clear, or collect one namespace.
 
         Args:
             ns: The Namespace object, as the sweep listed it.
             name: Its name, for addressing and logs.
+            occupied: Whether the cluster-wide listing saw a Knative Service
+                here. Emptiness means none - everything else in the namespace
+                exists for one, or for the template set the delete takes with
+                it.
 
         Returns:
             1 if the namespace was deleted, else 0.
@@ -164,10 +133,7 @@ class NamespaceGC:
             return 0  # already on its way out
         annotations = meta.get("annotations") or {}
 
-        # Empty means no Knative Services: everything else in the namespace
-        # exists for one, or for the template set the delete may take with it.
-        workloads = self._cluster.get(ResourceKind.KNATIVE_SERVICE, namespace=name)
-        if workloads:
+        if occupied:
             if ANNOTATION_EMPTY_SINCE in annotations:
                 self._annotate(name, {ANNOTATION_EMPTY_SINCE: None})
                 logger.info("namespace GC: '%s' has workloads again; stamp cleared", name)
