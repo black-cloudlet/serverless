@@ -1,4 +1,4 @@
-"""The tenant-namespace controller (docs/proposals/namespace-per-group.md).
+"""The tenant-namespace controller (docs/ARCHITECTURE.md - Tenant Namespaces).
 
 A second deployment beside the API, like the build controller, existing for
 privilege separation: creating and deleting Namespaces and RoleBindings is

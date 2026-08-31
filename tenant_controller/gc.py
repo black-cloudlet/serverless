@@ -61,8 +61,7 @@ class NamespaceGC:
         self._enabled = settings.gc_enabled
         self._interval = settings.gc_interval_seconds
         self._grace = settings.gc_grace_seconds
-        # Zero, so the first pass sweeps immediately: a restarted controller
-        # shows its GC working (or says why not) within one resync.
+        # Zero: the first pass sweeps immediately.
         self._next_sweep = 0.0
         self._thread: threading.Thread | None = None
         if not self._enabled:
@@ -91,8 +90,7 @@ class NamespaceGC:
             return
         self._next_sweep = now + self._interval
         if self._thread is not None and self._thread.is_alive():
-            # A sweep outliving its own interval is an apiserver problem worth
-            # a line; starting a second would race the first.
+            # A second sweep would race the first over the same namespaces.
             logger.warning(
                 "namespace GC: previous sweep in '%s' still running after %ds; "
                 "not starting another",
@@ -166,9 +164,8 @@ class NamespaceGC:
             return 0  # already on its way out
         annotations = meta.get("annotations") or {}
 
-        # Emptiness means no Knative Services: every workload is one, and
-        # everything else in the namespace exists for one (or for the template
-        # set, which the delete may take with it).
+        # Empty means no Knative Services: everything else in the namespace
+        # exists for one, or for the template set the delete may take with it.
         workloads = self._cluster.get(ResourceKind.KNATIVE_SERVICE, namespace=name)
         if workloads:
             if ANNOTATION_EMPTY_SINCE in annotations:

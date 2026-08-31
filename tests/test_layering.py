@@ -103,7 +103,12 @@ def test_the_build_controller_serves_no_http_and_carries_no_web_framework(module
 
 @pytest.mark.parametrize(
     "module",
-    ["tenant_controller.reconcile", "tenant_controller.templates", "tenant_controller.provision"],
+    [
+        "tenant_controller.reconcile",
+        "tenant_controller.templates",
+        "tenant_controller.provision",
+        "tenant_controller.gc",
+    ],
 )
 def test_the_tenant_controller_loop_carries_no_web_framework(module):
     """Only ``tenant_controller.api`` may reach FastAPI; the converge half must not.

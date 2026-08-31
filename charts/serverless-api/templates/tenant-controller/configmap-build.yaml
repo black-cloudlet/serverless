@@ -24,8 +24,8 @@ metadata:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
 {{- if .Values.build.scc.enabled }}
-  # The SCC grant, same ClusterRole as the legacy namespace's - the per-function
-  # build accounts the API names at request time live here now.
+  # The SCC grant, to the namespace's whole ServiceAccount group - the
+  # per-function build accounts the API names at request time live here.
   60-build-scc.yaml: |
     apiVersion: rbac.authorization.k8s.io/v1
     kind: RoleBinding

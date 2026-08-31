@@ -1,6 +1,6 @@
 {{- if .Values.tenantNamespaces.controller.enabled }}
 {{- $p := .Values.tenantNamespaces.controller }}
-# Creates and converges the per-group namespaces (docs/proposals/namespace-per-group.md).
+# Creates and converges the per-group namespaces (docs/ARCHITECTURE.md - Tenant Namespaces).
 # Two jobs in one process, sharing the cluster clients and the mounted set: a
 # reconcile loop over THIS cluster, and the provision endpoint the API calls before
 # a create - which writes to every region, because a create must not land in a
