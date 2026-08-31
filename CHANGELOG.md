@@ -7,6 +7,54 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (tenant namespaces)
+
+- **BREAKING: workloads now deploy into one namespace per SSO group**
+  (`{group}-serverless`), not the shared `serverless-workloads` namespace, and a
+  workload's cluster objects are named plain `{name}` - the namespace scopes
+  them, so the platform's primary key is (namespace, name) and the same name can
+  exist in two groups. The combined `{name}-{group} <= 63` rule now binds only
+  the **default host**; a caller-supplied `hostname` lifts it (`/info` `naming`
+  says so). Namespaces are provisioned at runtime by the new **tenant
+  controller** (its own Deployment, image and certificate): the API asks it to
+  provision the group's namespace before every accepted deploy and fails closed
+  when it cannot confirm every region, and a reconcile loop converges existing
+  namespaces to the chart's tenant template set on every sync. There is no
+  migration: pre-GA, redeploying the test workloads is the cutover.
+- **BREAKING: the legacy `serverless-workloads` namespace is gone from the
+  chart** - its Namespace, NetworkPolicies, CA-bundle ConfigMap, RoleBinding,
+  SCC binding and credential ExternalSecrets are no longer rendered (tenant
+  namespaces carry their own from the template set), and the
+  `namespaces.workloads`/`namespaces.workloadsLabels` values and
+  `SERVERLESS_WORKLOADS_NAMESPACE` setting no longer exist. Deploy note: after
+  syncing, delete the namespace in each cluster
+  (`kubectl delete ns serverless-workloads`).
+- **Builders are now ClusterBuilders.** A namespaced Builder is resolvable only
+  in an Image's own namespace, and tenant namespaces are created at runtime -
+  so builders go cluster-scoped, with their push credential on the
+  `kpack-builder` ServiceAccount in the API namespace. The tenant template set
+  also materializes the kpack-registry pull credential per namespace, which the
+  per-function build accounts reference.
+- **The provisioning vocabulary replaces "ensure"** in config and the chart:
+  `tenantNamespaces.ensureTimeout` is `provisionTimeout` (default raised to 30s
+  - a new group's first provision applies the full template set in every
+  region), and `controller.ensureWorkers` is `provisionWorkers`. The API now
+  provisions once per accepted request - updates included, so a region added
+  after a group's first create gets its namespace - and a provision of an
+  up-to-date namespace costs the controller one read per region. A controller
+  that answers a provision with a 4xx surfaces as `PROVISIONING_REJECTED`
+  (config mismatch between the two ends), no longer as a retryable 503.
+
+### Added (namespace GC)
+
+- **Empty tenant namespaces are collected, slowly and loudly.** The tenant
+  controller sweeps its own cluster's managed namespaces
+  (`tenantNamespaces.gc`, off by default): one continuously empty of workloads
+  past the grace period (default a day) is deleted, a workload appearing
+  clears the clock, and the `serverless.platform/keep` annotation always wins.
+  Stamping runs even while deletion is disabled, so enabling GC later does not
+  restart every clock.
+
 ### Changed (name limits)
 
 - **Names and groups now get the full 63 characters, bounded only by the pair.**

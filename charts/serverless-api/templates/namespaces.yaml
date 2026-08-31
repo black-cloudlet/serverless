@@ -1,19 +1,13 @@
-# Namespaces owned by this chart:
-#   - {{ .Values.namespaces.api }}: where the API runs
-#   - {{ .Values.namespaces.workloads }}: where the API creates functions/containers
-# Guarded with ArgoCD sync-options so they are never pruned or deleted when the
+# The API's own namespace - the one namespace this chart creates directly.
+# Workload namespaces are per group ({group}{tenantNamespaces.suffix}),
+# provisioned at runtime by the tenant controller from the tenant template set.
+# Guarded with ArgoCD sync-options so it is never pruned or deleted when the
 # Application is synced or removed.
-{{- $perNs := dict
-      .Values.namespaces.api (.Values.namespaces.apiLabels | default dict)
-      .Values.namespaces.workloads (.Values.namespaces.workloadsLabels | default dict) }}
-{{- range $ns, $extra := $perNs }}
----
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ $ns }}
+  name: {{ .Values.namespaces.api }}
   labels:
-    {{- include "serverless-api.namespaceLabels" (dict "root" $ "extra" $extra) | nindent 4 }}
+    {{- include "serverless-api.namespaceLabels" (dict "root" $ "extra" (.Values.namespaces.apiLabels | default dict)) | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-options: Delete=false,Prune=false
-{{- end }}

@@ -137,24 +137,23 @@ async def test_a_host_held_by_the_same_name_in_another_group_still_conflicts():
 async def test_the_host_conflict_says_who_holds_it_and_where():
     """The owner can sit in a namespace the caller cannot see.
 
-    Including the legacy one: a pre-cutover DomainMapping still carries the old
-    `{name}-{group}` workload label, so a re-create after the cutover conflicts
-    with something the caller has no way to find from "already assigned".
+    The owner may sit in a namespace the caller cannot see, so "already
+    assigned" alone would be a dead end to debug.
     """
     from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
     from common.errors import ConflictError
 
     host = "app-team.serverless.example.com"
-    legacy = {
+    foreign = {
         "metadata": {
             "name": host,
-            "namespace": "serverless-workloads",
-            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "team"},
+            "namespace": "other-serverless",
+            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "other"},
         }
     }
-    svc = _workload_service({"region-a": _FakeCluster("region-a", existing={host: legacy})})
+    svc = _workload_service({"region-a": _FakeCluster("region-a", existing={host: foreign})})
 
-    with pytest.raises(ConflictError, match="app-team in namespace serverless-workloads"):
+    with pytest.raises(ConflictError, match="app-team in namespace other-serverless"):
         await svc.assert_host_available(
             host, "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
         )

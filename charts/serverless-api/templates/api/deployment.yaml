@@ -49,8 +49,6 @@ spec:
               value: {{ tpl .Values.routeDomain . | quote }}
             - name: SERVERLESS_BASE_PATH
               value: {{ .Values.basePath | quote }}
-            - name: SERVERLESS_WORKLOADS_NAMESPACE
-              value: {{ .Values.namespaces.workloads | quote }}
             # Where a group's workloads live, and how to reach the component
             # that creates those namespaces. The suffix is read by both ends;
             # an empty URL skips the provision call, which is the dev posture.

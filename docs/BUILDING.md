@@ -339,7 +339,7 @@ push builder images and function images to different places.
 ### Build pod resources
 
 A build is far heavier than the function it produces - a dependency resolve plus a compile
-- and it now draws on the workloads namespace quota (DEPLOYING.md: Chart Topology). `build.resources` sets
+- and it draws on its namespace's quota (DEPLOYING.md: Chart Topology). `build.resources` sets
 `Image.spec.build.resources`. Unset, the build pod is BestEffort and is the first thing
 evicted under node pressure.
 
@@ -491,8 +491,8 @@ Instead there are **two kinds of ServiceAccount**:
 
 | Account | Created by | Holds | Used by |
 |---------|-----------|-------|---------|
-| `kpack-builder` | the chart | both registry credentials, no git one | `Builder` objects (compose + push a builder image; never clone source) |
-| `{name}-{group}-build` | the **API**, per function | that function's git Secret **+** both registry credentials | the function's `Image` |
+| `kpack-builder` | the chart, in the API namespace | both registry credentials, no git one | `ClusterBuilder` objects (compose + push a builder image; never clone source) |
+| `{workload}-build` | the **API**, per function, in the workload's namespace | that function's git Secret **+** both registry credentials | the function's `Image` |
 
 The per-function account is created alongside the function and named on its `Image`:
 
@@ -500,12 +500,12 @@ The per-function account is created alongside the function and named on its `Ima
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: hello-payments-build
-  namespace: serverless-workloads       # with the Image and the KSVC (DEPLOYING.md: Chart Topology)
+  name: hello-build
+  namespace: payments-serverless        # with the Image and the KSVC (DEPLOYING.md: Chart Topology)
 secrets:
-  - name: serverless-registry-creds     # this region's, from the chart
+  - name: serverless-registry-creds     # this region's, from the tenant template set
   - name: kpack-registry-creds          # the run image `export` pulls
-  - name: hello-payments-git            # this function's token, from the API
+  - name: hello-git                     # this function's token, from the API
 imagePullSecrets:
   - name: serverless-registry-creds
 ```
@@ -517,7 +517,7 @@ separate host) and grants the API `serviceaccounts` write (DEPLOYING.md: RBAC).
 The account and the git Secret it names must sit in the **same namespace as the
 `Image`** - kpack resolves a build's credentials from the ServiceAccount named on the
 Image, in the Image's own namespace, and looks nowhere else. All three are in the
-workloads namespace, which is what makes one git Secret enough.
+workload's own namespace, which is what makes one git Secret enough.
 
 > **One Secret, two readers - implemented.** `{workload}-git` is
 > `kubernetes.io/basic-auth` (`username` + `password`) annotated
@@ -673,7 +673,7 @@ The `Image` says what to build; `status.latestImage` says what was built. Nothin
 request/response path can observe the second - a `STACK` or `BUILDPACK` rebuild fires with
 nobody asking (BUILDING.md: What causes a new Build) - so a control loop closes the gap.
 
-`controller/` is that loop, in its own Deployment (`{name}-build-controller`) and its own
+`build_controller/` is that loop, in its own Deployment (`{name}-build-controller`) and its own
 image. Separate Deployments because a watch loop and an HTTP API scale and restart on their
 own terms.
 
@@ -858,7 +858,7 @@ twice means.
   other, and a build can succeed in one and fail in the other - which reads as `Failed` with `reason: "BuildFailed"`
   with one region `Building`, and was impossible when a single build fed both.
 - **Build load and registry storage multiply by the number of regions.** A build pod is the
-  heaviest thing in the workloads namespace (BUILDING.md: Build pod resources), so the
+  heaviest thing in a tenant namespace (BUILDING.md: Build pod resources), so the
   quota has to be sized for concurrent builds in every region, not one.
 - **Builds depend on the kpack registry.** If it is down no region can build; every region can
   still run and serve. A strictly smaller blast radius than a single registry, which was
@@ -1100,18 +1100,18 @@ are under DEPLOYING.md: Sample Manifests.
 apiVersion: kpack.io/v1alpha2
 kind: Image
 metadata:
-  name: hello-payments                 # deterministic: the workload's own {name}-{group}
-  namespace: serverless-workloads      # owned by the KSVC (DEPLOYING.md: Chart Topology)
+  name: hello                          # deterministic: the workload's own name
+  namespace: payments-serverless       # owned by the KSVC (DEPLOYING.md: Chart Topology)
   labels:                              # common/labels.py
     serverless.platform/managed-by: serverless-api
-    serverless.platform/workload: hello-payments
+    serverless.platform/workload: hello
 spec:
   # {base}/{group}/{name}:{branch projected to a legal OCI tag} (BUILDING.md: Registry layout)
   tag: registry.internal/<org>/<repo>/payments/hello:main
   builder:
-    kind: Builder
+    kind: ClusterBuilder
     name: python
-  serviceAccountName: hello-payments-build   # per-function: its git token + both registry creds
+  serviceAccountName: hello-build      # per-function: its git token + both registry creds
   source:
     git:
       url: https://git.internal/payments/hello.git
@@ -1126,16 +1126,17 @@ spec:
     # NOTE: never set creationTime here - see BUILDING.md: Active/Active Behaviour
 ```
 
-### Builder (serverless-api chart, per region)
+### ClusterBuilder (serverless-api chart, per region)
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
-kind: Builder
+kind: ClusterBuilder
 metadata:
   name: python
-  namespace: serverless-workloads
 spec:
-  serviceAccountName: kpack-builder
+  serviceAccountRef:
+    name: kpack-builder
+    namespace: serverless-api
   tag: registry.internal/<org>/serverless/builders/python
   stack: { name: serverless-base, kind: ClusterStack }
   store: { name: serverless-store, kind: ClusterStore }
@@ -1188,7 +1189,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kpack-builder
-  namespace: serverless-workloads
+  namespace: serverless-api
 secrets:                       # push to this region's registry, pull stack/store
   - name: serverless-registry-creds
   - name: kpack-registry-creds
@@ -1213,7 +1214,9 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [serverless-workloads]
+              namespaceSelector:
+                matchLabels:
+                  serverless.platform/managed-by: serverless-tenant-controller
               selector:
                 matchExpressions:
                   - { key: kpack.io/build, operator: Exists }

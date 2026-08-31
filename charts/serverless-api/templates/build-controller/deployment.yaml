@@ -47,8 +47,6 @@ spec:
             # The region whose Images it watches; writes go to every region.
             - name: SERVERLESS_LOCAL_REGION
               value: {{ .Values.global.region | quote }}
-            - name: SERVERLESS_WORKLOADS_NAMESPACE
-              value: {{ .Values.namespaces.workloads | quote }}
             - name: SERVERLESS_RESYNC_SECONDS
               value: {{ .Values.buildController.resyncSeconds | int64 | quote }}
             # Tag GC: prune kpack's per-build tags in THIS region's registry

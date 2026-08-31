@@ -37,22 +37,23 @@ flowchart LR
     ARGO --> ESOC
 ```
 
-- **Helm chart (this repo)** templates: two `Namespace`s (`serverless-api` for the API and
-  `serverless-workloads` for customer workloads, both annotated
-  `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never prunes/deletes
-  them), the trusted-CA-bundle `ConfigMap` (both namespaces), a `serverless-api-regions`
+- **Helm chart (this repo)** templates: the API's `Namespace` (annotated
+  `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never
+  prunes/deletes it; workload namespaces are per group, provisioned at runtime by the
+  tenant controller - ARCHITECTURE.md: Tenant Namespaces), the trusted-CA-bundle
+  `ConfigMap`, a `serverless-api-regions`
   **`ConfigMap`** holding just the **regions list** - each region's name and its cluster, which
   is the whole profile, since the API server URL is derived from the cluster name and the
   base domain - loaded into both Deployments as the `SERVERLESS_REGIONS` env var (the rest of
   the config is plain `env` on each), a `serverless-api-runtimes` **`ConfigMap`** holding the
-  available runtimes, mounted as a YAML file, **default-deny `NetworkPolicies`** for the
-  workloads namespace (ARCHITECTURE.md: Networking & Exposure), **two `Deployment`s** - the API and the build
-  controller, which watches and writes this region only (BUILDING.md: Digest propagation),
-  configured under `api` and `buildController`
-  respectively, sharing the root `image` section for registry and pull policy - a `Service`
-  and `Route` for the API alone (the controller serves nothing, with a
-  configurable host/labels/annotations), `Role`/`RoleBinding` (bound to the client-cert CN
-  user, in the workloads namespace), cert-manager `Certificate`, **one ESO `ExternalSecret`
+  available runtimes, mounted as a YAML file, the **tenant template set** (the per-namespace
+  ConfigMaps: default-deny NetworkPolicies, CA bundle, RBAC, build prerequisites -
+  ARCHITECTURE.md: Tenant Namespaces), **three `Deployment`s** - the API, the build
+  controller (watches and writes this region only, BUILDING.md: Digest propagation) and the
+  tenant controller - configured under `api`, `buildController` and
+  `tenantNamespaces.controller` respectively, sharing the root `image` section for registry
+  and pull policy - a `Service` and `Route` for the API alone, ClusterRoles for the
+  client-cert CN users, cert-manager `Certificate`s, **one ESO `ExternalSecret`
   per kind of data** (each its own target Secret, referencing the pre-existing
   `ClusterSecretStore`; enabled ones `envFrom`'d into the API), and `values.yaml` describing
   the region profiles. It does **not** ship a
@@ -94,9 +95,9 @@ Platform chart                                          once per cluster
     └── build SA + ExternalSecret  the credential those two pull with
 
 serverless-api chart                            one release per cluster/region
-├── Builder x3              ...... go | python | node   (workloads namespace)
+├── ClusterBuilder x3       ...... go | python | node  [cluster-scoped]
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
-├── kpack-builder SA        ...... registry push/pull (Builders only, no git)
+├── kpack-builder SA        ...... registry push/pull (ClusterBuilders only, no git; API namespace)
 ├── ExternalSecret          ...... this region's registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
 ├── ExternalSecret          ...... the kpack registry's, pull-only (omitted when it is the region registry)
 ├── ExternalSecret          ...... every region's Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
@@ -117,26 +118,26 @@ a broken one on the Builder's status.
 
 ### Builds run beside the workloads
 
-Every build object - the `Builder`s, the per-function `Image`, its build
-`ServiceAccount` and its git `Secret` - lives in `namespaces.workloads`, the same
-namespace as the KSVC it belongs to. Three things follow, and each removes a moving part
-rather than adding one:
+A function's build objects - its `Image`, its build `ServiceAccount` and its git
+`Secret` - live in the workload's own tenant namespace, beside the KSVC they belong to
+(the `ClusterBuilder`s are cluster-scoped, shared by every namespace). Three things
+follow, and each removes a moving part rather than adding one:
 
 | | |
 |---|---|
 | **Ownership** | A function's `Image` and build `ServiceAccount` are ordinary owned resources of its KSVC, carrying the same `ownerReference` as its env Secret and DomainMapping. Deleting the function garbage-collects them - no explicit cleanup path, and no way to orphan an `Image` that would rebuild a deleted function forever (BUILDING.md: Lifecycle & Cleanup). ownerReferences cannot cross namespaces, so this only works co-located. |
 | **One git credential** | The workload's `{workload}-git` Secret is the *only* copy of the token. It is `kubernetes.io/basic-auth` carrying `kpack.io/git`, which is the shape kpack clones with, and the API reads the password back to rebuild on a later edit. Split across namespaces this had to be two Secrets holding the same token. |
-| **One registry credential per region** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in one namespace, so one `ExternalSecret` rather than a projection per namespace. The **name** is identical in every region because every region's KSVC references it; the contents are that region's, from a per-region Vault path (BUILDING.md: Registry & Git Credentials). |
+| **One registry credential per region, per namespace** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in the workload's namespace, materialized there by the tenant template set's `ExternalSecret`. The **name** is identical everywhere because every region's KSVC references it; the contents are that region's, from a per-region Vault path (BUILDING.md: Registry & Git Credentials). |
 
 The cost is that build pods - which execute tenant source and resolve tenant dependency
 trees - are scheduled beside the running functions and share their namespace boundary.
 That boundary is `networkPolicy` and quota, so the two are worth stating plainly:
 
-- **Network.** The namespace is default-deny with a narrow allowlist, which a build pod
-  would fail under: it must reach git, the registry and the artifact mirror. Rather than
-  widen the tenant allowlist, `networkPolicy.build` adds a policy selecting **only** pods
-  labelled `kpack.io/build`. NetworkPolicies are additive, so tenant pods keep exactly the
-  egress they had.
+- **Network.** Every tenant namespace is default-deny with a narrow allowlist, which a
+  build pod would fail under: it must reach git, the registry and the artifact mirror.
+  Rather than widen the tenant allowlist, the template set's build policy selects **only**
+  pods labelled `kpack.io/build`. NetworkPolicies are additive, so tenant pods keep exactly
+  the egress they had.
 - **Quota.** A build is far heavier than the function it produces, and it now draws on the
   same namespace quota. `build.resources` bounds it (BUILDING.md: Build pod resources); size the namespace quota for
   concurrent builds plus the running functions, not just the latter.
@@ -201,17 +202,17 @@ the API must not be able to do. Neither can do the other's damage:
 
 ### Network policy for build pods
 
-The workloads namespace is default-deny with a narrow allowlist, and a build pod needs
-more than a function does - git, the registry, the artifact mirror. `networkPolicy.build`
-adds a policy selecting **only** pods labelled `kpack.io/build`. NetworkPolicies are
+Every tenant namespace is default-deny with a narrow allowlist, and a build pod needs
+more than a function does - git, the registry, the artifact mirror. The template set's
+build policy selects **only** pods labelled `kpack.io/build`. NetworkPolicies are
 additive, so tenant pods keep exactly the egress they had; nothing is widened for them.
 
 An off-cluster git/registry/mirror is already covered by the namespace's external-egress
 rule. `egressNamespaces` / `egressCIDRs` are for in-cluster ones, which that rule excludes
 along with the rest of the pod and service networks.
 
-`Builder` (this chart) and `ClusterStack`/`ClusterStore` (the kpack chart) are managed by
-Helm/ArgoCD, not by the services - no runtime write permission on them.
+`ClusterBuilder` (this chart) and `ClusterStack`/`ClusterStore` (the kpack chart) are
+managed by Helm/ArgoCD, not by the services - no runtime write permission on them.
 
 ### OpenShift SCC for builds
 
@@ -232,9 +233,10 @@ security context constraint: ... .spec.securityContext.fsGroup: Invalid value:
 The tail of that message is the useful part: it names the exact ids the pod asked for, which
 is what `build.scc.runAsUser` and `.fsGroup` have to match.
 
-**This fails per function, not per install.** A Builder build runs as `kpack-builder`, but a
-function build runs as the `{workload}-build` account the API creates at request time - so the
-symptom appears on the first function build, after everything else looked healthy.
+**This fails per function, not per install.** A ClusterBuilder is composed by the kpack
+controller itself (no build pod), but a function build runs as the `{workload}-build`
+account the API creates at request time - so the symptom appears on the first function
+build, after everything else looked healthy.
 
 `build.scc.enabled` ships a `SecurityContextConstraints` granting exactly those ids and
 nothing more: no host namespaces, no added capabilities, no privilege escalation, all
@@ -242,18 +244,16 @@ capabilities dropped, `runtime/default` seccomp. It carries no `priority`, so it
 only for pods `restricted-v2` cannot admit and everything else in the namespace keeps its
 usual constraint. Reach for the shipped `anyuid` instead and you also permit uid 0.
 
-Because the per-function accounts cannot be named ahead of time, the RoleBinding grants it
-to `system:serviceaccounts:{workloads namespace}`. That is a real widening - a tenant KSVC
-pod in that namespace could also request uid 1000 - and it is why the SCC is written this
-narrowly. Set `build.scc.allServiceAccounts=false` and list accounts explicitly if you
-would rather bind it by name and accept that function builds need their own grant.
+Because the per-function accounts cannot be named ahead of time, the template set's
+RoleBinding grants it to each tenant namespace's whole ServiceAccount group. That is a
+real widening - a tenant KSVC pod in that namespace could also request uid 1000 - and it
+is why the SCC is written this narrowly.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `build.scc.enabled` | `false` | SCCs do not exist outside OpenShift. |
 | `build.scc.runAsUser` | `1001` | The builder image's `CNB_USER_ID` (Paketo jammy). |
 | `build.scc.fsGroup` | `1000` | Its `CNB_GROUP_ID` - a *different* number on jammy. Confirm both with `skopeo inspect --config docker://<build image> \| jq '.config.Env'` before changing base images. |
-| `build.scc.allServiceAccounts` | `true` | Binds the namespace's ServiceAccount group, covering the per-function accounts. |
 | `build.scc.volumes` | see values | `persistentVolumeClaim` is needed only for kpack's volume build cache. |
 
 If a build still fails admission after this, the controller log names the offending field -
@@ -267,7 +267,7 @@ oc -n kpack logs deploy/kpack-controller | grep -o 'unable to validate.*'
 
 ## Sample Manifests
 
-The platform-side objects; the build objects (kpack Image, Builder, ClusterStack,
+The platform-side objects; the build objects (kpack Image, ClusterBuilder, ClusterStack,
 build ServiceAccount, Kyverno CA policy) are under BUILDING.md: Sample Manifests.
 
 > Illustrative only - final values are templated by Helm and parameterized per region.
@@ -278,11 +278,11 @@ build ServiceAccount, Kyverno CA policy) are under BUILDING.md: Sample Manifests
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: orders-api-team        # {name}-{group}
-  namespace: serverless-workloads
+  name: orders-api              # the plain workload name; the namespace scopes it
+  namespace: team-serverless     # {group}{tenantNamespaces.suffix}
   labels:
     serverless.platform/group: team
-    serverless.platform/workload: orders-api-team
+    serverless.platform/workload: orders-api
     serverless.platform/managed-by: serverless-api
   annotations:
     serverless.platform/host: orders-api-team.serverless.example.com
@@ -320,14 +320,14 @@ spec:
             name: ca-bundle
 ```
 
-### Trusted CA bundle ConfigMap (both namespaces, OpenShift-injected)
+### Trusted CA bundle ConfigMap (every namespace, OpenShift-injected)
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ca-bundle
-  namespace: serverless-workloads   # also created in serverless-api
+  namespace: team-serverless        # from the template set; also in serverless-api
   labels:
     config.openshift.io/inject-trusted-cabundle: "true"   # OpenShift fills .data
   annotations:
@@ -347,14 +347,14 @@ apiVersion: serving.knative.dev/v1beta1
 kind: DomainMapping
 metadata:
   name: orders-api-team.serverless.example.com   # the custom host
-  namespace: serverless-workloads
+  namespace: team-serverless
   labels:
     serverless.platform/group: team
-    serverless.platform/workload: orders-api-team
+    serverless.platform/workload: orders-api
     serverless.platform/offering: container
 spec:
   ref:
-    name: orders-api-team        # the {name}-{group} KSVC
+    name: orders-api             # the workload's KSVC
     kind: Service
     apiVersion: serving.knative.dev/v1
 ```
@@ -416,11 +416,12 @@ rules:
     resources: ["serviceaccounts"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
 ---
+# One per tenant namespace, written by the tenant controller from the template set.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: serverless-api-workloads
-  namespace: serverless-workloads
+  namespace: team-serverless
 subjects:
   - kind: User
     name: serverless-api.clients.example.com   # matches the Certificate CN (DNS name)

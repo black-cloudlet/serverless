@@ -1,9 +1,7 @@
 {{/*
-The workloads-namespace segmentation, defined once and rendered twice: into
-the legacy namespace by networkpolicy.yaml beside this file, and into the
-tenant template set by tenant-controller/configmap-network-policies.yaml. It
-lives at the chart root, with the legacy render, because both use it - a
-shared body under one component's folder would point the wrong way.
+The tenant-namespace segmentation, rendered into the tenant template set by
+tenant-controller/configmap-network-policies.yaml with the namespace token in
+place of a name.
 */}}
 {{- define "serverless-api.workloadNetworkPolicies" -}}
 {{- $root := .root -}}

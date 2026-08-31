@@ -42,9 +42,8 @@ class RegionConfig(BaseModel):
 
     A *region* is a region (e.g. ``central``, ``south``); it runs an OpenShift
     *cluster* (e.g. ``central-0``) whose API server is derived as
-    ``https://api.{cluster}.{base_domain}:6443``. The client certificate, CA
-    bundle, and workloads namespace are global (the same in every cluster);
-    the registry is not.
+    ``https://api.{cluster}.{base_domain}:6443``. The client certificate and CA
+    bundle are global (the same in every cluster); the registry is not.
 
     Attributes:
         name: The region (region) name.
@@ -256,10 +255,6 @@ class CommonSettings(BaseSettings):
     )
 
     base_domain: str = "example.com"
-    # The legacy shared namespace. Nothing deploys here any more - workloads
-    # resolve to `{group}{tenant_namespaces.suffix}` - and it goes away with the
-    # rest of the cutover cleanup.
-    workloads_namespace: str = "serverless-workloads"
     tenant_namespaces: TenantNamespaceConfig = Field(default_factory=TenantNamespaceConfig)
 
     client_cert_dir: str = "/etc/serverless/client"

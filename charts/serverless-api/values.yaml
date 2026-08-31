@@ -126,22 +126,20 @@ buildController:
     keepBuilds: 0
 
 namespaces:
-  # The API itself. Builds and workloads live in `workloads` below.
+  # The API itself. Workloads live in the per-group namespaces below.
   api: serverless-api
-  # Knative Services and their pods - what has been built, not the building.
-  workloads: serverless-workloads
-  # -- Labels for both namespaces; the two below add to (and override) them.
+  # -- Labels for every namespace this platform owns - the API's and each
+  # tenant's; the two blocks below add to (and override) them.
   # labels:
   #   team: platform
   labels: {}
   # apiLabels:
   #   pod-security.kubernetes.io/enforce: restricted
   apiLabels: {}
-  workloadsLabels: {}
 
-# One namespace per SSO group, provisioned at runtime
-# (docs/proposals/namespace-per-group.md). Everything here is inert until the
-# API resolves workloads into these namespaces.
+# One namespace per SSO group, provisioned at runtime by the tenant controller
+# (docs/ARCHITECTURE.md - Tenant namespaces). Workloads and their builds land
+# in `{group}{suffix}`.
 tenantNamespaces:
   # A group's namespace is `{group}{suffix}`. Group-first so tenant namespaces
   # list under their group's name; the suffix is what keeps a group from naming
@@ -383,7 +381,8 @@ runtimes:
         value: "https://artifactory.internal/artifactory/api/npm/npm/"
 
 # Function image builds (kpack + Cloud Native Buildpacks). docs/BUILDING.md.
-# Everything lands in `namespaces.workloads` and resolves against `registry.url`.
+# Builds run in the workload's own tenant namespace and resolve against
+# `registry.url`.
 build:
   # False where kpack is not installed; the API and its workloads still deploy.
   enabled: true
@@ -456,12 +455,6 @@ build:
     # jammy images run as uid 1001, gid 1000.
     runAsUser: 1001
     fsGroup: 1000
-    # Bind to the namespace's SA group - per-function build accounts are named
-    # at request time. False binds `build.serviceAccount.name` and those below.
-    allServiceAccounts: true
-    # serviceAccounts:
-    #   - my-function-build
-    serviceAccounts: []
     # `persistentVolumeClaim` is only for kpack's volume build cache.
     volumes:
       - configMap

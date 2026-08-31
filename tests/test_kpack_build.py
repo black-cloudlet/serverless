@@ -25,7 +25,6 @@ def anyio_backend():
 def _settings(**over):
     base = dict(
         regions=[RegionConfig(name="region-a", cluster="a-0")],
-        workloads_namespace="wl",
         build={"registry_secret": "reg-creds"},
         registry={"url": "registry.internal", "organization": "acme"},
     )
