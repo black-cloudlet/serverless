@@ -29,6 +29,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `SERVERLESS_WORKLOADS_NAMESPACE` setting no longer exist. Deploy note: after
   syncing, delete the namespace in each cluster
   (`kubectl delete ns serverless-workloads`).
+- **BREAKING: ESO is required for the two build credentials.** The
+  `create` switches on `build.serviceAccount.registrySecret` and
+  `build.kpackRegistry.pullSecret` are gone: both credentials are needed in
+  every `{group}{suffix}` namespace, those are created at runtime, and
+  nothing the chart renders once can reach a namespace that does not exist
+  yet - so the tenant template set's ExternalSecret is the only way in.
+  Installs that set either to `false` must move the credential into Vault.
 - **Builders are now ClusterBuilders.** A namespaced Builder is resolvable only
   in an Image's own namespace, and tenant namespaces are created at runtime -
   so builders go cluster-scoped, with their push credential on the

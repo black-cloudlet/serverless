@@ -41,10 +41,9 @@ data:
         apiGroup: rbac.authorization.k8s.io
         name: system:serviceaccounts:{{ $ns }}
 {{- end }}
-{{- if .Values.build.serviceAccount.registrySecret.create }}
-  # Written as an ExternalSecret rather than a Secret, so the credential never
-  # passes through a ConfigMap: ESO fills it in the tenant namespace from Vault,
-  # exactly as it does for the legacy one. A Vault path, never a credential.
+  # An ExternalSecret rather than a Secret, so the credential never passes
+  # through a ConfigMap: ESO fills it in the tenant namespace from Vault. A
+  # Vault path travels here, never a credential.
   70-registry-credentials.yaml: |
     apiVersion: external-secrets.io/v1beta1
     kind: ExternalSecret
@@ -72,9 +71,8 @@ data:
           remoteRef:
             key: {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" .Values.build.serviceAccount.registrySecret.key) }}
             property: {{ .Values.build.serviceAccount.registrySecret.passwordProperty }}
-{{- end }}
 {{- $kpack := .Values.build.kpackRegistry }}
-{{- if and $kpack.url $kpack.pullSecret.name $kpack.pullSecret.create }}
+{{- if and $kpack.url $kpack.pullSecret.name }}
   # The kpack-registry pull credential the per-function build accounts also
   # reference: `export` pulls the run image from it. One registry and one
   # credential everywhere, so no region token is needed - the auth host is the

@@ -422,11 +422,10 @@ build:
     # `clusterBuild.registry`. e.g. registry.kpack.internal
     url: ""
     # Pull-only, and needed on BOTH build accounts: `export` pulls the run image.
+    # ESO materializes it wherever a build reads it - see registrySecret below
+    # for why there is no out-of-band option.
     pullSecret:
       name: kpack-registry-creds
-      # Same caveat as registrySecret.create: out-of-band now means every
-      # runtime-created tenant namespace, not one static one.
-      create: true
       key: cloudlet/platforms/serverless
       usernameProperty: kpack-registry-username
       passwordProperty: kpack-registry-password
@@ -439,14 +438,14 @@ build:
     # function's KSVC here pull with it. The NAME is identical in every region - it
     # is written into every region's KSVC - while the contents differ, so the Vault
     # path is per region.
+    #
+    # ESO is required for it, so there is no `create` switch: the credential is
+    # needed in every {group}{suffix} namespace, and those are created at
+    # runtime - nothing the chart renders once can reach a namespace that does
+    # not exist yet. The tenant template set carries the ExternalSecret so each
+    # namespace gets its copy as it appears.
     registrySecret:
       name: serverless-registry-creds
-      # False renders no ExternalSecret - but tenant namespaces are created at
-      # runtime, so out-of-band means something of yours must place this
-      # Secret in EVERY {group}{suffix} namespace as it appears. With nothing
-      # doing that, every function build and image pull fails; leave this true
-      # unless you have such a replicator.
-      create: true
       key: "cloudlet/platforms/serverless/{{ .Values.global.region }}"
       usernameProperty: registry-username
       passwordProperty: registry-password
