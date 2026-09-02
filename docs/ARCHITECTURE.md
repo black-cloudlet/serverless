@@ -10,6 +10,7 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 - [Overview & Goals](#overview--goals)
 - [High-Level Architecture](#high-level-architecture)
 - [Multi-Region (Active/Active HA) Design](#multi-region-activeactive-ha-design)
+- [Tenant Namespaces](#tenant-namespaces)
 - [Networking & Exposure](#networking--exposure)
 - [Authentication & Authorization](#authentication--authorization)
 - [Secrets Management](#secrets-management)
@@ -26,9 +27,9 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 | Deliverable | FastAPI app + Helm chart + CI/CD in this repo (GitOps `ApplicationSet` lives elsewhere) |
 | FaaS build | **kpack** (Kubernetes-native Cloud Native Buildpacks), mirrored stack/store images for airgap - see BUILDING.md: Design Decisions (locked in) |
 | Cluster auth | **cert-manager `Certificate` CR** (shipped in Helm chart) → client TLS cert; **CN is a DNS name** `serverless-api.clients.{base_domain}` (ACME-issued); that name is the Kubernetes user, bound via RBAC |
-| Topology | **Two separate OpenShift clusters** ("regions") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters** in a **separate namespace** from the API. |
+| Topology | **Two separate OpenShift clusters** ("regions") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters**, in one namespace per group. |
 | Region selection | **Deploy to both regions on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless region (active/passive at the traffic layer, active/active at the deploy layer). |
-| Tenancy | **Shared namespace, label-scoped**; SSO group → resource labels enforced by the API |
+| Tenancy | **Namespace-per-group** (`{group}-serverless`), provisioned at runtime by the tenant controller; SSO group → namespace, with ownership labels as defense in depth |
 | API authn | **SSO (Red Hat Build of Keycloak) OIDC** in front of the API |
 | API authz | Based on **SSO group membership** |
 | Secrets | **External Secrets Operator** - this repo ships **`ExternalSecret` only**, referencing a **pre-existing `ClusterSecretStore`** that points at **HashiCorp Vault** (API stores no secrets) |
@@ -57,7 +58,7 @@ Both models must run on **Knative Serving** (scale-to-zero, request-driven autos
 governed by enterprise SSO. Everything runs in an **airgapped** datacenter across **two
 OpenShift clusters** for high availability. The **API itself also runs active/active on
 those same two clusters** (fronted by a DNS record pointing at the active region), and the
-**customer workloads run on the same two clusters** in a **separate namespace** from the API.
+**customer workloads run on the same two clusters**, each SSO group in its own namespace.
 
 ### Goals
 
@@ -109,7 +110,7 @@ flowchart TB
     subgraph ZA["Region central - cluster central-0"]
         APIA["FastAPI API (active/active)"]
         BCA["build-controller<br/>Image watch → ksvc digest"]
-        KNA["Knative Serving<br/>(workloads namespace)"]
+        KNA["Knative Serving<br/>(one namespace per group)"]
         RTA["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
         ESOA["ESO ExternalSecret"]
         CMA["cert-manager (ACME)"]
@@ -119,7 +120,7 @@ flowchart TB
     subgraph ZB["Region south - cluster south-0"]
         APIB["FastAPI API (active/active)"]
         BCB["build-controller<br/>Image watch → ksvc digest"]
-        KNB["Knative Serving<br/>(workloads namespace)"]
+        KNB["Knative Serving<br/>(one namespace per group)"]
         RTB["OpenShift Route<br/>{name}-{group}.serverless.{base_domain}"]
         ESOB["ESO ExternalSecret"]
         CMB["cert-manager (ACME)"]
@@ -257,15 +258,15 @@ both clusters **trust the same CA** and the workload **Route host is identical i
 each region is a full, independent replica; a DNS record forwards end-user traffic to the
 active region.
 
-The **client certificate, CA bundle, and workloads namespace are global** (the same in every
-cluster), so a region profile is just its name and its cluster - the API server URL is
-**derived**, not configured. The `routeDomain`, `workloadsNamespace`, client cert directory,
-and CA bundle are shared config:
+The **client certificate and CA bundle are global** (the same in every cluster), so a
+region profile is just its name and its cluster - the API server URL is **derived**, not
+configured. A workload's namespace is derived too: `{group}{tenantNamespaces.suffix}`,
+identical in both clusters. The `routeDomain`, client cert directory, and CA bundle are
+shared config:
 
 ```yaml
 baseDomain: example.com                   # each region's API server derives from this
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
-workloadsNamespace: serverless-workloads  # where the API creates workloads (global)
 clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
 caBundle:                                 # OpenShift-injected, global
   configMap: ca-bundle
@@ -348,6 +349,46 @@ absence).
 
 ---
 
+## Tenant Namespaces
+
+Each SSO group's workloads - and their builds, config Secrets and credentials - live in the
+group's own namespace, **`{group}{suffix}`** (default suffix `-serverless`), in both
+clusters. The namespace is the hard tenancy boundary; the API's group checks and ownership
+labels stay as defense in depth.
+
+Namespaces are created at runtime by the **tenant controller** (`tenant_controller/`, its
+own Deployment and image), because the group set is SSO data Helm cannot render. It is a
+separate deployment for privilege separation: creating namespaces and writing RBAC is
+cluster-scoped power the internet-facing API must not hold - the API cannot create a
+namespace, and the tenant controller cannot touch a workload.
+
+**What lands in a tenant namespace** comes from the **tenant template set**: ConfigMaps the
+chart renders (final YAML with `{{namespace}}`/`{{group}}` placeholders, plus
+`{{region}}`/`{{registry}}` for the two per-region values) and the controller applies per
+namespace. The operator's day-2 workflow stays *edit values → Argo sync*: the set's hash is
+stamped on each namespace, and a hash mismatch triggers re-apply. Today the set carries the
+CA-bundle ConfigMap, the default-deny NetworkPolicies, the API's RoleBinding, and the build
+prerequisites (SCC RoleBinding, registry credentials).
+
+The controller has three jobs:
+
+- **Provision** (`PUT /groups/{group}/namespace`, internal-only): called by the API before
+  every accepted deploy, it converges the group's namespace in **every** region - a create
+  must not land in a region whose namespace does not exist. Fails closed: an unreachable
+  controller or an unconverged region refuses the deploy (503). A namespace already stamped
+  with the current hash costs one read per region.
+- **Reconcile** (level-triggered loop, **local cluster only**): converges every managed
+  namespace whose stamp is stale, which is how a `helm upgrade` reaches namespaces Argo
+  cannot see. Local-only so the two sites never fight during Argo sync skew.
+- **Namespace GC** (periodic sweep, local, off by default): a namespace continuously empty
+  of workloads past the grace period is deleted; a workload appearing clears the clock, and
+  the `serverless.platform/keep` annotation always wins. See `tenantNamespaces.gc`.
+
+`kubectl get ns -L serverless.platform/group` with the template-hash annotation answers
+"has the new policy reached every tenant"; the per-converge log line is the audit trail.
+
+---
+
 ## Networking & Exposure
 
 - This runs on **OpenShift Serverless** (the Operator-installed Knative). The Serverless
@@ -376,13 +417,17 @@ Rationale: the host must be **identical in both clusters** (DNS forwards to acti
 must be a custom platform domain anyway; FaaS-vs-CaaS is a build-time detail the consumer
 shouldn't see in the URL; and one wildcard domain means **one wildcard cert + one DNS zone**
 to manage. The offering (`function`/`container`) is tracked as a **label**, not in the host. The
-`{group}` prefix prevents collisions in the shared namespace and makes ownership obvious.
+`{group}` in the default host keeps hosts unique platform-wide - DNS is global even though
+namespaces are not - and makes ownership obvious. The pair `{name}-{group}` must fit one
+DNS label (63 chars) **for the default host only**; a caller-supplied `hostname` lifts the
+limit (published on `/info` as `naming`).
 
 **Object naming.** The OpenShift name of the workload (KSVC) and all its derived resources
-(`{workload}-env` Secret, `{workload}-files` ConfigMap/Secret, pull secret) is
-**`{name}-{group}`** - unique per tenant in the shared namespace. `{group}` here is the
-**normalized** group (ARCHITECTURE.md: Authentication & Authorization), so a group written `My_Team` in SSO appears as `my-team` in both
-the object name and the host.
+(`{workload}-env` Secret, `{workload}-files` ConfigMap/Secret, pull secret) is plain
+**`{name}`** - the group's namespace scopes it, so the platform's primary key is
+**(namespace, name)** and the same name can exist in two groups. `{group}` is the
+**normalized** group (ARCHITECTURE.md: Authentication & Authorization), so a group written
+`My_Team` in SSO appears as `my-team` in the namespace and the host.
 
 **Custom hostname.** A client may override the host with a `hostname` field. Because the
 `DomainMapping` name *is* the host, the API **validates the hostname is not already assigned**
@@ -400,9 +445,9 @@ flowchart LR
 
 #### Workload network isolation (NetworkPolicies)
 
-The chart ships **default-deny** `NetworkPolicies` for the workloads namespace, then reopens
-only the paths Knative + OpenShift need. Net effect: a workload pod **can't talk to another
-workload pod** (no cross-tenant lateral movement in the shared namespace) or reach other
+Every tenant namespace gets **default-deny** `NetworkPolicies` (from the tenant template
+set), then reopens only the paths Knative + OpenShift need. Net effect: a workload pod
+**can't talk to another workload pod** - not even in its own namespace - or reach other
 namespaces, and its egress is constrained:
 
 - **Ingress** - allowed only from the configured system namespaces (Knative activator +
@@ -582,10 +627,10 @@ so the value deciding whose signatures we trust is always a deliberate choice he
   > separate groups (confirmed with the SSO team). Configured **admin groups** are normalized
   > the same way, so they may be written in any spelling.
 
-> Isolation is enforced **in the API layer** plus label selectors. Because all tenants share
-> a namespace, the cluster RBAC for the API's service identity is namespace-wide (see ARCHITECTURE.md: Authentication & Authorization);
-> per-tenant isolation is therefore the API's responsibility. (A future hardening option is
-> namespace-per-group - see ARCHITECTURE.md: Open Questions / Future Work.)
+> Isolation is enforced by the **namespace boundary** - each group's workloads, builds and
+> secrets live in its own namespace - with the API's group checks and ownership labels as
+> defense in depth. Admin listings and the host pre-flight still read cluster-wide, by
+> label.
 
 ### Cluster-side identity (cert-manager client cert + RBAC)
 
@@ -594,8 +639,10 @@ so the value deciding whose signatures we trust is always a deliberate choice he
   cert's **CN/SAN is `serverless-api.clients.{base_domain}`** - and that DNS name is the
   **Kubernetes user**. OpenShift authenticates the client by that name. Both clusters
   **trust the same CA**, so the same identity is valid in either cluster.
-- Each region has one `Role`/`RoleBinding` (in the **workload namespace**,
-  `serverless-workloads`) granting least-privilege CRUD on exactly what the API manages:
+- The API's rights are one **ClusterRole** of least-privilege CRUD on exactly what it
+  manages, bound into **each tenant namespace** by a RoleBinding from the tenant template
+  set (writes stay namespace-bound), plus a read-only ClusterRole for the cluster-wide
+  reads (host pre-flight, admin listings, the build controller's Image watch):
   Knative `services`/`domainmappings`, `secrets`, `configmaps`, read on `pods`/`events`, and
   read on the **`pods/log`** subresource (for the `/logs` endpoint). The API does **not** need
   `routes` permission - on OpenShift Serverless the operator creates the OpenShift Route
@@ -626,7 +673,8 @@ Three, all stored in **Vault** and projected into the cluster by **ESO**: the st
 **admin API key** (`SERVERLESS_ADMIN_API_KEY`), the **Quay OAuth token** used to delete a
 deleted function's repositories (`SERVERLESS_REGISTRY__API_TOKEN`), and the shared
 **registry dockerconfigjson** that kpack pushes with and every function's KSVC pulls with
-(in the *workloads* namespace - BUILDING.md: Registry & Git Credentials).
+(one copy per tenant namespace, from the tenant template set - BUILDING.md: Registry & Git
+Credentials).
 
 > There is **no SSO client secret**. The API is a resource server: it validates tokens
 > offline against cached JWKS and never calls the token endpoint, and the Swagger UI login
@@ -657,9 +705,9 @@ flowchart LR
 ### Customer-provided credentials (git/registry tokens)
 
 - `gitToken` (FaaS) and `registryToken` (CaaS) arrive in the request body **over TLS**.
-- Each is stored as a **scoped, labeled Kubernetes Secret** owned by the tenant group, in
-  the workload namespace of both regions, and **garbage-collected with the workload** (via the
-  KSVC `ownerReference`):
+- Each is stored as a **scoped, labeled Kubernetes Secret** in the group's own namespace
+  in both regions, and **garbage-collected with the workload** (via the KSVC
+  `ownerReference`):
   - `gitToken` → a `kubernetes.io/basic-auth` **`{workload}-git`** Secret, annotated
     `kpack.io/git` so kpack clones with it, and read back by the API so a later edit can
     rebuild (on a `gitRepo`/`branch`/`runtime` change) **without the client re-supplying
@@ -1118,10 +1166,12 @@ Serverless/
 │                         # (cluster I/O + fan-out), state/ (interpretation), streams/ (SSE)
 ├── common/               # shared library: config, cluster client, build backend, errors
 ├── build_controller/     # watches kpack Images, rolls digests onto KSVCs
-├── charts/serverless-api # the Helm chart (API + build controller + kpack objects)
+├── tenant_controller/    # provisions and converges the per-group namespaces
+├── charts/serverless-api # the Helm chart (API + both controllers + kpack objects)
 ├── tests/                # flat pytest modules
 ├── Dockerfile            # the API image
-└── Dockerfile.build-controller # the build controller image
+├── Dockerfile.build-controller # the build controller image
+└── Dockerfile.tenant-controller # the tenant controller image
 ```
 
 The repo is organized as services + a shared library so a builder microservice
@@ -1143,7 +1193,11 @@ build system through `common.build.BuildBackend` - today the in-process
   under sustained load against a long-down region a circuit breaker (skip a
   known-down region for a cooldown) would be the next hardening step.
 - **Quotas & rate limiting** - per-group resource quotas (CPU/mem, max workloads)
-  and API rate limiting are not yet specified.
+  and API rate limiting are not yet specified. The tenant template set is the
+  delivery vehicle: a `ResourceQuota`/`LimitRange` added to it reaches every
+  tenant namespace on the next converge. One rule from the sizing work: quota
+  `requests.cpu`/`requests.memory`/`limits.memory`, never `limits.cpu` -
+  workloads deliberately carry no CPU limit and would be rejected at admission.
 - **Durable observability** - streaming exists (ARCHITECTURE.md: Streaming), but
   `usage` can be no fresher than the metrics-server scrape and nothing survives
   the pod that produced it. Centralized logging, metrics and tracing for tenant
@@ -1152,8 +1206,6 @@ build system through `common.build.BuildBackend` - today the in-process
   bounded by the node's rotation.
 - **Audit logging** - who deployed/changed/deleted what; likely required for
   compliance.
-- **Stronger isolation** - optional move from shared-namespace to
-  namespace-per-group for hard multi-tenancy.
 - **Git webhook** - not implemented. A per-function webhook would pin the pushed
   commit SHA to the build (`BuildRequest.revision` already carries the field),
   making a push-triggered rebuild idempotent by data. Until then a build follows

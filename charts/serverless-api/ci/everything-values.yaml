@@ -6,6 +6,10 @@ build:
   enabled: true
   scc:
     enabled: true
+  # A distinct kpack registry, so CI renders its pull-credential paths - the
+  # ServiceAccount entries and the tenant template set's ExternalSecret.
+  kpackRegistry:
+    url: registry.kpack.internal
 tenantNamespaces:
   labels:
     pod-security.kubernetes.io/enforce: restricted

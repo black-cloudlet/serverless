@@ -94,7 +94,6 @@ class _WatchableApi:
 def _cluster_calling(api):
     """A Cluster whose _dynamic_api always resolves to `api`."""
     cluster = object.__new__(Cluster)
-    cluster._namespace = "serverless-workloads"
     cluster._opts = {"_request_timeout": (2.0, 5.0)}
     cluster._dynamic_api = lambda kind: api
     return cluster

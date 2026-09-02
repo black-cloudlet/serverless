@@ -1,7 +1,7 @@
 {{/*
-The OpenShift-injected CA bundle ConfigMap for ONE namespace. Shared by
-ca-bundle.yaml beside this file and by the tenant template set, on the same
-reasoning as _network-policies.tpl.
+The OpenShift-injected CA bundle ConfigMap for ONE namespace. Rendered into
+the API namespace by ca-bundle.yaml beside this file, and into the tenant
+template set with the namespace token in place of a name.
 */}}
 {{- define "serverless-api.caBundleConfigMap" -}}
 {{- $root := .root -}}

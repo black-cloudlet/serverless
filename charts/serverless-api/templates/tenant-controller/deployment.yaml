@@ -1,8 +1,8 @@
 {{- if .Values.tenantNamespaces.controller.enabled }}
 {{- $p := .Values.tenantNamespaces.controller }}
-# Creates and converges the per-group namespaces (docs/proposals/namespace-per-group.md).
+# Creates and converges the per-group namespaces (docs/ARCHITECTURE.md - Tenant Namespaces).
 # Two jobs in one process, sharing the cluster clients and the mounted set: a
-# reconcile loop over THIS cluster, and the ensure endpoint the API calls before
+# reconcile loop over THIS cluster, and the provision endpoint the API calls before
 # a create - which writes to every region, because a create must not land in a
 # region whose namespace does not exist yet.
 apiVersion: apps/v1
@@ -47,7 +47,7 @@ spec:
           env:
             - name: SERVERLESS_BASE_DOMAIN
               value: {{ .Values.global.baseDomain | quote }}
-            # The region whose namespaces the LOOP converges. Ensure still
+            # The region whose namespaces the LOOP converges. Provision still
             # writes to every region; only the loop is local, so the two sites
             # never fight over one namespace during an Argo sync gap.
             - name: SERVERLESS_LOCAL_REGION
@@ -62,8 +62,14 @@ spec:
               value: {{ .Values.tenantNamespaces.controller.fullResyncPasses | int64 | quote }}
             - name: SERVERLESS_CONVERGE_WORKERS
               value: {{ .Values.tenantNamespaces.controller.convergeWorkers | int64 | quote }}
-            - name: SERVERLESS_ENSURE_WORKERS
-              value: {{ .Values.tenantNamespaces.controller.ensureWorkers | int64 | quote }}
+            - name: SERVERLESS_PROVISION_WORKERS
+              value: {{ .Values.tenantNamespaces.controller.provisionWorkers | int64 | quote }}
+            - name: SERVERLESS_GC_ENABLED
+              value: {{ .Values.tenantNamespaces.gc.enabled | quote }}
+            - name: SERVERLESS_GC_INTERVAL_SECONDS
+              value: {{ .Values.tenantNamespaces.gc.intervalSeconds | int64 | quote }}
+            - name: SERVERLESS_GC_GRACE_SECONDS
+              value: {{ .Values.tenantNamespaces.gc.graceSeconds | int64 | quote }}
             # Whole-ConfigMap mount, never subPath: a subPath mount is not
             # refreshed by the kubelet, and that refresh is the only way a helm
             # upgrade reaches namespaces Argo cannot see.
@@ -82,7 +88,7 @@ spec:
             - name: REQUESTS_CA_BUNDLE
               value: {{ printf "%s/%s" .Values.caBundle.mountPath .Values.caBundle.key | quote }}
           envFrom:
-            # The same regions list the API and the controller read: ensure
+            # The same regions list the API and the controller read: provision
             # needs a client for every region, not just this one.
             - configMapRef:
                 name: "{{ .Values.name }}-regions"
@@ -172,7 +178,7 @@ spec:
       protocol: TCP
 {{- if .Values.networkPolicy.enabled }}
 ---
-# The primary control on the ensure endpoint: only the API's own pods may reach
+# The primary control on the provision endpoint: only the API's own pods may reach
 # it. The shared token is depth behind this, not instead of it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

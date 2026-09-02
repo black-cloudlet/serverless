@@ -8,6 +8,7 @@ in whichever copy the incident pointed at.
 from __future__ import annotations
 
 import signal
+import threading
 import time
 from collections.abc import Callable
 
@@ -74,3 +75,93 @@ def run_loop(
             continue
         backoff = error_backoff_seconds
         time.sleep(max(period - (time.monotonic() - started), 0.0))
+
+
+class PeriodicSweep:
+    """A slow background job offered a run each pass, pacing itself.
+
+    The scaffolding the two GCs share, on the module's one-copy rule: the
+    deadline is set when a sweep *starts* (a failing sweep retries at the next
+    due pass, not every pass), the sweep runs on its own daemon thread (its
+    I/O must never sit inside the loop's pass), a sweep outliving its interval
+    blocks the next rather than racing it, and a raising sweep is logged, not
+    the loop's end. Subclasses implement :meth:`sweep` and may veto a due run
+    via :meth:`enabled` (silent - the operator turned it off) or
+    :meth:`blocked` (the subclass logs why).
+    """
+
+    # Names this sweep in the shared log lines, e.g. "tag GC".
+    label = "sweep"
+
+    def __init__(self, interval: float, region: str, thread_name: str):
+        """Set the pacing; the first offered run sweeps immediately.
+
+        Args:
+            interval: Seconds between sweep starts.
+            region: The local region, for log lines.
+            thread_name: The sweep thread's name.
+        """
+        self._interval = interval
+        self._region = region
+        self._thread_name = thread_name
+        self._next_sweep = 0.0
+        self._thread: threading.Thread | None = None
+
+    def enabled(self) -> bool:
+        """Whether this sweep runs at all; False is silent."""
+        return True
+
+    def blocked(self) -> str | None:
+        """Why a due sweep must not run, or None; logged here, per interval."""
+        return None
+
+    def maybe_sweep(self, *args) -> None:
+        """Start a sweep when due; never raise into the caller's loop.
+
+        Args:
+            *args: Passed through to :meth:`sweep`.
+        """
+        if not self.enabled():
+            return
+        now = time.monotonic()
+        if now < self._next_sweep:
+            return
+        self._next_sweep = now + self._interval
+        reason = self.blocked()
+        if reason:
+            logger.warning("%s off: %s", self.label, reason)
+            return
+        if self._thread is not None and self._thread.is_alive():
+            logger.warning(
+                "%s: previous sweep in '%s' still running after %ds; not starting another",
+                self.label,
+                self._region,
+                self._interval,
+            )
+            return
+        self._thread = threading.Thread(
+            target=self._run, args=args, name=self._thread_name, daemon=True
+        )
+        self._thread.start()
+
+    def wait(self, timeout: float | None = None) -> None:
+        """Block until the running sweep (if any) finishes - for tests."""
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def _run(self, *args) -> None:
+        """The thread body: one sweep, contained."""
+        try:
+            self.sweep(*args)
+        except Exception:  # noqa: BLE001 - a failed sweep is logged, not the loop's end
+            logger.exception(
+                "%s: sweep failed in '%s'; retrying in ~%ds",
+                self.label,
+                self._region,
+                self._interval,
+            )
+
+    def sweep(self, *args) -> None:
+        """One sweep; subclasses implement it."""
+        raise NotImplementedError

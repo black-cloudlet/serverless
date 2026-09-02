@@ -1,4 +1,4 @@
-"""Tenant controller entrypoint: the reconcile loop, with the ensure API beside it.
+"""Tenant controller entrypoint: the reconcile loop, with the provision API beside it.
 
 Two jobs, one process: the level-triggered loop that converges this cluster,
 and the HTTP call the API makes before a workload deploys. They share the
@@ -18,6 +18,7 @@ from common.cluster import Cluster, clusters_for, select_local
 from common.loop import install_terminate_handlers, run_loop
 from tenant_controller.api import create_app
 from tenant_controller.config import TenantControllerSettings, get_settings
+from tenant_controller.gc import NamespaceGC
 from tenant_controller.reconcile import reconcile_all
 from tenant_controller.templates import TemplateSet
 
@@ -30,7 +31,7 @@ API_SHUTDOWN_SECONDS = 5.0
 # shutdown, or it expires just as the server is finishing and the caller
 # closes the cluster clients out from under an in-flight converge.
 API_JOIN_SECONDS = 15.0
-# A server that cannot bind must not be discovered by the first ensure.
+# A server that cannot bind must not be discovered by the first provision.
 API_STARTUP_SECONDS = 10.0
 
 
@@ -58,7 +59,7 @@ def run_pass(cluster: Cluster, settings: TenantControllerSettings, *, force: boo
         raise RuntimeError(f"all {seen} managed namespace(s) failed to converge")
 
 
-def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
+def loop(cluster: Cluster, settings: TenantControllerSettings, gc: NamespaceGC) -> None:
     """Reconcile, sleep, forever (paced by ``common.loop``).
 
     Per-namespace failures never reach the pacing - ``reconcile_all``
@@ -67,6 +68,7 @@ def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
     Args:
         cluster: The local cluster.
         settings: Pacing (resync interval, error backoff).
+        gc: The namespace GC, offered a sweep each pass (it paces itself).
     """
     passes = 0
 
@@ -76,6 +78,8 @@ def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
         # Every Nth pass forces a full converge, so drift in the objects
         # themselves is repaired without waiting for a template change.
         run_pass(cluster, settings, force=passes % settings.full_resync_passes == 0)
+        # After the converge, on its own thread: never inside the pass's time.
+        gc.maybe_sweep()
 
     run_loop(
         one_pass,
@@ -87,7 +91,7 @@ def loop(cluster: Cluster, settings: TenantControllerSettings) -> None:
 def serve(
     settings: TenantControllerSettings, clusters: list[Cluster]
 ) -> tuple[uvicorn.Server, threading.Thread]:
-    """Start the ensure API on a background thread.
+    """Start the provision API on a background thread.
 
     Background, so the loop keeps the main thread: uvicorn installs no signal
     handlers off it (it checks), leaving SIGTERM to unwind the loop as before.
@@ -95,7 +99,7 @@ def serve(
 
     Args:
         settings: For the listen port.
-        clusters: Every region's cluster - ensure fans out to all of them.
+        clusters: Every region's cluster - provisioning fans out to all of them.
 
     Returns:
         The server and the thread running it, for :func:`stop`.
@@ -109,7 +113,7 @@ def serve(
         timeout_graceful_shutdown=int(API_SHUTDOWN_SECONDS),
     )
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, name="ensure-api", daemon=True)
+    thread = threading.Thread(target=server.run, name="provision-api", daemon=True)
     thread.start()
     _await_startup(server, thread)
     return server, thread
@@ -120,7 +124,7 @@ def _await_startup(server: uvicorn.Server, thread: threading.Thread) -> None:
 
     uvicorn answers a bind failure with ``sys.exit`` *inside this thread*,
     which Python discards silently - so without this the loop would run on
-    beside a dead API and every ensure would be refused with nothing in the
+    beside a dead API and every provision would be refused with nothing in the
     log to say so. Raising instead crash-loops the pod, which is visible.
 
     Raises:
@@ -131,15 +135,15 @@ def _await_startup(server: uvicorn.Server, thread: threading.Thread) -> None:
         if server.started:
             return
         if not thread.is_alive():
-            raise RuntimeError("the ensure API stopped before it began serving")
+            raise RuntimeError("the provision API stopped before it began serving")
         time.sleep(0.05)
-    raise RuntimeError(f"the ensure API did not start within {API_STARTUP_SECONDS}s")
+    raise RuntimeError(f"the provision API did not start within {API_STARTUP_SECONDS}s")
 
 
 def stop(server: uvicorn.Server, thread: threading.Thread) -> None:
     """Ask the server to stop and wait for it, so shutdown stays ordered.
 
-    The wait matters: the server's own shutdown drains the ensure pool, and
+    The wait matters: the server's own shutdown drains the provision pool, and
     only once that returns may the caller close the cluster clients those
     converges write through.
     """
@@ -147,7 +151,7 @@ def stop(server: uvicorn.Server, thread: threading.Thread) -> None:
     thread.join(timeout=API_JOIN_SECONDS)
     if thread.is_alive():
         logger.warning(
-            "the ensure API did not stop within %ss; closing cluster clients anyway",
+            "the provision API did not stop within %ss; closing cluster clients anyway",
             API_JOIN_SECONDS,
         )
 
@@ -158,20 +162,20 @@ def run() -> None:
     settings = get_settings()
     install_terminate_handlers()
 
-    # Every region: ensure writes to all of them. The loop below still takes
+    # Every region: provisioning writes to all of them. The loop below still takes
     # only the local one - converging a peer cluster from here is what the
     # local-only rule exists to prevent.
     clusters = clusters_for(settings)
     local = select_local(clusters, settings.local_region)
     logger.info(
-        "tenant controller reconciling namespaces in %s from %s, ensure API on :%d",
+        "tenant controller reconciling namespaces in %s from %s, provision API on :%d",
         local.region,
         settings.templates_dir,
         settings.port,
     )
     server, thread = serve(settings, list(clusters.values()))
     try:
-        loop(local, settings)
+        loop(local, settings, NamespaceGC(settings, local))
     finally:
         stop(server, thread)
         for cluster in clusters.values():

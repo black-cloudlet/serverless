@@ -473,6 +473,11 @@ def test_run_pass_loads_the_mounted_set_fresh_each_time(tmp_path, monkeypatch):
     assert len(seen) == 2 and seen[0] != seen[1]
 
 
+class _NoopGC:
+    def maybe_sweep(self):
+        pass
+
+
 def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatch):
     settings = TenantControllerSettings(regions=[], resync_seconds=300, error_backoff_seconds=5.0)
     outcomes = iter([RuntimeError("mount vanished"), None, SystemExit(0)])
@@ -487,7 +492,7 @@ def test_a_raising_pass_backs_off_and_a_clean_pass_waits_the_interval(monkeypatc
     monkeypatch.setattr(common_loop.time, "sleep", sleeps.append)
 
     with pytest.raises(SystemExit):
-        controller_main.loop(object(), settings)
+        controller_main.loop(object(), settings, _NoopGC())
 
     assert sleeps[0] == 5.0  # the raise took the backoff...
     assert sleeps[1] == pytest.approx(300, abs=2)  # ...the clean pass, the interval
@@ -733,7 +738,7 @@ class _Thread:
 
 
 def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypatch):
-    """The split the design turns on: ensure fans out, the loop never does."""
+    """The split the design turns on: provision fans out, the loop never does."""
     events = []
     served = {}
     looped = {}
@@ -755,7 +760,7 @@ def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypa
         events.append("served")
         return served["server"], _Thread(events)
 
-    def _loop(cluster, settings):
+    def _loop(cluster, settings, gc):
         looped["cluster"] = cluster
         raise SystemExit(0)
 
@@ -768,7 +773,7 @@ def test_run_gives_the_api_every_region_but_the_loop_only_the_local_one(monkeypa
     assert [c.region for c in served["clusters"]] == ["central", "south"]
     assert looped["cluster"].region == "central"
     # Shut down in order, even when the loop ends by signal: the API is asked
-    # to stop before the clients an in-flight ensure is still writing through.
+    # to stop before the clients an in-flight provision is still writing through.
     assert served["server"].should_exit is True
     assert events == ["served", "joined", "closed central", "closed south"]
 
@@ -794,7 +799,7 @@ def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
     server, thread = controller_main.serve(settings, [])
     thread.join(timeout=5)
 
-    assert thread.daemon and thread.name == "ensure-api"
+    assert thread.daemon and thread.name == "provision-api"
     assert built["ran"], "the thread actually served"
     assert built["config"].port == 9999
     # Ours is already configured; uvicorn's dictConfig would replace it.
@@ -810,7 +815,7 @@ def test_the_api_runs_on_a_daemon_thread_off_the_loop(monkeypatch):
 def test_a_server_that_never_binds_fails_the_pod_instead_of_hiding(monkeypatch):
     """uvicorn answers a bind failure with sys.exit *in the thread*, and Python
     discards that silently - so without this check the loop would run on beside
-    a dead API and every ensure would be refused with nothing in the log."""
+    a dead API and every provision would be refused with nothing in the log."""
 
     class _DyingServer:
         def __init__(self, config):

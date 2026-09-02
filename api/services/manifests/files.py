@@ -92,7 +92,7 @@ def resolve_files(
     backing builders take bytes and choose the right Kubernetes field.
 
     Args:
-        workload: The object name (``{name}-{group}``).
+        workload: The workload's name.
         group: Owning group (for labels).
         owner: Username (for labels).
         files: The submitted file mounts.

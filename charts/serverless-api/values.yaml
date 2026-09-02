@@ -126,22 +126,20 @@ buildController:
     keepBuilds: 0
 
 namespaces:
-  # The API itself. Builds and workloads live in `workloads` below.
+  # The API itself. Workloads live in the per-group namespaces below.
   api: serverless-api
-  # Knative Services and their pods - what has been built, not the building.
-  workloads: serverless-workloads
-  # -- Labels for both namespaces; the two below add to (and override) them.
+  # -- Labels for every namespace this platform owns - the API's and each
+  # tenant's; the two blocks below add to (and override) them.
   # labels:
   #   team: platform
   labels: {}
   # apiLabels:
   #   pod-security.kubernetes.io/enforce: restricted
   apiLabels: {}
-  workloadsLabels: {}
 
-# One namespace per SSO group, provisioned at runtime
-# (docs/proposals/namespace-per-group.md). Everything here is inert until the
-# API resolves workloads into these namespaces.
+# One namespace per SSO group, provisioned at runtime by the tenant controller
+# (docs/ARCHITECTURE.md - Tenant namespaces). Workloads and their builds land
+# in `{group}{suffix}`.
 tenantNamespaces:
   # A group's namespace is `{group}{suffix}`. Group-first so tenant namespaces
   # list under their group's name; the suffix is what keeps a group from naming
@@ -151,22 +149,41 @@ tenantNamespaces:
   # controller derives the one it creates. Configured differently on either
   # side, the API would deploy into a namespace nobody provisions.
   suffix: -serverless
-  # How long the API waits for the ensure call before failing a create closed.
-  # A create waits on this, so it is well under the cluster op timeout.
-  ensureTimeout: 10
+  # How long the API waits for the provision call before failing a deploy
+  # closed. Must exceed the controller's own converge budget (the cluster op
+  # timeout, 60s for the whole fan-out): a brand-new group's first provision
+  # applies the full template set in every region, and giving up before the
+  # controller can finish would turn exactly that first create into a 503.
+  provisionTimeout: 75
   # -- Labels added to every tenant namespace, on top of `namespaces.labels`.
   # labels:
   #   pod-security.kubernetes.io/enforce: restricted
   labels: {}
 
+  # Collect a group's namespace once it has been continuously empty of
+  # workloads for the whole grace period (deleting it cascades everything
+  # inside; the group's next deploy provisions a fresh one). "May the platform
+  # delete things" is the operator's call - the registry.deleteOnFunctionDelete
+  # precedent - so deletion is off by default; the empty-since stamping runs
+  # either way, and a namespace annotated `serverless.platform/keep` is never
+  # collected. Local per cluster: a region a group stopped using is collected
+  # there alone.
+  gc:
+    enabled: false
+    # Hours-scale: every sweep re-derives emptiness from live state, so
+    # nothing is lost by waiting.
+    intervalSeconds: 3600
+    # A day of continuous emptiness before deletion.
+    graceSeconds: 86400
+
   # The service that creates those namespaces and keeps them converged to the
   # template set this chart ships. Two jobs in one process: a reconcile loop
-  # over its own cluster, and the ensure call the API makes before a create.
+  # over its own cluster, and the provision call the API makes before a deploy.
   controller:
     enabled: true
     repository: serverless/tenant-controller
     tag: ""
-    # Two, like the API: the ensure call is in the create path, so it needs to
+    # Two, like the API: the provision call is in the create path, so it needs to
     # survive a rolling restart. Replicas converge rather than race - the same
     # reason the build controller needs no leader election.
     replicaCount: 2
@@ -202,9 +219,9 @@ tenantNamespaces:
     fullResyncPasses: 12
     # Namespaces converged in parallel within one pass.
     convergeWorkers: 4
-    # Converges in flight across ensure calls. The bound that keeps a slow
+    # Converges in flight across provision calls. The bound that keeps a slow
     # region from starving the probes.
-    ensureWorkers: 8
+    provisionWorkers: 8
 
     # Its own client certificate, and therefore its own Kubernetes username -
     # the tenant controller writes namespaces and the API does not, so they must not
@@ -213,7 +230,7 @@ tenantNamespaces:
       name: serverless-tenant-controller-cert
       user: serverless-tenant-controller.clients.example.com
 
-    # Optional shared token on the ensure endpoint, depth behind the
+    # Optional shared token on the provision endpoint, depth behind the
     # NetworkPolicy that already scopes it to the API's pods. Off by default:
     # with no Secret the check is disabled, which is what a dev cluster with no
     # Vault needs. One Secret, envFrom'd by both ends - the API sends what the
@@ -365,7 +382,8 @@ runtimes:
         value: "https://artifactory.internal/artifactory/api/npm/npm/"
 
 # Function image builds (kpack + Cloud Native Buildpacks). docs/BUILDING.md.
-# Everything lands in `namespaces.workloads` and resolves against `registry.url`.
+# Builds run in the workload's own tenant namespace and resolve against
+# `registry.url`.
 build:
   # False where kpack is not installed; the API and its workloads still deploy.
   enabled: true
@@ -404,10 +422,10 @@ build:
     # `clusterBuild.registry`. e.g. registry.kpack.internal
     url: ""
     # Pull-only, and needed on BOTH build accounts: `export` pulls the run image.
+    # ESO materializes it wherever a build reads it - see registrySecret below
+    # for why there is no out-of-band option.
     pullSecret:
       name: kpack-registry-creds
-      # False when the Secret is provided out-of-band.
-      create: true
       key: cloudlet/platforms/serverless
       usernameProperty: kpack-registry-username
       passwordProperty: kpack-registry-password
@@ -420,10 +438,14 @@ build:
     # function's KSVC here pull with it. The NAME is identical in every region - it
     # is written into every region's KSVC - while the contents differ, so the Vault
     # path is per region.
+    #
+    # ESO is required for it, so there is no `create` switch: the credential is
+    # needed in every {group}{suffix} namespace, and those are created at
+    # runtime - nothing the chart renders once can reach a namespace that does
+    # not exist yet. The tenant template set carries the ExternalSecret so each
+    # namespace gets its copy as it appears.
     registrySecret:
       name: serverless-registry-creds
-      # False when the Secret is provided out-of-band.
-      create: true
       key: "cloudlet/platforms/serverless/{{ .Values.global.region }}"
       usernameProperty: registry-username
       passwordProperty: registry-password
@@ -438,12 +460,6 @@ build:
     # jammy images run as uid 1001, gid 1000.
     runAsUser: 1001
     fsGroup: 1000
-    # Bind to the namespace's SA group - per-function build accounts are named
-    # at request time. False binds `build.serviceAccount.name` and those below.
-    allServiceAccounts: true
-    # serviceAccounts:
-    #   - my-function-build
-    serviceAccounts: []
     # `persistentVolumeClaim` is only for kpack's volume build cache.
     volumes:
       - configMap

@@ -20,6 +20,7 @@ from cloudlet_apis.logging import get_logger
 from common.cluster import Cluster, ResourceKind
 from common.errors import NotFoundError
 from common.labels import (
+    ANNOTATION_EMPTY_SINCE,
     ANNOTATION_TEMPLATE_HASH,
     LABEL_GROUP,
     LABEL_MANAGED_BY,
@@ -45,7 +46,7 @@ PRUNABLE_KINDS = TEMPLATE_KINDS
 def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
     """Bring one tenant namespace to the template set (the stamp protocol above).
 
-    Idempotent throughout, so the ensure call and the loop can both run it.
+    Idempotent throughout, so the provision call and the loop can both run it.
     Every step is unconditional: the protocol has one shape, so a caller
     cannot skip the opening apply - which is also the write that creates the
     namespace - on a stale read of someone else's stamp.
@@ -61,7 +62,7 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         Exception: Any render or apply error; the caller decides whether it
             ends the pass.
     """
-    # Rendered for the cluster being written to, not for this pod: an ensure
+    # Rendered for the cluster being written to, not for this pod: a provision
     # converges peers, and a per-region value must follow the target.
     manifests = templates.render(
         namespace=namespace, group=group, region=cluster.region, registry=cluster.registry.url
@@ -108,6 +109,87 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
     )
 
 
+def managed_namespaces(cluster: Cluster) -> list[dict]:
+    """Every namespace this controller manages in ``cluster``, by label.
+
+    The one spelling of "what do I own" - the reconcile pass and the GC sweep
+    must never enumerate different worlds.
+
+    Args:
+        cluster: The cluster to list in.
+
+    Returns:
+        The Namespace objects.
+    """
+    return cluster.get(
+        ResourceKind.NAMESPACE, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=None
+    )
+
+
+def is_converged(meta: dict, templates: TemplateSet) -> bool:
+    """Whether a namespace's stamp says it already holds this template set.
+
+    The stamp is written last (the protocol above), so a matching one proves a
+    completed converge - one spelling of that rule, or the provision fast path
+    and the loop's staleness check could disagree about what "current" means.
+
+    Args:
+        meta: The Namespace's ``metadata``.
+        templates: The currently mounted template set.
+
+    Returns:
+        True when the stamp matches the set's digest.
+    """
+    return (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH) == templates.digest
+
+
+def converge_if_stale(cluster: Cluster, namespace: str, group: str, templates: TemplateSet) -> None:
+    """Converge for a provision, unless the namespace already carries the stamp.
+
+    The stamp is written last, so a matching stamp proves a completed converge
+    to this exact set - which makes the read-first fast path safe, and makes
+    provisioning a warm namespace one GET per region instead of a full apply.
+    Drift inside a stamped namespace is repaired by the loop's full resync,
+    not here.
+
+    Provision-only, and that carries two duties the loop's converge must not:
+    a namespace being *deleted* fails rather than passing (its stamp is still
+    readable, but nothing can be created in it - reporting Ready would break
+    the fail-closed contract the provision call exists for), and the GC's
+    empty-since stamp is cleared - the caller is about to deploy, and a clock
+    left running would let the sweep delete the namespace under the accepted
+    deploy. The loop must not clear it, or the GC could never collect.
+
+    Args:
+        cluster: The cluster to converge in (cluster-scoped client).
+        namespace: The namespace's name.
+        group: The owning (normalized) group.
+        templates: The loaded template set.
+
+    Raises:
+        RuntimeError: If the namespace is terminating.
+    """
+    try:
+        existing = cluster.get(ResourceKind.NAMESPACE, namespace, namespace=None)
+    except NotFoundError:
+        existing = None
+    meta = (existing or {}).get("metadata") or {}
+    if meta.get("deletionTimestamp"):
+        raise RuntimeError(f"namespace '{namespace}' is terminating; retry once it is gone")
+    annotations = meta.get("annotations") or {}
+    if not is_converged(meta, templates):
+        converge(cluster, namespace, group, templates)
+    if ANNOTATION_EMPTY_SINCE in annotations:
+        # Deleted underneath us raises NotFoundError into a Failed row, which
+        # is the right verdict for a namespace vanishing mid-provision.
+        cluster.patch(
+            ResourceKind.NAMESPACE,
+            namespace,
+            {"metadata": {"annotations": {ANNOTATION_EMPTY_SINCE: None}}},
+            namespace=None,
+        )
+
+
 def reconcile_all(
     cluster: Cluster, templates: TemplateSet, *, force: bool = False, workers: int = 1
 ) -> tuple[int, int, int]:
@@ -137,9 +219,7 @@ def reconcile_all(
             "indistinguishable from a broken one)"
         )
         return (0, 0, 0)
-    namespaces = cluster.get(
-        ResourceKind.NAMESPACE, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=None
-    )
+    namespaces = managed_namespaces(cluster)
     seen = failed = 0
     stale: list[tuple[str, str]] = []
     for ns in namespaces:
@@ -152,8 +232,7 @@ def reconcile_all(
             logger.warning("managed namespace '%s' carries no group label; skipping", name)
             failed += 1
             continue
-        stamp = (meta.get("annotations") or {}).get(ANNOTATION_TEMPLATE_HASH)
-        if stamp == templates.digest and not force:
+        if is_converged(meta, templates) and not force:
             continue
         stale.append((name, group))
 

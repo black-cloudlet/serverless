@@ -14,8 +14,9 @@ from common.names import default_host_label
 DOMAIN_MAPPING_API = "serving.knative.dev/v1beta1"
 
 # The composition host_for uses, surfaced on GET /info so a UI can preview the
-# default host as the user types. Keep in sync with host_for.
-HOST_TEMPLATE = "{name}-{group}.{routeDomain}"
+# default host as the user types. Composed from the same helper, so the two
+# cannot drift.
+HOST_TEMPLATE = default_host_label("{name}", "{group}") + ".{routeDomain}"
 
 
 def host_for(name: str, group: str, route_domain: str) -> str:

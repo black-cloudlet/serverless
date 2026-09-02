@@ -6,7 +6,7 @@ Everything a single component owns lives in that component's folder:
 
   api/               the REST API: Deployment, Service, Route, its own secrets
   build-controller/  the digest-propagation loop
-  tenant-controller/ per-group namespaces: the loop, the ensure API, its own
+  tenant-controller/ per-group namespaces: the loop, the provision API, its own
                      identity, and the template set it applies
   kpack/             the build subsystem: builders, SCC, CA policy, credentials
 

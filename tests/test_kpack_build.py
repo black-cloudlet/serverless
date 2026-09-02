@@ -25,7 +25,6 @@ def anyio_backend():
 def _settings(**over):
     base = dict(
         regions=[RegionConfig(name="region-a", cluster="a-0")],
-        workloads_namespace="wl",
         build={"registry_secret": "reg-creds"},
         registry={"url": "registry.internal", "organization": "acme"},
     )
@@ -159,7 +158,7 @@ def test_image_never_sets_creation_time():
     # creationTime is a nonce: setting it makes every apply look like a change
     # and rebuilds forever under active/active.
     assert "creationTime" not in image["spec"]
-    assert image["spec"]["builder"] == {"kind": "Builder", "name": "python"}
+    assert image["spec"]["builder"] == {"kind": "ClusterBuilder", "name": "python"}
     assert "build" not in image["spec"]  # omitted when there is no env/resources
 
 

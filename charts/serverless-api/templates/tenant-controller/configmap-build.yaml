@@ -23,29 +23,9 @@ metadata:
   labels:
     {{- include "serverless-api.labels" . | nindent 4 }}
 data:
-  50-build-serviceaccount.yaml: |
-    apiVersion: v1
-    kind: ServiceAccount
-    metadata:
-      name: {{ .Values.build.serviceAccount.name }}
-      namespace: {{ $ns }}
-    {{- $creds := list .Values.build.serviceAccount.registrySecret.name }}
-    {{- with .Values.build.kpackRegistry }}
-    {{- if and .url .pullSecret.name }}
-    {{- $creds = append $creds .pullSecret.name }}
-    {{- end }}
-    {{- end }}
-    secrets:
-      {{- range $creds }}
-      - name: {{ . }}
-      {{- end }}
-    imagePullSecrets:
-      {{- range $creds }}
-      - name: {{ . }}
-      {{- end }}
 {{- if .Values.build.scc.enabled }}
-  # The SCC grant, same ClusterRole as the legacy namespace's - the per-function
-  # build accounts the API names at request time live here now.
+  # The SCC grant, to the namespace's whole ServiceAccount group - the
+  # per-function build accounts the API names at request time live here.
   60-build-scc.yaml: |
     apiVersion: rbac.authorization.k8s.io/v1
     kind: RoleBinding
@@ -61,10 +41,9 @@ data:
         apiGroup: rbac.authorization.k8s.io
         name: system:serviceaccounts:{{ $ns }}
 {{- end }}
-{{- if .Values.build.serviceAccount.registrySecret.create }}
-  # Written as an ExternalSecret rather than a Secret, so the credential never
-  # passes through a ConfigMap: ESO fills it in the tenant namespace from Vault,
-  # exactly as it does for the legacy one. A Vault path, never a credential.
+  # An ExternalSecret rather than a Secret, so the credential never passes
+  # through a ConfigMap: ESO fills it in the tenant namespace from Vault. A
+  # Vault path travels here, never a credential.
   70-registry-credentials.yaml: |
     apiVersion: external-secrets.io/v1beta1
     kind: ExternalSecret
@@ -92,5 +71,38 @@ data:
           remoteRef:
             key: {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" .Values.build.serviceAccount.registrySecret.key) }}
             property: {{ .Values.build.serviceAccount.registrySecret.passwordProperty }}
+{{- $kpack := .Values.build.kpackRegistry }}
+{{- if and $kpack.url $kpack.pullSecret.name }}
+  # The kpack-registry pull credential the per-function build accounts also
+  # reference: `export` pulls the run image from it. One registry and one
+  # credential everywhere, so no region token is needed - the auth host is the
+  # configured kpack registry itself.
+  75-kpack-pull-credentials.yaml: |
+    apiVersion: external-secrets.io/v1beta1
+    kind: ExternalSecret
+    metadata:
+      name: {{ $kpack.pullSecret.name }}
+      namespace: {{ $ns }}
+    spec:
+      refreshInterval: {{ .Values.externalSecrets.refreshInterval }}
+      secretStoreRef:
+        name: {{ .Values.externalSecrets.clusterSecretStore }}
+        kind: ClusterSecretStore
+      target:
+        name: {{ $kpack.pullSecret.name }}
+        template:
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: |-
+              {{ printf `{"auths":{"%s":{"username":"{{ .username }}","password":"{{ .password }}"}}}` $kpack.url }}
+      data:
+        - secretKey: username
+          remoteRef:
+            key: {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" $kpack.pullSecret.key) }}
+            property: {{ $kpack.pullSecret.usernameProperty }}
+        - secretKey: password
+          remoteRef:
+            key: {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" $kpack.pullSecret.key) }}
+            property: {{ $kpack.pullSecret.passwordProperty }}
 {{- end }}
 {{- end }}

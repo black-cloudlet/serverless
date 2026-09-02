@@ -137,24 +137,23 @@ async def test_a_host_held_by_the_same_name_in_another_group_still_conflicts():
 async def test_the_host_conflict_says_who_holds_it_and_where():
     """The owner can sit in a namespace the caller cannot see.
 
-    Including the legacy one: a pre-cutover DomainMapping still carries the old
-    `{name}-{group}` workload label, so a re-create after the cutover conflicts
-    with something the caller has no way to find from "already assigned".
+    The owner may sit in a namespace the caller cannot see, so "already
+    assigned" alone would be a dead end to debug.
     """
     from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
     from common.errors import ConflictError
 
     host = "app-team.serverless.example.com"
-    legacy = {
+    foreign = {
         "metadata": {
             "name": host,
-            "namespace": "serverless-workloads",
-            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "team"},
+            "namespace": "other-serverless",
+            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "other"},
         }
     }
-    svc = _workload_service({"region-a": _FakeCluster("region-a", existing={host: legacy})})
+    svc = _workload_service({"region-a": _FakeCluster("region-a", existing={host: foreign})})
 
-    with pytest.raises(ConflictError, match="app-team in namespace serverless-workloads"):
+    with pytest.raises(ConflictError, match="app-team in namespace other-serverless"):
         await svc.assert_host_available(
             host, "app", "team", svc.deployer.resolve_targets(None, "team-serverless")
         )
@@ -2742,3 +2741,33 @@ async def test_get_reads_every_regions_build_concurrently():
 
     (a_start, a_end), (b_start, b_end) = spans["region-a"], spans["region-b"]
     assert a_start < b_end and b_start < a_end, "the per-region build reads did not overlap"
+
+
+async def test_the_callers_own_mapping_wins_over_a_leftover_loser():
+    """Two groups raced a create; Knative marked one mapping the loser but the
+    object survives. The caller's own mapping anywhere in the listing means
+    available - a leftover loser must not lock the winner out of its own
+    updates - whatever order the apiserver lists them in."""
+    from api.models.common import LABEL_GROUP, LABEL_WORKLOAD
+
+    host = "app-team.serverless.example.com"
+    loser = {
+        "metadata": {
+            "name": host,
+            "namespace": "other-serverless",
+            "labels": {LABEL_WORKLOAD: "app-team", LABEL_GROUP: "other"},
+        }
+    }
+    own = {
+        "metadata": {
+            "name": host,
+            "namespace": "team-serverless",
+            "labels": {LABEL_WORKLOAD: "app", LABEL_GROUP: "team"},
+        }
+    }
+    # The foreign mapping listed FIRST - the order that used to decide.
+    svc = _workload_service(
+        {"region-a": _FakeCluster("region-a", existing={"a-loser": loser, "b-own": own})}
+    )
+
+    await svc.assert_host_available(host, "app", "team", svc.targets_for("team"))

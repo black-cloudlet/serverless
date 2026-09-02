@@ -1,7 +1,7 @@
-"""The ensure fan-out and the tenant controller's internal HTTP surface.
+"""The provision fan-out and the tenant controller's internal HTTP surface.
 
-Ensure is the one tenant-controller path that writes to every region, and the one a
-create blocks on, so what matters here is that a single region's trouble stays
+Provision is the one tenant-controller path that writes to every region, and the
+one a create blocks on, so what matters here is that a single region's trouble stays
 a *row* rather than an exception that loses the regions that worked - and that
 the endpoint's verdicts are the ones the API is written against: 400 for a
 group that cannot name a namespace, 401 for a bad token, 502 only when nothing
@@ -22,6 +22,9 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from common.config import PROVISION_FAILED as FAILED
+from common.config import PROVISION_READY as READY
+from common.config import PROVISION_TIMEOUT as TIMEOUT
 from common.labels import (
     ANNOTATION_TEMPLATE_HASH,
     LABEL_GROUP,
@@ -31,7 +34,7 @@ from common.labels import (
 from tenant_controller import api as controller_api
 from tenant_controller.api import create_app
 from tenant_controller.config import TenantControllerSettings
-from tenant_controller.ensure import FAILED, READY, TIMEOUT, ensure
+from tenant_controller.provision import provision
 from tenant_controller.templates import TemplateSet
 
 TEMPLATES = {
@@ -59,13 +62,20 @@ class _Cluster:
     name = "cluster-0"
 
     def __init__(
-        self, region: str, *, fail: str | None = None, block: threading.Event | None = None
+        self,
+        region: str,
+        *,
+        fail: str | None = None,
+        block: threading.Event | None = None,
+        live_namespace: dict | None = None,
     ):
         self.region = region
         # Resolved per region on the real client, which is what makes a
         # per-region value in the set follow the cluster being written to.
         self.registry = SimpleNamespace(url=f"registry.{region}.internal")
         self.applied: list[tuple[dict, str | None]] = []
+        self.patched: list[tuple[str, dict]] = []
+        self._live_namespace = live_namespace
         self._fail = fail
         self._block = block
 
@@ -78,7 +88,23 @@ class _Cluster:
         return [manifest]
 
     def get(self, kind, name=None, label_selector=None, *, namespace):
-        return []  # nothing left over, so the prune deletes nothing
+        if name is None:
+            return []  # nothing left over, so the prune deletes nothing
+        # A named get serves the last applied object (or the preset live one),
+        # like the apiserver: the stamp fast path reads the Namespace back
+        # before deciding to converge.
+        from common.errors import NotFoundError
+
+        for manifest, _ns in reversed(self.applied):
+            if manifest["kind"] == kind.kind and manifest["metadata"].get("name") == name:
+                return manifest
+        live = self._live_namespace
+        if live is not None and kind.kind == "Namespace" and live["metadata"].get("name") == name:
+            return live
+        raise NotFoundError(f"{name} not found")
+
+    def patch(self, kind, name, body, *, namespace):
+        self.patched.append((name, body))
 
     def delete(self, kind, name, *, namespace):
         raise AssertionError("nothing should be pruned in these fixtures")
@@ -91,7 +117,7 @@ class _Cluster:
 
 @pytest.fixture
 def pool():
-    """The app-owned pool ensure runs its converges on."""
+    """The app-owned pool provision runs its converges on."""
     with ThreadPoolExecutor(max_workers=4) as executor:
         yield executor
 
@@ -126,11 +152,11 @@ def _client(clusters, settings) -> TestClient:
     return TestClient(create_app(clusters, settings), raise_server_exceptions=False)
 
 
-async def test_ensure_converges_every_region(pool):
+async def test_provision_converges_every_region(pool):
     clusters = [_Cluster("central"), _Cluster("south")]
     templates = _templates()
 
-    outcomes = await ensure(
+    outcomes = await provision(
         clusters, "payments-serverless", "payments", templates, timeout=10, executor=pool
     )
 
@@ -148,7 +174,7 @@ async def test_ensure_converges_every_region(pool):
 async def test_a_failing_region_is_a_row_and_the_others_still_converge(pool):
     clusters = [_Cluster("central", fail="apiserver said no"), _Cluster("south")]
 
-    outcomes = await ensure(
+    outcomes = await provision(
         clusters, "payments-serverless", "payments", _templates(), timeout=10, executor=pool
     )
 
@@ -163,7 +189,7 @@ async def test_regions_past_the_deadline_are_reported_as_timeout(pool):
     clusters = [_Cluster("central", block=blocked), _Cluster("south", block=blocked)]
     try:
         started = time.monotonic()
-        outcomes = await ensure(
+        outcomes = await provision(
             clusters, "payments-serverless", "payments", _templates(), timeout=0.3, executor=pool
         )
         elapsed = time.monotonic() - started
@@ -177,9 +203,11 @@ async def test_regions_past_the_deadline_are_reported_as_timeout(pool):
     assert elapsed < 2.0
 
 
-async def test_ensure_refuses_an_empty_region_list(pool):
+async def test_provision_refuses_an_empty_region_list(pool):
     with pytest.raises(ValueError, match="no regions are configured"):
-        await ensure([], "payments-serverless", "payments", _templates(), timeout=10, executor=pool)
+        await provision(
+            [], "payments-serverless", "payments", _templates(), timeout=10, executor=pool
+        )
 
 
 def test_the_endpoint_reports_the_namespace_the_hash_and_every_region(tmp_path):
@@ -208,7 +236,11 @@ def test_the_endpoint_normalizes_the_group_before_deriving_the_namespace(tmp_pat
     assert response.json()["namespace"] == "my-team-serverless"
 
 
-def test_a_second_ensure_is_a_no_op_beyond_re_applying(tmp_path):
+def test_a_second_provision_reads_the_stamp_and_skips_the_apply(tmp_path):
+    """Idempotent, and cheap: the stamp is written last, so a namespace already
+    carrying the current hash proves a completed converge - the second call is
+    one read per region, not a re-apply. A deploy provisions on every request,
+    so the warm path has to cost almost nothing."""
     clusters = [_Cluster("central")]
     client = _client(clusters, _settings(tmp_path))
 
@@ -216,8 +248,82 @@ def test_a_second_ensure_is_a_no_op_beyond_re_applying(tmp_path):
     writes = len(clusters[0].applied)
     second = client.put("/groups/payments/namespace").json()
 
-    assert first == second, "ensure is idempotent: same namespace, same hash, same rows"
-    assert len(clusters[0].applied) == 2 * writes, "and it re-applies rather than skipping"
+    assert first == second, "provision is idempotent: same namespace, same hash, same rows"
+    assert len(clusters[0].applied) == writes, "the stamped namespace is not re-applied"
+
+
+def _live_namespace(name, *, stamp=None, annotations=None, deleting=False):
+    meta: dict = {"name": name, "annotations": dict(annotations or {})}
+    if stamp is not None:
+        meta["annotations"][ANNOTATION_TEMPLATE_HASH] = stamp
+    if deleting:
+        meta["deletionTimestamp"] = "2026-08-30T11:00:00+00:00"
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": meta}
+
+
+def test_a_terminating_namespace_fails_provision_not_ready(tmp_path):
+    """Its stamp is still readable, but nothing can be created in it: Ready
+    here would break the fail-closed contract the provision call exists for -
+    the accepted deploy would die against a namespace being deleted."""
+    settings = _settings(tmp_path)
+    digest = TemplateSet.load(settings.templates_dir).digest
+    live = _live_namespace("payments-serverless", stamp=digest, deleting=True)
+    clusters = [_Cluster("central", live_namespace=live)]
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 502
+    assert "terminating" in response.json()["error"]["details"][0]["message"]
+    assert clusters[0].applied == []
+
+
+def test_provision_clears_the_gc_clock(tmp_path):
+    """The caller is about to deploy: an empty-since clock left running would
+    let the sweep delete the namespace under the just-accepted deploy."""
+    from common.labels import ANNOTATION_EMPTY_SINCE
+
+    settings = _settings(tmp_path)
+    digest = TemplateSet.load(settings.templates_dir).digest
+    live = _live_namespace(
+        "payments-serverless",
+        stamp=digest,
+        annotations={ANNOTATION_EMPTY_SINCE: "2026-08-01T00:00:00+00:00"},
+    )
+    clusters = [_Cluster("central", live_namespace=live)]
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 200
+    assert clusters[0].applied == [], "the warm path stays a read plus the clock clear"
+    assert clusters[0].patched == [
+        (
+            "payments-serverless",
+            {"metadata": {"annotations": {ANNOTATION_EMPTY_SINCE: None}}},
+        )
+    ]
+
+
+def test_a_cold_converge_also_clears_the_gc_clock(tmp_path):
+    from common.labels import ANNOTATION_EMPTY_SINCE
+
+    settings = _settings(tmp_path)
+    live = _live_namespace(
+        "payments-serverless",
+        stamp="stale-hash",
+        annotations={ANNOTATION_EMPTY_SINCE: "2026-08-01T00:00:00+00:00"},
+    )
+    clusters = [_Cluster("central", live_namespace=live)]
+
+    response = _client(clusters, settings).put("/groups/payments/namespace")
+
+    assert response.status_code == 200
+    assert clusters[0].namespaces, "the stale stamp forced a real converge"
+    assert clusters[0].patched == [
+        (
+            "payments-serverless",
+            {"metadata": {"annotations": {ANNOTATION_EMPTY_SINCE: None}}},
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -330,8 +436,8 @@ def test_a_tenant_controller_with_no_regions_is_unavailable_not_broken(tmp_path,
     assert "no regions are configured" in response.json()["error"]["message"]
 
 
-def test_an_unusable_template_set_fails_ensure_the_way_it_fails_readiness(tmp_path):
-    """One gate for both, so readiness can never say ready on a set ensure refuses."""
+def test_an_unusable_template_set_fails_provision_the_way_it_fails_readiness(tmp_path):
+    """One gate for both, so readiness can never say ready on a set provision refuses."""
     settings = TenantControllerSettings(templates_dir=str(tmp_path / "missing"))
     client = _client([_Cluster("central")], settings)
 
@@ -341,7 +447,7 @@ def test_an_unusable_template_set_fails_ensure_the_way_it_fails_readiness(tmp_pa
 
 def test_readiness_rejects_a_set_that_renders_only_a_namespace(tmp_path):
     """The rule converge refuses on. Unchecked here, the pod stays in rotation
-    and every ensure 502s, blaming the regions for this pod's own bad mount."""
+    and every provision 502s, blaming the regions for this pod's own bad mount."""
     (tmp_path / "10-namespace.yaml").write_text(TEMPLATES["10-namespace.yaml"])
     settings = TenantControllerSettings(templates_dir=str(tmp_path))
     client = _client([_Cluster("central")], settings)
@@ -355,7 +461,7 @@ def test_readiness_rejects_a_set_that_renders_only_a_namespace(tmp_path):
 
 def test_no_endpoint_holds_one_of_the_servers_threads(tmp_path):
     """All three are coroutines, so none consumes a slot of Starlette's thread
-    limiter - which an ensure would hold for the whole cluster op timeout,
+    limiter - which a provision would hold for the whole cluster op timeout,
     starving the probes that keep this pod alive."""
     app = create_app([_Cluster("central")], _settings(tmp_path))
 
@@ -373,7 +479,7 @@ def test_converging_a_group_is_a_put():
     assert methods["/groups/{group}/namespace"][1] == {"PUT"}
 
 
-async def test_the_probes_answer_while_an_ensure_is_in_flight(tmp_path):
+async def test_the_probes_answer_while_a_provision_is_in_flight(tmp_path):
     blocked = threading.Event()
     app = create_app([_Cluster("central", block=blocked)], _settings(tmp_path))
     transport = httpx.ASGITransport(app=app)
@@ -407,14 +513,14 @@ def test_the_app_drains_its_pool_before_the_process_lets_go(tmp_path, monkeypatc
             super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
     monkeypatch.setattr(controller_api, "ThreadPoolExecutor", _RecordingPool)
-    settings = _settings(tmp_path, ensure_workers=3)
+    settings = _settings(tmp_path, provision_workers=3)
 
     # Entering TestClient runs startup; leaving it runs shutdown.
     with TestClient(create_app([_Cluster("central")], settings)) as client:
         assert client.put("/groups/payments/namespace").status_code == 200
         assert "shutdown" not in built, "the pool must live as long as the app"
 
-    assert built["max_workers"] == 3, "bounded by ensure_workers, not the default"
+    assert built["max_workers"] == 3, "bounded by provision_workers, not the default"
     assert built["shutdown"] == {"wait": True, "cancel_futures": True}
 
 
@@ -432,7 +538,7 @@ def test_readiness_never_touches_a_cluster(tmp_path):
     assert response.status_code == 200
 
 
-def test_ensure_uses_the_configured_suffix_not_the_default(tmp_path):
+def test_provision_uses_the_configured_suffix_not_the_default(tmp_path):
     """The one value both ends must agree on.
 
     Derived from the module default here, the controller would provision

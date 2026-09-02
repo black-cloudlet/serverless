@@ -381,7 +381,7 @@ class FakeCluster:
     """A local region: a scripted pod roster, and scripted per-pod log chunks."""
 
     region = "central"
-    oname = "foo"
+    workload = "foo"
 
     def __init__(self, pods=None, chunks=None, *, live=False):
         self._pods = dict(pods or {})
@@ -405,7 +405,7 @@ class FakeCluster:
                     pods_stream.REVISION_LABEL: revision,
                     # What the per-pod authorization checks: a pod is only this
                     # workload's if it carries this workload's service label.
-                    pods_stream.SERVICE_LABEL: self.oname,
+                    pods_stream.SERVICE_LABEL: self.workload,
                 },
             },
             "status": {
@@ -644,7 +644,7 @@ def _pods_follow(cluster, capacity, **over):
         capacity=capacity,
         config=FAST,
         first=_roster(),
-        oname="foo",
+        workload="foo",
         interval=FAST.interval_seconds,
     )
     args.update(over)

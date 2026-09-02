@@ -1,3 +1,0 @@
-{{- if .Values.networkPolicy.enabled }}
-{{- include "serverless-api.workloadNetworkPolicies" (dict "root" $ "namespace" .Values.namespaces.workloads) }}
-{{- end }}

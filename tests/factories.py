@@ -14,6 +14,17 @@ def settings_with_regions():
     )
 
 
+def _list_matching(objects, kind, field_selector):
+    """The apiserver's list semantics, shared by both fakes: the kind, then the
+    ``metadata.name`` field selector. A fake that ignored either would hand the
+    caller objects a real cluster never would - or withhold ones it would."""
+    items = [o for o in objects if o.get("kind") in (None, kind.kind)]
+    if field_selector and field_selector.startswith("metadata.name="):
+        wanted = field_selector.split("=", 1)[1]
+        items = [o for o in items if (o.get("metadata") or {}).get("name") == wanted]
+    return items
+
+
 class _FakeCluster:
     def __init__(self, name, existing=None):
         self.name = name
@@ -27,13 +38,7 @@ class _FakeCluster:
         # 404. The host pre-flight lists cluster-wide now, so a fake that
         # raised here would read as an unreachable region.
         if name is None:
-            items = list(self._existing.values())
-            # The apiserver applies the field selector; a fake that ignored it
-            # would hand the caller objects a real cluster never would.
-            if field_selector and field_selector.startswith("metadata.name="):
-                wanted = field_selector.split("=", 1)[1]
-                items = [o for o in items if (o.get("metadata") or {}).get("name") == wanted]
-            return items
+            return _list_matching(self._existing.values(), kind, field_selector)
         if name in self._existing:
             return self._existing[name]
         raise _NF(f"{name} not found")
@@ -89,11 +94,10 @@ class _ApplyCluster:
         from common.cluster import ResourceKind
         from common.errors import NotFoundError as _NF
 
-        # A LIST, not a get: the host pre-flight lists DomainMappings across
-        # every namespace now, and an empty cluster lists empty rather than
-        # 404ing - which a region would otherwise read as unreachable.
+        # A LIST serves what this cluster holds - preset and applied alike, so
+        # the host pre-flight sees the DomainMappings earlier operations wrote.
         if name is None:
-            return []
+            return _list_matching([*self._existing.values(), *self.applied], kind, field_selector)
         if kind == ResourceKind.KNATIVE_SERVICE and name in self._existing:
             return self._existing[name]
         if kind == ResourceKind.SECRET and name in self._secrets:

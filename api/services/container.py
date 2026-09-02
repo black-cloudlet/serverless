@@ -140,15 +140,14 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        oname = spec.name
         # Registry creds are optional (public image -> no pull secret).
         pull_name: str | None = None
         pull: dict | None = None
         if spec.registryUsername and spec.registryToken:
-            pull_name = secret_svc.pull_secret_name(oname)
+            pull_name = secret_svc.pull_secret_name(spec.name)
             pull = secret_svc.build_pull_secret(
                 pull_name,
-                workload_labels(group, user.username, oname, OFFERING_CONTAINER),
+                workload_labels(group, user.username, spec.name, OFFERING_CONTAINER),
                 secret_svc.registry_of(spec.image),  # key to the image's registry
                 spec.registryUsername,
                 spec.registryToken,
@@ -200,7 +199,6 @@ class ContainerService:
         Returns:
             The response body and HTTP status code.
         """
-        oname = name
         # accept_update already fetched (and authorized) this; reuse it to avoid a
         # second multi-region fanout. Falls back to a fresh fetch for direct callers.
         if existing is None:
@@ -210,8 +208,8 @@ class ContainerService:
 
         # token -> rotate; username only -> keep, re-keyed to the image's registry;
         # neither -> remove (docs/ARCHITECTURE.md - Secrets).
-        labels = workload_labels(group, user.username, oname, OFFERING_CONTAINER)
-        pull_name = secret_svc.pull_secret_name(oname)
+        labels = workload_labels(group, user.username, name, OFFERING_CONTAINER)
+        pull_name = secret_svc.pull_secret_name(name)
         pull: dict | None = None
         if spec.registryToken:  # rotate
             pull = secret_svc.build_pull_secret(

@@ -20,18 +20,7 @@ spec:
     - name: mount-ca-bundle
       match:
         any:
-          - resources:
-              kinds:
-                - Pod
-              namespaces:
-                - {{ .Values.namespaces.workloads }}
-              selector:
-                matchExpressions:
-                  # Set by kpack on build pods, and on nothing else - this
-                  # namespace is full of tenant pods that must not be touched.
-                  - key: kpack.io/build
-                    operator: Exists
-          # And every per-group namespace, matched on the label the tenant controller
+          # Every per-group namespace, matched on the label the tenant controller
           # stamps rather than by name: they are created at runtime, so there is
           # no list of names for this policy to hold. The key and value are
           # common/labels.py's LABEL_MANAGED_BY and TENANT_CONTROLLER_VALUE; a test
@@ -44,6 +33,8 @@ spec:
                   serverless.platform/managed-by: serverless-tenant-controller
               selector:
                 matchExpressions:
+                  # Set by kpack on build pods, and on nothing else - these
+                  # namespaces are full of tenant pods that must not be touched.
                   - key: kpack.io/build
                     operator: Exists
       mutate:

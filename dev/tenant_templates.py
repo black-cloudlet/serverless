@@ -14,8 +14,8 @@ second: what it prints is what would land in a tenant namespace, ready for
 kubeconform.
 
 ``--digest`` prints the set's hash alone. Rendering the chart for each region
-and comparing the two is how the region-neutrality the ensure fan-out depends
-on gets asserted rather than assumed (tenant_controller/ensure.py).
+and comparing the two is how the region-neutrality the provision fan-out depends
+on gets asserted rather than assumed (tenant_controller/provision.py).
 """
 
 from __future__ import annotations

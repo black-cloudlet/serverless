@@ -34,7 +34,7 @@ from common.cluster import ResourceKind
 # everywhere, and the values are resolved against whichever cluster is being
 # written to. Without them a per-region value - a Vault path, a registry host -
 # would be baked in at chart render, the two regions' sets would never share a
-# hash, and an ensure writing a peer's namespace would write the wrong one.
+# hash, and a provision writing a peer's namespace would write the wrong one.
 PLACEHOLDERS = ("namespace", "group", "region", "registry")
 _SENTINELS = {name: f"__serverless_placeholder_{name}__" for name in PLACEHOLDERS}
 _TOKEN = re.compile(r"\{\{([a-z]+)\}\}")
@@ -147,7 +147,7 @@ class TemplateSet:
             namespace: The tenant namespace being converged.
             group: The owning (normalized) group.
             region: The region of the cluster being written to - not
-                necessarily this pod's own, since ensure converges peers.
+                necessarily this pod's own, since provisioning converges peers.
             registry: That region's registry host.
 
         Returns:

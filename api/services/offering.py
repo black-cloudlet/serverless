@@ -47,18 +47,16 @@ class DeleteContext:
     """What :meth:`Offering.after_delete` may need, so the protocol takes one value.
 
     An offering is stateless policy, so everything it touches is handed to it.
-    Cleanup outgrew ``(cluster, oname)`` once it reached past the cluster: the
-    registry is addressed by ``{group}/{name}``, not by the object name.
+    Cleanup outgrew ``(cluster, name)`` once it reached past the cluster: the
+    registry is addressed by ``{group}/{name}``.
 
     Attributes:
         cluster: The region being cleaned up, carrying its own registry.
-        oname: The object name (``{name}-{group}``).
         name: The workload name.
         group: The owning group.
     """
 
     cluster: NamespacedCluster
-    oname: str
     name: str
     group: str
 
@@ -117,7 +115,7 @@ class Offering(Protocol):
         """
         ...
 
-    def managed_secrets(self, oname: str) -> set[tuple[ResourceKind, str]]:
+    def managed_secrets(self, name: str) -> set[tuple[ResourceKind, str]]:
         """Derived Secrets the engine owns and must prune when unreferenced.
 
         Anything returned here is deleted on update unless the new spec still
@@ -125,7 +123,7 @@ class Offering(Protocol):
         """
         ...
 
-    def read_extra_state(self, cluster: NamespacedCluster, oname: str) -> dict:
+    def read_extra_state(self, cluster: NamespacedCluster, name: str) -> dict:
         """Offering-specific carried-forward state, merged into the loaded state.
 
         Runs off the event loop, on a region that has the workload.
@@ -203,7 +201,7 @@ class FunctionOffering:
             build=build,
         )
 
-    def managed_secrets(self, oname: str) -> set[tuple[ResourceKind, str]]:
+    def managed_secrets(self, name: str) -> set[tuple[ResourceKind, str]]:
         """None. A function's git Secret is carried forward, never pruned.
 
         It is applied on every region so any of them can rebuild after a switchover
@@ -213,9 +211,9 @@ class FunctionOffering:
         """
         return set()
 
-    def read_extra_state(self, cluster: NamespacedCluster, oname: str) -> dict:
+    def read_extra_state(self, cluster: NamespacedCluster, name: str) -> dict:
         """The stored git token, so a build-input change can rebuild without one."""
-        git = region_read.secret_text(cluster, secret_svc.git_secret_name(oname))
+        git = region_read.secret_text(cluster, secret_svc.git_secret_name(name))
         return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
 
     def after_delete(self, ctx: DeleteContext) -> None:
@@ -230,7 +228,7 @@ class FunctionOffering:
         Where several regions share one registry the repository delete repeats and
         the second call 404s, which :func:`delete_repositories` already tolerates.
         """
-        region_apply.delete_build_objects(ctx.cluster, ctx.oname)
+        region_apply.delete_build_objects(ctx.cluster, ctx.name)
         registry_svc.delete_function_repositories(ctx.cluster.registry, ctx.group, ctx.name)
 
     def build_status(
@@ -287,11 +285,11 @@ class ContainerOffering:
             port=spec.port,
         )
 
-    def managed_secrets(self, oname: str) -> set[tuple[ResourceKind, str]]:
+    def managed_secrets(self, name: str) -> set[tuple[ResourceKind, str]]:
         """The image-pull Secret, so dropping the registry creds deletes it."""
-        return {(ResourceKind.SECRET, secret_svc.pull_secret_name(oname))}
+        return {(ResourceKind.SECRET, secret_svc.pull_secret_name(name))}
 
-    def read_extra_state(self, cluster: NamespacedCluster, oname: str) -> dict:
+    def read_extra_state(self, cluster: NamespacedCluster, name: str) -> dict:
         """None. The registry credential is read by the shared state loader."""
         return {}
 
