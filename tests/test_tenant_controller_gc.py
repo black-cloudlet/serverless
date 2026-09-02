@@ -230,6 +230,27 @@ def test_a_read_failure_never_deletes(monkeypatch):
     assert cluster.deleted == []
 
 
+def test_workloads_that_do_not_say_where_they_run_refuse_the_sweep(monkeypatch):
+    """The same rule as an unreadable listing, one step subtler: items came
+    back but none carry a namespace, so every namespace would look empty at
+    once. (A listing of *no* items is a legitimate "all empty" - the case
+    test_empty_past_the_grace_is_deleted covers.)"""
+    cluster = _Cluster([_namespace("team-serverless", annotations=_stamped(4000))])
+    real_get = cluster.get
+
+    def get(kind, name=None, label_selector=None, *, namespace, field_selector=None):
+        if kind == ResourceKind.KNATIVE_SERVICE:
+            return [{"metadata": {"name": "api"}}]  # no metadata.namespace
+        return real_get(kind, name, label_selector, namespace=namespace)
+
+    cluster.get = get
+    with pytest.raises(RuntimeError, match="none carry metadata.namespace"):
+        _gc(cluster, monkeypatch=monkeypatch).sweep()
+
+    assert cluster.deleted == []
+    assert cluster.patched == []
+
+
 def test_maybe_sweep_paces_itself_and_runs_off_the_loop(monkeypatch):
     cluster = _Cluster([_namespace("team-serverless")])
     gc = _gc(cluster, monkeypatch=monkeypatch)

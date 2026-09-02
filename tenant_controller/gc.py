@@ -84,16 +84,26 @@ class NamespaceGC(PeriodicSweep):
         One namespace failing is logged and skipped, never the end of the
         sweep: the listing order is stable, so an aborting error would starve
         every namespace after the failing one, deterministically.
+
+        Raises:
+            RuntimeError: If workloads are listed but none say where they run
+                (see below); the caller logs it and the sweep retries.
         """
         started = time.monotonic()
         namespaces = managed_namespaces(self._cluster)
         # One cluster-wide list; each namespace's emptiness is then a set
         # lookup instead of its own apiserver round trip. A failed list ends
         # the sweep (caught by the caller) - unreadable is not empty.
-        occupied = {
-            (w.get("metadata") or {}).get("namespace")
-            for w in self._cluster.get(ResourceKind.KNATIVE_SERVICE, namespace=None)
-        }
+        workloads = self._cluster.get(ResourceKind.KNATIVE_SERVICE, namespace=None)
+        occupied = {ns for w in workloads if (ns := (w.get("metadata") or {}).get("namespace"))}
+        if workloads and not occupied:
+            # A missing namespace would read as a valid answer - "nothing runs
+            # there" - for every namespace at once, which past the grace is a
+            # cluster-wide delete. Says-nothing is unreadable, not empty.
+            raise RuntimeError(
+                f"{len(workloads)} Knative Service(s) listed in {self._cluster.region} but "
+                "none carry metadata.namespace; refusing to judge any namespace empty"
+            )
         seen = deleted = failed = 0
         for ns in namespaces:
             seen += 1
