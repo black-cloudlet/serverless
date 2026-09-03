@@ -118,3 +118,50 @@ def test_the_chart_emits_exactly_the_placeholders_the_controller_substitutes():
     assert emitted == set(PLACEHOLDERS), (
         f"the chart emits {sorted(emitted)}; the tenant controller substitutes {sorted(PLACEHOLDERS)}"
     )
+
+
+def test_the_provision_endpoints_policy_is_not_governed_by_the_workload_switch():
+    """`networkPolicy.enabled` governs tenant namespaces, never this endpoint.
+
+    The switch reads as being about workload pods, so an operator turning it
+    off to debug connectivity - or on a CNI that does not enforce policy -
+    expects to change what a tenant namespace gets. Letting it also drop the
+    policy in front of the provision endpoint would take away that endpoint's
+    primary control, leaving only a shared token that is off by default.
+    """
+    deployment = (TEMPLATES / "tenant-controller" / "deployment.yaml").read_text()
+    policy = deployment.index("kind: NetworkPolicy")
+    guards = re.findall(r"\{\{-?\s*if\s+([^}]+?)\s*-?\}\}", deployment[:policy])
+    opened = [g for g in guards if "networkPolicy.enabled" in g]
+    assert not opened, f"the provision endpoint's NetworkPolicy sits under {opened}"
+
+
+def test_the_workload_policies_render_and_mount_together():
+    """The part is listed exactly when its ConfigMap renders.
+
+    Listed without rendering, the pod mounts a ConfigMap that does not exist
+    and never starts; rendered without being listed, the policies are applied
+    to no tenant. Both sides carry the same condition, so they move together.
+    """
+    helper = (TEMPLATES / "tenant-controller" / "_tenant.tpl").read_text()
+    parts = helper.split('define "serverless-api.tenantTemplateParts" -}}')[1]
+    parts = parts.split("{{- end -}}")[0]
+    listing = next(line for line in parts.splitlines() if "network-policies" in line)
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-network-policies.yaml").read_text()
+    assert "networkPolicy.enabled" in listing, listing
+    assert "networkPolicy.enabled" in configmap.splitlines()[0], configmap.splitlines()[0]
+    assert configmap.rstrip().endswith("{{- end }}")
+
+
+def test_nothing_of_the_template_set_renders_without_the_controller():
+    """The set exists only to be mounted by the controller's pod.
+
+    Its parts are ConfigMaps in the API namespace, so a release with the
+    controller off would otherwise leave them behind with nothing to read
+    them - and a later reader could take them for live configuration.
+    """
+    parts = sorted((TEMPLATES / "tenant-controller").glob("configmap-*.yaml"))
+    assert parts, "no template-set ConfigMaps found"
+    for part in parts:
+        first = part.read_text().splitlines()[0]
+        assert "tenantNamespaces.controller.enabled" in first, f"{part.name}: {first}"

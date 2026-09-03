@@ -1,3 +1,4 @@
+{{- if .Values.tenantNamespaces.controller.enabled }}
 {{- $ns := include "serverless-api.tenantNamespaceToken" . }}
 {{/*
 Part of the tenant template set: the OpenShift-injected CA trust bundle.
@@ -26,3 +27,4 @@ metadata:
 data:
   30-ca-bundle.yaml: |
     {{- include "serverless-api.caBundleConfigMap" (dict "root" $ "namespace" $ns) | nindent 4 }}
+{{- end }}

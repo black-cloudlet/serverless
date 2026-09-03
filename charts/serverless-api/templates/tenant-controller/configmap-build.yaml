@@ -1,4 +1,4 @@
-{{- if .Values.build.enabled }}
+{{- if and .Values.tenantNamespaces.controller.enabled .Values.build.enabled }}
 {{- $ns := include "serverless-api.tenantNamespaceToken" . }}
 {{/*
 Part of the tenant template set: everything a build needs in the tenant's own
