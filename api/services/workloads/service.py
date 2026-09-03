@@ -5,8 +5,8 @@ add only the offering-specific prep (build-from-Git vs image + pull secret);
 apply, host/absence checks, access control and get/delete all live here.
 
 What lives here is the *orchestration* - which regions to visit, in what order,
-and what a partial answer means. Everything it orchestrates was pulled out to be
-readable and testable on its own:
+and what a partial answer means (docs/ARCHITECTURE.md - Partial-failure
+semantics). What it orchestrates lives in modules of its own:
 
 * :mod:`api.services.manifests` - build what gets applied (pure)
 * :mod:`api.services.regions`     - fan out, and write/read one region
@@ -14,15 +14,16 @@ readable and testable on its own:
 * :mod:`api.services.builder`   - the function image build
 
 The ``assert_*``/``host_for``/``validate_spec`` methods below are thin
-delegations to :mod:`api.services.regions.preflight`, kept on the engine because
-that is the object the offering services and the routers hold.
+delegations to :mod:`api.services.regions.preflight`; the offering services and
+the routers hold this engine and call them on it.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from concurrent.futures import Executor
+from dataclasses import dataclass
 from datetime import datetime
 
 from cloudlet_apis.auth import Principal
@@ -95,9 +96,9 @@ async def run_background(fn, *args) -> None:
     try:
         await fn(*args)
     except Exception:  # noqa: BLE001 - background work; surfaced via status polling
-        # The plain-string args only (group, name) - never the whole tuple:
-        # the spec in there carries the caller's git/registry tokens and
-        # secret values, and this is the one log line that would print them.
+        # The plain-string args only (group, name), never the whole tuple: the
+        # spec in there carries the caller's git/registry tokens and secret
+        # values, which must not reach a log line.
         ident = "/".join(a for a in args if isinstance(a, str)) or "?"
         logger.exception("background %s failed for %s", getattr(fn, "__name__", fn), ident)
 
@@ -141,9 +142,10 @@ async def _retag_region(cluster: NamespacedCluster, manifests: Sequence[dict]) -
 def _pod_authorizer(cluster: NamespacedCluster, name: str, pod: str, kind: str, user: Principal):
     """The check both log reads run, as one blocking callable.
 
-    Shared rather than written twice because the second half is the security
-    boundary: owning the workload is not owning every pod in its namespace.
-    Two copies of that rule is one copy that gets fixed.
+    Two checks, run by the log stream and the log snapshot alike: the caller
+    must own the workload, and the named pod must carry that workload's service
+    label. Owning the workload is not owning every pod in its namespace
+    (docs/ARCHITECTURE.md - Authorizing a pod).
 
     Args:
         cluster: The local region.
@@ -172,6 +174,272 @@ def _pod_authorizer(cluster: NamespacedCluster, name: str, pod: str, kind: str, 
     return authorize
 
 
+def _roster_reader(cluster: NamespacedCluster, name: str, kind: str, user: Principal, verb: str):
+    """The read both roster endpoints run, as one blocking callable.
+
+    Authorizes against the workload, then lists its pods - the same two reads
+    whether the roster is streamed or read once.
+
+    Args:
+        cluster: The local region.
+        name: The workload name (and its KSVC's).
+        kind: The offering label ("function"/"container").
+        user: The authenticated caller.
+        verb: What the caller was doing, for the hidden-404 log line.
+
+    Returns:
+        A callable returning the roster, to run off the event loop.
+    """
+
+    def read() -> list:
+        obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
+        if not ownership.owned_by(obj, user, kind):
+            raise hidden_404(verb, kind, name, user, obj)
+        return pods_stream.read_roster(cluster, name)
+
+    return read
+
+
+@dataclass(frozen=True)
+class _Composed:
+    """The manifests one apply writes, composed once for every target region.
+
+    Attributes:
+        ksvc_for: The KSVC for a region, as a function of the region name; only
+            the image varies between regions.
+        backing: The derived objects the KSVC references (config, files, the
+            offering's secrets), identical everywhere.
+        mapping: The DomainMapping.
+        to_prune: The derived objects an earlier spec owned and this one no
+            longer references.
+    """
+
+    ksvc_for: Callable[[str], dict]
+    backing: list[dict]
+    mapping: dict
+    to_prune: set[tuple[ResourceKind, str]]
+
+
+def _to_prune(
+    req: ApplyRequest, offering: Offering, backing: Sequence[dict]
+) -> set[tuple[ResourceKind, str]]:
+    """The derived objects the new spec no longer references.
+
+    The resolvers emit only what the new spec still needs, so the rest is
+    pruned: dropping the last secret env var must delete its Secret, not orphan
+    it. Nothing on a create - there is no earlier spec to prune.
+
+    Args:
+        req: The apply request.
+        offering: The offering, for the secrets it manages.
+        backing: The derived manifests this apply writes.
+
+    Returns:
+        ``(kind, name)`` pairs to delete before the apply.
+    """
+    if req.created:
+        return set()
+    applied = {(ResourceKind.from_kind(m["kind"]), m["metadata"]["name"]) for m in backing}
+    # Keyed on whether the KSVC still references it, not on the manifest: the
+    # secret can be carried forward without being re-applied.
+    if req.pull_secret_name:
+        applied.add((ResourceKind.SECRET, req.pull_secret_name))
+    managed = {
+        (ResourceKind.SECRET, env_secret_name(req.name)),
+        (ResourceKind.CONFIG_MAP, files_name(req.name)),
+        (ResourceKind.SECRET, files_name(req.name)),
+    } | offering.managed_secrets(req.name)
+    return managed - applied
+
+
+@dataclass(frozen=True)
+class _RegionRead:
+    """What one region's fetch found, beside the status row it produced.
+
+    A fetch returns one of these for a region that has the workload, and the
+    fan-out collects them in target order. A region that timed out or raised
+    yields the fan-out's own RegionStatus and no read, so a list of these holds
+    only the regions that answered.
+
+    Attributes:
+        status: The region's row.
+        obj: The KSVC read there.
+        cluster: The region it was read from, for whatever is read next.
+        build: The region's build state, when the offering has one.
+        usage: The region's live usage, when the caller asked for it.
+    """
+
+    status: RegionStatus
+    obj: dict
+    cluster: NamespacedCluster
+    build: BuildStatusView | None = None
+    usage: region_read.RegionUsage | None = None
+
+
+def _split(
+    results: Sequence[RegionStatus | _RegionRead | None],
+) -> tuple[list[RegionStatus], list[_RegionRead]]:
+    """Separate a fan-out's rows from the reads that carry an object.
+
+    A None is a region the workload is not deployed to, and belongs in
+    neither. A bare RegionStatus is a region that produced a row and nothing
+    else - the fan-out's own Timeout/Failed, or a fetch's Absent.
+
+    Args:
+        results: The fan-out's results, one per target.
+
+    Returns:
+        Every row (a read's row included), and the reads.
+    """
+    statuses: list[RegionStatus] = []
+    reads: list[_RegionRead] = []
+    for result in results:
+        if result is None:
+            continue
+        if isinstance(result, _RegionRead):
+            reads.append(result)
+            statuses.append(result.status)
+        else:
+            statuses.append(result)
+    return statuses, reads
+
+
+def _annotation(reads: Sequence[_RegionRead], key: str) -> str | None:
+    """The first region's value for a KSVC annotation, or None if none carries it.
+
+    The spec is uniform across regions, so the first copy that has it will do.
+    """
+    for read in reads:
+        annotations = (read.obj.get("metadata", {}) or {}).get("annotations", {}) or {}
+        if key in annotations:
+            return annotations[key]
+    return None
+
+
+def _live_status(cluster: NamespacedCluster, obj: dict) -> RegionStatus:
+    """One region's row for a deployed workload, from its KSVC and its Revision.
+
+    Reads the Revision as well as the KSVC: the Revision carries the live scale
+    and the specific rollout-failure condition, and on a Failed status its
+    conditions are preferred over the KSVC's, so the row carries a cause rather
+    than a bare status=Failed.
+
+    Args:
+        cluster: The region the KSVC was read from.
+        obj: The KSVC.
+
+    Returns:
+        The row.
+    """
+    status, revision = ksvc_state.ksvc_status(obj)
+    rev = region_read.revision(cluster, revision)
+    message = None
+    reason = None
+    if status == "Failed":
+        message = revision_failure_message(rev) or ksvc_failure_message(obj)
+        reason = ksvc_state.failure_cause(rev, obj)
+    return RegionStatus(
+        region=cluster.region,
+        status=status,
+        revision=revision,
+        reason=reason,
+        message=message,
+        replicas=ksvc_state.revision_replicas(rev),
+    )
+
+
+@dataclass(frozen=True)
+class _Rollup:
+    """The per-region rows folded with their builds, and what the fold decided.
+
+    Attributes:
+        statuses: The rows, each carrying its region's build where one runs.
+        overall: The headline status.
+        build: The builds rolled up, or None when no region has one.
+        reason: The headline's machine-readable cause, if any.
+    """
+
+    statuses: list[RegionStatus]
+    overall: str
+    build: BuildStatusView | None
+    reason: str | None
+
+
+def _roll_up(offering: Offering, statuses: list[RegionStatus], reads: list[_RegionRead]) -> _Rollup:
+    """Fold each region's build into its row and into the headline.
+
+    Build-first, per region and then rolled up: while a region is building, its
+    KSVC cannot pull an image that does not exist there yet, so the build state
+    takes precedence over the KSVC's (docs/FUNCTIONS.md - Function Status
+    Resolution). Called by both the full GET and the stats poll. A down region
+    counts as Failed.
+
+    The headline reason is Kubernetes-style: a failed build is the reason
+    wherever the rows stand (regions still serving their previous revision stay
+    Ready), else the first recognized per-region cause.
+
+    Args:
+        offering: The offering, for whether there is a build to fold at all.
+        statuses: Every region's row, the unreachable ones included.
+        reads: The regions that answered, with their builds.
+
+    Returns:
+        The fold.
+    """
+    overall = overall_status_for_regions(statuses)
+    builds = {r.status.region: r.build for r in reads} if offering.has_build else {}
+    build = ksvc_state.roll_up_builds(list(builds.values()))
+    statuses = ksvc_state.regions_with_build_status(statuses, builds)
+    overall = ksvc_state.with_build_status(overall, build)
+    if build is not None and build.state == "Failed":
+        reason = "BuildFailed"
+    else:
+        reason = next((s.reason for s in statuses if s.reason), None)
+    return _Rollup(statuses=statuses, overall=overall, build=build, reason=reason)
+
+
+def _stats_response(
+    rollup: _Rollup, usage_by_region: Mapping[str, region_read.RegionUsage | None]
+) -> WorkloadStatsResponse:
+    """The poll view: the rollup, and per-region replicas and usage with totals.
+
+    Both totals are null rather than partial when a region could not answer.
+
+    Args:
+        rollup: The folded rows and headline.
+        usage_by_region: Each answering region's raw usage read. Raw: the total
+            is summed from these, not from the rounded figures the response
+            carries.
+
+    Returns:
+        The response body.
+    """
+    statuses = rollup.statuses
+    reads = [usage_by_region.get(s.region) for s in statuses]
+    usage = None
+    if all(r is not None and r.measured for r in reads):
+        usage = metrics_svc.total(r.total for r in reads if r.total)
+    replicas = None
+    if all(s.replicas is not None for s in statuses):
+        replicas = sum(s.replicas for s in statuses)
+    return WorkloadStatsResponse(
+        status=rollup.overall,  # type: ignore[arg-type]
+        reason=rollup.reason,
+        replicas=replicas,
+        usage=usage.quantities() if usage else None,
+        regions=[
+            RegionStats(
+                region=s.region,
+                status=s.status,
+                reason=s.reason,
+                replicas=s.replicas,
+                usage=u.total.quantities() if u and u.total else None,
+            )
+            for s, u in zip(statuses, reads, strict=True)
+        ],
+    )
+
+
 class WorkloadService:
     """Offering-agnostic orchestration shared by the function/container services."""
 
@@ -188,10 +456,8 @@ class WorkloadService:
             settings: Global settings.
             deployer: The multi-region fan-out helper.
             builder: The function image build backend.
-            capacity: The stream pool and admission gate. Defaulted from
-                ``settings`` rather than required, so the non-streaming paths -
-                which is all of them until a client asks for a stream - can be
-                constructed without one.
+            capacity: The stream pool and admission gate. None builds one from
+                ``settings`` on the first streaming use.
         """
         self.settings = settings
         self.deployer = deployer
@@ -202,8 +468,9 @@ class WorkloadService:
     def capacity(self) -> StreamCapacity:
         """The stream pool; the fallback is built on first streaming use.
 
-        Lazy so an engine constructed without one (tests, scripts) does not
-        conjure a thread pool nothing will ever shut down just by existing.
+        An engine constructed without one builds it from ``settings`` here, so
+        the thread pool exists only once something streams
+        (docs/ARCHITECTURE.md - A held-open stream holds a thread).
         """
         if self._capacity is None:
             self._capacity = StreamCapacity(self.settings.stream)
@@ -229,9 +496,8 @@ class WorkloadService:
     def namespace_for(self, group: str) -> str:
         """The namespace this group's workloads live in.
 
-        The single resolution point. Every read and every write goes through
-        it, so "where does this land" has one answer per request and no caller
-        can bind a namespace of its own.
+        The single resolution point: every read and every write in the engine
+        names its namespace through this method.
 
         Args:
             group: The owning (normalized) group.
@@ -293,8 +559,8 @@ class WorkloadService:
         """Assert a workload can be deployed: host free, and optionally name unused.
 
         Pure cluster probes - see
-        :func:`api.services.regions.preflight.assert_deployable`. The
-        namespace itself is provisioned separately, once per accepted request
+        :func:`api.services.regions.preflight.assert_deployable`. The namespace
+        itself is provisioned separately, once per accepted request
         (:meth:`provision_namespace`), so the background re-check before the
         mutation does not repeat that round trip.
         """
@@ -384,10 +650,10 @@ class WorkloadService:
         # Validate synchronously (400) before the 202, so bad input never reaches the
         # background deploy.
         self.validate_spec(spec.name, group, user.username, spec.env, spec.files)
-        # The namespace first - there is no point proving a name is free in a
-        # namespace that does not exist yet - then host and name in one pass:
-        # an immediate 409 is the point of doing this synchronously, and one
-        # round trip answers both.
+        # The namespace first - a name cannot be proven free in a namespace
+        # that does not exist yet - then host and name in one pass: one round
+        # trip answers both, and a conflict is an immediate 409 rather than a
+        # background failure.
         await self.provision_namespace(group)
         await self.assert_deployable(spec.name, group, targets, host=host, require_absent=True)
         background.add_task(run_background, work, group, spec, user)
@@ -483,18 +749,49 @@ class WorkloadService:
         self.assert_group(req.user, req.group)
         targets = self.targets_for(req.group, req.regions)
         host = self.host_for(req.name, req.hostname, req.group)
-        owner = req.user.username
 
-        # Re-checked here, immediately before the mutation, and not merely trusted
-        # from accept time: this is the guard, and it has to be the last thing that
-        # happens before the apply. The DomainMapping name IS the host, so an
-        # idempotent apply would otherwise hijack another workload's mapping; on a
-        # create the same pass also confirms the name is still unused, which is why
-        # the offering services no longer probe for that separately.
+        # Re-checked here, immediately before the mutation, and not trusted from
+        # accept time: the DomainMapping name IS the host, so an idempotent apply
+        # would otherwise take over another workload's mapping. On a create the
+        # same pass also confirms the name is still unused, so the offering
+        # services do not probe for that separately.
         await self.assert_deployable(
             req.name, req.group, targets, host=host, require_absent=req.created
         )
+        composed = self._compose(req, offering, host)
+        # Before any apply: a moved tag cannot be applied over, only replaced.
+        await self.retag_build(targets, req.region_resources)
 
+        def apply(cluster: NamespacedCluster) -> RegionStatus:
+            # A region builds what it runs, so its build objects ride along with
+            # its KSVC and are owned by it.
+            return region_apply.apply_to_region(
+                cluster,
+                name=req.name,
+                ksvc=composed.ksvc_for(cluster.region),
+                backing=composed.backing + list(req.region_resources.get(cluster.region, ())),
+                pull_secret_manifest=req.pull_secret_manifest,
+                mapping=composed.mapping,
+                to_prune=composed.to_prune,
+                created=req.created,
+                prev_host=req.prev_host,
+            )
+
+        statuses = await self.deployer.fanout(targets, apply)
+        return self._applied(req, offering, host, statuses)
+
+    def _compose(self, req: ApplyRequest, offering: Offering, host: str) -> _Composed:
+        """Compose everything one apply writes, once, for every target region.
+
+        Args:
+            req: The apply request.
+            offering: The offering being deployed.
+            host: The resolved external host.
+
+        Returns:
+            The manifests, and what to prune before them.
+        """
+        owner = req.user.username
         resolved = resolve_files(req.name, req.group, owner, req.files, req.kept_files)
         resolved_env = resolve_env(req.name, req.group, owner, req.env, req.kept_env)
         backing = resolved.backing + resolved_env.backing + list(req.extra_secrets)
@@ -528,42 +825,28 @@ class WorkloadService:
         mapping = route_svc.build_domain_mapping(
             name=req.name, group=req.group, owner=owner, offering=offering.name, host=host
         )
+        return _Composed(
+            ksvc_for=ksvc_for,
+            backing=backing,
+            mapping=mapping,
+            to_prune=_to_prune(req, offering, backing),
+        )
 
-        # The resolvers emit only what the new spec still needs, so prune the rest:
-        # dropping the last secret env var must delete its Secret, not orphan it.
-        applied_derived = {
-            (ResourceKind.from_kind(m["kind"]), m["metadata"]["name"]) for m in backing
-        }
-        managed_derived = {
-            (ResourceKind.SECRET, env_secret_name(req.name)),
-            (ResourceKind.CONFIG_MAP, files_name(req.name)),
-            (ResourceKind.SECRET, files_name(req.name)),
-        } | offering.managed_secrets(req.name)
-        # Keyed on whether the KSVC still references it, not on the manifest: the
-        # secret can be carried forward without being re-applied.
-        if req.pull_secret_name:
-            applied_derived.add((ResourceKind.SECRET, req.pull_secret_name))
-        to_prune = () if req.created else managed_derived - applied_derived
+    @staticmethod
+    def _applied(
+        req: ApplyRequest, offering: Offering, host: str, statuses: list[RegionStatus]
+    ) -> tuple[WorkloadResponse, int]:
+        """The response for an apply, from what was submitted and how it landed.
 
-        # Before any apply: a moved tag cannot be applied over, only replaced.
-        await self.retag_build(targets, req.region_resources)
+        Args:
+            req: The apply request.
+            offering: The offering deployed.
+            host: The resolved external host.
+            statuses: One row per target region.
 
-        def apply(cluster: NamespacedCluster) -> RegionStatus:
-            # A region builds what it runs, so its build objects ride along with
-            # its KSVC and are owned by it - there is no unowned case left.
-            return region_apply.apply_to_region(
-                cluster,
-                name=req.name,
-                ksvc=ksvc_for(cluster.region),
-                backing=backing + list(req.region_resources.get(cluster.region, ())),
-                pull_secret_manifest=req.pull_secret_manifest,
-                mapping=mapping,
-                to_prune=to_prune,
-                created=req.created,
-                prev_host=req.prev_host,
-            )
-
-        statuses = await self.deployer.fanout(targets, apply)
+        Returns:
+            The response body and HTTP status code.
+        """
         overall = aggregate(statuses)
         common = dict(
             name=req.name,
@@ -583,9 +866,8 @@ class WorkloadService:
     def target_registries(self, requested: list[str] | None) -> dict[str, RegistryConfig]:
         """The registry each targeted region builds into, keyed by region name.
 
-        What a build plan needs, taken off the clusters rather than re-resolved
-        from settings, so there is one answer per region and not two snapshots
-        of it.
+        What a build plan needs, read off the resolved clusters, so a region's
+        registry has one source.
 
         Args:
             requested: Explicit region names, or None for all configured regions.
@@ -599,14 +881,14 @@ class WorkloadService:
         """Re-declare a workload's build in every region that runs it, then ask for one.
 
         The rebuild path, and the one write in the engine that leaves the KSVC
-        alone: nothing about the workload's desired state changes, so there is
-        no spec to fan out - only the build objects and the trigger.
+        alone: the workload's desired state does not change, so only the build
+        objects and the trigger are written (docs/FUNCTIONS.md - Building again
+        without changing anything).
 
-        Applying before triggering is what makes this self-healing rather than
-        merely idempotent: a region that has never built the function gets the
-        Image created here and builds from that, and
+        Applies before triggering, per region: a region that has never built the
+        function gets its Image created here and starts building from that, and
         :meth:`~common.build.BuildBackend.trigger` finds nothing to annotate and
-        says so.
+        reports so.
 
         Args:
             name: The workload name.
@@ -641,17 +923,15 @@ class WorkloadService:
         """Make way for an Image whose tag has moved, and reclaim what it left.
 
         ``spec.tag`` is **immutable** on a kpack Image, so applying a moved one is
-        rejected at admission - which would wedge every later write to the
-        function, not just the layout change. The Image is deleted instead and
-        the apply that follows recreates it; a new Image with no prior Build
-        builds on its own, so nothing else has to ask for one.
+        rejected at admission. The Image is deleted instead and the apply that
+        follows recreates it; a new Image with no prior Build builds on its own,
+        so nothing else has to ask for one.
 
-        Per region, because each region's tag moves independently - which is what
-        makes moving an install onto per-region registries a re-apply rather than
-        a migration (docs/BUILDING.md - Moving a function's repository).
+        Per region, because each region's tag moves independently
+        (docs/BUILDING.md - Moving a function's repository).
 
-        A no-op in the normal case, which is what the tag comparison buys - the
-        cost is one GET per region per write.
+        The tag is compared first, so this is one GET per region and no write at
+        all unless a tag has actually moved.
 
         Args:
             targets: The clusters being written to.
@@ -667,8 +947,8 @@ class WorkloadService:
         """Stamp a new pull marker on the workload in every region.
 
         Changing a ``spec.template`` annotation is what makes Knative cut a
-        revision and resolve the tag again. A merge patch rather than the usual
-        full apply, like the rebuild trigger: no desired state changes
+        revision and resolve the tag again. A merge patch, not a full apply,
+        like the rebuild trigger: no desired state changes
         (docs/CONTAINERS.md - Pulling the tag again).
 
         Args:
@@ -694,6 +974,21 @@ class WorkloadService:
 
         targets = self.targets_for(group)
         return await self.deployer.fanout(targets, stamp_region)
+
+    def _representative(self, reads: list[_RegionRead]) -> _RegionRead:
+        """The read to take the uniform spec from: the local region's, else any.
+
+        The spec is uniform across regions (active/active), so any copy will
+        do; the local one is the cheapest hop for whatever is read from it next.
+
+        Args:
+            reads: The regions that have the workload; must not be empty.
+
+        Returns:
+            The representative read.
+        """
+        local = self.deployer.local_region()
+        return next((r for r in reads if r.status.region == local), reads[0])
 
     async def load_existing(
         self, name: str, offering: Offering, user: Principal, group: str
@@ -721,58 +1016,44 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         targets = self.targets_for(group)
-        found: dict = {}
-        images: dict[str, str] = {}
 
-        def fetch(cluster: NamespacedCluster) -> RegionStatus:
+        def fetch(cluster: NamespacedCluster) -> RegionStatus | _RegionRead:
             # Only a real 404 means absent; anything else must propagate so a down region
             # is recorded as an error, not mistaken for absence.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             except NotFoundError:
                 return RegionStatus(region=cluster.region, status="Absent")
-            # The spec is uniform across regions, so any responder's copy will do;
-            # setdefault is atomic under the concurrent fan-out. The image is the
-            # exception - each region runs what its own build pushed - so it is
-            # kept per region, and an update carries each one forward untouched.
-            found.setdefault("obj", obj)
-            deployed = ksvc_state.extract_image(obj)
-            if deployed:
-                images[cluster.region] = deployed
-            return RegionStatus(region=cluster.region, status="Present")
-
-        statuses = await self.deployer.fanout(targets, fetch)
-
-        obj = found.get("obj")
-        if obj is not None:
-            # The name could belong to the other offering (or, if labels ever
-            # drifted, another owner); both mean "not this workload" -> hide as 404.
-            if not ownership.owned_by(obj, user, offering.name):
-                raise NotFoundError(f"{offering.name} workload '{name}' not found")
-            # Read the backing Secrets from the local region when it has the workload,
-            # else any region that does - they're uniform, so prefer the cheapest hop.
-            present = {s.region for s in statuses if s.status == "Present"}
-            if not present:
-                # `obj` was found but no region reported Present: a fan-out that
-                # timed out can leave a zombie thread's late write in `found`
-                # with its status recorded as an error. Fail like the
-                # unreachable-region case below rather than crash on an empty set.
-                preflight.assert_all_regions_checked(statuses, f"load workload '{name}'")
-                raise NotFoundError(f"{offering.name} workload '{name}' not found")
-            by_region = {c.region: c for c in targets}
-            local = self.deployer.local_region()
-            cluster = by_region[local if local in present else next(iter(present))]
-            # Reading the backing Secrets is blocking cluster I/O; run it in a thread
-            # so it doesn't stall the event loop (as get()/describe_spec do).
-            state = await asyncio.to_thread(
-                region_read.existing_state, obj, cluster, offering, name
+            return _RegionRead(
+                status=RegionStatus(region=cluster.region, status="Present"),
+                obj=obj,
+                cluster=cluster,
             )
-            return {**state, "images": images}
 
-        # Absent on every region we could reach. If one was unreachable we can't be
-        # sure it's truly gone -> fail closed (503), not a misleading 404.
-        preflight.assert_all_regions_checked(statuses, f"load workload '{name}'")
-        raise NotFoundError(f"{offering.name} workload '{name}' not found")
+        statuses, reads = _split(await self.deployer.fanout(targets, fetch))
+        if not reads:
+            # Absent on every reachable region. An unreachable region cannot prove
+            # absence, so that case fails closed with a 503 instead of a 404.
+            preflight.assert_all_regions_checked(statuses, f"load workload '{name}'")
+            raise NotFoundError(f"{offering.name} workload '{name}' not found")
+
+        rep = self._representative(reads)
+        # The name could belong to the other offering, or - if labels ever
+        # drifted - another owner; both mean "not this workload" -> hide as 404.
+        if not ownership.owned_by(rep.obj, user, offering.name):
+            raise NotFoundError(f"{offering.name} workload '{name}' not found")
+        # The image is the exception to the uniform spec - each region runs what
+        # its own build pushed - so it is kept per region, and an update carries
+        # each one forward untouched.
+        images = {
+            r.status.region: image for r in reads if (image := ksvc_state.extract_image(r.obj))
+        }
+        # Reading the backing Secrets is blocking cluster I/O; run it in a thread
+        # so it doesn't stall the event loop (as get()/describe_spec do).
+        state = await asyncio.to_thread(
+            region_read.existing_state, rep.obj, rep.cluster, offering, name
+        )
+        return {**state, "images": images}
 
     async def get(
         self, offering: Offering, name: str, user: Principal, group: str
@@ -798,110 +1079,59 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        meta_holder: dict[str, str] = {}
-        # The spec is uniform across regions, so read it back once from one
-        # representative region (local if it has the workload) after the fan-out.
-        reps: dict[str, tuple] = {}
-        # The build is NOT uniform: each region builds its own copy, so its state
-        # is read in the same per-region thread as that region's KSVC.
-        builds: dict[str, BuildStatusView | None] = {}
 
-        def fetch(cluster: NamespacedCluster) -> RegionStatus | None:
+        def fetch(cluster: NamespacedCluster) -> _RegionRead | None:
             # A 404 means not deployed here, so omit the region rather than fail it.
             # Anything else propagates, keeping a down region visible as Failed.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             except NotFoundError:
                 return None
-            annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
-            for key, ann in (("host", ANNOTATION_HOST), ("size", ANNOTATION_SIZE)):
-                if ann in annotations and key not in meta_holder:
-                    meta_holder[key] = annotations[ann]
-            reps[cluster.region] = (obj, cluster)
+            # The build is NOT uniform: each region builds its own copy, so its
+            # state is read in the same per-region thread as that region's KSVC.
+            # No usage read: live usage is a cluster call of its own, and only
+            # /stats reports it.
+            build = None
             if offering.has_build:
-                builds[cluster.region] = offering.build_status(self.builder, cluster, name, group)
-            status, revision = ksvc_state.ksvc_status(obj)
-            # One read, and it earns its place twice over: the Revision carries the
-            # live scale and the specific rollout-failure condition. The usage read
-            # that used to sit beside it is gone from this path - it is a cluster
-            # call for something only a poller wants, and pollers have /status.
-            rev = region_read.revision(cluster, revision)
-            replicas = ksvc_state.revision_replicas(rev)
-            # Prefer the Revision's conditions (the specific cause) over the KSVC's, so
-            # a GET explains why it failed instead of a bare status=Failed.
-            message = None
-            reason = None
-            if status == "Failed":
-                message = revision_failure_message(rev) or ksvc_failure_message(obj)
-                reason = ksvc_state.failure_cause(rev, obj)
-            return RegionStatus(
-                region=cluster.region,
-                status=status,
-                revision=revision,
-                reason=reason,
-                message=message,
-                replicas=replicas,
+                build = offering.build_status(self.builder, cluster, name, group)
+            return _RegionRead(
+                status=_live_status(cluster, obj), obj=obj, cluster=cluster, build=build
             )
 
         targets = self.targets_for(group)
-        results = await self.deployer.fanout(targets, fetch, read=True)
-        statuses = [s for s in results if s is not None]  # drop regions without it
-
-        if not reps:
-            # Present on no reachable region. If a region was unreachable we can't be
-            # sure it's absent -> 503; otherwise it's genuinely gone -> 404.
+        statuses, reads = _split(await self.deployer.fanout(targets, fetch, read=True))
+        if not reads:
+            # Present on no reachable region. An unreachable region cannot prove
+            # absence, so that case is a 503; otherwise it is genuinely gone -> 404.
             preflight.assert_all_regions_checked(statuses, f"get workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        # The spec is uniform across regions: read it (and authorize) from the local
-        # region if it has the workload, else any region that does.
-        obj, cluster = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
-        if not ownership.owned_by(obj, user, kind):
-            raise hidden_404("get", kind, name, user, obj)
+        # The spec is uniform across regions: read it (and authorize) from one
+        # representative copy.
+        rep = self._representative(reads)
+        if not ownership.owned_by(rep.obj, user, kind):
+            raise hidden_404("get", kind, name, user, rep.obj)
 
-        host = meta_holder.get("host", route_svc.host_for(name, group, self.settings.route_domain))
-        # A down region counts as Failed; otherwise the per-region KSVC
-        # status drives the rollup, so a workload still coming up reads as Deploying.
-        overall = overall_status_for_regions(statuses)
-        # Build-first, per region and then rolled up: while a region is building, its
-        # KSVC cannot pull an image that does not exist there yet, so the row
-        # would contradict the headline it sits under (docs/FUNCTIONS.md -
-        # Function Status Resolution).
-        # Snapshot first: a fan-out that timed a region out leaves a zombie thread
-        # that may still insert into `builds` while these iterate. dict/list
-        # copies are atomic under the GIL; iterating the live view is not.
-        builds = dict(builds)
-        build = ksvc_state.roll_up_builds(list(builds.values()))
-        statuses = ksvc_state.regions_with_build_status(statuses, builds)
-        overall = ksvc_state.with_build_status(overall, build)
-        # The headline reason, Kubernetes-style: the build verdict is
-        # authoritative (a failed build IS the cause, wherever the rows stand -
-        # regions still serving their previous revision stay Ready), else the
-        # first recognized per-region cause.
-        if build is not None and build.state == "Failed":
-            status_reason = "BuildFailed"
-        else:
-            status_reason = next((s.reason for s in statuses if s.reason), None)
-        spec = await self.deployer.run_read(region_read.describe_spec, cluster, obj)
-        # Neither `obj` nor `spec` is optional from here: `reps` is non-empty
-        # (guarded above) and every entry holds an object, and describe_spec
-        # always returns a WorkloadSpec. Guarding them would advertise a nullable
-        # that does not exist, which is how a real one stops being noticeable.
+        rollup = _roll_up(offering, statuses, reads)
+        host = _annotation(reads, ANNOTATION_HOST)
+        if host is None:
+            host = route_svc.host_for(name, group, self.settings.route_domain)
+        spec = await self.deployer.run_read(region_read.describe_spec, rep.cluster, rep.obj)
         common = dict(
             name=name,
             group=group,
             type=kind,
             hostname=host,
-            status=overall,
-            reason=status_reason,
-            size=meta_holder.get("size"),
-            createdAt=ksvc_state.creation_time(obj),
-            regions=statuses,
+            status=rollup.overall,
+            reason=rollup.reason,
+            size=_annotation(reads, ANNOTATION_SIZE),
+            createdAt=ksvc_state.creation_time(rep.obj),
+            regions=rollup.statuses,
             scaling=spec.scaling,
             env=spec.env,
             files=spec.files,
         )
-        return offering.fetched_response(common, obj, spec, build)
+        return offering.fetched_response(common, rep.obj, spec, rollup.build)
 
     async def stats(
         self,
@@ -915,10 +1145,9 @@ class WorkloadService:
         """Read a workload's live state: rollup, and per-region replicas and usage.
 
         The poll counterpart to :meth:`get`. Same fan-out, authorization and
-        rollup, but none of the desired-state reads - no file ConfigMaps and no
-        backing Secret - so a client refreshing every few seconds is not pulling
-        secret material out of the cluster on a loop for config that only changes
-        when it changes it.
+        rollup, but none of the desired-state reads: no file ConfigMaps and no
+        backing Secret, so a refresh reads no secret material out of the cluster
+        (docs/FUNCTIONS.md - Polling live state).
 
         The build is still read for a function, though it is not reported here:
         it is what makes a running build ``Building`` instead of the ``Failed``
@@ -931,9 +1160,9 @@ class WorkloadService:
             user: The authenticated caller.
             group: Owning group.
             executor: Pool the per-region reads run on; None takes the default.
-                The stats stream passes its own, because a reading it repeats for
-                as long as a client is connected must not compete for the threads
-                every ordinary request needs.
+                The stats stream passes the streaming pool's executor, so its
+                repeated readings run there and not on the request threads
+                (docs/ARCHITECTURE.md - A held-open stream holds a thread).
 
         Returns:
             The live stats view.
@@ -945,88 +1174,39 @@ class WorkloadService:
         """
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
-        reps: dict[str, dict] = {}
-        # Raw, because the workload total is summed from these rather than from
-        # the rounded figures the response carries.
-        usage_by_region: dict[str, region_read.RegionUsage] = {}
-        builds: dict[str, BuildStatusView | None] = {}
 
-        def fetch(cluster: NamespacedCluster) -> RegionStatus | None:
+        def fetch(cluster: NamespacedCluster) -> _RegionRead | None:
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             except NotFoundError:
                 return None  # not deployed here; omit the region rather than fail it
-            reps[cluster.region] = obj
+            # Read per region inside the fan-out, so a stats *stream* reads the
+            # build on its own pool, like every other read here.
+            build = None
             if offering.has_build:
-                builds[cluster.region] = offering.build_status(self.builder, cluster, name, group)
-            status, revision = ksvc_state.ksvc_status(obj)
-            usage_by_region[cluster.region] = region_read.region_usage(cluster, name)
-            rev = region_read.revision(cluster, revision)
-            return RegionStatus(
-                region=cluster.region,
-                status=status,
-                replicas=ksvc_state.revision_replicas(rev),
-                message=revision_failure_message(rev) if status == "Failed" else None,
-                reason=ksvc_state.failure_cause(rev, obj) if status == "Failed" else None,
+                build = offering.build_status(self.builder, cluster, name, group)
+            return _RegionRead(
+                status=_live_status(cluster, obj),
+                obj=obj,
+                cluster=cluster,
+                build=build,
+                usage=region_read.region_usage(cluster, name),
             )
 
         targets = self.targets_for(group)
         results = await self.deployer.fanout(targets, fetch, executor=executor, read=True)
-        statuses = [s for s in results if s is not None]  # drop regions without it
-
-        if not reps:
-            # If a region was unreachable we can't be sure it's absent -> 503.
+        statuses, reads = _split(results)
+        if not reads:
+            # An unreachable region cannot prove absence, so that case is a 503.
             preflight.assert_all_regions_checked(statuses, f"get stats of workload '{name}'")
             raise NotFoundError(f"{kind} '{name}' not found")
 
-        obj = reps.get(self.deployer.local_region()) or next(iter(reps.values()))
-        if not ownership.owned_by(obj, user, kind):
-            raise hidden_404("stats of", kind, name, user, obj)
+        rep = self._representative(reads)
+        if not ownership.owned_by(rep.obj, user, kind):
+            raise hidden_404("stats of", kind, name, user, rep.obj)
 
-        overall = overall_status_for_regions(statuses)
-        # Not reported here, but it is what makes a running build read as
-        # `Building` instead of the `Failed` its unpullable image would
-        # otherwise produce (docs/FUNCTIONS.md - Function Status Resolution).
-        # Read per region inside `fetch`, so it rides the same fan-out - and so a
-        # stats *stream* pays for it on its own pool, like every other read here.
-        # Snapshot first - same zombie-thread hazard as get()'s rollup above.
-        builds = dict(builds)
-        rolled = ksvc_state.roll_up_builds(list(builds.values()))
-        overall = ksvc_state.with_build_status(overall, rolled)
-        statuses = ksvc_state.regions_with_build_status(statuses, builds)
-
-        # Both totals are null rather than partial when a region could not answer:
-        # a single number quietly missing a whole region still reads as authoritative.
-        reads = [usage_by_region.get(s.region) for s in statuses]
-        usage = None
-        if all(r is not None and r.measured for r in reads):
-            usage = metrics_svc.total(r.total for r in reads if r.total)
-        replicas = None
-        if all(s.replicas is not None for s in statuses):
-            replicas = sum(s.replicas for s in statuses)
-
-        # As on the full GET: the build verdict is authoritative, else the
-        # first recognized per-region cause.
-        if rolled is not None and rolled.state == "Failed":
-            reason = "BuildFailed"
-        else:
-            reason = next((s.reason for s in statuses if s.reason), None)
-
-        return WorkloadStatsResponse(
-            status=overall,  # type: ignore[arg-type]
-            reason=reason,
-            replicas=replicas,
-            usage=usage.quantities() if usage else None,
-            regions=[
-                RegionStats(
-                    region=s.region,
-                    status=s.status,
-                    reason=s.reason,
-                    replicas=s.replicas,
-                    usage=u.total.quantities() if u and u.total else None,
-                )
-                for s, u in zip(statuses, reads, strict=True)
-            ],
+        return _stats_response(
+            _roll_up(offering, statuses, reads), {r.status.region: r.usage for r in reads}
         )
 
     async def delete(self, offering: Offering, name: str, user: Principal, group: str) -> None:
@@ -1049,8 +1229,8 @@ class WorkloadService:
         denied: list[str] = []
 
         def remove(cluster: NamespacedCluster) -> RegionStatus:
-            # A clean 404 means "not deployed here", which is not a failure and must
-            # not read as one - only a region that cannot answer at all is an error.
+            # A clean 404 means "not deployed here", which is not a failure; only
+            # a region that cannot answer at all is an error.
             try:
                 obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
             except NotFoundError:
@@ -1071,10 +1251,9 @@ class WorkloadService:
         targets = self.targets_for(group)
         statuses = await self.deployer.fanout(targets, remove)
 
-        # An unreachable region cannot confirm the workload is gone. Fail closed (503)
-        # so the caller retries, rather than reporting a 404 that reads as "already
-        # deleted" while the workload is still serving somewhere (delete is
-        # idempotent, so a retry over the regions that did succeed is a no-op).
+        # An unreachable region cannot confirm the workload is gone, so this fails
+        # closed with a 503. Delete is idempotent, so the caller's retry is a no-op
+        # over the regions that did succeed.
         preflight.assert_all_regions_checked(statuses, f"delete {kind} '{name}'")
         if denied:
             logger.debug(
@@ -1087,12 +1266,12 @@ class WorkloadService:
             raise NotFoundError(f"{kind} '{name}' not found")
 
         # Every region answered and none refused, so the workload is gone platform-wide
-        # and whatever the ownerReferences did not cascade to can go too. Reached
-        # even when nothing was deleted: that is the case where an earlier partial
-        # delete orphaned them, and a leftover Image would keep rebuilding a
-        # function nothing runs.
+        # and whatever the ownerReferences did not cascade to can go too. Reached even
+        # when nothing was deleted here, which is the case where an earlier partial
+        # delete left those resources behind.
         # Per region, because what is left behind is per region: each built its own
-        # image, into its own registry, from its own build objects.
+        # image, into its own registry, from its own build objects
+        # (docs/BUILDING.md - Registry cleanup on delete).
         await asyncio.gather(
             *(
                 asyncio.to_thread(
@@ -1116,15 +1295,16 @@ class WorkloadService:
     ) -> AsyncIterator[StreamEvent]:
         """Stream which pods the workload has on the local region.
 
-        The endpoint that makes per-pod log streaming usable: a pod name is what
-        ``stream_pod_logs`` takes, and nothing else in the API returns one.
+        Feeds per-pod log streaming: a pod name is what ``stream_pod_logs`` takes,
+        and nothing else in the API returns one.
 
         Local region only, matching the log streams it feeds - a pod name is only
         useful where its log can be read.
 
-        The first roster is read here rather than in the stream, because it is
-        also what authorizes the request: a workload that does not exist is a 404
-        with an envelope, not a stream that opens and immediately errors.
+        The first roster is read here, not inside the stream: it is also what
+        authorizes the request, so a workload that does not exist is a 404 with an
+        envelope rather than a stream that opens and immediately errors
+        (docs/ARCHITECTURE.md - Errors after the first byte).
 
         Args:
             offering: The offering being read.
@@ -1144,12 +1324,7 @@ class WorkloadService:
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         cluster = self.deployer.local_cluster(self.namespace_for(group))
-
-        def read() -> list:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
-            if not ownership.owned_by(obj, user, kind):
-                raise hidden_404("stream pods of", kind, name, user, obj)
-            return pods_stream.read_roster(cluster, name)
+        read = _roster_reader(cluster, name, kind, user, "stream pods of")
 
         slot = self.capacity.admit()
         try:
@@ -1181,14 +1356,12 @@ class WorkloadService:
     async def pods(self, offering: Offering, name: str, user: Principal, group: str) -> PodRoster:
         """The workload's pods on the local region, read once (``follow=false``).
 
-        The non-streaming half of :meth:`stream_pods`, and the same reads. It
-        exists for the caller that cannot hold a connection - without it, a
-        server-side client could not learn a pod name, and so could not use the
-        log snapshot either.
+        The non-streaming half of :meth:`stream_pods`, and the same reads, for a
+        caller that cannot hold a connection open (docs/ARCHITECTURE.md -
+        follow=false).
 
-        No stream slot: this is an ordinary bounded request that ends, and
-        charging it against the streaming pool would let held-open connections
-        throttle a caller that is not holding one.
+        No stream slot: this is an ordinary bounded request that ends, and it runs
+        on the read pool like every other request.
 
         Args:
             offering: The offering being read.
@@ -1206,12 +1379,7 @@ class WorkloadService:
         self.assert_group(user, group)
         kind = offering.name  # the API kind ("function"/"container") is the offering label
         cluster = self.deployer.local_cluster(self.namespace_for(group))
-
-        def read() -> list:
-            obj = cluster.get(ResourceKind.KNATIVE_SERVICE, name)
-            if not ownership.owned_by(obj, user, kind):
-                raise hidden_404("read pods of", kind, name, user, obj)
-            return pods_stream.read_roster(cluster, name)
+        read = _roster_reader(cluster, name, kind, user, "read pods of")
 
         return PodRoster(
             name=name,
@@ -1239,17 +1407,14 @@ class WorkloadService:
         """One pod's log as it stands, read once (``follow=false``).
 
         The non-streaming half of :meth:`stream_pod_logs`, through the same
-        authorization, so the pod-ownership rule cannot differ between them. What
-        it returns is bounded by what the node still holds - there is no history
-        behind that, whichever way it is read - and further by the configured
-        snapshot bounds: the newest ``snapshot_tail_lines`` lines, within
-        ``snapshot_max_bytes``. Bounded *here*, not left to the caller, because
-        the node can hold tens of megabytes and this read shares a process with
-        the health probes: an unbounded snapshot parsed into one response is
-        how a polling client makes the API unready.
+        authorization, so the pod-ownership rule is one rule. What it returns is
+        bounded by what the node still holds - there is no history behind that,
+        whichever way it is read - and further by the configured snapshot bounds:
+        the newest ``snapshot_tail_lines`` lines, within ``snapshot_max_bytes``.
+        A caller's own bounds are clamped to those, never widened
+        (docs/ARCHITECTURE.md - follow=false).
 
-        No stream slot: the read ends, so it is not a stream and must not be
-        rationed as one.
+        No stream slot: the read is an ordinary bounded request that ends.
 
         Args:
             offering: The offering being read.
@@ -1339,12 +1504,11 @@ class WorkloadService:
         Local region only: Kubernetes keeps no log buffer beyond the node that
         wrote it, so there is nowhere else to read from.
 
-        The pod is authorized twice over, and the second check is the one that
-        matters. Owning the workload is not enough - the caller names a pod, and
-        the pods of every workload on the platform share one namespace - so the
-        named pod must also carry this workload's service label. Without that,
-        any authenticated user could read any pod in the namespace by guessing
-        its name.
+        The pod is authorized twice: the caller must own the workload, and the
+        named pod must carry this workload's service label, since owning the
+        workload is not owning every pod in its namespace. A pod that is not
+        this workload's is a 404, identical to one that does not exist
+        (docs/ARCHITECTURE.md - Authorizing a pod).
 
         Args:
             offering: The offering being read.
@@ -1353,13 +1517,11 @@ class WorkloadService:
             group: Owning group.
             pod: The pod to follow, as ``stream_pods`` named it.
             container: The pod container to read.
-            since_seconds: How far back the log starts, so a client sees recent
-                context rather than only what arrives after it connected.
+            since_seconds: How far back the log starts; None begins at the
+                moment of connection.
             tail_lines: Start at the newest this-many lines instead, however old
-                they are - what a viewer opening an *existing* pod wants, since
-                a pod quiet for longer than any time window would otherwise
-                show nothing until it next writes. Clamped to the snapshot
-                bound: it is the same "history a client gets at once".
+                they are. Clamped to the configured snapshot tail bound, which
+                is the same "history a client gets at once".
 
         Returns:
             The event stream, beginning with an ``open`` event.
@@ -1421,9 +1583,10 @@ class WorkloadService:
         reports - the same rollup, the same per-region replicas and usage, a
         function's build read for the same reason. Only the transport differs.
 
-        The first reading is taken here rather than in the stream: it is what
+        The first reading is taken here, not inside the stream: it also
         authorizes the request, so a workload that does not exist is a 404 with
-        an envelope instead of a stream that opens and immediately errors.
+        an envelope rather than a stream that opens and immediately errors
+        (docs/ARCHITECTURE.md - Errors after the first byte).
 
         Args:
             offering: The offering being read.
@@ -1474,11 +1637,10 @@ class WorkloadService:
 
         Build-first, like the single GET (docs/FUNCTIONS.md - Function Status
         Resolution): a function whose first build is still running has a KSVC that
-        cannot pull its image yet, so a listing that read the KSVC alone showed
-        every new function as ``Failed`` for the whole of that build. The build
-        states come from one label-selected read of the local region, so the fold
-        costs a single round trip for the entire listing - overlapped with the
-        fan-out, not chained onto it.
+        cannot pull its image yet, so the build state takes precedence. The build
+        states come from one label-selected read per region, so the fold costs a
+        single round trip for the entire listing, taken inside the fan-out rather
+        than chained onto it.
 
         Args:
             offering: The offering being listed.
@@ -1498,10 +1660,10 @@ class WorkloadService:
 
         def fetch(cluster: NamespacedCluster) -> tuple[list[dict], dict]:
             # Both reads in one per-region thread: the build states belong to this
-            # region now, so pairing them costs no extra round trip and cannot
-            # attribute one region's builds to another. Branching on the declared
-            # capability, not on which offering this is - an offering with no
-            # build must not pay for a read that returns {}.
+            # region, so pairing them costs no extra round trip and cannot
+            # attribute one region's builds to another. Branches on the declared
+            # capability rather than on the offering name; an offering with no
+            # build skips the read and returns {}.
             ksvcs = cluster.get(ResourceKind.KNATIVE_SERVICE, label_selector=selector)
             if not offering.has_build:
                 return ksvcs, {}

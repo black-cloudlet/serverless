@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from cloudlet_apis.auth import Principal
 from cloudlet_apis.logging import get_logger
 
-from api.models.common import (
-    PodLogSnapshot,
-    PodRoster,
-    WorkloadStatsResponse,
-    WorkloadSummary,
-)
 from api.models.container import ContainerCreate, ContainerResponse, ContainerUpdate
 from api.services.manifests import secrets as secret_svc
 from api.services.offering import CONTAINER
+from api.services.offering_service import OfferingService
 from api.services.state import describe as describe_svc
-from api.services.streams.sse import StreamEvent
-from api.services.workloads import ApplyRequest, WorkloadService
+from api.services.workloads import ApplyRequest
 from api.services.workloads.service import run_background
 from common.errors import ValidationError
 from common.labels import OFFERING_CONTAINER, workload_labels
@@ -28,16 +21,16 @@ from common.names import digest_of
 logger = get_logger(__name__)
 
 
-class ContainerService:
-    """Container-specific orchestration; delegates the shared work to WorkloadService."""
+class ContainerService(OfferingService):
+    """Container orchestration: the image-pull Secret and the pull, over the engine.
 
-    def __init__(self, engine: WorkloadService):
-        """Initialize the service.
+    Create and update compose the pull Secret from the registry credential and
+    hand the engine an :class:`ApplyRequest`; pull stamps every region so
+    Knative resolves the tag again. Reads, streams and delete are
+    :class:`OfferingService`'s.
+    """
 
-        Args:
-            engine: The shared workload engine doing the cross-region work.
-        """
-        self._engine = engine
+    offering = CONTAINER
 
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets redacted)."""
@@ -107,10 +100,11 @@ class ContainerService:
     def _check_registry_change(spec: ContainerUpdate, existing: dict) -> None:
         """Reject a registry-username change made without a token (synchronous 400).
 
-        A username with no token is a keep - it must match the stored username. A
-        different one can't rotate the credential (there's no token to write), so
-        it's rejected rather than silently ignored. Only enforced when the stored
-        username is known; if it couldn't be read we fall through to carry-forward.
+        A username with no token is a keep, so it must match the stored
+        username; a different one names a credential there is no token to write
+        (docs/ARCHITECTURE.md - Customer-provided credentials). Enforced only
+        when the stored username is known - when it could not be read, the
+        update falls through to carry-forward.
         """
         stored = existing.get("registry_username")
         if (
@@ -153,9 +147,8 @@ class ContainerService:
                 spec.registryToken,
             )
 
-        # No absence probe here: apply_workload runs one combined host+absence pass
-        # over the same targets immediately before it mutates, which is both a
-        # stronger guard (nothing happens in between) and one fewer cross-region trip.
+        # No absence probe here: apply_workload runs one combined host+absence
+        # pass over the same targets immediately before it mutates.
         body, code = await self._engine.apply_workload(
             ApplyRequest(
                 name=spec.name,
@@ -283,14 +276,18 @@ class ContainerService:
                 "pull. Send a PUT with a tag to track one."
             )
         background.add_task(run_background, self.pull, group, name)
-        # Same fallback as the function rebuild path: a workload written before the
-        # host annotation existed still has a host, and it is the derived one - so
-        # derive it rather than answering the 202 with an empty `hostname`.
+        # Falls back to the derived host when the workload carries no host
+        # annotation, so the 202 never answers with an empty `hostname`. The
+        # function rebuild path does the same.
         host = existing.get("host") or self._engine.host_for(name, None, group)
         return self._engine.accepted(CONTAINER, name, group, host, image=image)
 
     async def pull(self, group: str, name: str) -> None:
         """Cut a revision so Knative re-resolves the tag (runs in the background).
+
+        Stamps one timestamp on every region, so they land on the same revision
+        (docs/CONTAINERS.md - Pulling the tag again). Runs after
+        :meth:`accept_pull` has returned the 202.
 
         Args:
             group: The owning group.
@@ -298,10 +295,8 @@ class ContainerService:
         """
         stamp = datetime.now(UTC).isoformat(timespec="seconds")
         statuses = await self._engine.stamp_pull(name, group, stamp)
-        # Background work: the 202 went out long ago, so a failed patch has no
-        # response left to land in. Say so in the log - without this an
-        # all-regions-failed pull completes silently and the client's statusUrl
-        # just never shows a new revision.
+        # The 202 has already been sent, so a failed patch has no response left
+        # to land in; the log is where it is reported.
         failed = [s for s in statuses if s.message]
         if failed:
             logger.warning(
@@ -310,172 +305,3 @@ class ContainerService:
                 group,
                 ", ".join(f"{s.region}: {s.message}" for s in failed),
             )
-
-    async def get(self, name: str, group: str, user: Principal) -> ContainerResponse:
-        """Get one container with live per-region status.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The full single-container response.
-        """
-        return await self._engine.get(CONTAINER, name, user, group)
-
-    async def stats(self, name: str, group: str, user: Principal) -> WorkloadStatsResponse:
-        """Read the container's live state (the poll view).
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The rollup plus per-region replicas and usage.
-        """
-        return await self._engine.stats(CONTAINER, name, user, group)
-
-    async def pods(self, name: str, group: str, user: Principal) -> PodRoster:
-        """The container's pods on the current region, read once.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The roster.
-        """
-        return await self._engine.pods(CONTAINER, name, user, group)
-
-    async def pod_logs(
-        self,
-        name: str,
-        group: str,
-        user: Principal,
-        *,
-        pod: str,
-        container: str,
-        since_seconds: int | None,
-        limit_bytes: int | None,
-        tail_lines: int | None = None,
-    ) -> PodLogSnapshot:
-        """One of the container's pods' logs as it stands, read once.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            pod: The pod to read.
-            container: The pod container to read.
-            since_seconds: Only lines newer than this, if set.
-            limit_bytes: Cap on the bytes read, if set.
-            tail_lines: Newest lines wanted, if set; clamped to the snapshot bound.
-
-        Returns:
-            The snapshot.
-        """
-        return await self._engine.pod_logs(
-            CONTAINER,
-            name,
-            user,
-            group,
-            pod=pod,
-            container=container,
-            since_seconds=since_seconds,
-            limit_bytes=limit_bytes,
-            tail_lines=tail_lines,
-        )
-
-    async def stream_pods(
-        self, name: str, group: str, user: Principal, *, interval: float | None
-    ) -> AsyncIterator[StreamEvent]:
-        """Stream which pods the container has on the current region.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            interval: Seconds between listings; None takes the default.
-
-        Returns:
-            The event stream.
-        """
-        return await self._engine.stream_pods(CONTAINER, name, user, group, interval=interval)
-
-    async def stream_pod_logs(
-        self,
-        name: str,
-        group: str,
-        user: Principal,
-        *,
-        pod: str,
-        container: str,
-        since_seconds: int | None,
-        tail_lines: int | None = None,
-    ) -> AsyncIterator[StreamEvent]:
-        """Follow one of the container's pods' logs, on the current region.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            pod: The pod to follow.
-            container: The pod container to read.
-            since_seconds: How far back the log starts, if set.
-            tail_lines: Start at the newest this-many lines instead, if set.
-
-        Returns:
-            The event stream.
-        """
-        return await self._engine.stream_pod_logs(
-            CONTAINER,
-            name,
-            user,
-            group,
-            pod=pod,
-            container=container,
-            since_seconds=since_seconds,
-            tail_lines=tail_lines,
-        )
-
-    async def stream_stats(
-        self, name: str, group: str, user: Principal, *, interval: float | None
-    ) -> AsyncIterator[StreamEvent]:
-        """Push the container's live state on an interval.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            interval: Seconds between readings; None takes the default.
-
-        Returns:
-            The event stream.
-        """
-        return await self._engine.stream_stats(CONTAINER, name, user, group, interval=interval)
-
-    async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        """List the group's containers.
-
-        Args:
-            group: The owning group.
-            user: The authenticated caller.
-            sort: Sort key, "name" or "createdAt".
-
-        Returns:
-            The per-workload summaries.
-        """
-        return await self._engine.list(CONTAINER, user, group, sort)
-
-    async def delete(self, name: str, group: str, user: Principal) -> None:
-        """Delete a container and its derived resources.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-        """
-        await self._engine.delete(CONTAINER, name, user, group)

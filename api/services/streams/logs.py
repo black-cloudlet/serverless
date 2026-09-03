@@ -1,28 +1,22 @@
 """Following one pod's log, and turning that into a stream of events.
 
 The stream is per **pod**, not per workload: the client picks a pod off the
-roster (:mod:`api.services.streams.pods`) and opens a stream for it. That keeps
-this module small - one pod, one thread, no set to reconcile - and moves the
-choice of what to watch to the side that knows what the user is looking at.
+roster (:mod:`api.services.streams.pods`) and opens a stream for it - one pod,
+one thread, no set to reconcile (docs/ARCHITECTURE.md - Streaming).
 
-Two moving parts remain, because the read is blocking and endless:
+Two moving parts carry it, because the read is blocking and endless:
 
 * :func:`_read` - the follow itself. Runs on a thread from the stream pool; the
   loop ends it by closing the underlying stream, which is the only thing that
   interrupts a blocking read (a flag is checked between lines, and a quiet pod
   produces none).
-* :class:`_Buffer` - the hand-off. Bounded, because a pod logging faster than
-  its reader must cost a *reported* gap rather than the process's memory.
+* :class:`_Buffer` - the hand-off. Bounded: a pod logging faster than its reader
+  costs a *reported* gap, not the process's memory.
 
 Log lines cross the buffer as **rendered SSE frames** (str), everything else as
-:class:`~api.services.streams.sse.StreamEvent`. The line path is the exception
-deliberately: a pod can log tens of thousands of lines a second, and rendering
-each on the event loop - the model dump, the frame, one generator hop per line -
-starved the loop until the health probes missed and the kubelet restarted the
-pod (killing every stream, whose clients then reconnected onto the surviving
-replica and took it down the same way). The follower thread is already doing
-per-line work, so it renders too, and the loop only forwards bytes - one yield
-per buffer drain, not per line.
+:class:`~api.services.streams.sse.StreamEvent`. The follower thread renders the
+line path itself, so the event loop only forwards bytes - one yield per buffer
+drain, not one per line.
 """
 
 from __future__ import annotations
@@ -43,9 +37,9 @@ from api.services.streams.capacity import StreamCapacity, start_on
 from api.services.streams.sse import StreamEvent, heartbeat, render
 from common.cluster import NamespacedCluster
 
-# `timestamps=True` prefixes every line with an RFC3339Nano stamp. Matched rather
-# than split on whitespace so a workload logging something that merely looks like
-# a date cannot have its first word eaten.
+# `timestamps=True` prefixes every line with an RFC3339Nano stamp. The prefix is
+# matched, not split off on whitespace, so a line that merely starts with
+# something date-shaped keeps its first word.
 _TIMESTAMP = re.compile(
     r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2}) (.*)$",
     re.DOTALL,
@@ -62,8 +56,8 @@ logger = get_logger(__name__)
 def split_timestamp(line: str) -> tuple[datetime | None, str]:
     """Split the node's timestamp prefix off a log line.
 
-    Rendered in Israel local time, like every other timestamp the API returns
-    (``createdAt``), so a client formats one timezone rather than two.
+    The time is returned in Israel local time, like every other timestamp the API
+    returns (``createdAt``).
 
     Args:
         line: The raw line, as ``timestamps=True`` produced it.
@@ -88,9 +82,9 @@ def split_timestamp(line: str) -> tuple[datetime | None, str]:
 def _frame_bytes(frame: str) -> int:
     """How much memory a rendered frame costs, in bytes.
 
-    ``len`` counts characters, and outside ASCII one costs up to four bytes -
-    counted as one, the buffer holds several times its budget. ``isascii`` is a
-    flag check on CPython, so the ordinary frame pays nothing for the check.
+    ``len`` counts characters, and outside ASCII one character costs up to four
+    bytes, so a character count would let the buffer hold several times its byte
+    budget. ``isascii`` is a flag check on CPython.
 
     Args:
         frame: The rendered SSE frame.
@@ -104,27 +98,21 @@ def _frame_bytes(frame: str) -> int:
 class _Buffer:
     """Bounded hand-off from the follower thread to the event loop.
 
-    A plain :class:`asyncio.Queue` would not do: filling one from a thread means
-    a ``call_soon_threadsafe`` per line, and scheduling those is itself unbounded
-    - a pod that outruns its reader would then grow the loop's callback queue
-    instead of the buffer, which is the same leak one level down. Here the thread
-    appends under a lock and only wakes the loop on the empty-to-filled edge, so a
-    burst of a thousand lines costs one wakeup and drops what does not fit.
+    The producer thread appends under a lock and wakes the loop only on the
+    empty-to-filled edge, so a burst of a thousand lines costs one wakeup and
+    drops whatever does not fit.
 
     Items are rendered SSE frames (str) for log lines and
     :class:`~api.services.streams.sse.StreamEvent` for the rare control message;
-    the buffer itself never looks inside them (see the module docstring for why
-    the hot path is pre-rendered).
+    the buffer itself never looks inside them.
 
-    Bounded twice, and both bounds matter. The line count caps the ordinary
-    case; the byte budget caps the pathological one, where a pod writes without
-    newlines and every "line" arrives as a ~1MB piece (LogFollow.MAX_LINE_BYTES)
-    - a thousand of those is a gigabyte, which against the pod's memory limit is
-    an OOM kill wearing a log stream's clothes. Either bound overrun costs a
-    *reported* drop, exactly as the count bound always did.
+    Bounded twice: ``maxsize`` caps how many items are held, ``max_bytes`` how
+    many rendered bytes. A pod that writes without newlines reaches the byte
+    bound first, each "line" arriving as up to ``LogFollow.MAX_LINE_BYTES``
+    (~1MB). Overrunning either bound costs a *reported* drop.
 
-    A frame too big for even an empty buffer is dropped, not waved through:
-    MAX_LINE_BYTES bounds the raw line, not the frame JSON escaping makes of it.
+    A frame too big for even an empty buffer is dropped: ``MAX_LINE_BYTES``
+    bounds the raw line, not the frame JSON escaping makes of it.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop, maxsize: int, max_bytes: int):
@@ -198,11 +186,10 @@ class _Buffer:
 class _Tail:
     """The running follow, and the handle that ends it.
 
-    The two halves are touched from different threads, which is the whole reason
-    this is an object. The worker owns the iteration; the loop owns :meth:`stop`.
-    They meet at the lock, so a stop that lands before the stream is even open
-    still takes effect - otherwise a client that disconnects during the opening
-    round trip would leave a thread following a pod nobody is reading.
+    The two halves are touched from different threads: the worker owns the
+    iteration, the event loop owns :meth:`stop`. They meet at the lock, so a stop
+    that lands before the stream is open still takes effect - :meth:`attach` then
+    returns False and the opener closes what it just opened.
     """
 
     def __init__(self):
@@ -262,14 +249,13 @@ def _read(
         tail.ended.set()
         return
     if not tail.attach(follow):
-        follow.close()  # stopped while we were opening it
+        follow.close()  # stopped while it was being opened
         tail.ended.set()
         return
     try:
         for line in follow.lines():
             stamp, message = split_timestamp(line)
-            # Rendered here, on this thread, not on the event loop - the whole
-            # point of the pre-rendered hot path (module docstring).
+            # Rendered on this thread, not on the event loop (module docstring).
             buf.put(
                 render(
                     StreamEvent(
@@ -294,9 +280,8 @@ def _read(
 def _coalesced(items: list[StreamEvent | str]) -> Iterator[StreamEvent | str]:
     """Join each run of rendered frames into one, leaving control events alone.
 
-    The wire is identical - SSE frames concatenate - but the loop pays one yield
-    (and the transport one write) per drain instead of per line, which under a
-    fire-hosing pod is the difference between a busy loop and a starved one.
+    The wire is identical - SSE frames concatenate - and the loop pays one yield
+    (and the transport one write) per drain instead of one per line.
 
     Args:
         items: One buffer drain: rendered frames (str) and control events.
@@ -334,11 +319,10 @@ async def follow(
         config: The stream bounds.
         opening: The ``open`` event, already built by the caller from the pod it
             authorized against.
-        since_seconds: How far back the log starts, so a client sees recent
-            context rather than only what arrives after it connected.
+        since_seconds: How far back the log starts, so the client opens with
+            recent context and not only what arrives after it connected.
         tail_lines: Start at the newest this-many lines instead, however old
-            they are - the right opening for a pod that has been quiet longer
-            than any time window.
+            they are.
 
     Yields:
         The ``open`` event, then ``log`` frames (pre-rendered SSE, str - see the
@@ -351,12 +335,9 @@ async def follow(
     deadline = loop.time() + config.max_seconds
 
     # Started before the try, and the try covers the opening yield: a client that
-    # disconnects the instant it connects - a browser navigating away, a curl
-    # piped into `head` - closes the generator at its very first suspension
-    # point, and a teardown that only guarded the main loop would never run for
-    # it. Those are exactly the streams that leak threads.
-    # `start_on`, not a bare run_in_executor: the follower is the longest-lived
-    # worker in the system, and its log lines need the request's correlation id.
+    # disconnects immediately closes the generator at its first suspension point,
+    # and the finally below still tears the follower down. `start_on` copies the
+    # request context, so the follower's log lines carry the correlation id.
     tail.future = start_on(
         capacity.executor, _read, cluster, tail, opening, since_seconds, tail_lines, buf
     )
@@ -366,25 +347,10 @@ async def follow(
         while True:
             now = loop.time()
             if now >= deadline:
-                # Deliver what is already buffered before ending: the rollover
-                # must not cost the client lines that had in fact arrived.
-                for event in _coalesced(buf.drain()):
+                # Deliver what is already buffered before ending, and report
+                # what was dropped, exactly as an ordinary tick does.
+                for event in _flush(buf):
                     yield event
-                # ...and report what was NOT delivered, exactly as a normal tick
-                # would: a client reconnecting across the rollover must not read
-                # the log as gapless when lines were in fact skipped.
-                dropped = buf.take_dropped()
-                if dropped:
-                    yield StreamEvent(
-                        "warning",
-                        StreamWarning(
-                            message=(
-                                "the client is reading slower than the pod is logging; "
-                                "lines were skipped"
-                            ),
-                            droppedLines=dropped,
-                        ),
-                    )
                 # Not an error: the client reconnects, which SSE does unprompted.
                 yield StreamEvent(
                     "end", StreamEnd(reason="the stream reached its time limit; reconnect")
@@ -393,28 +359,14 @@ async def follow(
             await buf.wait(min(deadline, now + config.heartbeat_seconds) - now)
 
             sent = False
-            for event in _coalesced(buf.drain()):
+            for event in _flush(buf):
                 sent = True
                 yield event
 
-            dropped = buf.take_dropped()
-            if dropped:
-                sent = True
-                yield StreamEvent(
-                    "warning",
-                    StreamWarning(
-                        message=(
-                            "the client is reading slower than the pod is logging; "
-                            "lines were skipped"
-                        ),
-                        droppedLines=dropped,
-                    ),
-                )
-
             # Checked after draining, so the last lines a dying pod wrote are
             # delivered before the stream is closed on its behalf. `empty`, not
-            # `drain`: draining here would consume - and discard - lines that
-            # arrived since the drain above, exactly the ones this exists to save.
+            # `drain`: a drain here would consume and discard the lines that
+            # arrived since the drain above.
             if tail.ended.is_set() and buf.empty():
                 yield StreamEvent(
                     "end",
@@ -433,14 +385,36 @@ async def follow(
         await _teardown(tail)
 
 
+def _flush(buf: _Buffer) -> Iterator[StreamEvent | str]:
+    """Everything a tick delivers: the buffered lines, then what was dropped.
+
+    The drop count is reported after the lines it was counted against, so a
+    client that renders in order sees the gap where it happened.
+
+    Args:
+        buf: The follower's buffer.
+
+    Yields:
+        The coalesced line frames, then a ``warning`` if any were dropped.
+    """
+    yield from _coalesced(buf.drain())
+    dropped = buf.take_dropped()
+    if dropped:
+        yield StreamEvent(
+            "warning",
+            StreamWarning(
+                message="the client is reading slower than the pod is logging; lines were skipped",
+                droppedLines=dropped,
+            ),
+        )
+
+
 async def _teardown(tail: _Tail) -> None:
     """End the follow and wait, briefly, for its thread to notice.
 
-    The wait is what keeps the admission bound honest: the stream's slot is
-    released as this returns, so leaving without it would let a new stream in
-    while this one's thread still holds the pool. It is bounded anyway - a thread
-    that ignores a closed socket is a leak worth logging, not one worth hanging
-    the teardown on.
+    The stream's slot is released as this returns, so the wait keeps a finished
+    stream's thread from overlapping a newly admitted one. It is bounded by
+    ``_DRAIN_TIMEOUT``; a follower still running after that is logged and left.
     """
     tail.stop()
     if tail.future is None:

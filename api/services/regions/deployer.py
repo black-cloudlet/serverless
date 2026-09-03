@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import Executor
 from contextlib import nullcontext
-from typing import Callable
+from typing import Callable, TypeVar
 
 from cloudlet_apis.errors import ServiceUnavailableError
 from cloudlet_apis.logging import get_logger
@@ -24,8 +24,13 @@ from common.errors import ValidationError
 
 logger = get_logger(__name__)
 
-# fn(cluster) -> RegionStatus  (may run blocking I/O; executed in a thread)
-RegionFn = Callable[[NamespacedCluster], RegionStatus]
+T = TypeVar("T")
+
+# fn(cluster) -> one region's result (may run blocking I/O; executed in a thread).
+# A RegionStatus is the common shape; a read may return something richer, or
+# None for "not deployed here". The fan-out passes whatever it returns through
+# and adds a RegionStatus of its own only for a region that timed out or raised.
+RegionFn = Callable[[NamespacedCluster], T]
 
 
 class Deployer:
@@ -53,10 +58,10 @@ class Deployer:
     async def run_read(self, fn, *args):
         """Run one blocking cluster read on the bounded read pool.
 
-        For the single-cluster reads that serve GETs, so they share the
-        fan-out's pool and admission rather than the default executor. Bounded
-        by ``cluster_read_op_timeout`` like every read: a slot is released when
-        the *thread* finishes, so an unbounded caller holds its worker.
+        Serves the single-cluster reads behind GETs, on the same pool and
+        admission as the fan-out. Bounded by ``cluster_read_op_timeout`` like
+        every read: a slot is released when the *thread* finishes, so an
+        unbounded caller holds its worker.
 
         Raises:
             ServiceUnavailableError: If the pool is saturated, or the read did
@@ -76,9 +81,9 @@ class Deployer:
         """The cluster this API instance sits in, bound to ``namespace``.
 
         Selected by config ``local_region`` (matched by region name then cluster
-        name), falling back to the first configured region. Used for reads of data
-        that is uniform across regions (active/active), to avoid a cross-cluster
-        round trip.
+        name), falling back to the first configured region. Serves reads of data
+        that is uniform across regions (active/active)
+        (docs/ARCHITECTURE.md - Multi-Region).
 
         Args:
             namespace: The namespace to bind - the caller's group namespace.
@@ -92,17 +97,16 @@ class Deployer:
         return NamespacedCluster(select_local(self._clusters, self._local_region), namespace)
 
     def local_region(self) -> str:
-        """The name of the local region (see :meth:`local_cluster`).
+        """The name of the local region, without binding a namespace.
 
-        Namespace-free: which region this instance is in has nothing to do with
-        whose workloads it is serving.
+        Selected the same way as in :meth:`local_cluster`.
         """
         return select_local(self._clusters, self._local_region).region
 
     def clusters(self, requested: list[str] | None = None) -> list[Cluster]:
         """The configured clusters, unbound.
 
-        For work that is about a *region* rather than about a namespace -
+        Serves work that is about a *region* rather than about a namespace -
         warming connections at startup, reading a region's registry.
 
         Args:
@@ -131,11 +135,9 @@ class Deployer:
     ) -> list[NamespacedCluster]:
         """Resolve the clusters to act on for a request, bound to ``namespace``.
 
-        The one boundary where the namespace is bound: everything downstream
-        gets a view that cannot mix namespaces. The namespace is now the
-        caller's group namespace, passed in per request rather than fixed at
-        construction - which is the whole of what namespace-per-group changes
-        about where writes land.
+        The namespace is bound here and nowhere else: everything downstream
+        gets a view that cannot mix namespaces. It is the caller's group
+        namespace, passed in per request rather than fixed at construction.
 
         Args:
             requested: Explicit region names, or None for all configured regions.
@@ -152,28 +154,28 @@ class Deployer:
     async def fanout(
         self,
         targets: list[NamespacedCluster],
-        fn: RegionFn,
+        fn: RegionFn[T],
         *,
         executor: Executor | None = None,
         read: bool = False,
-    ) -> list[RegionStatus]:
+    ) -> list[RegionStatus | T]:
         """Run ``fn`` on every target concurrently, collecting per-region results.
 
         Each call runs in a thread with a timeout; a region that times out or raises
         yields a ``RegionStatus`` with ``message`` set rather than aborting the others.
+        The results keep the targets' order, so the caller can map a result back to
+        the region it came from.
 
         Args:
             targets: The clusters to run on.
             fn: The per-region operation returning a RegionStatus.
             executor: Pool to run on; None takes the read pool for a read and the
-                default executor otherwise. A stream passes its own so that
-                repeating this fan-out for as long as a client stays connected
-                cannot starve ordinary requests.
+                default executor otherwise. A stream passes its own pool
+                (docs/ARCHITECTURE.md - A held-open stream holds a thread).
             read: This fan-out serves a page read: run it on the bounded read
                 pool and bound each region by ``cluster_read_op_timeout``, so a
-                slow cluster costs its own column in the response - which the
-                rollup already renders - not the whole page. A write keeps the
-                minute-scale ``cluster_op_timeout``: it is worth waiting for.
+                slow cluster fails as its own region row. A write runs under the
+                minute-scale ``cluster_op_timeout``.
 
         Returns:
             One RegionStatus per target.
@@ -183,15 +185,15 @@ class Deployer:
                 the whole fan-out.
         """
         timeout = self._read_timeout if read else self._op_timeout
-        # For every target before any starts: shed half way through, the regions
-        # already running would burn the pool for a result the 503 discards.
+        # Admission is all or nothing: slots for every target are reserved
+        # before any region starts.
         on_pool = read and executor is None
         reserved = self._read_pool.reserve(len(targets)) if on_pool else nullcontext()
 
-        async def run(cluster: NamespacedCluster, run_read) -> RegionStatus:
+        async def run(cluster: NamespacedCluster, run_read) -> RegionStatus | T:
             try:
-                # Backstop: a down/slow region fails fast and is reported as an
-                # error rather than blocking the whole fan-out indefinitely.
+                # Per-region timeout backstop: a down or slow region is reported
+                # as a Timeout row instead of blocking the fan-out.
                 if run_read is not None:
                     result = run_read(fn, cluster)
                 else:
