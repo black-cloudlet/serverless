@@ -19,7 +19,8 @@ configmap-{part}.yaml beside this file, and a test asserts that the Deployment
 projects nothing the chart does not render.
 */}}
 {{- define "serverless-api.tenantTemplateParts" -}}
-namespace network-policies ca-bundle rbac
+namespace ca-bundle rbac
+{{- if .Values.networkPolicy.enabled }} network-policies{{ end }}
 {{- if .Values.build.enabled }} build{{ end }}
 {{- end -}}
 

@@ -1,3 +1,4 @@
+{{- if .Values.tenantNamespaces.controller.enabled }}
 {{- $ns := include "serverless-api.tenantNamespaceToken" . }}
 {{/*
 Part of the tenant template set: the API's grant inside a tenant namespace.
@@ -40,3 +41,4 @@ data:
       kind: ClusterRole
       name: {{ .Values.name }}
       apiGroup: rbac.authorization.k8s.io
+{{- end }}

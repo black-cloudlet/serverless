@@ -684,9 +684,14 @@ externalSecrets:
           key: cloudlet/platforms/serverless
           property: swagger-client-secret
 
-# Default-deny NetworkPolicies for workload pods. Verify the namespace names and
-# CIDRs match your cluster.
+# Default-deny NetworkPolicies for workload pods, applied to every tenant
+# namespace through the tenant controller's template set. Verify the namespace
+# names and CIDRs match your cluster.
 networkPolicy:
+  # Off drops the policies from the set, and the controller prunes them out of
+  # the tenant namespaces on its next pass. The tenant controller's own policy -
+  # only the API's pods may reach the provision endpoint - is always applied and
+  # is not governed by this.
   enabled: true
   # Namespaces allowed to connect TO workload pods.
   ingressNamespaces:

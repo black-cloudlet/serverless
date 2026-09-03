@@ -1,3 +1,4 @@
+{{- if and .Values.tenantNamespaces.controller.enabled .Values.networkPolicy.enabled }}
 {{- $ns := include "serverless-api.tenantNamespaceToken" . }}
 {{/*
 Part of the tenant template set: the namespace's segmentation.
@@ -14,8 +15,13 @@ per-region value goes in as a token the controller resolves against the cluster
 it is writing to - never baked in here.
 */}}
 {{/*
-The bodies come from _network-policies.tpl at the chart root, which the legacy
-namespace renders from too, so the two cannot drift.
+The bodies come from _network-policies.tpl at the chart root.
+
+Rendered only when `networkPolicy.enabled`. Turning it off drops this part from
+the set, and the controller prunes the policies it had applied out of every
+tenant namespace - `NetworkPolicy` is one of the kinds it owns there. The
+tenant controller's own policy is not this switch's to turn off: it is rendered
+unconditionally beside the Deployment.
 */}}
 apiVersion: v1
 kind: ConfigMap
@@ -27,3 +33,4 @@ metadata:
 data:
   20-network-policies.yaml: |
     {{- include "serverless-api.workloadNetworkPolicies" (dict "root" $ "namespace" $ns) | nindent 4 }}
+{{- end }}

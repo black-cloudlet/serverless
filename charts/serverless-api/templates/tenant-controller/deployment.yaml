@@ -176,10 +176,11 @@ spec:
       port: {{ $p.service.port }}
       targetPort: {{ $p.service.targetPort }}
       protocol: TCP
-{{- if .Values.networkPolicy.enabled }}
 ---
 # The primary control on the provision endpoint: only the API's own pods may reach
-# it. The shared token is depth behind this, not instead of it.
+# it. The shared token is depth behind this, not instead of it. Unconditional:
+# `networkPolicy.enabled` governs what a tenant namespace gets, and switching
+# that off must not take the control off this endpoint.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -200,7 +201,6 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $p.service.targetPort }}
-{{- end }}
 {{- if $p.tokenSecret.create }}
 ---
 apiVersion: external-secrets.io/v1beta1
