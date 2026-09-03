@@ -103,7 +103,7 @@ class BuildPlan:
             (docs/BUILDING.md - Active/Active).
         per_region: The build objects each region applies, keyed by region name.
             Each region pushes to its own registry, so the tag differs per
-            region (docs/BUILDING.md - Registry layout).
+            region (docs/RUNTIMES.md - Registry layout).
     """
 
     replicated: list[dict]
@@ -267,7 +267,7 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
 def cache_reference(registry_base: str, req: BuildRequest) -> str:
     """Where a build's layer cache lives: ``{base}/{group}/{name}_cache:latest``.
 
-    The registry form of kpack's cache (docs/BUILDING.md - Build cache).
+    The registry form of kpack's cache (docs/RUNTIMES.md - Build cache).
 
     The ``_`` makes a collision with a function image impossible: a name is a
     DNS-1123 label, which admits only ``[a-z0-9-]``, so no function can be named

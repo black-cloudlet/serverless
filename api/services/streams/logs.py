@@ -2,7 +2,7 @@
 
 The stream is per **pod**, not per workload: the client picks a pod off the
 roster (:mod:`api.services.streams.pods`) and opens a stream for it - one pod,
-one thread, no set to reconcile (docs/ARCHITECTURE.md - Streaming).
+one thread, no set to reconcile (docs/STREAMING.md - Streaming).
 
 Two moving parts carry it, because the read is blocking and endless:
 

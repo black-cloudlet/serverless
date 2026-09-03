@@ -5,7 +5,7 @@ view, the log snapshot, the update's state load, and the delete - and each does
 something different when the answer is no, so what is shared here is the
 predicate :func:`owned_by` and, for the paths that answer 404,
 :func:`hidden_404`, which keeps a denial indistinguishable from absence
-(docs/ARCHITECTURE.md - Error model).
+(docs/API.md - Error model).
 """
 
 from __future__ import annotations

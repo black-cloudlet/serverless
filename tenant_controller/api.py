@@ -6,7 +6,7 @@ optional shared token below is a second layer behind that policy.
 
 The app is assembled here rather than through the API's app factory, which
 wires SSO, CORS, offline docs and a base path - and with them the JWT stack
-this image does not ship (docs/BUILDING.md - Two images).
+this image does not ship (docs/BUILD-CONTROLLER.md - Two images).
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def _router(
         Readiness and provisioning both go through it, so the probe cannot
         report ready on a set the endpoint would then refuse. Nothing here
         touches a cluster, per the platform's probe rule
-        (docs/ARCHITECTURE.md - Endpoints); every condition it checks is this
+        (docs/API.md - Endpoints); every condition it checks is this
         pod's own configuration, so a bad ConfigMap stalls its own rollout
         instead of failing every create.
 
@@ -240,7 +240,7 @@ def _check_token(request: Request, configured: str) -> None:
     An empty setting disables the check, leaving the NetworkPolicy as the only
     control. The comparison is spelled out here rather than taken from
     ``cloudlet_apis.auth``, an import that would pull the JWT stack into this
-    image (docs/BUILDING.md - Two images).
+    image (docs/BUILD-CONTROLLER.md - Two images).
 
     Args:
         request: The incoming request.

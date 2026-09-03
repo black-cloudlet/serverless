@@ -1,4 +1,4 @@
-"""Multi-region fan-out (docs/ARCHITECTURE.md - Multi-Region).
+"""Multi-region fan-out (docs/API.md - Multi-Region).
 
 Every deploy is applied to all target regions concurrently; the per-region
 results are rolled up by :mod:`api.services.regions.rollup`. The Kubernetes
@@ -83,7 +83,7 @@ class Deployer:
         Selected by config ``local_region`` (matched by region name then cluster
         name), falling back to the first configured region. Serves reads of data
         that is uniform across regions (active/active)
-        (docs/ARCHITECTURE.md - Multi-Region).
+        (docs/API.md - Multi-Region).
 
         Args:
             namespace: The namespace to bind - the caller's group namespace.
@@ -171,7 +171,7 @@ class Deployer:
             fn: The per-region operation returning a RegionStatus.
             executor: Pool to run on; None takes the read pool for a read and the
                 default executor otherwise. A stream passes its own pool
-                (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+                (docs/STREAMING.md - A held-open stream holds a thread).
             read: This fan-out serves a page read: run it on the bounded read
                 pool and bound each region by ``cluster_read_op_timeout``, so a
                 slow cluster fails as its own region row. A write runs under the

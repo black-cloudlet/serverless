@@ -7,7 +7,7 @@ this loop reads or writes a peer cluster.
 
 One pass relists and then watches from that point, so a dropped stream costs a
 relist and no change is missed. There is no leader election
-(docs/BUILDING.md - Digest propagation).
+(docs/BUILD-CONTROLLER.md - Digest propagation).
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ class Reconciler:
         if self._gc is not None:
             # After the rollouts, on the same listing: the GC judges tags
             # against each Image's latest state, as just fetched. Paced
-            # internally (docs/BUILDING.md - Registry tag GC).
+            # internally (docs/BUILD-CONTROLLER.md - Registry tag GC).
             self._gc.maybe_sweep(images)
         return version
 

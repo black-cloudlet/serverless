@@ -5,7 +5,7 @@ add only the offering-specific prep (build-from-Git vs image + pull secret);
 apply, host/absence checks, access control and get/delete all live here.
 
 What lives here is the *orchestration* - which regions to visit, in what order,
-and what a partial answer means (docs/ARCHITECTURE.md - Partial-failure
+and what a partial answer means (docs/API.md - Partial-failure
 semantics). What it orchestrates lives in modules of its own:
 
 * :mod:`api.services.manifests` - build what gets applied (pure)
@@ -145,7 +145,7 @@ def _pod_authorizer(cluster: NamespacedCluster, name: str, pod: str, kind: str, 
     Two checks, run by the log stream and the log snapshot alike: the caller
     must own the workload, and the named pod must carry that workload's service
     label. Owning the workload is not owning every pod in its namespace
-    (docs/ARCHITECTURE.md - Authorizing a pod).
+    (docs/STREAMING.md - Authorizing a pod).
 
     Args:
         cluster: The local region.
@@ -470,7 +470,7 @@ class WorkloadService:
 
         An engine constructed without one builds it from ``settings`` here, so
         the thread pool exists only once something streams
-        (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+        (docs/STREAMING.md - A held-open stream holds a thread).
         """
         if self._capacity is None:
             self._capacity = StreamCapacity(self.settings.stream)
@@ -928,7 +928,7 @@ class WorkloadService:
         so nothing else has to ask for one.
 
         Per region, because each region's tag moves independently
-        (docs/BUILDING.md - Moving a function's repository).
+        (docs/RUNTIMES.md - Moving a function's repository).
 
         The tag is compared first, so this is one GET per region and no write at
         all unless a tag has actually moved.
@@ -1162,7 +1162,7 @@ class WorkloadService:
             executor: Pool the per-region reads run on; None takes the default.
                 The stats stream passes the streaming pool's executor, so its
                 repeated readings run there and not on the request threads
-                (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+                (docs/STREAMING.md - A held-open stream holds a thread).
 
         Returns:
             The live stats view.
@@ -1304,7 +1304,7 @@ class WorkloadService:
         The first roster is read here, not inside the stream: it is also what
         authorizes the request, so a workload that does not exist is a 404 with an
         envelope rather than a stream that opens and immediately errors
-        (docs/ARCHITECTURE.md - Errors after the first byte).
+        (docs/STREAMING.md - Errors after the first byte).
 
         Args:
             offering: The offering being read.
@@ -1357,7 +1357,7 @@ class WorkloadService:
         """The workload's pods on the local region, read once (``follow=false``).
 
         The non-streaming half of :meth:`stream_pods`, and the same reads, for a
-        caller that cannot hold a connection open (docs/ARCHITECTURE.md -
+        caller that cannot hold a connection open (docs/STREAMING.md -
         follow=false).
 
         No stream slot: this is an ordinary bounded request that ends, and it runs
@@ -1412,7 +1412,7 @@ class WorkloadService:
         whichever way it is read - and further by the configured snapshot bounds:
         the newest ``snapshot_tail_lines`` lines, within ``snapshot_max_bytes``.
         A caller's own bounds are clamped to those, never widened
-        (docs/ARCHITECTURE.md - follow=false).
+        (docs/STREAMING.md - follow=false).
 
         No stream slot: the read is an ordinary bounded request that ends.
 
@@ -1508,7 +1508,7 @@ class WorkloadService:
         named pod must carry this workload's service label, since owning the
         workload is not owning every pod in its namespace. A pod that is not
         this workload's is a 404, identical to one that does not exist
-        (docs/ARCHITECTURE.md - Authorizing a pod).
+        (docs/STREAMING.md - Authorizing a pod).
 
         Args:
             offering: The offering being read.
@@ -1586,7 +1586,7 @@ class WorkloadService:
         The first reading is taken here, not inside the stream: it also
         authorizes the request, so a workload that does not exist is a 404 with
         an envelope rather than a stream that opens and immediately errors
-        (docs/ARCHITECTURE.md - Errors after the first byte).
+        (docs/STREAMING.md - Errors after the first byte).
 
         Args:
             offering: The offering being read.

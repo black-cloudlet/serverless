@@ -2,7 +2,7 @@
 
 There is one path per endpoint and it is the complete one: every router is
 registered under :func:`api_base`, every path handed to a client is built from
-it, and nothing else answers (docs/ARCHITECTURE.md - REST API Specification).
+it, and nothing else answers (docs/API.md - REST API Specification).
 """
 
 from __future__ import annotations

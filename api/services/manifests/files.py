@@ -30,7 +30,7 @@ class VolumeSpec:
 
     Rendered read-only: Kubernetes mounts ConfigMap/Secret volumes read-only
     whatever the pod spec asks for
-    (docs/ARCHITECTURE.md - Files (config & secret mounts)).
+    (docs/API.md - Files (config & secret mounts)).
     """
 
     volume_name: str
@@ -88,7 +88,7 @@ def resolve_files(
     Content is carried as **bytes** throughout - ``encoding: base64`` submits binary
     material such as a keystore or a DER certificate - and the backing builders take
     those bytes and choose the right Kubernetes field
-    (docs/ARCHITECTURE.md - Files (config & secret mounts)).
+    (docs/API.md - Files (config & secret mounts)).
 
     Args:
         workload: The workload's name.

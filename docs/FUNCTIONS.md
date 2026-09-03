@@ -25,7 +25,7 @@ what functions share with containers is ARCHITECTURE.md.
 | `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/serverless/v1/functions/info`. |
 | `regions` | no | Which regions to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a region builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
 | `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/serverless/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
-| `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
+| `env`, `files`, `scaling` | no | Shared capabilities, see API.md: Shared sub-schemas. |
 
 **Build flow (kpack / Cloud Native Buildpacks):**
 
@@ -39,13 +39,13 @@ is the shape:
 3. **kpack** does the rest on its own: clone `gitRepo@branch`, run the runtime's `Builder`
    (the mirrored Paketo stack and buildpackages - ARCHITECTURE.md: Airgapped Considerations),
    and push to **that region's** registry at
-   `{region registry base}/{group}/{name}:{branch}` (BUILDING.md: Registry layout).
+   `{region registry base}/{group}/{name}:{branch}` (RUNTIMES.md: Registry layout).
 4. In the same pass as step 2, the API applies the **KSVC** to every target region, pointing
    at that **tag**. Until a build lands there is no image to pull, which is why a new
    function reads `Building` rather than `Failed` (see *Function Status Resolution*).
 5. When a build finishes, **that region's** build controller - a separate Deployment watching
    `Image.status.latestImage` - rolls the resulting **digest** onto the function's KSVC
-   **there** (BUILDING.md: Digest propagation). After the create, it is the only thing that
+   **there** (BUILD-CONTROLLER.md: Digest propagation). After the create, it is the only thing that
    writes that field.
 
 > The tag is a projection of the branch, not the commit: an OCI tag may not contain `/`,
@@ -319,7 +319,7 @@ Listen for `end` and `warning`, not just `log`. `end` is a pod going away, which
 Knative is routine rather than a failure; `warning` is the stream saying it is
 showing you an incomplete picture (lines skipped because the client fell behind).
 Each open stream costs a slot against the per-replica limit, so close the ones the
-user is not looking at. See ARCHITECTURE.md: Streaming.
+user is not looking at. See STREAMING.md: The streams.
 
 ### Editing a workload: `PUT` request recipes
 
@@ -451,7 +451,7 @@ POST /api/serverless/v1/groups/{group}/functions/{name}/build   ->   202 Accepte
 Every input comes back off the workload itself - `gitRepo`, `branch`, `path`, `runtime`
 and `version` from the KSVC's annotations, the token from the `{workload}-git` Secret -
 which is the same reconstruction a region that has never built the function does after a
-switchover (BUILDING.md: Reconstruction after switchover). Nothing is accepted from the
+switchover (BUILDING.md: Reconstruction after a gap). Nothing is accepted from the
 request: a rebuild that took inputs would be a `PUT` in disguise.
 
 Use it to:
@@ -470,7 +470,7 @@ What it deliberately does **not** do:
 | | |
 |---|---|
 | Touch the workload | Nothing about the desired state changes, so no KSVC is applied and no revision is spawned. The running revision keeps serving its current digest until the new one is rolled out (BUILDING.md: Ownership: API vs Build Service) - as for any build kpack starts on its own. |
-| Take a commit SHA | A rebuild builds the branch head, which is what create and update do. Pinning an exact commit is the job of the git webhook, which is **not implemented yet** (`BuildRequest.revision` already carries the field for it - BUILDING.md: Who writes the ksvc image). |
+| Take a commit SHA | A rebuild builds the branch head, which is what create and update do. Pinning an exact commit is the job of the git webhook, which is **not implemented yet** (`BuildRequest.revision` already carries the field for it - BUILD-CONTROLLER.md: Who writes the ksvc image). |
 | Change the spec | Send a `PUT` for that. A rebuild is the one function write that carries no desired state at all. |
 
 **Errors.** `404` if there is no such function (including a *container* of the same name -

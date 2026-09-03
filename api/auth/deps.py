@@ -97,7 +97,7 @@ def optional_auth(request: Request) -> Principal | None:
 
 # The library's dependency: ticket first, header second (see stream_auth).
 # The hint is display text derived from settings and bound at import
-# (docs/ARCHITECTURE.md - Browsers cannot send an `Authorization` header).
+# (docs/STREAMING.md - Browsers cannot send an `Authorization` header).
 require_stream_auth = stream_auth(
     get_tickets,
     optional_auth,

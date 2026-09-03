@@ -3,7 +3,7 @@
 The endpoint itself is :func:`cloudlet_apis.auth.ticket_mint_router`; this module
 supplies its authentication, its path allowlist and its expiry timezone. Mounted
 under the base path in ``main.py`` like every router, so the mint is served at
-``{api_base}/stream-tickets`` (docs/ARCHITECTURE.md - Browsers cannot send an
+``{api_base}/stream-tickets`` (docs/STREAMING.md - Browsers cannot send an
 ``Authorization`` header).
 """
 

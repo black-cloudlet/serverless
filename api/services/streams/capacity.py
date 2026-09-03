@@ -7,7 +7,7 @@ request.
 Streaming therefore runs on a pool of its own, sized from the admission bounds
 (:class:`~api.core.config.StreamConfig`), behind a gate that refuses with a 503
 any stream that would overrun it
-(docs/ARCHITECTURE.md - A held-open stream holds a thread).
+(docs/STREAMING.md - A held-open stream holds a thread).
 """
 
 from __future__ import annotations

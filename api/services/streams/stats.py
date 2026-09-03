@@ -8,7 +8,7 @@ the stream pool.
 
 A workload that goes away ends the stream with an ``error`` event carrying the
 same code the envelope would have
-(docs/ARCHITECTURE.md - Errors after the first byte).
+(docs/STREAMING.md - Errors after the first byte).
 """
 
 from __future__ import annotations

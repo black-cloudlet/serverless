@@ -13,7 +13,7 @@ class LogFollow:
     loop calls :meth:`close`, which ends that block by closing the socket: the
     pending read fails, the iteration stops, and the thread is returned to the
     pool. The ``_closed`` flag alone does not end it, being read only between
-    lines (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+    lines (docs/STREAMING.md - A held-open stream holds a thread).
     """
 
     def __init__(self, response):

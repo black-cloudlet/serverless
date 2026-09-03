@@ -25,7 +25,7 @@ class Cluster:
     """A single region's cluster connection and resource operations.
 
     The Kubernetes client is synchronous and the connection is established lazily,
-    on first use (docs/ARCHITECTURE.md - Partial-failure semantics).
+    on first use (docs/API.md - Partial-failure semantics).
 
     A Cluster is the handle callers pass around to mean "this region", and
     :attr:`registry` is that region's registry.
@@ -240,7 +240,7 @@ class Cluster:
 
         Blocking and finite: ``timeout_seconds`` closes the stream and ends the
         iteration, after which a caller relists and watches again
-        (docs/BUILDING.md - One pass). No read timeout applies to a watch: the
+        (docs/BUILD-CONTROLLER.md - One pass). No read timeout applies to a watch: the
         per-request timeouts in ``self._opts`` are not passed, the default
         installed in ``_api_client`` bounds only the connect, and the dynamic
         client's ``watch`` accepts no per-request override.
@@ -400,7 +400,7 @@ class Cluster:
 
         No read timeout is applied. The caller bounds the stream instead - its
         own deadline, and :meth:`LogFollow.close`
-        (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+        (docs/STREAMING.md - A held-open stream holds a thread).
 
         Args:
             pod: The pod name.
@@ -478,7 +478,7 @@ def select_local(clusters: dict[str, Cluster], local_region: str | None) -> Clus
     """The cluster this process sits in, from :func:`clusters_for`'s mapping.
 
     Matched on the region name first, then the cluster name, so either spelling in
-    the chart resolves (docs/ARCHITECTURE.md - Multi-Region). A configured name
+    the chart resolves (docs/API.md - Multi-Region). A configured name
     that matches nothing raises rather than falling back; only an *unset* name
     falls back, to the first configured region.
 

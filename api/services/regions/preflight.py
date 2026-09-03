@@ -4,7 +4,7 @@ Everything here answers "may this deploy proceed?" and nothing here mutates.
 One rule holds across all of them: **a check that could not be run has not
 passed**. An unreachable region cannot prove a host is free, so these fail closed
 with a 503 - see :func:`assert_all_regions_checked`
-(docs/ARCHITECTURE.md - Partial-failure semantics).
+(docs/API.md - Partial-failure semantics).
 
 :class:`~api.services.workloads.WorkloadService` exposes these as methods.
 """
@@ -122,7 +122,7 @@ async def assert_deployable(
     answers describe the same instant.
 
     Only a real 404 means free/absent. An unreachable region cannot prove either,
-    so this fails closed with a 503 (docs/ARCHITECTURE.md - Partial-failure
+    so this fails closed with a 503 (docs/API.md - Partial-failure
     semantics).
 
     The check is not atomic with the write: the apply that follows is a separate

@@ -40,7 +40,7 @@ flowchart LR
 - **Helm chart (this repo)** templates: the API's `Namespace` (annotated
   `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never
   prunes/deletes it; workload namespaces are per group, `{group}{suffix}`, provisioned at
-  runtime by the tenant controller - ARCHITECTURE.md: Tenant Namespaces), the
+  runtime by the tenant controller - TENANT-CONTROLLER.md: Tenant Namespaces), the
   trusted-CA-bundle `ConfigMap`, a `serverless-api-regions`
   **`ConfigMap`** holding just the **regions list** - each region's name and its cluster, which
   is the whole profile, since the API server URL is derived from the cluster name and the
@@ -49,8 +49,8 @@ flowchart LR
   available runtimes, mounted as a YAML file, the **tenant template set** (the per-namespace
   ConfigMaps the tenant controller applies into every `{group}{suffix}` namespace:
   default-deny NetworkPolicies - ARCHITECTURE.md: Networking & Exposure - CA bundle, RBAC,
-  build prerequisites - ARCHITECTURE.md: Tenant Namespaces), **three `Deployment`s** - the
-  API, the build controller (watches and writes this region only, BUILDING.md: Digest
+  build prerequisites - TENANT-CONTROLLER.md: Tenant Namespaces), **three `Deployment`s** - the
+  API, the build controller (watches and writes this region only, BUILD-CONTROLLER.md: Digest
   propagation) and the tenant controller - configured under `api`, `buildController` and
   `tenantNamespaces.controller` respectively, sharing the root `image` section for registry
   and pull policy - a `Service` and `Route` for the API alone, with a configurable
@@ -76,9 +76,9 @@ This repo's chart **consumes** cluster capabilities that are installed and manag
 | Prerequisite | Provides | Install |
 |--------------|----------|---------|
 | **OpenShift Serverless Operator** | Knative Serving (`Service`/`DomainMapping` CRDs), kourier ingress in `knative-serving-ingress`, and **automatic OpenShift Route creation** for Knative ingresses | OLM `Subscription` → `KnativeServing` CR (mirrored for airgap via `oc-mirror`) |
-| **cert-manager** | issues the API's ACME client certificate (ARCHITECTURE.md: Authentication & Authorization) | OLM (mirrored) |
+| **cert-manager** | issues the API's ACME client certificate (API.md: Authentication & Authorization) | OLM (mirrored) |
 | **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (ARCHITECTURE.md: Secrets Management) | OLM (mirrored) |
-| **RHBK** | OIDC identity provider (ARCHITECTURE.md: Authentication & Authorization) | platform-managed |
+| **RHBK** | OIDC identity provider (API.md: Authentication & Authorization) | platform-managed |
 | **kpack** + its cluster build content | the build engine, plus the `ClusterStack` and `ClusterStore` the `ClusterBuilder`s here reference by name | the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`), in the platform chart |
 
 On OpenShift you must use the **OpenShift Serverless Operator** - not an upstream/community
@@ -108,8 +108,8 @@ serverless-api chart                            one release per cluster/region
 ├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Network policy for build pods)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
 ├── SCC + ClusterRole       ...... build pods' CNB uid/gid, off by default (DEPLOYING.md: OpenShift SCC for builds)  [cluster-scoped]
-├── build-controller Deploy ...... Image watch -> ksvc digest (BUILDING.md: Digest propagation)
-├── tenant-controller       ...... Deploy + the template set for each {group}{suffix} namespace (ARCHITECTURE.md: Tenant Namespaces)
+├── build-controller Deploy ...... Image watch -> ksvc digest (BUILD-CONTROLLER.md: Digest propagation)
+├── tenant-controller       ...... Deploy + the template set for each {group}{suffix} namespace (TENANT-CONTROLLER.md: Tenant Namespaces)
 └── (existing: API Deployment + Service + Route, namespaces, CA bundle,
     regions/runtimes ConfigMaps, Certificate, RBAC, tenant NetworkPolicies)
 ```
@@ -182,7 +182,7 @@ ArgoCD, keep the engine in an earlier sync wave than serverless-api.
 
 ## RBAC
 
-The API and build controller share one identity (per ARCHITECTURE.md: Authentication & Authorization, the cert CN
+The API and build controller share one identity (per API.md: Authentication & Authorization, the cert CN
 user) and one set of rules. Those rules live in a **ClusterRole**, bound by a RoleBinding in
 each namespace the identity may write - which keeps the writes namespace-scoped while
 letting a namespace created at runtime carry the binding without carrying a copy of the
@@ -190,7 +190,7 @@ rules. In every such namespace, in every cluster, they need:
 
 | Resource | Verbs | Used by |
 |----------|-------|---------|
-| `services.knative.dev` | get, list, watch, create, update, patch, delete | API (the workload), build controller (the built digest - BUILDING.md: Digest propagation) |
+| `services.knative.dev` | get, list, watch, create, update, patch, delete | API (the workload), build controller (the built digest - BUILD-CONTROLLER.md: Digest propagation) |
 | `images.kpack.io` | get, list, watch, create, update, patch, delete | API (write), build controller (watch) |
 | `builds.kpack.io` | get, list, watch, patch | status resolution (FUNCTIONS.md: Function Status Resolution), log lookup, and the rebuild trigger - an annotation on the latest Build (BUILDING.md: What causes a new Build). Never create or delete: kpack owns their lifecycle |
 | `pods`, `pods/log` | get, list | per-phase build logs (BUILDING.md: Build Flow) |
@@ -479,7 +479,7 @@ spec:
         property: admin-api-key
     # Only where the SSO realm forbids PUBLIC clients: with this set the API
     # proxies Swagger's token exchange and adds the secret server-side, so the
-    # client can be confidential (docs/ARCHITECTURE.md - The Swagger "Authorize"
+    # client can be confidential (docs/API.md - The Swagger "Authorize"
     # client). Otherwise OMIT the entry entirely - an empty Vault property fails
     # the whole ExternalSecret, taking the other keys in it down too.
     - secretKey: SERVERLESS_SSO__SWAGGER_CLIENT_SECRET

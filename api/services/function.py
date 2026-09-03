@@ -103,7 +103,7 @@ class FunctionService(OfferingService):
         return self._engine.builder.plan(req, labels, registries)
 
     # Validate synchronously for an immediate 400/404/409, then build and deploy
-    # in the background behind a 202 (docs/ARCHITECTURE.md - Request semantics).
+    # in the background behind a 202 (docs/API.md - Request semantics).
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
@@ -387,7 +387,7 @@ class FunctionService(OfferingService):
         diff of the Image spec. ``version`` counts as a build input like
         ``branch`` and ``runtime``: it is replaced, not kept, so omitting it
         returns the function to the platform default and that is a change
-        (docs/ARCHITECTURE.md - Request semantics).
+        (docs/API.md - Request semantics).
 
         Args:
             spec: The update request.
@@ -490,7 +490,7 @@ class FunctionService(OfferingService):
         self._assert_rebuildable(spec, existing, token)
 
         # The image is never rewritten here, whatever changed. After the create,
-        # it is the controller's alone (docs/BUILDING.md - Digest propagation):
+        # it is the controller's alone (docs/BUILD-CONTROLLER.md - Digest propagation):
         # the build this update declares has not pushed yet, so anything written
         # now is a revision of the code already running. Kept per region, since
         # each region runs what its own build pushed.

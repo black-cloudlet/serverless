@@ -67,7 +67,7 @@ async def provision(
 
     A region that fails or times out yields its own row instead of aborting
     the others; the caller decides what a partial result means, the same way
-    it does for a partial deploy (docs/ARCHITECTURE.md - Partial-failure
+    it does for a partial deploy (docs/API.md - Partial-failure
     semantics).
 
     Async, and the blocking converges run on a *caller-owned* pool rather than

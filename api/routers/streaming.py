@@ -2,7 +2,7 @@
 
 Shared by both offerings' routers: it sets the SSE headers, renders each event,
 turns a failure after the first byte into an ``error`` event, and closes the
-service's generator on teardown (docs/ARCHITECTURE.md - Streaming).
+service's generator on teardown (docs/STREAMING.md - The streams).
 """
 
 from __future__ import annotations

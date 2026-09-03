@@ -2,7 +2,7 @@
 
 The API owns the KSVC spec and the controller owns one field of it, so these
 helpers edit the live object read back from the cluster instead of composing
-one. Pure dict work (docs/BUILDING.md - What it writes).
+one. Pure dict work (docs/BUILD-CONTROLLER.md - What it writes).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def needs_image(ksvc: dict, image: str) -> bool:
 
     False when the KSVC already runs that reference, and when it is not labelled
     as a function. Only the whole reference is compared, so a build that moved to
-    another repository still rolls out (docs/BUILDING.md - What it writes).
+    another repository still rolls out (docs/BUILD-CONTROLLER.md - What it writes).
 
     Args:
         ksvc: The live Knative Service object.

@@ -10,7 +10,7 @@ carries no FastAPI import.
 
 The file is **required** and has no fallback: :func:`load_runtimes` raises when
 it is missing, unreadable, malformed or empty, and the lifespan loads it before
-serving (docs/BUILDING.md - Where it lives).
+serving (docs/RUNTIMES.md - Where it lives).
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class RuntimeSpec(BaseModel):
     """One available runtime, as the chart renders it into the runtimes ConfigMap.
 
     Every field is read by :class:`~api.services.builder.kpack_backend.KpackBackend`, so this
-    is the contract with the ConfigMap (docs/BUILDING.md - Where it lives).
+    is the contract with the ConfigMap (docs/RUNTIMES.md - Where it lives).
     ``extra="allow"`` preserves unknown keys, so a newer chart can be rolled out ahead of
     the API. Numbers are coerced to strings: the ConfigMap is hand-editable YAML, where an
     unquoted ``defaultVersion: 3.12`` is a float.
@@ -97,7 +97,7 @@ def load_runtimes(path: str) -> RuntimeRegistry:
 
     The chart always mounts the file, so absent or empty means a broken mount. Raising
     here makes that a startup failure and a misconfigured pod never reaches readiness
-    (docs/BUILDING.md - Where it lives).
+    (docs/RUNTIMES.md - Where it lives).
 
     Args:
         path: Path to the mounted runtimes YAML file.
