@@ -36,7 +36,7 @@ router = APIRouter(tags=["info"])
 
 # The workload statuses a poll ends on; every other status is still in flight.
 # Values of the same WorkloadStatus Literal, published on /info as
-# statuses.terminal (docs/ARCHITECTURE.md - REST API Specification).
+# statuses.terminal (docs/API.md - REST API Specification).
 TERMINAL_STATUSES = ("Ready", "Failed")
 
 

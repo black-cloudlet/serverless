@@ -95,7 +95,7 @@ def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
     # Every path the app serves - endpoints, docs, OpenAPI, probes - hangs off
-    # this (docs/ARCHITECTURE.md - REST API Specification).
+    # this (docs/API.md - REST API Specification).
     base_path = settings.base_path
 
     app = FastAPI(

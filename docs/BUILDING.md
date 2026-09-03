@@ -1,77 +1,71 @@
 # Building - kpack + Cloud Native Buildpacks
 
-How source becomes an image: buildpack topology, runtime versions, credentials,
-the build flow, and what the API owns versus the build controller.
+How a function's source becomes an image: the buildpack topology, the build flow, the
+credentials a build needs, what the API owns versus the build controller, and what happens
+under active/active. Runtime versions, the registry layout and the airgap mirror are in
+RUNTIMES.md; the controller that publishes built digests is in BUILD-CONTROLLER.md.
 
 ## Contents
 
 - [Design Decisions (locked in)](#design-decisions-locked-in)
 - [Overview & Goals](#overview--goals)
 - [Buildpack Topology](#buildpack-topology)
-- [Runtime Versions & Dependencies](#runtime-versions--dependencies)
+- [Build Flow](#build-flow)
 - [Trust: CA Injection](#trust-ca-injection)
 - [Registry & Git Credentials](#registry--git-credentials)
-- [Build Flow](#build-flow)
 - [Ownership: API vs Build Service](#ownership-api-vs-build-service)
-- [Digest propagation](#digest-propagation)
-- [Who writes the ksvc image](#who-writes-the-ksvc-image)
-- [Moving a function's repository](#moving-a-functions-repository)
 - [Active/Active Behaviour](#activeactive-behaviour)
 - [Lifecycle & Cleanup](#lifecycle--cleanup)
 - [Sample Manifests](#sample-manifests)
-- [Airgapped Mirror Inventory](#airgapped-mirror-inventory)
 - [Open Questions](#open-questions)
 
 ## Design Decisions (locked in)
 
 | Topic | Decision |
 |-------|----------|
-| Build engine | **kpack** (Kubernetes-native Cloud Native Buildpacks), not `func`/Tekton |
+| Build engine | **kpack** (Kubernetes-native Cloud Native Buildpacks) |
 | kpack install | The `kpack` Helm chart is a **subchart** of the platform chart |
-| Buildpack content | `ClusterStack` and `ClusterStore` ship in the **kpack chart**; the per-runtime `ClusterBuilder`s ship in the **serverless-api chart**. All three kinds are cluster-scoped |
-| Cluster singletons | Stack and store are cluster-wide, so the engine release owns them; the serverless-api chart references them by name |
-| Languages | `go`, `python`, `node` |
-| Stack | **One shared** jammy base stack for all languages |
-| Build locality | **Build where you run** - every region the function is deployed to builds its own copy, into its own registry (BUILDING.md: Active/Active Behaviour) |
-| Build namespace | The workload's **own** namespace, `{group}{suffix}`, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
-| Image CR writer | The **API** (POST / PUT / `POST .../build`; a git webhook is planned, not implemented) |
-| Digest propagation | The **build controller**, its own Deployment, watches `status.latestImage` in its own cluster and applies the ksvc with the new digest **there only** (BUILDING.md: Digest propagation) |
-| Write model | **Full server-side apply** of the desired spec - never a partial patch |
-| Rebuild trigger | An explicit `POST .../build` annotates the **latest `Build`**, never the `Image`, so the desired state stays a pure function of the function definition. *Planned:* a webhook setting `spec.source.git.revision` to the pushed commit SHA (idempotent by data) |
+| Buildpack content | `ClusterStack` and `ClusterStore` ship in the **kpack chart**; the per-runtime `ClusterBuilder`s ship in the **serverless-api chart**. All three kinds are cluster-scoped, so the engine release owns the cluster singletons and the serverless-api chart references them by name |
+| Languages | `go`, `python`, `node`, on **one shared** jammy base stack |
+| Build locality | **Build where you run** - every region builds its own copy, into its own registry |
+| Build namespace | The workload's **own** namespace, `{group}{suffix}` (DEPLOYING.md: Chart Topology) |
+| Image CR writer | The **API**, on POST / PUT / `POST .../build`. A git webhook is planned, not implemented |
+| Write model | **Full server-side apply** of the desired spec, never a partial patch |
+| Rebuild trigger | `POST .../build` annotates the **latest `Build`**, never the `Image` |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
-| Runtime downloads | **`BP_DEPENDENCY_MIRROR`** redirecting all buildpack dependencies at once, not per-SHA mappings |
-| Registry credential | **One** ESO-managed secret per region - kpack **push** + function **pull** - under one name everywhere and different contents; plus a pull-only secret for the kpack registry (BUILDING.md: Registry & Git Credentials) |
-| Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
-| Registry cleanup | Function delete **deletes both repositories in every region's registry** through Quay's management API, with a per-region OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
-| Registry tag GC | The **build controller** prunes kpack's per-build tags, **its own region's registry only**, on an hours-scale sweep off the loop thread. Kept per function: the branch tag, every tag on the serving digest, the newest N builds beyond those. Requires **one region per registry** - enforced at render and re-checked by the controller (BUILDING.md: Registry tag GC) |
-| Registry layout | Each region's own `registry.url` (from `regions[].registry`) + optional `registry.organization` + `build.builderRepository`. **One** root for the ClusterBuilders this platform composes and the functions it builds; the mirrored kpack and Paketo content sits on a separate, shared registry nothing writes to (BUILDING.md: Registry layout) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
+| Registry credential | **One** ESO-managed secret per region for kpack push and function pull, plus a pull-only secret for the kpack registry |
+| Registry cleanup | Function delete **deletes both repositories in every region's registry** through Quay's management API |
 
----
+Decided elsewhere: the registry layout, the registry build cache and the runtime download
+mirror (RUNTIMES.md); digest propagation and registry tag GC (BUILD-CONTROLLER.md).
 
 ## Overview & Goals
 
+A build turns a git revision into a runnable OCI image. The API writes one kpack `Image` per
+region; kpack resolves the source, runs the buildpack lifecycle in a pod, and pushes the result
+to that region's registry. The build controller then rolls the new digest out to the Knative
+Service.
+
 ### Goals
 
-- Build a function from git, in-cluster, fully **airgapped** - no egress to public
-  registries, PyPI, npmjs or `proxy.golang.org`.
-- Offer **three languages** (Go, Python, Node) with a selectable runtime version, from
-  mirrored buildpack content.
-- **Continuously rebuild** on base-image/buildpack CVE patches without user action -
-  this is the reason kpack was chosen over a one-shot builder.
-- Stay correct under **active/active** with a floating DNS address: concurrent or
-  duplicated writes must never produce duplicate builds.
-- Survive **switchover**: a cluster that has never built a given function must be able
-  to reconstruct everything it needs from state that is already replicated to it.
+- Build from git, in-cluster, fully **airgapped** - no egress to public registries, PyPI, npmjs
+  or `proxy.golang.org`.
+- Offer **three languages** (Go, Python, Node) with a selectable runtime version, from mirrored
+  buildpack content.
+- **Continuously rebuild** on base-image and buildpack CVE patches without user action. This is
+  why kpack, and not a one-shot builder.
+- Stay correct under **active/active** with a floating DNS address: concurrent or duplicated
+  writes must never produce duplicate builds.
+- Survive **switchover**: a cluster that has never built a function must be able to reconstruct
+  everything it needs from state already replicated to it.
 
 ### Non-goals (this phase)
 
-- Reproducible/bit-identical builds across clusters (see BUILDING.md: Active/Active Behaviour).
-- Per-tenant builder isolation - builders are shared platform infrastructure.
-- Build caching tuned per language. *Where* the cache lives is settled - the registry, not
-  a PVC per function (BUILDING.md: Build cache) - but its size and hit rate are not tuned.
-
----
+- Reproducible, bit-identical builds across clusters (BUILDING.md: Active/Active Behaviour).
+- Per-tenant builder isolation. Builders are shared platform infrastructure.
+- Build caching tuned per language. *Where* the cache lives is settled (RUNTIMES.md: Build
+  cache); its size and hit rate are not.
 
 ## Buildpack Topology
 
@@ -82,15 +76,13 @@ order         (explicit components)      ┘                       builder image
 ```
 
 A `ClusterBuilder` must report `Ready` with a `status.latestImage` before any `Image`
-referencing it will build. **This is the first thing to check when a build never starts** -
-in an airgapped cluster it usually means the Stack or Store could not pull from the mirror.
+referencing it will build. **This is the first thing to check when a build never starts.**
+In an airgapped cluster it usually means the Stack or Store could not pull from the mirror.
 
-The builders are **cluster-scoped**. An `Image` resolves a namespaced `Builder` in the
-`Image`'s own namespace, and every function's `Image` lives in its group's namespace,
-`{group}{suffix}` (DEPLOYING.md: Chart Topology) - a namespaced builder would have to exist in
-every one of them. One `ClusterBuilder` per runtime serves them all. Their names are
-cluster-scoped with them, so the chart assumes the one-release-per-cluster topology it is
-installed with: two releases in one cluster would fight over the same three names.
+The builders are **cluster-scoped**, one per runtime, because an `Image` resolves a namespaced
+`Builder` only in its own namespace and every function's `Image` lives in its group's namespace
+(DEPLOYING.md: Chart Topology). Their names are cluster-scoped with them, so one release per
+cluster: two would fight over the same three names.
 
 ### Language mapping
 
@@ -101,352 +93,125 @@ installed with: two releases in one cluster would fight over the same three name
 | `node` | `node` | npm (`npm-install`) |
 
 Orders name **component** buildpacks explicitly rather than the language composites, so the
-platform supports exactly the paths it mirrors. yarn, pipenv and conda groups are omitted:
-an app on one of those fails at `detect` with "no group passed" instead of failing deep in
-a build on a dependency that was never mirrored. Narrowing does not shrink the image
-mirror - it shrinks the dependency mirror (BUILDING.md: Airgapped Mirror Inventory), because only buildpacks that can run
-ever download.
+platform supports exactly the paths it mirrors. yarn, pipenv and conda groups are omitted: an
+app on one of those fails at `detect` with "no group passed" instead of failing deep in a build
+on a dependency that was never mirrored. Narrowing shrinks the dependency mirror, not the image
+mirror (RUNTIMES.md: Airgapped Mirror Inventory), because only buildpacks that can run ever
+download.
 
-**TypeScript is not offered.** Paketo has no TypeScript buildpack - TS builds through the
-Node.js buildpack, which runs the project's build script and therefore needs the
-`typescript` compiler pulled from npm as a devDependency. Without that mirrored, the build
-fails at `npm install`, so the runtime is not advertised. `node-run-script` stays in the
-node order (plain JS projects use build scripts too), so a TS app becomes buildable the
-moment `npm_config_registry` points at a mirror carrying its devDependencies - no chart
-change beyond re-adding the runtime entry.
+**TypeScript is not offered.** Paketo has no TypeScript buildpack, so TS builds through the
+Node.js buildpack, which runs the project's build script and needs the `typescript` compiler
+from npm as a devDependency; without that mirrored the build fails at `npm install`.
+`node-run-script` stays in the node order, so a TS app becomes buildable as soon as
+`npm_config_registry` points at a mirror carrying its devDependencies - no chart change beyond
+re-adding the runtime entry.
 
-One shared `ClusterStack` (jammy base) serves all three builders. Per-language stacks
-(e.g. Go on `tiny`/`static` for smaller images) are a later optimisation.
+One shared `ClusterStack` (jammy base) serves all three builders. Per-language stacks - Go on
+`tiny` or `static` for smaller images - are a later optimisation.
 
----
+## Build Flow
 
-## Runtime Versions & Dependencies
-
-Three independent axes. Conflating them is the most common source of confusion:
-
-| Axis | What it pins | Where it is set |
-|------|--------------|-----------------|
-| 1. Buildpack content | The mirrored Paketo image tags | kpack chart: `clusterBuild.stacks[].{build,run}Image.tag`, `clusterBuild.stores[].sources[].tag` |
-| 2. Language runtime | CPython / Node / Go version | `BP_*_VERSION` build env |
-| 3. App dependencies | pip / npm / go modules | package-manager env pointing at the on-prem artifact server |
-
-### Axis 2 - runtime version
-
-| Runtime | Env var |
-|---------|---------|
-| python | `BP_CPYTHON_VERSION` |
-| go | `BP_GO_VERSION` |
-| node | `BP_NODE_VERSION` |
-
-> Selecting a version only *asks* for it - the buildpack still has to fetch that runtime
-> from the internet. Offline, this axis works only once the download is redirected to the
-> mirror (BUILDING.md: Airgapped Mirror Inventory).
-
-### Axis 3 - application packages (airgapped)
-
-The package managers run **inside the build pod** and cannot reach the internet. They are
-pointed at the on-prem artifact server:
-
-| Runtime | Env |
-|---------|-----|
-| python | `PIP_INDEX_URL` (+ `PIP_EXTRA_INDEX_URL`) |
-| node | `npm_config_registry` |
-| go | `GOPROXY`, `GOSUMDB=off` (or vendored deps with `GOFLAGS=-mod=vendor`) |
-
-> Do **not** use `PIP_TRUSTED_HOST`, `npm strict-ssl=false`, `GOINSECURE` or
-> `NODE_TLS_REJECT_UNAUTHORIZED=0`. TLS verification stays on; trust comes from the CA
-> injected in BUILDING.md: Trust: CA Injection.
-
-### Where it lives
-
-All of this is **data**, carried by the existing `runtimes` list in `values.yaml`. It
-serialises into the runtimes ConfigMap through `toYaml` and is read by
-`api/services/builder/runtimes.py`, whose `RuntimeSpec` is `extra="allow"` - so these fields flow
-end-to-end with no template or model change:
-
-```yaml
-runtimes:
-  - name: python
-    builder: python
-    versionEnv: BP_CPYTHON_VERSION
-    defaultVersion: "3.12"
-    versions: ["3.11", "3.12", "3.13"]
-    buildEnv:
-      - { name: PIP_INDEX_URL, value: "https://artifactory.internal/artifactory/api/pypi/pypi/simple" }
-  - name: node
-    builder: node
-    versionEnv: BP_NODE_VERSION
-    defaultVersion: "20"
-    versions: ["18", "20", "22"]
-    buildEnv:
-      - { name: npm_config_registry, value: "https://artifactory.internal/artifactory/api/npm/npm/" }
-```
-
-**The runtimes file is the contract.** `RuntimeSpec` declares every key the builder
-reads - `name`, `builder`, `versionEnv`, `defaultVersion`, `versions` and `buildEnv` - and
-keeps unknown keys (`extra="allow"`), so a newer chart can be rolled out ahead of the
-API. Numbers are coerced to strings, because an unquoted `defaultVersion: 3.12` is a float
-in YAML and rejecting it would take down every runtime over a missing pair of quotes.
-
-The file is **required and has no fallback**. A built-in default list would be
-indistinguishable from a real one at the API surface while naming no ClusterBuilder, so a
-broken mount would look like a working platform right up until the first function failed
-to build. Instead `load_runtimes` raises, the lifespan loads it before serving, and a
-misconfigured pod never reaches readiness.
-
-A runtime that is present but maps to no ClusterBuilder - a partially filled ConfigMap - is
-caught separately, as a `400 runtime 'python' is not buildable` before the 202, rather
-than minutes later as a failed background deploy that reads like a broken build.
-
-**The loader carries no HTTP layer.** `api/services/builder/runtimes.py` only loads and
-validates; the cached, request-injectable registry is assembled in `api/dependencies.py`.
-Nothing in the loader reaches FastAPI, so a service with no HTTP surface - the build
-controller, or anything else that has to resolve a runtime - reuses the same loading and
-validation rather than a second copy of it.
-
-**Coupling warning.** Axis 2 is bounded by axis 1: a pinned buildpackage only *contains*
-certain interpreter versions, and in an airgapped cluster there is no fallback download.
-Whenever a `clusterBuild.stores[].sources[].tag` is bumped, re-check that every advertised
-`runtimes[].versions` entry is still available, or builds will fail at `detect`/`build`.
-
-### Registry layout
-
-**There is a registry per region, and one shared registry beside them.** The split is
-decided by *who writes*:
-
-| Content | Registry | Written by |
-|---|---|---|
-| kpack's own images; the Paketo stack and buildpackages | **the kpack registry**, shared | the mirror scripts, once |
-| Composed `ClusterBuilder` images | **the region's own** | that region's kpack |
-| Function images, and their build caches | **the region's own** | that region's kpack |
-
-Everything read-only is shared, so the airgap mirror inventory stays a single copy
-(BUILDING.md: Airgapped Mirror Inventory). Everything written is local, so two clusters
-can never race to push one tag - which is what lets every region build the function it runs
-(BUILDING.md: Active/Active Behaviour). The composed `ClusterBuilder` sits on the local
-side even though it is *made* of mirrored content: composing it is a push.
-
-Registries that namespace their repositories - Harbor projects, Quay and GitLab
-organizations, Artifactory repository keys - need a path segment between the host and
-the repository. `registry.organization` supplies it, `build.builderRepository` adds the
-one everything the platform builds sits under, and the rest derives from those three:
+### Resource chain
 
 ```
-{region registry url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
-
-  base/{name}                                       ClusterBuilder tags
-  base/{group}/{name}:{branch}                      function images (the API)
-  base/{group}/{name}_cache:latest                  build layer cache (BUILDING.md: Build cache)
+API creates:      Image                     ← the only object the API manages
+                    │
+kpack creates:      ├──► SourceResolver     ← resolves the git ref to a concrete SHA
+                    │
+                    └──► Build              ← one per actual build
+                          │
+                          └──► Pod          ← the CNB lifecycle
 ```
 
-Only the **host** varies per region. The path segments are how repositories are *named*,
-and naming them differently per region would buy nothing while giving `RegistryConfig.path`
-two answers - so `regions[].registry` normally sets `url` alone.
+**The `Image` takes the workload's object name verbatim.** kpack stamps that name onto every
+`Build` as the `image.kpack.io/image` label value, which caps at 63 characters - the limit
+already enforced on a workload name. `common.kpack.build_image_name` stays a function even
+though it is the identity, so applying an `Image` and deleting one cannot disagree. The build
+`ServiceAccount` is the one exception, suffixed `{workload}-build`; it is never written where a
+label value has to fit.
 
-One value covers the ClusterBuilders and the functions deliberately: they are pushed by the
-same credential, mirrored together, and cleaned up against the same root, so a second value
-would only be a second thing to keep in step. A function cannot collide with a ClusterBuilder
-- a ClusterBuilder is one path component below the base and a function is two.
+### Inside the build pod
 
-Either segment may be empty and is then skipped, so the flat `{host}/{group}/{name}`
-layout still produces no doubled slash. `RegistryConfig.path` is the single derivation:
-the image reference hangs off it and the repository *delete* addresses Quay by the same
-string with the host removed, so the repository that is deleted is the one that was
-pushed to.
+The lifecycle runs as **init containers**, in order; `completion` is the main container:
 
-**`CommonSettings.registry_for(region)` is the single resolution**, merging a region's
-override over the platform default, and every cluster client carries the answer as
-`Cluster.registry`. Nothing on a per-region path reads the platform default directly: it is
-the one value that would silently be the wrong registry there. A region that names no
-registry of its own inherits the default, which is exactly the single-registry install.
+| # | Container | Does | Config that matters |
+|---|-----------|------|---------------------|
+| 1 | `prepare` | git clone, credential setup | git secret, **CA** |
+| 2 | `analyze` | reads previous image metadata | - |
+| 3 | `detect` | runs the `order`, first passing group wins | builder `order` |
+| 4 | `restore` | restores cached layers | - |
+| 5 | `build` | **runs the buildpacks** - pip / npm / go | `BP_*_VERSION`, artifact-server env, **CA** |
+| 6 | `export` | assembles OCI layers, **pushes** | `spec.tag`, push credential |
+| - | `completion` *(main)* | finalise, optional attestation | - |
 
-### Why per-region resolution sits where it does
+Because each phase is a named container, `Cluster.pod_logs(pod, container=...)` yields
+**per-phase build logs** - the difference between "build failed" and an actionable error.
 
-Two placement decisions carry the per-region design, and both are about which process
-composes what:
+### What causes a new Build
 
-**The KSVC image is resolved per region, inside the per-cluster fan-out.** A function's
-image is `{region registry base}/{group}/{name}:{branch}` - a different string per region -
-so the apply composes the KSVC inside the per-cluster closure rather than once outside
-it. That is only the create path: afterwards the field belongs to each region's build
-controller (BUILDING.md: Who writes the ksvc image), which pins a digest from its own
-registry - per-region divergence is carried by the mechanism that already owned the field.
-A container is unaffected: its image is the caller's, one value everywhere.
+| Reason | Trigger | In this platform |
+|--------|---------|------------------|
+| `CONFIG` | `spec` changed | PUT that changes runtime, version, branch, path or env |
+| `COMMIT` | resolved source SHA changed | kpack's `SourceResolver` re-resolving the branch. *Planned:* a per-function webhook pinning the pushed SHA, so a push builds at once rather than at the next poll |
+| `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/build` |
+| `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
+| `STACK` | the Stack run image was updated | **CVE patch**, often a fast *rebase* |
 
-**A region's registry lives in the shared `regions[]` list, never in per-release values.**
-The API instance handling a write composes manifests for *every* region, so it must know
-every region's registry - not just its own. `regions[]` is the same ConfigMap in every
-cluster, which is also what keeps the convergence rules (BUILDING.md: Convergence rules)
-intact: two instances in two clusters compose the same `Image` for region X because they
-read region X's registry from the same list. Secrets stay out of it - the list is
-ConfigMap data, so a region override carries `url`/`organization`/`repository` only.
+`BUILDPACK` and `STACK` fire with **no user action**, which is why digest propagation is
+event-driven rather than triggered by API writes (BUILD-CONTROLLER.md: Digest propagation).
 
-**No NetworkPolicy follows from any of this.** A registry is never a Service or a
-Route - always off-cluster - so the `allow-egress-external` rule (off-cluster allowed,
-only the in-cluster CIDRs carved out) covers each region's registry and the shared kpack
-registry with nothing added.
+`TRIGGER` is the one reason that is imperative rather than a state change, which is why the
+explicit rebuild exists: nothing about the function changed, so there is no desired state to
+write. kpack looks for the annotation on the **latest `Build`**, not on the `Image`, and the
+next `Build` inherits only the *Image's* annotations - so one request produces exactly one
+build and no loop.
 
-### Moving a function's repository
-
-`spec.tag` is **immutable on a kpack `Image`** - `validateTag` compares against the
-baseline on every update and rejects a change at admission:
-
-```go
-if apis.IsInUpdate(ctx) {
-    original := apis.GetBaseline(ctx).(*Image)
-    return validate.ImmutableField(original.Spec.Tag, is.Tag, "tag")
-}
-```
-
-So a moved tag cannot be *applied over*. Left as an ordinary apply it does not merely fail
-to migrate - it wedges the function: every later write emits the `Image` manifest, so a
-`PUT` that has nothing to do with the registry is rejected too, until someone deletes the
-object by hand.
-
-The API therefore **deletes the `Image` and lets the apply recreate it** whenever the
-computed tag differs from the deployed one (`WorkloadService.retag_build`, one GET on the
-build region per write). Three things follow:
-
-- **A new `Image` has no prior `Build`, so it builds immediately.** Nothing has to ask for
-  one; changing the layout and sending any `PUT` is the whole migration.
-- **The old repository and its cache are reclaimed** through the same Quay API the delete
-  path uses (BUILDING.md: Registry cleanup on delete). Cleanup on delete derives the
-  *current* layout, so without this each function would leak a repository pair permanently
-  - and the mutable tag would be left pointing at content nothing tracks. The reclaim is
-  skipped when the old reference is on a different **host**: this token addresses one
-  registry, and a same-named path elsewhere is somebody else's repository.
-- **Build history resets.** `Build`s are owned by the `Image`, so deleting it collects
-  them. Acceptable for a function that is about to rebuild anyway.
-
-The workload keeps serving its existing digest throughout - the create is the only path
-that writes the ksvc image (BUILDING.md: Who writes the ksvc image) - so the old repository
-must not be reclaimed before the new build lands. It is not: the reclaim runs against the
-*previous* tag only after the `Image` has been replaced, and the running pods already hold
-their image.
-
-The stack and store images are *mirrored* content rather than something this platform
-builds, so they sit under the organization but **not** under `build.builderRepository`.
-The kpack chart prefixes them with its own `clusterBuild.registry` - set that to
-`{registry.url}/{registry.organization}`:
-
-```
-{clusterBuild.registry}/...                         <- the kpack chart's prefix
-
-  base/paketobuildpacks/build-jammy-base:<tag>      ClusterStack
-  base/paketobuildpacks/<component>:<tag>           ClusterStore sources
-```
-
-One deliberate exception: the pull/push Secret's `auths` key stays `registry.url` with
-**no** organization. Docker credentials are keyed by registry *host*; adding the path
-there produces a secret that silently never matches, and the failure surfaces as an
-unauthenticated pull much later.
-
-The chart and the API must agree on this, so the same rule is implemented twice - the
-`serverless-api.registryBase` template helper and `RegistryConfig.base` in
-`common/config.py`. The Deployment passes both halves as `SERVERLESS_REGISTRY__URL` and
-`SERVERLESS_REGISTRY__ORGANIZATION`; changing one implementation without the other will
-push builder images and function images to different places.
-
----
+> **Never put the trigger on the `Image`.** It is a nonce, and the `Image` spec must stay a
+> pure function of the function definition (BUILDING.md: Convergence rules).
 
 ### Build pod resources
 
-A build is far heavier than the function it produces - a dependency resolve plus a compile
-- and it draws on its namespace's quota (DEPLOYING.md: Chart Topology). `build.resources` sets
-`Image.spec.build.resources`. Unset, the build pod is BestEffort and is the first thing
-evicted under node pressure.
-
-**One bound for every build, deliberately.** A per-language override was tried and
-removed: the variance that matters is between a small function and a large one, not
-between Go and Node, so language is the wrong axis to tune on. If per-build tuning is ever
-needed it belongs on the function, alongside its `size` - a different feature, not a
-generalisation of this one.
-
-### Build cache
-
-kpack can cache build layers - the restore/export ends of the lifecycle - in one of two
-places, and the choice is per `Image`:
-
-| Form | `spec.cache` | Cost |
-|------|--------------|------|
-| Volume | `volume.size: 2Gi` | a **PVC per function**, provisioned in full whether or not a build ever fills it |
-| Registry | `registry.tag: <ref>` | blobs in the registry the build already pushes to |
-
-**The API writes the registry form.** The volume form's cost scales with the number of
-functions rather than with how much is actually cached, so a platform with a few hundred
-functions is carrying a few hundred idle PVCs - and on a `ReadWriteOnce` StorageClass each
-one also pins its build to the node holding it. The registry is storage the platform
-already runs, the build `ServiceAccount` already carries a push credential for it
-(BUILDING.md: Registry & Git Credentials), and nothing new has to be provisioned per function.
-
-The cache is a sibling repository of the function image:
-
-```
-base/{group}/{name}:{branch}                      function images
-base/{group}/{name}_cache:latest                  that function's layer cache
-```
-
-The `_` is load-bearing, not cosmetic. A name is a DNS-1123 label, which admits only
-`[a-z0-9-]`, so no function can ever be named `{name}_cache` and the two repositories
-can never be the same one. Two alternatives were rejected for colliding:
-
-- **A reserved tag** in the function's own repository (`{name}:cache`) - a branch named
-  `cache` projects to exactly that tag, and image and cache would overwrite each other.
-- **A nested path** (`{name}/cache`) - collision-free, but it adds a repository level.
-  Quay's native model is two-level (`namespace/repository`), so a nested path needs
-  `FEATURE_EXTENDED_REPOSITORY_NAMES`. The suffix form needs no such flag, and keeps the
-  cache inside whatever namespace the function image already lives in.
-
-The cache is per `Image` - that is, per function, not per branch. There is one `Image` per
-function whose `spec.tag` follows the branch, so keying the cache by branch would strand
-the old cache on every branch change and start cold each time.
-
-`build.cache: inherit` writes **no** `spec.cache` at all. That is the escape hatch for an
-install that wants kpack's own behaviour, not a way to disable caching: a stock kpack
-defaults an `Image` with no cache spec to a volume cache, which is the case this setting
-exists to avoid.
+A build is far heavier than the function it produces - a dependency resolve plus a compile -
+and it draws on its namespace's quota (DEPLOYING.md: Chart Topology). `build.resources` sets
+`Image.spec.build.resources`. Unset, the build pod is BestEffort and is the first thing evicted
+under node pressure. **One bound covers every build:** the variance that matters is between a
+small function and a large one, not between Go and Node.
 
 ## Trust: CA Injection
 
-Internal TLS (git, the registry, the artifact server) is signed by the internal CA. The
-build pod must trust it - **verification is never disabled**.
+Internal TLS - git, the registry, the artifact server - is signed by the internal CA. The
+build pod must trust it, and **verification is never disabled**.
 
-**Mechanism: a Kyverno `ClusterPolicy`** that mutates kpack build pods, mounting the
-existing OpenShift-injected `ca-bundle` ConfigMap (already created in each group's
-namespace by the tenant template set) and setting the per-tool CA env vars.
+**Mechanism: a Kyverno `ClusterPolicy`** that mutates kpack build pods, mounting the existing
+OpenShift-injected `ca-bundle` ConfigMap (created in each group's namespace by the tenant
+template set) and setting the per-tool CA env vars. It is preferred over a CNB
+`ca-certificates` service binding, which affects only the **build** phase and not `prepare`,
+where kpack clones from git; the OpenShift bundle also rotates on its own, so there is no
+ExternalSecret and no `ca-certificates` entry in every builder `order`.
 
-Two properties make this the right choice over a CNB `ca-certificates` service binding:
+> **The policy must mutate `initContainers`, not just `containers`.** The kpack lifecycle runs
+> as init containers; `completion` is the only main container. A policy that patches
+> `spec.containers` alone silently does nothing to the phases that clone source and run
+> package managers.
 
-- The binding only affects the **build** phase. It does **not** cover `prepare`
-  (build-init), which is where kpack does the **git clone** - so an internal-CA git
-  server would still fail.
-- The bundle rotates with OpenShift; no ExternalSecret, no `ca-certificates` entry in
-  every builder `order`.
+The OpenShift bundle is the **complete** trust store - system CAs plus the internal CA - so
+mount it at a path and export `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `PIP_CERT` and
+`GIT_SSL_CAINFO` rather than overwriting `/etc/ssl/certs/ca-certificates.crt`. pip needs three
+of its own (RUNTIMES.md: Why pip needs three variables of its own).
 
-> **The policy must mutate `initContainers`, not just `containers`.** The kpack lifecycle
-> runs as init containers (BUILDING.md: Build Flow); `completion` is the only main container. A policy that
-> patches `spec.containers` alone silently does nothing to the phases that clone source and
-> run package managers.
+**Kyverno is a hard dependency of the build path.** The policy ships with
+`failurePolicy: Fail` (`build.caInjection.failurePolicy`): a build pod is *rejected* if Kyverno
+cannot mutate it, rather than starting without the CA and dying later with an opaque TLS error
+from pip, npm or git. Kyverno being down then blocks builds, which is acceptable because builds
+are asynchronous and retried. Set it to `Ignore` only if you would rather builds proceed
+unmutated.
 
-Because the OpenShift bundle is the **complete** trust store (system CAs + internal CA),
-mounting it at a path and exporting `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` / `PIP_CERT` /
-`GIT_SSL_CAINFO` is preferred over overwriting `/etc/ssl/certs/ca-certificates.crt`.
+Cover the path with a smoke test that builds a function pulling one internal dependency. That
+is the only thing that proves the mount reached the phase that needed it.
 
-**Operational risk:** Kyverno becomes a hard dependency of the build path. The policy
-therefore ships with `failurePolicy: Fail` (`build.caInjection.failurePolicy`): a build pod
-is *rejected* if Kyverno cannot mutate it, rather than starting without the CA and dying
-later with an opaque TLS error from pip, npm or git. The cost is that Kyverno being down
-blocks builds - acceptable, since builds are asynchronous and retried, and a rejected pod
-names the cause. Set it to `Ignore` only if you would rather builds proceed unmutated.
-
-Cover the path with a smoke test that builds a function pulling one internal dependency;
-that is the only thing that proves the mount reached the phase that needed it.
-
-If Kyverno is not available, set `build.caInjection.enabled: false` and bake the CA into
-the mirrored stack images instead (`update-ca-certificates` at mirror time) - that also
-covers the run image, so the running function trusts internal TLS too.
-
----
+If Kyverno is not available, set `build.caInjection.enabled: false` and bake the CA into the
+mirrored stack images instead (`update-ca-certificates` at mirror time). That also covers the
+run image, so the running function trusts internal TLS too.
 
 ## Registry & Git Credentials
 
@@ -454,7 +219,7 @@ covers the run image, so the running function trusts internal TLS too.
 
 A build reads two registries: it pushes to the region's own, and pulls the stack, the store
 and (at `export`) the run image from the shared kpack registry. Docker auth is keyed by
-**host**, so that is two dockerconfigjson secrets - plus the function's git token.
+**host**, so that is two dockerconfigjson secrets, plus the function's git token.
 
 | Secret | Content | Same in every region? |
 |---|---|---|
@@ -462,27 +227,20 @@ and (at `export`) the run image from the shared kpack registry. Docker auth is k
 | `kpack-registry-creds` | the shared kpack registry, pull only | Yes, both |
 | `{workload}-git` | that function's token | Per function, on every region it runs in |
 
-The region credential serves both ends of the image's life:
-
-```
-ExternalSecret ──► Secret (dockerconfigjson)
-                     ├──► build ServiceAccounts     → kpack PUSHES the built image
-                     └──► ksvc imagePullSecrets      → Knative PULLS it to run
-```
-
-The image is pushed to and pulled from the same registry - this region's - so splitting that
-one would mean maintaining two secrets with identical contents.
+The region credential serves both ends of the image's life: ESO syncs one dockerconfigjson
+Secret, the build ServiceAccounts push the built image with it, and the ksvc pulls the image to
+run with it as an `imagePullSecrets` entry.
 
 **The name must stay identical in every region.** It is written into every region's KSVC
-`imagePullSecrets` and onto every per-function build ServiceAccount, and the API emits
-those for all regions from one place. Only the *contents* differ, so only the Vault path is
-per region (`.../serverless/{{ .Values.global.region }}`).
+`imagePullSecrets` and onto every per-function build ServiceAccount, and the API emits those
+for all regions from one place. Only the *contents* differ, so only the Vault path is per
+region (`.../serverless/{{ .Values.global.region }}`).
 
 `build.kpackRegistry.url` empty means the kpack registry **is** the region registry - the
-single-registry install - and then no second Secret is created and nothing is added to the
-build accounts.
+single-registry install. No second Secret is created and nothing is added to the build
+accounts.
 
-**kpack reads the two SA fields differently** - put both credentials in both:
+**kpack reads the two ServiceAccount fields differently.** Put both credentials in both:
 
 | SA field | Used for |
 |----------|----------|
@@ -491,29 +249,26 @@ build accounts.
 
 ### Git credential - per function, never shared
 
-Unlike the registry, **the git token belongs to the function, not the platform**: the caller
-supplies it on create, and the API persists it as `{workload}-git` (per BUILDING.md: Build Flow, because
-rebuilds happen without the caller - CVE patches, webhooks).
+**The git token belongs to the function, not the platform.** The caller supplies it on create
+and the API persists it as `{workload}-git`, because rebuilds happen without the caller -
+CVE patches, webhooks.
 
-kpack resolves git credentials from the ServiceAccount named by the `Image`, matching
-secrets by host annotation. A single shared account would therefore hand **one tenant's
-token to another tenant's build** - so there is no platform-wide git credential anywhere in
-this design.
+kpack resolves git credentials from the ServiceAccount named by the `Image`, matching secrets
+by host annotation. A single shared account would hand **one tenant's token to another
+tenant's build**, so there is no platform-wide git credential anywhere in this design.
 
-Instead there are **two kinds of ServiceAccount**:
+There are **two kinds of ServiceAccount**:
 
 | Account | Created by | Holds | Used by |
 |---------|-----------|-------|---------|
-| `kpack-builder` | the chart, in the API namespace | both registry credentials, no git one | `ClusterBuilder` objects (compose + push a builder image; never clone source) |
+| `kpack-builder` | the chart, in the API namespace | both registry credentials, no git one | `ClusterBuilder` objects (compose and push a builder image; never clone source) |
 | `{workload}-build` | the **API**, per function, in the workload's namespace | that function's git Secret **+** both registry credentials | the function's `Image` |
 
-The chart creates `kpack-builder` **in the API's namespace**, and both registry
-ExternalSecrets with it: a `ClusterBuilder` is cluster-scoped and has no namespace of its
-own to resolve an account in, so it names that one through `spec.serviceAccountRef`. The
-function builds themselves run in the group's namespace, where the tenant template set has
-already placed this region's registry credential.
-
-The per-function account is created alongside the function and named on its `Image`:
+The chart creates `kpack-builder` **in the API's namespace**, along with both registry
+ExternalSecrets: a `ClusterBuilder` is cluster-scoped and names that account through
+`spec.serviceAccountRef`. Function builds run in the group's namespace, where the tenant
+template set has already placed this region's registry credential. The per-function account is
+created alongside the function and named on its `Image`:
 
 ```yaml
 apiVersion: v1
@@ -533,92 +288,16 @@ The chart passes both Secret names as `SERVERLESS_BUILD__REGISTRY_SECRET` and
 `SERVERLESS_BUILD__KPACK_REGISTRY_SECRET` (the second only when the kpack registry is a
 separate host) and grants the API `serviceaccounts` write (DEPLOYING.md: RBAC).
 
-The account and the git Secret it names must sit in the **same namespace as the
-`Image`** - kpack resolves a build's credentials from the ServiceAccount named on the
-Image, in the Image's own namespace, and looks nowhere else. All three are in the
-workload's own namespace, which is what makes one git Secret enough.
+The account and the git Secret it names must sit in the **same namespace as the `Image`**:
+kpack resolves a build's credentials from the ServiceAccount named on the Image, in the Image's
+own namespace, and looks nowhere else. All three are in the workload's own namespace, which is
+what makes one git Secret enough.
 
-> **One Secret, two readers - implemented.** `{workload}-git` is
-> `kubernetes.io/basic-auth` (`username` + `password`) annotated
-> `kpack.io/git: <scheme>://<host>`. kpack clones with it - it reads no other shape - and
-> the API reads the password back so a later edit rebuilds without the client re-sending
-> the token. One shape and one decode path: `FunctionOffering.read_extra_state` pulls the
-> `password` key through `region_read.secret_text`, the same call that reads a workload's
-> env values.
-
----
-
-## Build Flow
-
-### Resource chain
-
-```
-API creates:      Image                     ← the only object the API manages
-                    │
-kpack creates:      ├──► SourceResolver     ← resolves the git ref to a concrete SHA
-                    │
-                    └──► Build              ← one per actual build
-                          │
-                          └──► Pod          ← the CNB lifecycle
-```
-
-**The `Image` takes the workload's object name verbatim.** kpack stamps that name onto
-every `Build` as the `image.kpack.io/image` label value, and a label value caps at 63
-characters - the same limit already enforced on a workload name. Naming the `Image`
-verbatim keeps those two limits one limit: any name the API accepts is a name kpack can
-label with, and a function gets no tighter a name budget than any other workload. An
-affix would silently shrink the platform-wide limit for functions alone.
-`common.kpack.build_image_name` stays a function even though it is the identity, so the
-rule has one home and the code that applies an `Image` cannot disagree with the code that
-deletes one.
-
-The build `ServiceAccount` is the deliberate exception, suffixed `-build`
-(`{workload}-build`): it reads like the workload's other derived objects in a
-listing, and unlike the `Image` name it is never written where a label value has to fit.
-
-### Inside the build pod
-
-The lifecycle runs as **init containers**, in order; `completion` is the main container:
-
-| # | Container | Does | Config that matters |
-|---|-----------|------|---------------------|
-| 1 | `prepare` | git clone, credential setup | git secret, **CA** |
-| 2 | `analyze` | reads previous image metadata | - |
-| 3 | `detect` | runs the `order`, first passing group wins | builder `order` |
-| 4 | `restore` | restores cached layers | - |
-| 5 | `build` | **runs the buildpacks** - pip / npm / go | `BP_*_VERSION`, artifact-server env, **CA** |
-| 6 | `export` | assembles OCI layers, **pushes** | `spec.tag`, push credential |
-| - | `completion` *(main)* | finalise, optional attestation | - |
-
-Because each phase is a named container, `Cluster.pod_logs(pod, container=...)` (already
-implemented) yields **per-phase build logs** - the difference between "build failed" and an
-actionable error.
-
-### What causes a new Build
-
-| Reason | Trigger | In this platform |
-|--------|---------|------------------|
-| `CONFIG` | `spec` changed | PUT that changes runtime, version, branch, path or env |
-| `COMMIT` | resolved source SHA changed | kpack's own `SourceResolver` re-resolving the branch. *Planned:* a per-function **webhook** pinning the pushed SHA, so a push builds at once rather than at the next poll |
-| `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/build` |
-| `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
-| `STACK` | the Stack run image was updated | **CVE patch** - often a fast *rebase* |
-
-`BUILDPACK` and `STACK` fire with **no user action**. Digest propagation must therefore be
-event-driven (BUILDING.md: Ownership: API vs Build Service), not only triggered by API writes.
-
-`TRIGGER` is the one reason that is imperative rather than a state change, and it is why
-the explicit rebuild exists: nothing about the function changed, so there is no desired
-state to write that would produce a build. kpack looks for the annotation on the **latest
-`Build`**, not on the `Image` - the next `Build` inherits the *Image's* annotations, which
-never carry it, so one request produces exactly one build and no loop.
-
-> **Never put the trigger on the `Image`.** It is a nonce, and the `Image` spec is a pure
-> function of the function definition (BUILDING.md: Convergence rules). On the `Image` it
-> would look like a change to every apply, and the next ordinary `PUT` - which composes the
-> spec from the request, without it - would drop it and build once more.
-
----
+> **One Secret, two readers.** `{workload}-git` is `kubernetes.io/basic-auth`
+> (`username` + `password`) annotated `kpack.io/git: <scheme>://<host>`. kpack clones with it
+> and reads no other shape; the API reads the password back so a later edit rebuilds without
+> the client re-sending the token. `FunctionOffering.read_extra_state` pulls the `password`
+> key through `region_read.secret_text`, the same call that reads a workload's env values.
 
 ## Ownership: API vs Build Service
 
@@ -627,232 +306,93 @@ Two components, split by execution model:
 | Component | Path | Responsibility |
 |-----------|------|----------------|
 | **API** | request/response | On POST / PUT / `POST .../build`: compose the desired `Image` and server-side apply it to the **local** cluster. Returns `202`. |
-| **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** to **all** regions (BUILDING.md: Digest propagation). |
+| **Build controller** | control loop | Watches `Image.status.latestImage` in the local cluster. On change, applies the ksvc with the new **digest** (BUILD-CONTROLLER.md: Digest propagation). |
 
-The watch loop does not fit a request/response API, and the shared library already
-anticipates this split (`common/cluster.py`: *"the API and a future builder service both
-reach a cluster the same way"*; `common/labels.py`: *"a future builder service stamps them
-on its build resources"*).
+A watch loop does not fit a request/response API, and the shared library (`common/cluster.py`,
+`common/labels.py`) is written for both services.
 
-**The contract is declarative.** `BuildBackend.plan` does not return a finished image and
-does not touch a cluster. It returns the manifests recording desired state (git Secret ->
-build ServiceAccount -> `Image`, in dependency order) plus the deterministic `tag` each
-region's build will push to; the caller applies them alongside the KSVC's other derived resources,
-the ksvc is applied against that tag immediately, and `GET` reports `Building` until kpack
-finishes (FUNCTIONS.md: Function Status Resolution). "Created" no longer implies "serving".
+The ksvc image field follows the same split. The API writes it **once, on create, per region**;
+a PUT keeps whatever each region is already running; `POST .../build` writes no ksvc at all.
+After the create the build controller is the only writer, and only ever of the digest
+(BUILD-CONTROLLER.md: Who writes the ksvc image).
 
-The manifests are **owned resources of the KSVC**, applied in the same pass as the
-function's env Secret and DomainMapping and carrying the same `ownerReference`. That is
-what deletes them with the function (BUILDING.md: Lifecycle & Cleanup) - there is no cleanup code, because there is
-nothing to clean up.
+**The API's contract is declarative.** `BuildBackend.plan` returns no finished image and
+touches no cluster. It returns the manifests recording desired state - git Secret, build
+ServiceAccount, `Image`, in dependency order - plus the deterministic `tag` each region's build
+will push to. The caller applies them with the KSVC's other derived resources, the ksvc is
+applied against that tag immediately, and `GET` reports `Building` until kpack finishes
+(FUNCTIONS.md: Function Status Resolution). "Created" does not imply "serving".
 
-`BuildBackend.plan` splits them by how far each piece travels, and the split is load-bearing:
+The manifests are **owned resources of the KSVC**, carrying the same `ownerReference` as the
+function's env Secret and DomainMapping. That is what deletes them with the function
+(BUILDING.md: Lifecycle & Cleanup): there is no cleanup code because there is nothing to clean
+up.
+
+`plan` splits them by how far each piece travels:
 
 | | Scope | Why |
 |---|---|---|
-| git `Secret` | **shared by every target region** | One token for the function, wherever it builds. Nothing can recover a token whose only copy was on the region that went away (BUILDING.md: Active/Active Behaviour). |
-| `Image` + build `ServiceAccount` | **per target region**, one set each | Every region builds what it runs, so each needs its own - identical but for the `tag` and cache reference, which name that region's registry. |
+| git `Secret` | **shared by every target region** | One token for the function, wherever it builds. Nothing can recover a token whose only copy was on the region that went away. |
+| `Image` + build `ServiceAccount` | **per target region**, one set each | Every region builds what it runs. The sets are identical but for the `tag` and cache reference, which name that region's registry. |
 
-**A region builds what it runs.** The build objects go to the workload's target regions, and
-nowhere else: a region that runs no copy has nothing to build, and one that does has a KSVC
-beside every build object to own it. There is no unowned case, so nothing has to be
-reclaimed by name and no region is written to that the request did not ask for.
+The build objects go to the workload's target regions and nowhere else, so nothing has to be
+reclaimed by name: a region that runs no copy has nothing to build, and one that does has a
+KSVC beside every build object to own it.
 
-`plan` therefore takes the registries the build pushes to - `{region: RegistryConfig}`,
-whose keys *are* the building regions - rather than resolving them itself. The caller holds
-the clusters and each carries its own registry, so there is one resolution path rather
-than a second snapshot of it (`KpackBackend.plan`, `api/services/builder/kpack_backend.py`).
+`plan` takes the registries the build pushes to - `{region: RegistryConfig}`, whose keys *are*
+the building regions - rather than resolving them itself (`KpackBackend.plan`,
+`api/services/builder/kpack_backend.py`).
 
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
-`Image` on a region that has never had one - which is what makes a PUT after a switchover
-self-healing (BUILDING.md: Active/Active Behaviour).
+`Image` on a region that has never had one, which is what makes a PUT after a switchover
+self-healing.
+
+`POST .../functions/{name}/build` re-applies the same composed `Image` and then asks kpack for
+one more build of it, so a function can be rebuilt without inventing a spec change
+(FUNCTIONS.md: Building again without changing anything).
 
 **`BuildRequest` validates itself on construction** (`common/build.py`). Its fields become
-Kubernetes object names and an image reference, and the build path is reachable away from
-the HTTP edge - where the request model's own validation has not run - so the inputs are
-checked where they are assembled rather than only where they arrive.
+Kubernetes object names and an image reference, and the build path is reachable away from the
+HTTP edge, so the inputs are checked where they are assembled.
 
-**A failed trigger is raised, not swallowed** (`BuildBackend.trigger`, implemented by
-`KpackBackend.trigger`). A status read that cannot reach a region degrades a field and the
-answer is still useful; triggering is the whole point of the call it belongs to, so a
-swallowed error there is a rebuild that silently never happens.
-
-### Who writes the ksvc image
-
-Exactly one writer per phase, with no overlap:
-
-| Path | ksvc image |
-|------|-----------|
-| POST | **written once, per region**: `{that region's registry}/{organization}/{builderRepository}/{group}/{name}:{branch}` |
-| PUT | **kept, per region** - whatever each region is running, read back off its own KSVC. One value fanned out would point a peer at this region's registry |
-| `POST .../build` | **not written** - no ksvc is applied at all |
-| build controller | **the only writer after the create**, and only ever the digest |
-
-A create has nothing to keep, so it deploys at the branch tag and reads `Building` until a
-build pushes something there. After that the tag is never written again: it resolves to the
-digest already running, so writing it cuts a revision of *the same code*, and the real
-rollout arrives minutes later from the controller anyway. Two revisions where one belongs.
-
-This is also what lets a **moved repository** work (BUILDING.md: Registry layout). The
-controller does not compare repositories - it cannot, being the only writer - so the first
-build that pushes to the new layout moves the workload there on its own. The update that
-re-tags the `Image` and the roll-out are separate events, in that order, which is why the
-migration reads "build first".
-
-`POST .../functions/{name}/build` is the manual half of that: it re-applies the same
-composed `Image` and then asks kpack for one more build of it, so a function can be rebuilt
-without inventing a spec change (FUNCTIONS.md: Building again without changing anything).
-
-Still to come, and deliberately out of scope for the current implementation: the
-per-function webhook endpoint that pins a pushed SHA to `spec.source.git.revision`
-(`BuildRequest.revision` already carries it).
-
----
-
-## Digest propagation
-
-The `Image` says what to build; `status.latestImage` says what was built. Nothing in a
-request/response path can observe the second - a `STACK` or `BUILDPACK` rebuild fires with
-nobody asking (BUILDING.md: What causes a new Build) - so a control loop closes the gap.
-
-`build_controller/` is that loop, in its own Deployment (`{name}-build-controller`) and its own
-image. Separate Deployments because a watch loop and an HTTP API scale and restart on their
-own terms.
-
-### Two images
-
-`Dockerfile.build-controller` installs the base dependencies only - `pydantic`,
-`pydantic-settings`, `kubernetes`. `fastapi`, `uvicorn`, `httpx` and `pyjwt[crypto]` are the
-API's, behind a `[project.optional-dependencies] api` extra its own image installs with
-`pip install ".[api]"`.
-
-That is what makes the split worth having: the controller holds a client certificate and
-writes Knative Services, and it now cannot load a web framework or
-`cryptography` at all - roughly 23 MB it never imported, and the steadiest source of
-advisories against a pod that has no HTTP surface to exploit them through. **What is not
-installed cannot be flagged, and cannot be reached.**
-
-The two are only ever built from the same commit, so they cannot disagree about
-`common/` - the release job builds both from one tag. CI proves the split rather than
-trusting it: it imports each service out of its own image, and asserts the controller's has
-no `fastapi`, `starlette`, `uvicorn`, `jwt` or `cryptography`. An import in `common` that
-quietly pulled a framework back in would pass every other check
-(`tests/test_layering.py` catches it in the source; that step catches it in the artifact).
-
-The tenant controller is a third image on the same principle, one notch along:
-`Dockerfile.tenant-controller` installs a `[tenant-controller]` extra holding a web server and nothing
-else. It does serve HTTP - one internal endpoint, `PUT /groups/{group}/namespace` - so `fastapi`
-there is expected; what it must never carry is the auth stack. Its caller presents a shared
-token, and the constant-time comparison for that is spelled out in `tenant_controller/api.py`
-rather than taken from `cloudlet_apis.auth`, because importing anything from that package
-pulls `pyjwt` and `cryptography` in behind it. CI asserts the absence, the
-same way it does for the controller. Only `tenant_controller/api.py` may reach the framework at
-all: the converge, the template set and the provision fan-out have no request to answer, and
-`tests/test_layering.py` holds them to it.
-
-### One pass
-
-```
-list Images (local)  ──►  reconcile each  ──►  watch from that resourceVersion
-      ▲                                              │
-      └──────────────  stream ends (timeout)  ───────┘
-```
-
-Event-driven, without depending on having *seen* every event. A dropped connection or an
-expired `resourceVersion` costs one extra relist, not a function stuck on an old digest.
-`buildController.resyncSeconds` (default 300) is both the watch's lifetime and, therefore,
-the relist interval - one knob, because they are the same number.
-
-**Both ends are local, for the same reason.** The `Image` is in this cluster because this
-region built it, and the digest it produced names this region's registry - a peer cannot pull
-it, so publishing there would be worse than doing nothing. Nothing in this loop reads or
-writes a peer cluster, and the controller holds one client.
-
-### What it writes
-
-The controller does **not** compose a KSVC. The API owns that spec; the controller owns one
-field of it. So it applies the *live* object with the image replaced - a full server-side
-apply, like every other write path (BUILDING.md: Active/Active Behaviour), of an object
-that has been stripped of the metadata the server owns (`managedFields`, `resourceVersion`,
-`uid`, …) and of any pinned `spec.template.metadata.name`, which Knative would reject.
-
-**The KSVC it writes is the one the `Image` names.** `Reconciler._roll_out`
-(`build_controller/reconciler.py`) takes the namespace off the `Image` object rather than
-deriving it, so the KSVC that gets the digest is always the one that `Image` was built
-for. Finding no KSVC there is expected rather than an error: an `Image` whose delete
-cascade has not run yet has none, and neither does one applied before builds followed the
-workload into its group's namespace.
-
-Two things stop a write. The repository is deliberately **not** one of them: this is the
-only writer of the image after the create (BUILDING.md: Who writes the ksvc image), so
-refusing a moved one would strand the workload on a repository nothing pushes to.
-
-| Condition | Why it is left alone |
-|---|---|
-| The KSVC already runs that digest | The loop's normal outcome, and why a resync costs nothing |
-| It is not labelled `offering: function` | A container that reused a deleted function's name must not inherit its image |
-
-### No leader election
-
-Two replicas - or two regions' controllers reaching the same conclusion - apply the same
-desired state, and a server-side apply of identical content is a no-op that produces no
-Knative revision. Same convergence rules as every other writer (BUILDING.md: Convergence
-rules); `buildController.replicaCount` above 1 is safe, just redundant.
-
-Two controllers never see the same input at all: each follows its own region's `Image`s and
-writes its own region's KSVCs, so there is nothing to contend over between regions. The
-redundancy that matters is within a region, and identical applies converge there.
-
-> **The prune is gone.** A switchover used to strand `Image` objects in the previously
-> active region; they kept firing `STACK`/`BUILDPACK` rebuilds and publishing digests that
-> fought the new region's, so each resync compared the two regions and deleted the ones it had
-> superseded. A peer's `Image` is no longer stranded - it is that region's own build, for the
-> workload that region runs - so the comparison, its clock-skew tie-breaking, its
-> "a region that cannot be listed stops the pass" guard and `buildController.pruneOrphans`
-> are all deleted. So is the assumption underneath them, that writes land at one region at a
-> time.
-
----
+**A failed trigger is raised, not swallowed** (`BuildBackend.trigger`). A swallowed error there
+is a rebuild that silently never happens.
 
 ## Active/Active Behaviour
 
 ### A region builds what it runs
 
-Each region builds in its **own** cluster, into its **own** registry, so the full build stack
-(kpack, Stack, Store, ClusterBuilders) is installed in every cluster and a function deployed to
+Each region builds in its **own** cluster, into its **own** registry. The full build stack -
+kpack, Stack, Store, ClusterBuilders - is installed in every cluster, and a function deployed to
 two regions has an `Image` in both. Nothing crosses a region boundary at runtime: the image a
 region serves was built there, from a registry it owns, and published by its own controller.
-
-That is what makes a region self-sufficient, and it is the whole switchover story - there is
-nothing to reconstruct, because the surviving region was already building and running its own
-copy. It is also what removes the three mechanisms the shared registry forced: the
-cross-region digest write, the prune, and the unowned build objects.
+That is also the whole switchover story - the surviving region was already building and running
+its own copy.
 
 ### Every write path is a full server-side apply
 
-`Cluster.apply()` already uses `apply=True, force_conflicts=True`; **server-side apply is
-create-or-update by construction**. Every path therefore composes the *complete* desired
-`Image` and applies it:
+`Cluster.apply()` uses `apply=True, force_conflicts=True`, and **server-side apply is
+create-or-update by construction**. Every path composes the complete desired `Image` and
+applies it:
 
 | Path | Behaviour |
 |------|-----------|
 | POST | compose -> apply -> creates |
-| PUT | compose -> apply -> **creates if missing**, else updates. Keeps each region's own ksvc image (BUILDING.md: Who writes the ksvc image) |
-| build | reconstruct (BUILDING.md: Active/Active Behaviour) -> apply -> **creates if missing** -> annotate the latest `Build` |
-| webhook *(planned)* | reconstruct (BUILDING.md: Active/Active Behaviour) + `revision` = pushed SHA -> apply -> **creates if missing** |
+| PUT | compose -> apply -> **creates if missing**, else updates. Keeps each region's own ksvc image (BUILD-CONTROLLER.md: Who writes the ksvc image) |
+| build | reconstruct -> apply -> **creates if missing** -> annotate the latest `Build` |
+| webhook *(planned)* | reconstruct + `revision` = pushed SHA -> apply -> **creates if missing** |
 
-The build applies *before* it triggers, and that ordering is what makes it self-healing
-rather than merely idempotent: on a region that has never built the function the apply
-creates the `Image`, which builds on its own, and there is no `Build` to annotate - so the
-trigger finds nothing and says so instead of failing. It is also the one write path that
-leaves the `KSVC` alone: the function's desired state does not change, so nothing is
-composed for it. It reaches every region the function runs in, and skips the ones it does
-not - an absent `KSVC` there means there is no build to re-declare.
+The build applies *before* it triggers, which is what makes it self-healing rather than merely
+idempotent. On a region that has never built the function the apply creates the `Image`, which
+builds on its own, and there is no `Build` to annotate - so the trigger finds nothing and says
+so instead of failing. It is also the one write path that leaves the KSVC alone, and it skips
+regions the function does not run in: an absent KSVC there means there is no build to
+re-declare.
 
-> **Never use a targeted patch** (e.g. patching only `spec.source.git.revision`). It
-> returns 404 when the object is absent - precisely the post-switchover case this design
-> must survive.
+> **Never use a targeted patch** (for example patching only `spec.source.git.revision`). It
+> returns 404 when the object is absent - precisely the post-switchover case this design must
+> survive.
 
 ### Reconstruction after a gap
 
@@ -864,11 +404,11 @@ deleted - can still compose it, because the inputs are on the workload itself:
 | runtime | ksvc annotation `ANNOTATION_RUNTIME` |
 | git url | ksvc annotation `ANNOTATION_GIT_URL` |
 | branch | ksvc annotation `ANNOTATION_GIT_BRANCH` |
-| builder, version env, build env | runtimes ConfigMap |
+| builder, version env, build env | runtimes ConfigMap (RUNTIMES.md: Where it lives) |
 | git token | the persisted git secret |
 | registry credential | the ESO-managed secret (BUILDING.md: Registry & Git Credentials) |
 
-No database and no cross-cluster state replication is required - the Knative Service is the
+No database and no cross-cluster state replication is required. The Knative Service is the
 replicated source of truth.
 
 ### Convergence rules
@@ -878,283 +418,142 @@ definition. Duplicate builds come from nonces, not from concurrency:
 
 1. **Deterministic name** - the workload's own `{name}`.
 2. **No timestamps, UUIDs or counters** anywhere in the spec.
-3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type
-   and setting it forces a rebuild on every apply.
+3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type and
+   setting it forces a rebuild on every apply.
 4. **The webhook, when it lands, must set a SHA, not a trigger annotation.** Bumping
    `image.kpack.io/additionalBuildNeeded` is a nonce: two instances handling one push would
    produce two builds. `spec.source.git.revision = <pushed SHA>` is idempotent by data.
-   This rule is recorded now because it is the constraint that shapes that endpoint.
 
-With these, two instances applying the same desired state produce one object and kpack
-creates **one** build - no lease or leader election is required.
+With these, two instances applying the same desired state produce one object and kpack creates
+**one** build. No lease and no leader election is required.
 
-The explicit rebuild is not an exception to rule 4, because it is not a write of desired
-state: the `Image` it applies is composed the same way every other path composes it, and
-the trigger annotation goes on the latest `Build` afterwards. The nonce rule is about state
-that gets *re-applied* - a value in the `Image` spec is asserted again on every write, so a
-timestamp there rebuilds forever. An annotation on one `Build` is asserted once. Two
-instances handling one rebuild request would patch the same `Build` and kpack would still
-create one build; two clients asking twice **should** get two builds, which is what asking
-twice means.
+The explicit rebuild is not an exception to rule 4, because it is not a write of desired state.
+The nonce rule is about state that gets *re-applied*: a timestamp in the `Image` spec is
+asserted on every write and rebuilds forever, while an annotation on one `Build` is asserted
+once. Two instances handling one rebuild request patch the same `Build` and kpack still creates
+one build.
 
 ### Accepted consequences
 
 - **The regions run different bytes.** Builds are not bit-reproducible, so the same commit
-  produces a different digest in each region. Both run *that commit*; what is not guaranteed
-  is that they run the same layers. Anything comparing images across regions has to compare
-  source instead. This is the one irreversible property of the design, and it is what buys
-  every region its independence.
-- **A rollout is not atomic across regions.** One region can finish building minutes before the
-  other, and a build can succeed in one and fail in the other - which reads as `Failed` with `reason: "BuildFailed"`
-  with one region `Building`, and was impossible when a single build fed both.
+  produces a different digest in each region. Both run *that commit*, but not the same layers,
+  so anything comparing images across regions has to compare source instead.
+- **A rollout is not atomic across regions.** A build can succeed in one region and fail in the
+  other, which reads as `Failed` with `reason: "BuildFailed"` while the other is `Building`.
 - **Build load and registry storage multiply by the number of regions.** A build pod is the
-  heaviest thing in a tenant namespace (BUILDING.md: Build pod resources), so the
-  quota has to be sized for concurrent builds in every region, not one.
+  heaviest thing in a tenant namespace, so quota has to cover concurrent builds in every region.
 - **Builds depend on the kpack registry.** If it is down no region can build; every region can
-  still run and serve. A strictly smaller blast radius than a single registry, which was
-  also the runtime pull path.
-
----
+  still run and serve.
 
 ## Lifecycle & Cleanup
 
 | Event | Action |
 |-------|--------|
-| Function delete | Nothing to do *in any cluster*: each region's `Image` and build `ServiceAccount` are owned by its KSVC, so deleting it garbage-collects them. Co-location is what buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
-| Function delete (registry) | Nothing in a cluster owns registry content, so the API deletes both repositories in **every** region's registry, by name - `{base path}/{group}/{name}` and `{base path}/{group}/{name}_cache` (BUILDING.md: Registry cleanup on delete). |
-| Old build tags | Each region's **build controller** prunes them from its own registry on an hours-scale sweep, keeping what is still addressable or recent (BUILDING.md: Registry tag GC). |
+| Function delete | Nothing to do *in any cluster*: each region's `Image` and build `ServiceAccount` are owned by its KSVC, so deleting it garbage-collects them. Co-location buys this - ownerReferences cannot cross namespaces (DEPLOYING.md: Chart Topology). |
+| Function delete (registry) | Nothing in a cluster owns registry content, so the API deletes both repositories in **every** region's registry, by name (BUILDING.md: Registry cleanup on delete). |
+| Old build tags | Each region's **build controller** prunes them from its own registry on an hours-scale sweep (BUILD-CONTROLLER.md: Registry tag GC). |
 | Switchover | Nothing to clean up. Each region already held its own build objects for the workloads it runs. |
 
 ### Build history
 
-Every `Image` carries an explicit `spec.successBuildHistoryLimit` /
-`spec.failedBuildHistoryLimit`, from `build.history.success` / `build.history.failed`
-(the chart ships **1** and **1**; the field's own default is 3). kpack garbage-collects
-older `Build` objects, and a `Build` owns its pod, so collecting one takes its completed
-pod with it.
+Every `Image` carries an explicit `spec.successBuildHistoryLimit` and
+`spec.failedBuildHistoryLimit`, from `build.history.success` and `build.history.failed` (the
+chart ships **1** and **1**; the field's own default is 3). kpack garbage-collects older
+`Build` objects, and a `Build` owns its pod, so collecting one takes its completed pod with it.
 
-**Neither may be 0** - kpack rejects it. Its `Image` webhook validates
-`*SuccessBuildHistoryLimit < 1` and answers *"build history limit must be greater than
-0"*, and its defaulting fills only an **absent** limit, so an explicit 0 is not replaced
-by the default of 10 - it reaches that check and fails. An `Image` with 0 cannot be
-created, so every function create and update would be refused at admission.
+**Neither may be 0** - kpack's `Image` webhook validates `*SuccessBuildHistoryLimit < 1` and
+answers *"build history limit must be greater than 0"*, and its defaulting fills only an
+**absent** limit, so an explicit 0 reaches that check and every create and update is refused at
+admission. The API mirrors the floor (`ge=1`), so the refusal happens once at startup rather
+than per function.
 
-The API mirrors the floor (`ge=1`) so the refusal happens at startup, against the whole
-deployment, rather than per function against whoever pushes next.
+They are set rather than left out, because "left out" is kpack's own default of **10 and 10** -
+20 `Build`s and 20 completed pods per function. At three hundred functions that is the whole
+namespace: `oc get pods` stops being usable and every controller listing pods pays for them. `STACK`/`BUILDPACK` CVE rebuilds and `POST .../build` fill that history faster than
+edits do. Failed builds keep their own quota because their pods are the only place the
+per-phase build log exists (BUILDING.md: Inside the build pod).
 
-They are set rather than left out, because "left out" is not "unbounded" - it is kpack's
-own default of **10 and 10**, so **20 `Build`s and 20 completed pods per function**. That is
-invisible at ten functions and is the whole namespace at three hundred: `oc get pods`
-stops being usable, and every controller that lists pods pays for them. Anything that
-re-triggers builds without a user - `STACK`/`BUILDPACK` CVE rebuilds, and now
-`POST .../build` - fills that history faster than edits do.
+The limits are a constant from configuration, identical on every apply, so they converge like
+the rest of the spec. Lowering them takes effect on each function's next build: kpack prunes
+when it creates a `Build`.
 
-Failed builds keep their own quota because their pods are the only place the per-phase
-build log exists (BUILDING.md: Inside the build pod); dropping the limit to 1 would mean a
-second failure erases the evidence of the first.
-
-The limits are a constant from configuration, identical on every apply, so they converge
-like the rest of the spec (BUILDING.md: Convergence rules). Lowering them takes effect on
-each function's next build, not at once - kpack prunes when it creates a `Build`, so an
-untouched function keeps its existing history until something rebuilds it.
-
-**Whatever reads that history orders it on the build-number label**, never on the
-creation timestamp: a timestamp has one-second resolution, while kpack numbers the builds
-itself, so the number is both exact and the ordering kpack's own tooling uses. That is
-what `common.kpack.latest_build` sorts on - and it is the `Build` the explicit rebuild
-annotates (BUILDING.md: What causes a new Build).
+**Whatever reads that history orders it on the build-number label**, never on the creation
+timestamp, which has only one-second resolution. That is what `common.kpack.latest_build` sorts
+on, and it is the `Build` the explicit rebuild annotates.
 
 ### Registry cleanup on delete
 
-Deleting a function deletes its image repository and its cache repository outright, **in
-every region's registry** - each built its own copy, and nothing else would ever address the
-peer's:
+Deleting a function deletes its image repository and its cache repository outright, **in every
+region's registry** - each built its own copy, and nothing else would ever address the peer's:
 
 ```
 DELETE /api/v1/repository/{registry.organization}/{build.builderRepository}/{group}/{name}
 DELETE /api/v1/repository/{registry.organization}/{build.builderRepository}/{group}/{name}_cache
 ```
 
-The path is `RegistryConfig.path` - the image reference with the host removed - so the
-repository deleted is exactly the one that was pushed to, and a layout change cannot make
-cleanup miss.
+The path is `RegistryConfig.path`, the image reference with the host removed
+(RUNTIMES.md: Registry layout), so the repository deleted is exactly the one that was pushed
+to and a layout change cannot make cleanup miss.
 
+This is **Quay's management API**, not the distribution API, which can only delete manifests
+(`DELETE /v2/{repo}/manifests/{digest}`) and leaves the repository in the registry's listing.
 
-This is **Quay's management API**, not the distribution API. The distribution API can only
-delete manifests (`DELETE /v2/{repo}/manifests/{digest}`), which reclaims the same bytes but
-leaves the repository itself in the registry's listing. Deleting the repository is what
-matches the request: a deleted function leaves nothing behind.
+**It needs a Quay OAuth token, not the push robot.** Robot accounts authenticate
+`docker push`/`pull` and the `/v2` endpoints, and cannot call `/api/v1` at all. Generate the
+token from an Application under a Quay organization (Organization → Applications), with
+`repo:admin`. Two consequences of how Quay scopes it:
 
-**It needs a Quay OAuth token, not the push robot.** Robot accounts are registry
-credentials - they authenticate `docker push`/`pull` and the `/v2` endpoints, and cannot
-call `/api/v1` at all. The token is generated from an Application under a Quay organization
-(Organization → Applications) and must carry `repo:admin`.
-
-Two consequences of how Quay scopes that token, both worth checking before enabling:
-
-- The token acts as **the user who authorized it**, so that user needs admin on every
-  namespace the platform pushes to. If that user is deactivated the token stops working.
+- It acts as **the user who authorized it**, so that user needs admin on every namespace the
+  platform pushes to, and a deactivated user stops the token working.
 - With `registry.organization` empty - the chart default - **each group is its own Quay
   namespace** (`payments/hello`), so one token only reaches the groups its user administers.
-  Setting `registry.organization` collapses everything into one namespace and one grant, at
-  the cost of needing `FEATURE_EXTENDED_REPOSITORY_NAMES` for the nested path.
+  Setting `registry.organization` collapses everything into one namespace and one grant, at the
+  cost of needing `FEATURE_EXTENDED_REPOSITORY_NAMES` for the nested path.
 
-**Each registry has its own token, and every pod holds all of them.** A delete lands on
-whichever instance the DNS record points at, and that instance is responsible for every
-region - so the chart reads one Vault entry per region and an ESO template assembles them into
-`SERVERLESS_REGION_REGISTRY_TOKENS`, a region-keyed JSON object. (One underscore: it is not
-`SERVERLESS_REGISTRY__API_TOKEN`, which stays as the fallback for a region the map does not
-name, and is what a single-registry install keeps using.) A JSON object rather than one
-variable per region, because a region name may contain `-`.
+**Each registry has its own token, and every pod holds all of them**, because a delete lands
+on whichever instance the DNS record points at and that instance is responsible for every
+region. The chart reads one Vault entry per region and an ESO template assembles them into
+`SERVERLESS_REGION_REGISTRY_TOKENS`, a region-keyed JSON object - one object rather than a
+variable per region, because a region name may contain `-`. One underscore: it is not
+`SERVERLESS_REGISTRY__API_TOKEN`, which stays the fallback for a region the map does not name
+and is what a single-registry install keeps using.
 
-**Wiring that secret is what enables cleanup** - without it the step is skipped, so an
-install that never adds it is unaffected by the upgrade.
-`registry.deleteOnFunctionDelete: false` switches it off with the tokens still mounted -
-and it is the platform-wide switch: the build controller's tag GC (BUILDING.md: Registry tag GC)
-honors the same flag, so false stops **every** registry delete the platform makes.
+**Wiring that secret is what enables cleanup.** Without it the step is skipped, so an install
+that never adds it is unaffected by the upgrade. `registry.deleteOnFunctionDelete: false`
+switches cleanup off with the tokens still mounted, and it is the platform-wide switch: the
+build controller's tag GC honours the same flag, so `false` stops **every** registry delete the
+platform makes. This is the one thing left that crosses a region boundary, and it is
+control-plane only.
 
-This is the **one** thing left that crosses a region boundary, and it is control-plane only:
-the data path never does. It is also why the API pod holds every region's token rather than
-its own - strictly less power than the client certificate it already carries, which can
-write Knative Services in every cluster.
-
-Both repository paths come from `common.names.image_repository` / `cache_repository`,
-under `RegistryConfig.path` - the same two functions and the same prefix the build pushes
-through, so what cleanup deletes cannot drift from what was pushed. They sit beside `image_tag` because they are the same kind of rule: the
-repository half of an image reference, where `image_tag` is the tag half. They take only
-the validated `{group}`/`{name}` labels, never request input, and the call runs only for
-the function offering - a container's image was built elsewhere and is not the platform's
-to delete.
-
-The `/api/v1` mechanics themselves - how a repository or a tag is addressed, and how each
-HTTP outcome is judged (2xx deleted, 404 already gone, 401/403 names the token's missing
-namespace admin) - live in `common.registry.RegistryClient`, a domain module either
-service may import - a context manager over **one** `httpx` connection, because every
-method needs the same base URL, token and timeout and a sweep over many repositories
-should handshake once rather than per call. `api.services.builder.registry` keeps only
-the policy of *what* a function event reclaims; anything else the platform reclaims through the management API
-(the build controller's tag pruning) speaks to Quay through the same client, so the two
-services cannot drift in how they address it.
+Both repository paths come from `common.names.image_repository` and `cache_repository`, under
+`RegistryConfig.path` - the same functions and prefix the build pushes through. They take only
+the validated `{group}` and `{name}` labels, never request input, and run only for the function
+offering: a container's image was built elsewhere. The `/api/v1` mechanics - how a repository or
+a tag is addressed, and how each HTTP outcome is judged (2xx deleted, 404 already gone, 401/403
+names the token's missing namespace admin) - live in `common.registry.RegistryClient`, a domain
+module either service may import and a context manager over **one** `httpx` connection.
+`api.services.builder.registry` keeps only the policy of *what* a function event reclaims; the
+build controller's tag pruning uses the same client.
 
 #### Accepted consequences
 
-- **A crash leaks a repository.** Cleanup is best-effort and fired once, after every region
-  confirms the delete; it is not reconciled. If the pod dies between the two, the
-  repository survives and nothing will notice. Deliberate: the alternative is a
-  reconcile pass that derives "unowned" from a cluster read, which deletes everything the
-  moment that read wrongly returns empty.
+- **A crash leaks a repository.** Cleanup is best-effort, fired once after every region
+  confirms the delete, and never reconciled. The alternative is a reconcile pass that derives
+  "unowned" from a cluster read, which deletes everything the moment that read wrongly returns
+  empty.
+- **An unreachable peer registry leaks**, the same way and unnoticed.
 - **A container pinned to a function's image breaks.** `image` on the container offering is
   grammar-validated only, not scoped to the caller's group, so a container may reference a
   function's image. Deleting the function removes it regardless.
-- **An unreachable peer registry leaks.** The delete is issued per region from one instance,
-  so a registry that cannot be reached leaves its repositories behind and nothing notices.
-  Doing it from each region's own controller instead was rejected for the reason above: it
-  would have to derive "unowned" from a cluster read.
-- **Reclamation is not immediate.** Deleting the repository removes it from the listing at
-  once, but the underlying blobs come back when Quay garbage-collects, after its
-  time-machine window has passed.
-- **Quay-specific.** `/api/v1` is Quay's own API; moving to another registry means
-  reimplementing this against that registry's equivalent.
-
-### Registry tag GC
-
-kpack pushes every successful build **twice**: the branch tag moves to the new digest, and
-a unique `b{n}.{date}.{time}` tag is added beside it. The branch tag overwrites; the build
-tags accumulate, one per build, for the life of the function - and `STACK`/`BUILDPACK` CVE
-rebuilds and `POST .../build` create builds without a user touching anything, so they grow
-even for functions nobody edits. They count against registry quota and, until this GC,
-nothing reclaimed them short of deleting the function. A branch change leaks the same way:
-the old branch's projected tag stays behind permanently.
-
-The **build controller** prunes them (`build_controller/gc.py`), because the problem is shaped
-like the controller:
-
-- **Per-region, local only.** A region builds what it runs into its own registry, so each
-  region's controller prunes exactly the registry its region filled, with its own token. The
-  one cross-region call stays the API's delete cleanup; the GC adds none.
-- **It already holds the ground truth.** The sweep rides the resync's Image listing - no
-  second LIST - and judges tags against `spec.tag` and `status.latestImage` as just
-  fetched.
-- **Reconciled**, unlike the fire-once cleanup on delete: garbage is re-derived from live
-  state on every sweep, so a crash or an unreachable registry leaks nothing permanently -
-  the next sweep collects it. One function failing is logged and skipped, never the end
-  of the sweep - the listing order is stable, so an aborting error would starve every
-  function after it, deterministically, on every sweep.
-
-**One region per registry is the safety premise, and it is enforced twice.** A controller
-pruning a repository protects only its *own* region's serving digest; two regions on one
-registry would each delete tags the other still serves. So the chart requires
-`regions[].registry.url` on every region and refuses to render two regions on one registry
-(BUILDING.md: Registry layout), and the controller independently refuses to sweep - loudly,
-naming the regions and the shared host - when its resolved registry matches another
-region's (`TagGC._blocked`, `build_controller/gc.py`), as the backstop for a hand-rolled
-config. Refusing is the safe answer because the alternative is not a smaller sweep: it is
-deleting tags a peer's KSVC is pinned to.
-
-Per function repository, a sweep **keeps**: the current **branch tag** (a create deploys
-at it; a switchover region rebuilds into it); every tag on the **digest of
-`status.latestImage`** (deleting the last tag on a manifest lets Quay collect it, and the
-digest-pinned KSVC could no longer pull on a node change); the newest
-**`buildController.gc.keepBuilds`** build tags **beyond all of those** (default **3**,
-mirroring `build.history.success` - protected tags never consume a slot, so the retained
-history is exactly what the knob says); and any tag the listing reports **without a
-digest**, which cannot be proven safe. A function whose Image records **no successful
-build** is skipped outright: a fresh Image (created, re-created, or post-switchover) can
-sit over a repository still holding a previous incarnation's tags, and with nothing
-digest-protected, pruning would be a guess. Everything else - older build tags, stale
-branch tags - is deleted. The cache repository is never addressed: it reuses one
-`latest` tag and does not accumulate (BUILDING.md: Open Questions).
-
-**Wiring.** The controller mounts the same per-region tokens Secret the API holds
-(`registry.apiTokens`, optional for the same ESO reason) and resolves only its own region's
-token; `buildController.gc.{enabled,intervalSeconds,keepBuilds}` are the knobs, and
-`registry.deleteOnFunctionDelete: false` - the platform-wide "may we delete registry
-content" switch - stops the GC exactly as it stops cleanup on delete. The sweep fires on
-an hours-scale interval (default 6h) and runs on its **own daemon thread**: it is
-registry-bound I/O that must never sit between the reconcile loop's relist and its
-watch, where every minute spent is a minute no digest rolls out. **The first sweep is not
-waited for**: `TagGC` starts with a zero deadline, so a restarted controller shows its GC
-working - or says why it is not - within one pass rather than an interval later. The next
-deadline is set when a sweep starts, so a failing registry retries at the next *due*
-resync; a sweep still running when the next is due is logged and not doubled. The tag listing itself is
-page-capped (`common/registry.py`), so paging that never terminates - a proxy dropping
-the `page` param - becomes a warning and an empty listing (no listing = no deletes),
-never a wedged thread.
-
-**The logs are the feature's UI.** Startup states whether the GC is on - and if off,
-*why*: disabled by configuration (said once), or a loud reason re-said once per interval
-(`deleteOnFunctionDelete` off, a missing token, a shared registry), so a state that an
-operator likely wants fixed is never deduced from silence. A token that syncs *after*
-the pod started needs a pod restart to be seen - env is injected at container start -
-which the log line says outright. Each sweep logs a per-function verdict
-(`pruned 4 of 8 tag(s) in 'payments/hello'`), names every deleted tag individually, and
-closes with a summary (`swept 12 function repositories in 'central', pruned 31 tag(s),
-0 failed`). Skips are named too: a tag on a foreign host is a warning, an Image with no
-successful build yet is an info line, a repository already deleted mid-sweep is silent
-by design.
-
-#### Accepted consequences
-
-- **An old revision can outlive its tags.** Only the serving digest is protected; a
-  revision pinned to an older one that re-pulls after its tags are pruned *and* after
-  Quay's time-machine window has passed will fail. `keepBuilds` plus the time machine is
-  the buffer. Deliberate: the RBAC for reading Revisions already exists (the Role grants
-  `revisions: get/list` for `/stats`), so the cost would only be a Revision list per
-  sweep - it is the retention window's coverage of the edge, not RBAC, that makes the
-  simpler rule enough for now.
-- **Quota returns late.** A deleted tag sits in Quay's time machine until
-  `DEFAULT_TAG_EXPIRATION` passes; the sweep frees the listing at once and the bytes later.
-- **A container pinned to a function's build tag breaks** - the same accepted consequence
-  as the repository delete above, one tag at a time.
-- **Quay-specific**, exactly as the cleanup above: `/api/v1` again, same token, same
-  caveat about other registries.
-
----
+- **Reclamation is not immediate.** The repository leaves the listing at once; the blobs come
+  back when Quay garbage-collects, after its time-machine window.
+- **Quay-specific.** Moving to another registry means reimplementing this against that
+  registry's `/api/v1` equivalent.
 
 ## Sample Manifests
 
-The build-side objects only; the platform manifests (KSVC, RBAC, ESO, DomainMapping)
-are under DEPLOYING.md: Sample Manifests.
+The build-side objects only. The platform manifests (KSVC, RBAC, ESO, DomainMapping) are under
+DEPLOYING.md: Sample Manifests.
 
 ### Image (created by the API, local cluster)
 
@@ -1168,7 +567,7 @@ metadata:
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello
 spec:
-  # {base}/{group}/{name}:{branch projected to a legal OCI tag} (BUILDING.md: Registry layout)
+  # {base}/{group}/{name}:{branch projected to a legal OCI tag} (RUNTIMES.md: Registry layout)
   tag: registry.internal/<org>/<repo>/payments/hello:main
   builder:                             # cluster-scoped, so no namespace to name
     kind: ClusterBuilder
@@ -1178,21 +577,21 @@ spec:
     git:
       url: https://git.internal/payments/hello.git
       revision: main                   # the branch; a pinned SHA awaits the webhook
-  cache:                               # registry, not a PVC (BUILDING.md: Build cache)
+  cache:                               # registry, not a PVC (RUNTIMES.md: Build cache)
     registry:
       tag: registry.internal/<org>/<repo>/payments/hello_cache:latest
   build:
     env:
       - { name: BP_CPYTHON_VERSION, value: "3.12" }
       - { name: PIP_INDEX_URL, value: "https://artifactory.internal/artifactory/api/pypi/pypi/simple" }
-    # NOTE: never set creationTime here - see BUILDING.md: Active/Active Behaviour
+    # NOTE: never set creationTime here - see BUILDING.md: Convergence rules
 ```
 
 ### ClusterBuilder (serverless-api chart, per region)
 
-Cluster-scoped, one per runtime (BUILDING.md: Buildpack Topology). The object is
-cluster-wide but its content is this region's: each region's release composes the builder
-from the mirrored stack and store and pushes it to its own registry.
+Cluster-scoped, one per runtime. The object is cluster-wide but its content is this region's:
+each region's release composes the builder from the mirrored stack and store and pushes it to
+its own registry.
 
 ```yaml
 apiVersion: kpack.io/v1alpha2
@@ -1238,18 +637,15 @@ spec:
 ```
 
 Both need `spec.serviceAccountRef` pointing at a ServiceAccount holding the mirror pull
-credential when the internal registry requires auth. That account and its ExternalSecret
-are created by the kpack chart too (`clusterBuild.serviceAccount` /
-`clusterBuild.registrySecret`), so the objects and the credential they pull with stay in
-one release.
+credential when the internal registry requires auth. The kpack chart creates that account and
+its ExternalSecret too (`clusterBuild.serviceAccount` / `clusterBuild.registrySecret`).
 
 ### Build ServiceAccount (registry push/pull + git)
 
-The account the **ClusterBuilders** run as, in the API's namespace - the one they name in
-`spec.serviceAccountRef`. No git credential: composing a builder image never clones source -
-but it does read two registries, pulling the stack and store from the kpack registry and
-pushing the composed builder to this region's. The per-function build account is in
-BUILDING.md: Registry & Git Credentials.
+The account the **ClusterBuilders** name in `spec.serviceAccountRef`, in the API's namespace.
+No git credential: composing a builder image never clones source. It does read two registries -
+stack and store from the kpack registry, the composed builder pushed to this region's. The
+per-function build account is in BUILDING.md: Registry & Git Credentials.
 
 ```yaml
 apiVersion: v1
@@ -1295,7 +691,7 @@ spec:
             volumes:
               - name: internal-ca
                 configMap: { name: ca-bundle }
-            # BOTH lists - the lifecycle runs as init containers (BUILDING.md: Trust: CA Injection, BUILDING.md: Build Flow)
+            # BOTH lists - the lifecycle runs as init containers (BUILDING.md: Trust: CA Injection)
             initContainers:
               - (name): "*"
                 volumeMounts:
@@ -1314,234 +710,33 @@ spec:
                 env:   # the same six - `serverless-api.buildCaEnv` renders both lists
 ```
 
-### Why pip needs three variables of its own
-
-Mounting the bundle is enough for Go, git and Node: Go's `crypto/x509` and OpenSSL read
-`SSL_CERT_FILE`, git reads `GIT_SSL_CAINFO`, and Node appends `NODE_EXTRA_CA_CERTS` to its
-built-in roots (npm inherits that). **pip reads none of them.** It verifies against the
-`certifi` bundle vendored inside the pip package - public roots only - and consults neither
-the OS trust store nor `SSL_CERT_FILE`. So an internal PyPI index fails with
-`CERTIFICATE_VERIFY_FAILED` no matter where the CA is mounted, and the failure is easy to
-misread: pip cannot fetch the simple index, so it reports the requirement as
-`(from versions: none)` and then `No matching distribution found` - which looks like a
-missing package rather than a TLS problem.
-
-`PIP_CERT` (pip itself), plus `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` (its vendored
-`requests`), are what actually redirect it.
-
-> This is also why the same `pip install` succeeds on a RHEL host: Red Hat patches its
-> packaged pip to de-vendor certifi and use the system trust store, so an internal CA in
-> `/etc/pki/ca-trust/source/anchors/` is picked up with no configuration. The jammy build
-> image runs upstream pip, which is unpatched.
-
-Note that those three **replace** the trust set rather than adding to it, unlike
-`NODE_EXTRA_CA_CERTS`. That is safe only because the OpenShift bundle is the complete
-store, system roots included; a partial bundle would silently cut off every public host.
-
-**Do not mount the bundle over `/etc/ssl/certs`.** A ConfigMap volume replaces the whole
-directory, so on the jammy build image `/etc/ssl/certs/ca-certificates.crt` - the target of
-the `/usr/lib/ssl/cert.pem` symlink OpenSSL actually reads - becomes a dangling link, and
-the hashed `c_rehash` symlinks its CApath needs are gone too. Python ends up with an empty
-trust store while Go still works, because Go falls back to scanning every file in that
-directory. The result is a build that gets *further* than an unmounted one and fails in a
-place that looks unrelated. `build.caInjection.mountPath` defaults to `/etc/serverless/ca`
-for this reason.
-
----
-
-## Airgapped Mirror Inventory
-
-Three **distinct** classes of artefact must be mirrored. Mirroring only the first two is
-the most common airgapped failure, and it fails late - at the `build` phase of the first
-real build, not at install time.
-
-The scripts that mirror them live in the **kpack chart repository**
-(`scripts/mirror/`), because everything below is named by that chart's values.
-Point them at the values the kpack release is deployed with:
-
-```bash
-./pull-images.sh   -v /path/to/your-kpack-values.yaml
-./pull-runtimes.sh -v /path/to/your-kpack-values.yaml
-```
-
-The second reads every buildpack.toml in the store's buildpackages and mirrors
-what they download, so it follows the store rather than the runtimes this chart
-advertises. That means it can carry versions no runtime offers - the store's
-buildpackages support them, so a build could ask for them. Narrowing
-`runtimes[].versions` shrinks what callers may select, not what is mirrored.
-
-### Container images - kpack platform
-
-Pulled by the platform chart. Registry `ghcr.io`, repository prefix
-`buildpacks-community/kpack/`, tag = the chart's `appVersion`:
-
-| Image | Pulled by |
-|-------|-----------|
-| `controller` | kpack Deployment |
-| `webhook` | kpack Deployment |
-| `build-init` | every build pod (`prepare`) |
-| `build-waiter` | every build pod |
-| `rebase` | rebase builds (CVE patches) |
-| `completion` | every build pod |
-| `lifecycle` | referenced by the `ClusterLifecycle` |
-
-### Container images - Paketo content
-
-| Image | Used by |
-|-------|---------|
-| `paketobuildpacks/build-jammy-base` | `ClusterStack.spec.buildImage` |
-| `paketobuildpacks/run-jammy-base` | `ClusterStack.spec.runImage` (and the running function) |
-| `paketobuildpacks/go` | `ClusterStore` |
-| `paketobuildpacks/nodejs` | `ClusterStore` |
-| `paketobuildpacks/python` | `ClusterStore` |
-
-These are pulled from the **kpack registry**, which is shared by every region and written by
-nobody - so the inventory is mirrored once, not once per region.
-
-The **composed builder images** this platform *produces* are the exception: they are pushed
-to `{region registry base}/<lang>` by that region's `ClusterBuilder` objects (the base
-already carries `build.builderRepository`), so that repository must exist and be writable
-in **each** region's registry. Composing is a push, and two clusters pushing one builder
-tag is the race per-region registries exist to remove.
-
-### Runtime distributions - **not images**
-
-A Paketo buildpackage ships the buildpack *logic and metadata*, **not** the language
-runtime. Its `buildpack.toml` points at the public internet - e.g. the `cpython` buildpack
-carries 60 dependency entries of the form:
-
-```toml
-[[metadata.dependencies]]
-  id       = "python"
-  version  = "3.10.19"
-  uri      = "https://www.python.org/ftp/python/3.10.19/Python-3.10.19.tgz"
-  checksum = "sha256:a078fb2d7a216071ebbe2e34b5f5355dd6b6e9b0cd1bacc4a41c63990c5a0eec"
-```
-
-In an airgapped cluster that fetch fails, so `BP_CPYTHON_VERSION` (BUILDING.md: Runtime Versions & Dependencies axis 2) cannot be
-satisfied by the image alone. The tarballs for every advertised
-`runtimes[].versions` entry must be mirrored **to the artifact server** (they are files,
-not registry content):
-
-Proof that nothing is bundled: each buildpack's own `include-files` lists everything that
-goes into its image - `buildpack.toml` plus a few `bin/` scripts, and no archives.
-
-**Only the buildpacks that *provide* a tool download anything.** The ones that *use* it
-(`pip-install`, `poetry-install`, `npm-install`, `go-build`, `*-start`, ...) are pure
-logic. Across the orders in BUILDING.md: Buildpack Topology this is the complete download set:
-
-| Component | Entries (amd64) | Upstream hosts |
-|-----------|-----------------|----------------|
-| `cpython` | 30 | www.python.org, artifacts.paketo.io |
-| `node-engine` | 11 | nodejs.org |
-| `go-dist` | 5 | go.dev |
-| `poetry` | 12 | files.pythonhosted.org |
-| `pip` | 2 | artifacts.paketo.io |
-| `watchexec` | 1 | github.com |
-
-Two things keep this small:
-
-- **Filter by what is advertised.** `cpython`'s 30 amd64 entries cover ten minor versions;
-  only the `runtimes[].versions` on offer are ever requested - six files for 3.11/3.12/3.13,
-  three if only the newest patch of each is kept.
-- **A dependency is fetched only if its buildpack can run.** Narrowing the orders (BUILDING.md: Buildpack Topology) is
-  what shrinks this list: with no pipenv or conda group, `pipenv` and `miniconda` never
-  execute and their files are never needed.
-
-Note the **five distinct upstream hosts** - that is why the mirror in BUILDING.md: Airgapped Mirror Inventory uses
-`{originalHost}` rather than a single flat prefix.
-
-The authoritative list is always the `uri` + `checksum` fields in each buildpack's
-`buildpack.toml`, readable with `pack buildpack inspect <image>`.
-
-### Redirecting the download - `dependency-mirror`
-
-Mirroring the tarballs is not enough: the buildpack still resolves the **public** URI from
-`buildpack.toml`. Paketo's dependency resolver (`libpak`) offers two ways to redirect it.
-They are **mutually exclusive** - libpak warns and ignores the mappings if both are set.
-
-#### Preferred: a dependency mirror
-
-One setting redirects **every** dependency, with no per-version list to maintain. libpak's
-own documentation gives this as the reason it exists: *"avoiding too many
-dependency-mapping bindings"*.
-
-```yaml
-env:
-  - name: BP_DEPENDENCY_MIRROR
-    value: https://artifactory.internal/artifactory/deps/{originalHost}
-```
-
-The resolver replaces the scheme, host and user from the mirror and **appends the original
-path**:
-
-```
-buildpack.toml:  https://www.python.org/ftp/python/3.10.19/Python-3.10.19.tgz
-resolved to:     https://artifactory.internal/artifactory/deps/www.python.org
-                                                   /ftp/python/3.10.19/Python-3.10.19.tgz
-```
-
-Because the upstream path is preserved, a **remote/generic repository that mirrors upstream
-layout** needs no per-file curation. Related knobs:
-
-| Knob | Effect |
-|------|--------|
-| `BP_DEPENDENCY_MIRROR` | Default mirror for all upstream hosts |
-| `BP_DEPENDENCY_MIRROR_<HOSTNAME>` | Per-host mirror (encode `.`/`-` as `__`, upper case) |
-| `{originalHost}` | Placeholder substituted with the upstream hostname |
-| `skip-path` | Strips a prefix from the original path when layouts differ |
-
-Only the `https://` and `file://` schemes are accepted.
-
-> **Credentials:** the resolver honours userinfo in the mirror URL, but a mirror needing
-> auth must be supplied as a **binding** of type `dependency-mirror`, never as
-> `BP_DEPENDENCY_MIRROR` env - env lands in the world-readable runtimes ConfigMap and in
-> every `Image` spec.
-
-#### Fallback: per-dependency mappings
-
-A binding of type `dependency-mapping` maps each dependency's SHA256 to its mirrored
-location. The checksum is both the lookup key and the integrity check, so a redirect cannot
-silently serve the wrong file:
-
-```
-type:                                                              dependency-mapping
-a078fb2d7a216071ebbe2e34b5f5355dd6b6e9b0cd1bacc4a41c63990c5a0eec:  https://artifactory.internal/.../Python-3.10.19.tgz
-```
-
-Use this only when the artifact server cannot reproduce upstream path structure - it must
-be regenerated whenever a buildpackage bump (BUILDING.md: Runtime Versions & Dependencies axis 1) changes the dependency set, or
-builds break for the versions that moved.
-
-Either form is attached per build through `spec.build.services`, alongside the CA binding.
-
----
+Why pip needs `PIP_CERT`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` of its own is in
+RUNTIMES.md: Why pip needs three variables of its own.
 
 ## Open Questions
 
 1. **Artifact server layout** - are pip/npm/go served by one Artifactory/Nexus host on the
-   standard `api/pypi`, `api/npm`, `api/go` paths, and are those repos anonymous-read? If
-   they require auth, the credential must reach the build pod without landing in the
-   world-readable runtimes ConfigMap (a CNB service binding, not env).
-2. **Mirror layout** (BUILDING.md: Airgapped Mirror Inventory) - can the artifact server expose the runtime tarballs under
-   their upstream paths (enabling a single `BP_DEPENDENCY_MIRROR`), or must per-dependency
-   `dependency-mapping` bindings be generated from each `buildpack.toml`? The former
-   removes a regeneration step on every buildpackage bump.
-3. **Build resource sizing** - `build.resources` now ships a default (500m/1Gi requests,
-   2 CPU/4Gi limits), so a build is no longer BestEffort. Whether one bound suits every
-   function is the open part: a large `node_modules` or Go module graph may need more,
-   and per-function tuning would belong beside the workload's `size` rather than on this
-   value (BUILDING.md: Build pod resources).
-4. **Cache retention** (BUILDING.md: Build cache) - kpack overwrites the one `latest` tag each build, so a
-   cache repository does not accumulate tags; superseded blobs are the registry's to
-   reclaim. Whether the registry's own GC settles this depends on the registry - and it
-   is now per region, so each one settles its own.
+   standard `api/pypi`, `api/npm`, `api/go` paths, and are those repos anonymous-read? If they
+   require auth, the credential must reach the build pod without landing in the world-readable
+   runtimes ConfigMap: a CNB service binding, not env.
+2. **Mirror layout** (RUNTIMES.md: Airgapped Mirror Inventory) - can the artifact server expose
+   the runtime tarballs under their upstream paths, enabling a single `BP_DEPENDENCY_MIRROR`,
+   or must per-dependency `dependency-mapping` bindings be generated from each
+   `buildpack.toml`? The former removes a regeneration step on every buildpackage bump.
+3. **Build resource sizing** - `build.resources` ships a default (500m/1Gi requests, 2 CPU/4Gi
+   limits), so a build is no longer BestEffort. Whether one bound suits every function is the
+   open part: a large `node_modules` or Go module graph may need more, and per-function tuning
+   would belong beside the workload's `size`.
+4. **Cache retention** (RUNTIMES.md: Build cache) - kpack overwrites the one `latest` tag each
+   build, so a cache repository does not accumulate tags; superseded blobs are the registry's
+   to reclaim. Whether the registry's own GC settles this depends on the registry, and it is
+   now per region.
 5. **Git webhook** - not implemented. `BuildRequest.revision` carries the field and the
-   convergence rule it must follow is recorded above (rule 4); what is undecided is the
-   endpoint's auth model (per-function shared secret vs. provider signature) and how a
-   push maps to a function when several functions build from one monorepo.
-6. **Peer-registry reachability** - a function delete reclaims repositories in *every*
-   region's registry from whichever API instance took the request (BUILDING.md: Registry
-   cleanup on delete), so the internal network must route each region's registry host
-   from every cluster. If it does not, deletes leak repositories in the peer region and a
-   different reclamation story is needed.
+   convergence rule it must follow is recorded above (rule 4). Undecided: the endpoint's auth
+   model (per-function shared secret vs. provider signature) and how a push maps to a function
+   when several functions build from one monorepo.
+6. **Peer-registry reachability** - a function delete reclaims repositories in *every* region's
+   registry from whichever API instance took the request (BUILDING.md: Registry cleanup on
+   delete), so the internal network must route each region's registry host from every cluster.
+   If it does not, deletes leak repositories in the peer region and a different reclamation
+   story is needed.

@@ -739,7 +739,7 @@ async def test_every_region_builds_and_every_region_gets_the_credential():
     await svc.create("payments", _create_spec(), _principal())
 
     # every region builds what it runs, into its own registry - no two regions
-    # contend for one tag (docs/BUILDING.md - Registry layout)
+    # contend for one tag (docs/RUNTIMES.md - Registry layout)
     assert len(_applied_kind(local, "Image")) == 1
     assert len(_applied_kind(remote, "Image")) == 1
     assert len(_applied_kind(remote, "Service")) == 1
@@ -920,7 +920,7 @@ async def test_changing_the_source_path_rebuilds_but_leaves_the_running_image():
     # The build is re-declared, but the workload keeps the digest it is serving:
     # the tag still resolves to that same digest until the build lands, so
     # writing it would cut a revision of identical code. The build controller supplies
-    # the new digest (docs/BUILDING.md - Digest propagation).
+    # the new digest (docs/BUILD-CONTROLLER.md - Digest propagation).
     assert extract_image(_applied_kind(cluster, "Service")[0]) == DEPLOYED
 
 

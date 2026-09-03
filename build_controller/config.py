@@ -19,7 +19,7 @@ class BuildControllerSettings(LoopSettings):
     app_name: str = "serverless-build-controller"
 
     # Tag GC: prune the per-build tags kpack accumulates in this region's
-    # registry (docs/BUILDING.md - Registry tag GC). Also needs the registry
+    # registry (docs/BUILD-CONTROLLER.md - Registry tag GC). Also needs the registry
     # API token; without one the GC announces itself off and does nothing.
     gc_enabled: bool = True
     # Sweep interval, hours-scale rather than the resync's minutes; each sweep

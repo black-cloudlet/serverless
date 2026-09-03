@@ -57,7 +57,7 @@ def overall_status(statuses: list[str]) -> str:
     makes it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in
     flight is ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal
     rollout with one region ahead, NOT a failure
-    (docs/ARCHITECTURE.md - Partial-failure semantics).
+    (docs/API.md - Partial-failure semantics).
 
     Args:
         statuses: The per-region status strings.

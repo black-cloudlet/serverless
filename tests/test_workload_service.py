@@ -1159,7 +1159,7 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
     # The build is re-declared, the running image is not touched: after the
-    # create only the controller writes it (docs/BUILDING.md - Digest propagation).
+    # create only the controller writes it (docs/BUILD-CONTROLLER.md - Digest propagation).
     assert extract_image(ksvc) == "reg/fn:old"
 
 

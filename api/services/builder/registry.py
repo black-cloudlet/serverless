@@ -1,10 +1,10 @@
 """Registry cleanup: deleting repositories nothing in the cluster owns.
 
-A function's images and its build cache (docs/BUILDING.md - Build cache)
+A function's images and its build cache (docs/RUNTIMES.md - Build cache)
 outlive the KSVC that produced them. Two events reclaim them: the function
 being deleted, and its tag moving to a new repository, which leaves the old one
 behind with nothing to ever address it again
-(docs/BUILDING.md - Moving a function's repository).
+(docs/RUNTIMES.md - Moving a function's repository).
 
 Policy only - *which* repositories a function event reclaims, and that the
 whole cleanup is best-effort. How the registry is spoken to lives in
@@ -55,7 +55,7 @@ def reclaim_moved_repositories(registry: RegistryConfig, previous_tag: str) -> N
     Nothing addresses them once the tag changes: cleanup on delete derives the
     *current* layout. Called after the ``Image`` has been replaced and the new
     build has a tag of its own, so the running pods keep the image they hold
-    (docs/BUILDING.md - Moving a function's repository).
+    (docs/RUNTIMES.md - Moving a function's repository).
 
     Args:
         registry: Registry settings, carrying the host and the API token.

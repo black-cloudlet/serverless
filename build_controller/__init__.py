@@ -1,6 +1,6 @@
 """Build controller - rolls each finished kpack build onto the function it built.
 
-The platform's second service (docs/BUILDING.md - Digest propagation): a watch
+The platform's second service (docs/BUILD-CONTROLLER.md - Digest propagation): a watch
 loop over kpack Images, since a `STACK` or `BUILDPACK` rebuild finishes with no
 request in flight to observe it. It serves no HTTP and takes only the domain and
 cluster layers of ``common``.

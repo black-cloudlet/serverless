@@ -7,7 +7,7 @@ the build-state read - stays in the engine.
 The merge is partial-tolerant. A region that did not answer is simply absent
 from the input, and a workload's rollup covers only the regions that did return
 it, so a workload found in one region of two reads ``Ready`` rather than
-``Failed`` (docs/ARCHITECTURE.md - Partial-failure semantics).
+``Failed`` (docs/API.md - Partial-failure semantics).
 """
 
 from __future__ import annotations

@@ -34,7 +34,7 @@ CA_ENV_VARS = (
 
 # Memory is request==limit, a hard OOM boundary; CPU is request-only, so a workload
 # is never throttled, and the request is what the cpu/memory HPA metrics divide by
-# (docs/ARCHITECTURE.md - Resource size).
+# (docs/API.md - Resource size).
 _SIZES: dict[str, tuple[str, str]] = {
     "small": ("100m", "256Mi"),
     "medium": ("250m", "512Mi"),

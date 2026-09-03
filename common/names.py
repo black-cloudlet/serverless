@@ -538,7 +538,7 @@ def cache_repository(group: str, name: str) -> str:
 
     The ``_`` makes a collision with the image repository impossible: a name is
     a DNS-1123 label admitting only ``[a-z0-9-]``, so no function can be named
-    ``{name}_cache`` (docs/BUILDING.md - Build cache).
+    ``{name}_cache`` (docs/RUNTIMES.md - Build cache).
 
     Args:
         group: The owning group.

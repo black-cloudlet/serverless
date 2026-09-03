@@ -100,7 +100,7 @@ class RegistryConfig(BaseModel):
     Both the platform default and, once merged with a :class:`RegionRegistry` by
     :meth:`CommonSettings.registry_for`, one region's resolved registry: a caller
     holds a whole registry, never a base plus overrides still to apply
-    (docs/BUILDING.md - Registry layout).
+    (docs/RUNTIMES.md - Registry layout).
     """
 
     url: str = "registry.internal"
@@ -172,7 +172,7 @@ class BuildConfig(BaseModel):
     resources: dict = Field(default_factory=dict)
     # "registry" caches build layers in the registry the build already pushes to;
     # "inherit" writes no `spec.cache` and takes kpack's default, a PVC per Image.
-    # docs/BUILDING.md - Build cache.
+    # docs/RUNTIMES.md - Build cache.
     cache: Literal["registry", "inherit"] = "registry"
     # Set explicitly: unset is kpack's default of 10 and 10, and each Build holds
     # a completed pod (docs/BUILDING.md - Build history).
@@ -275,7 +275,7 @@ class CommonSettings(BaseSettings):
     cluster_op_timeout: float = 60.0
     # The same backstop for the read fan-outs (list/get/stats). A cluster that
     # overruns it costs only its own column of the merged response
-    # (docs/ARCHITECTURE.md - Partial-failure semantics).
+    # (docs/API.md - Partial-failure semantics).
     cluster_read_op_timeout: float = 5.0
     # The bounded pool the read fan-outs run on, and how much may queue for it.
     # It is separate from the process-wide default executor; past

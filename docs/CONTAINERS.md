@@ -14,12 +14,12 @@ functions - scaling, env, files, hosts, status - is in ARCHITECTURE.md.
 | `registryToken` | no | Registry access token; used to create an `imagePullSecret`, **not persisted** and **never returned**. |
 | `name` | yes | Logical workload name (DNS-1123). |
 | `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/serverless/v1/containers/info`. |
-| `env`, `files`, `scaling` | no | Shared capabilities, see ARCHITECTURE.md: Shared capabilities. |
+| `env`, `files`, `scaling` | no | Shared capabilities, see API.md: Shared sub-schemas. |
 
 **Flow:**
 
 1. The API creates a Kubernetes `kubernetes.io/dockerconfigjson` **imagePullSecret** from
-   the supplied credentials in each region, **labeled** with the owning group (ARCHITECTURE.md: Authentication & Authorization) and linked
+   the supplied credentials in each region, **labeled** with the owning group (API.md: Authentication & Authorization) and linked
    to the KSVC's service account. The secret's `auths` entry is keyed to the **registry host
    parsed from the client's `image`** (the org runs several registries), not the platform's
    own registry.
@@ -84,5 +84,5 @@ track one.
 
 **Functions do not have this endpoint.** A function's image is built by the platform, and
 its digest reaches the workload through the build controller
-(BUILDING.md: Digest propagation). `POST .../functions/{name}/build` is the equivalent:
+(BUILD-CONTROLLER.md: Digest propagation). `POST .../functions/{name}/build` is the equivalent:
 build again, then let the controller roll the result out.

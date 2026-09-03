@@ -22,7 +22,7 @@ class _SlotGuardedStream:
     ``weakref.finalize`` backstop releases for an object the response layer
     dropped without ever closing or iterating it. Release is idempotent, so the
     several owners cannot double-free
-    (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+    (docs/STREAMING.md - A held-open stream holds a thread).
     """
 
     def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]):

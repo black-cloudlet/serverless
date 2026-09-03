@@ -1,4 +1,4 @@
-"""The tenant-namespace controller (docs/ARCHITECTURE.md - Tenant Namespaces).
+"""The tenant-namespace controller (docs/TENANT-CONTROLLER.md - Tenant Namespaces).
 
 A deployment beside the API, with its own cluster identity: it is the only
 component that creates and deletes Namespaces and RoleBindings

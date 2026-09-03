@@ -5,7 +5,7 @@ roster first and then opens a log stream for one of its entries.
 
 It pushes on an interval rather than answering once because the roster expires:
 Knative replaces a workload's pods on every revision and removes them all on
-scale-to-zero (docs/ARCHITECTURE.md - Streaming).
+scale-to-zero (docs/STREAMING.md - The streams).
 
 Local region only, matching the log streams it feeds: a pod name is only useful
 where its log can be read.

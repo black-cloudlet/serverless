@@ -6,7 +6,7 @@ branch tag overwrites; the build tags accumulate, one per build, for the life
 of the function - and CVE rebuilds and ``POST .../build`` create builds without
 any user action, so they grow even for functions nobody touches. Nothing else
 reclaims them short of deleting the function
-(docs/BUILDING.md - Registry tag GC).
+(docs/BUILD-CONTROLLER.md - Registry tag GC).
 
 Local, like the reconciler this rides in: a region builds what it runs and
 pushes to its own registry, so each controller prunes exactly the registry its
@@ -56,7 +56,7 @@ def garbage(
     Protected tags are set aside *before* the newest-``keep`` window is cut, so
     ``keep`` counts only deletable build history and a protected tag never
     consumes a slot. A tag with no digest cannot be proven safe and is set aside
-    the same way (docs/BUILDING.md - Registry tag GC).
+    the same way (docs/BUILD-CONTROLLER.md - Registry tag GC).
 
     Args:
         tags: The repository's active tags, in any order.
@@ -90,7 +90,7 @@ class TagGC(PeriodicSweep):
     The pacing and thread scaffolding live on :class:`common.loop.PeriodicSweep`:
     the sweep is registry-bound I/O that must never sit between the reconcile
     loop's relist and its watch, where every minute spent is a minute no digest
-    rolls out (docs/BUILDING.md - Registry tag GC).
+    rolls out (docs/BUILD-CONTROLLER.md - Registry tag GC).
     """
 
     label = "tag GC"
@@ -145,7 +145,7 @@ class TagGC(PeriodicSweep):
             return (
                 f"region '{region}' shares registry {self._registry.host} with "
                 f"{', '.join(sorted(sharing))}; every region must build into its own "
-                "registry (docs/BUILDING.md - Registry layout), and pruning a shared one "
+                "registry (docs/RUNTIMES.md - Registry layout), and pruning a shared one "
                 "would delete tags a peer region still serves"
             )
         if not self._registry.delete_on_function_delete:

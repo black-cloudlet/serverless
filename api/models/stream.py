@@ -2,7 +2,7 @@
 
 The request/response schemas ship with the flow itself
 (:mod:`cloudlet_apis.auth.tickets`); this module holds the allowlist the mint
-runs every requested path through (docs/ARCHITECTURE.md - Browsers cannot send
+runs every requested path through (docs/STREAMING.md - Browsers cannot send
 an ``Authorization`` header).
 """
 

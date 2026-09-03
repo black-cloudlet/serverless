@@ -31,7 +31,7 @@ class StreamConfig(BaseModel):
     connected, so stream threads are drawn from
     :class:`~api.services.streams.capacity.StreamCapacity`'s own pool, not the
     default executor, and admission is capped before that pool can be exhausted
-    (docs/ARCHITECTURE.md - A held-open stream holds a thread).
+    (docs/STREAMING.md - A held-open stream holds a thread).
 
     Attributes:
         max_concurrent: Open streams allowed at once, per process. A request
@@ -54,7 +54,7 @@ class StreamConfig(BaseModel):
             spent opening one connection.
         snapshot_tail_lines: Newest lines a ``follow=false`` log snapshot
             returns, applied always, whatever the caller asks
-            (docs/ARCHITECTURE.md - ``follow=false``).
+            (docs/STREAMING.md - ``follow=false``).
         snapshot_max_bytes: Hard ceiling on the bytes one snapshot reads. A
             caller's ``limitBytes`` is clamped to it, and it applies when the
             caller sets none.
@@ -124,7 +124,7 @@ class Settings(CommonSettings):
     sso: SSOConfig = Field(default_factory=SSOConfig)
     # Raw admin key from Vault via ESO. Empty (the default) disables key auth.
     # Separate from `sso`: the non-OIDC fallback, for admin automation that
-    # cannot do SSO at all (docs/ARCHITECTURE.md - Static API keys).
+    # cannot do SSO at all (docs/API.md - Static API keys).
     admin_api_key: str = ""
 
     # What the SSE streams are allowed to consume. env: SERVERLESS_STREAM__*.
@@ -132,7 +132,7 @@ class Settings(CommonSettings):
     # HMAC key for stream tickets, from Vault via ESO. Empty (the default)
     # disables ticket minting; the streams still authenticate off the
     # Authorization header, so only the browser path - which cannot set that
-    # header - depends on this (docs/ARCHITECTURE.md - Browsers cannot send an
+    # header - depends on this (docs/STREAMING.md - Browsers cannot send an
     # `Authorization` header).
     stream_ticket_key: str = ""
 

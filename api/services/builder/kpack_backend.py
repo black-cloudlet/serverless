@@ -92,7 +92,7 @@ class KpackBackend:
         """Where a build caches its layers, or None to leave it to kpack.
 
         A sibling repository of the image in the same registry the build pushes to
-        (docs/BUILDING.md - Build cache).
+        (docs/RUNTIMES.md - Build cache).
 
         Args:
             req: The build request.
@@ -118,7 +118,7 @@ class KpackBackend:
         default never decides it. Precedence is the caller's version, then an
         explicit ``buildEnv`` pin, then the runtime's ``defaultVersion``; the
         entry for that variable is replaced, not appended to
-        (docs/BUILDING.md - Axis 2 - runtime version). A version outside the
+        (docs/RUNTIMES.md - Axis 2 - runtime version). A version outside the
         runtime's advertised ``versions`` is rejected before this is reached.
 
         Args:
@@ -161,7 +161,7 @@ class KpackBackend:
 
         The git Secret is replicated; the Image and ServiceAccount are per region.
         Each region pushes to its own registry, so those objects are identical but
-        for the tag and the cache reference (docs/BUILDING.md - Registry layout).
+        for the tag and the cache reference (docs/RUNTIMES.md - Registry layout).
 
         Args:
             req: The build request.
