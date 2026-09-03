@@ -1,11 +1,9 @@
 """Writing one workload into one region, and the ordering that keeps it safe.
 
 The fan-out lives in :class:`~api.services.workloads.WorkloadService`; what
-happens *inside* a single region lives here, because the ordering constraints are
-local to one cluster and each has a failure it exists to prevent - a stale
-Secret outliving the spec that dropped it, an orphaned resource whose owner was
-never applied, a half-built create holding a name. They are stated on
-:func:`apply_to_region`, next to the code that has to honour them.
+happens *inside* a single region lives here. The ordering constraints are local
+to one cluster and are stated on :func:`apply_to_region`, next to the code that
+honours them.
 
 Every function here runs off the event loop (blocking cluster I/O) and is called
 through ``asyncio.to_thread`` or the deployer's fan-out.
@@ -118,14 +116,10 @@ def apply_to_region(
                 cluster.region,
             )
 
-    # Status comes from the apply response, not a re-read. Server-side apply
-    # returns the stored object - it is already trusted enough to source the
-    # ownerReference every derived resource hangs off - and Knative has not
-    # reconciled microseconds later, so a second GET reports the same
-    # pre-reconciliation state for an extra cross-region round trip on every
-    # region of every deploy. An empty response falls back to the manifest we
-    # sent, which carries no status and so reads as Deploying: the right
-    # answer for a workload that was just written.
+    # Status comes from the apply response, not a re-read: server-side apply
+    # returns the stored object, which is also the source of the ownerReference
+    # above. An empty response falls back to the manifest just sent, which
+    # carries no status and so reads as Deploying.
     status, revision = ksvc_state.ksvc_status(applied[0] if applied else ksvc)
     return RegionStatus(region=cluster.region, status=status, revision=revision)
 
@@ -133,10 +127,10 @@ def apply_to_region(
 def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, name: str) -> bool:
     """Re-declare a function's build in one region, outside a workload apply.
 
-    The rebuild path (``POST .../build``), which touches no KSVC. A region builds
-    what it runs, so an absent KSVC means this region has no build to re-declare -
-    not that the objects should be applied unowned. Everything is owned by the
-    KSVC beside it and cascades on delete.
+    Serves the rebuild path (``POST .../build``), which touches no KSVC. A region
+    builds what it runs, so an absent KSVC means this region has no build to
+    re-declare and nothing is applied. Everything applied is owned by the KSVC
+    beside it and cascades on delete.
 
     Args:
         cluster: The region to write to.
@@ -147,9 +141,7 @@ def apply_build_objects(cluster: NamespacedCluster, manifests: list[dict], *, na
         True if the objects were applied; False if the workload does not run here.
 
     Raises:
-        Exception: Any apply error. Failing here means the image would never
-            be built, so it is surfaced rather than leaving a function whose
-            tag nothing ever pushes.
+        Exception: Any apply error, surfaced to the caller rather than swallowed.
     """
     try:
         owner = res.owner_reference(cluster.get(ResourceKind.KNATIVE_SERVICE, name))
@@ -164,11 +156,10 @@ def delete_build_objects(cluster: NamespacedCluster, name: str) -> None:
     """Remove a function's build objects from one region, by name.
 
     Normally every call is a no-op 404: the objects are owned by the KSVC, so
-    its delete already cascaded. It stays as the sweep for objects applied
-    unowned before builds followed the workload, which nothing else collects.
+    its delete already cascaded. This is the sweep for any that were applied
+    unowned.
 
-    Best-effort: the KSVC is gone by now either way, and failing the delete
-    over a build object would report a workload as undeleted when it is.
+    Best-effort: a delete that fails is logged, never raised.
 
     Args:
         cluster: The region to clean up.

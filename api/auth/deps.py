@@ -3,8 +3,8 @@
 The component itself is :mod:`cloudlet_apis.auth`, shared with every API on the
 platform; what lives here is only which settings it is built from.
 
-``require_auth`` stays a module-level function wrapping it, so settings resolve
-per request and it remains the callable ``dependency_overrides`` keys on.
+``require_auth`` is a module-level function wrapping it, so settings resolve per
+request and it is the callable ``dependency_overrides`` keys on.
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from api.core.paths import api_base
 def get_auth() -> SSOAuth:
     """The app's auth component (one JWKS cache per process).
 
-    Cached here rather than inside the component: building it per request would
-    give a fresh validator, and a fresh discovery round trip, every time.
+    Cached here, so one validator and one OIDC discovery round trip serve every
+    request. ``api.main`` warms it during startup.
 
     Returns:
         The configured :class:`~cloudlet_apis.auth.SSOAuth`.
@@ -73,11 +73,10 @@ def get_tickets() -> StreamTickets:
 def optional_auth(request: Request) -> Principal | None:
     """The caller the Authorization header identifies, or None if there is none.
 
-    Exists because the stream endpoints have two ways in, and "no header" is
-    only a failure there once the ticket has also come up empty. A dependency of
-    its own rather than a ``try`` inside the one below: FastAPI resolves this by
-    identity, so a test - or any app wiring - overrides the header half exactly
-    the way it overrides :func:`require_auth` everywhere else.
+    The stream endpoints take either a ticket or a header, so a missing header
+    is a failure there only once the ticket has also come up empty. It is a
+    dependency of its own, so FastAPI resolves it by identity and
+    ``dependency_overrides`` can replace the header half on its own.
 
     Args:
         request: The incoming request.
@@ -87,9 +86,8 @@ def optional_auth(request: Request) -> Principal | None:
         credential. With auth disabled this is the dev principal, not None.
 
     Raises:
-        ForbiddenError: If a valid OIDC token carries no group membership - a
-            caller who authenticated and is not allowed is not a caller who
-            failed to authenticate.
+        ForbiddenError: If a valid OIDC token carries no group membership. It
+            propagates instead of becoming None.
     """
     try:
         return require_auth(request)
@@ -98,8 +96,8 @@ def optional_auth(request: Request) -> Principal | None:
 
 
 # The library's dependency: ticket first, header second (see stream_auth).
-# The hint is display text derived from settings, bound at import - the same
-# moment main.py builds the app; a label needs no per-request laziness.
+# The hint is display text derived from settings and bound at import
+# (docs/ARCHITECTURE.md - Browsers cannot send an `Authorization` header).
 require_stream_auth = stream_auth(
     get_tickets,
     optional_auth,

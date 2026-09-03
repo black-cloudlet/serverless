@@ -1,16 +1,15 @@
 """What differs between a function and a container, in one place.
 
-:class:`~api.services.workloads.WorkloadService` calls itself offering-agnostic,
-and this is what makes that true. It used to be aspirational: seven ``if offering
-== "function"`` branches were spread through the engine - picking a response
-class (three times), pruning a container's pull Secret, reading a function's git
-token, folding in its build status, and deleting its build objects. Adding a
-third offering meant finding all seven.
+:class:`~api.services.workloads.WorkloadService` is offering-agnostic: it never
+branches on which offering it is serving. Everything that does differ - the
+response class, which derived Secrets are pruned, the extra state an update
+carries forward (a function's git token), the build status folded into a read,
+the cleanup after a delete - is a member of :class:`Offering`, implemented once
+per offering and passed to the engine per call.
 
-They are now the members of :class:`Offering`, implemented once per offering and
-passed to the engine per call. The engine is a process-wide singleton shared by
-both offerings (``api.dependencies.get_workload_service``), which is exactly why
-the offering travels as an argument rather than being held as state.
+The engine is a process-wide singleton shared by both offerings
+(``api.dependencies.get_workload_service``), so the offering travels as an
+argument rather than being held as state.
 
 Implementations are stateless policy - no cluster clients, no settings - so
 :data:`FUNCTION` and :data:`CONTAINER` are module singletons. Everything they
@@ -47,8 +46,8 @@ class DeleteContext:
     """What :meth:`Offering.after_delete` may need, so the protocol takes one value.
 
     An offering is stateless policy, so everything it touches is handed to it.
-    Cleanup outgrew ``(cluster, name)`` once it reached past the cluster: the
-    registry is addressed by ``{group}/{name}``.
+    Cleanup reaches past the cluster: the registry is addressed by
+    ``{group}/{name}``, so the group travels alongside the name.
 
     Attributes:
         cluster: The region being cleaned up, carrying its own registry.
@@ -78,9 +77,8 @@ class Offering(Protocol):
     def has_build(self) -> bool:
         """Whether this offering builds its image, so a read must fetch build state.
 
-        Declared rather than inferred, so the engine can skip the build read
-        entirely instead of calling :meth:`build_status` just to be handed None -
-        that read runs in its own thread on every GET.
+        False means the engine skips the build read - one thread per GET -
+        instead of calling :meth:`build_status` for a None.
         """
         ...
 
@@ -101,8 +99,8 @@ class Offering(Protocol):
     ) -> WorkloadResponse:
         """Shape the response for a workload read back from a cluster.
 
-        Distinct from :meth:`applied_response` because the values come from
-        elsewhere: the stored object and its parsed spec, not the request.
+        The values come from the stored object and its parsed spec, where
+        :meth:`applied_response` takes them from the request.
 
         Args:
             common: The offering-agnostic response fields the engine assembled.
@@ -179,15 +177,13 @@ class FunctionOffering:
     ) -> WorkloadResponse:
         """The function response, carrying the build the engine rolled up.
 
-        The build-first folding happens in the engine, against each region's own
-        build: it is per region now, and only the engine holds the per-region states
-        (see :func:`~api.services.state.ksvc_state.regions_with_build_status`).
-        What is left here is reporting the rolled-up state on ``build``.
+        The engine folds each region's own build into that region's status and
+        holds the per-region states (see
+        :func:`~api.services.state.ksvc_state.regions_with_build_status`); this
+        reports the rolled-up state on ``build``.
 
-        No image is exposed: the built image is an internal artifact, so a client
-        reads ``gitRepo``/``branch`` instead. The runtime and version come from
-        the KSVC's annotations rather than the spec - they are build inputs, not
-        anything visible in the running container.
+        No image is exposed; a client reads ``gitRepo``/``branch`` instead. The
+        runtime and version come from the KSVC's annotations, not the spec.
         """
         annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
         return FunctionResponse(
@@ -204,10 +200,9 @@ class FunctionOffering:
     def managed_secrets(self, name: str) -> set[tuple[ResourceKind, str]]:
         """None. A function's git Secret is carried forward, never pruned.
 
-        It is applied on every region so any of them can rebuild after a switchover
-        (docs/BUILDING.md - Active/Active), and an update that omits the token
-        keeps the stored copy - so pruning it would destroy the only thing that
-        can rebuild the function.
+        It is applied on every region so any of them can rebuild after a
+        switchover (docs/BUILDING.md - Active/Active), and an update that omits
+        the token keeps the stored copy.
         """
         return set()
 
@@ -236,13 +231,12 @@ class FunctionOffering:
     ) -> BuildStatusView | None:
         """The function's build state from the local region, or None if it has none.
 
-        One region builds and it is always the local one (docs/BUILDING.md), including
-        for a function deployed only elsewhere - so the Image is here whenever it
-        exists anywhere, and a cross-region fan-out would add latency to every GET for
-        something that cannot be found anywhere else.
+        One region builds and it is always the local one (docs/BUILDING.md),
+        including for a function deployed only elsewhere, so the Image is here
+        whenever it exists at all - no cross-region read.
 
-        Never an error: a function whose image already exists must still report its
-        KSVC status when the build backend cannot be read.
+        Never an error: an unreadable build backend leaves ``build`` unset and
+        the KSVC status is still reported.
         """
         status = builder.status(cluster, name, group)
         if status is None:
@@ -254,8 +248,7 @@ class FunctionOffering:
     ) -> dict[str, BuildStatusView]:
         """Every function's build state in the group, from the local region's Images.
 
-        Same region and same reasoning as :meth:`build_status`, in one read: a list
-        of twenty functions would otherwise be twenty kpack reads per poll.
+        Same region as :meth:`build_status`, in one read for the whole group.
         """
         return {
             workload: BuildStatusView(state=status.state, message=status.message)
@@ -296,8 +289,8 @@ class ContainerOffering:
     def after_delete(self, ctx: DeleteContext) -> None:
         """Nothing. Every container resource is owned by the KSVC and cascades.
 
-        Its image is not the platform's to delete either - a container is deployed
-        from an image the caller built and may share with anything else.
+        The image is left in the registry: it is the caller's, not the
+        platform's (docs/BUILDING.md - Registry cleanup on delete).
         """
 
     def build_status(

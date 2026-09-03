@@ -32,8 +32,9 @@ CA_ENV_VARS = (
     "GIT_SSL_CAINFO",
 )
 
-# Memory is request==limit, a predictable OOM boundary; CPU is request-only so
-# it is never throttled, and the request is what cpu/memory HPA reads.
+# Memory is request==limit, a hard OOM boundary; CPU is request-only, so a workload
+# is never throttled, and the request is what the cpu/memory HPA metrics divide by
+# (docs/ARCHITECTURE.md - Resource size).
 _SIZES: dict[str, tuple[str, str]] = {
     "small": ("100m", "256Mi"),
     "medium": ("250m", "512Mi"),
@@ -161,8 +162,10 @@ def build_ksvc(
         ca_file: Absolute path to the CA file inside the pod; when the CA is
             mounted, the CA-trust env vars (see ``CA_ENV_VARS``) default to it for
             any name the caller didn't set.
-        pull_stamp: Carried forward, never minted here: a fresh value on every
-            apply would cut a revision on every apply.
+        pull_stamp: The workload's stored pull stamp, re-stamped on both the
+            metadata and the template so an ordinary apply carries it forward.
+            Never minted here; the pull endpoint mints it
+            (docs/CONTAINERS.md - Pulling the tag again).
 
     Returns:
         The KSVC manifest dict.
@@ -203,8 +206,8 @@ def build_ksvc(
                 injected.append(var)
 
     container: dict = {"image": image, "resources": _resources(size)}
-    # Both offerings default this to 8080, so it is normally set; None is still
-    # honoured (leaving Knative its own default) for a direct caller. One port only.
+    # Both offerings default this to 8080, so it is normally set; None leaves Knative
+    # its own default. Knative permits a single container port.
     if port is not None:
         container["ports"] = [{"containerPort": port}]
     if env_out:

@@ -1,7 +1,8 @@
 """Turning a service's event stream into an SSE response.
 
-One helper, shared by both offerings' routers, so the two cannot drift in the
-headers they set or in what they do when a stream fails after it has begun.
+Shared by both offerings' routers: it sets the SSE headers, renders each event,
+turns a failure after the first byte into an ``error`` event, and closes the
+service's generator on teardown (docs/ARCHITECTURE.md - Streaming).
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from api.services.streams import sse
 logger = get_logger(__name__)
 
 # What the OpenAPI document says about a streaming route. FastAPI infers a
-# response schema from the return annotation, and a StreamingResponse has none
-# to infer - without this the operation documents itself as returning nothing.
+# response schema from the return annotation, and a StreamingResponse carries
+# none, so the 200 is declared here instead.
 RESPONSES: dict = {
     200: {
         "description": (
@@ -35,10 +36,9 @@ RESPONSES: dict = {
 def switchable(snapshot: type[BaseModel], events: str) -> dict:
     """The OpenAPI 200 for a route that streams by default and can be asked not to.
 
-    One operation, two media types, chosen by ``follow``. Both are declared
-    because a generated client that only knew about one of them would be wrong
-    half the time - and the JSON half is the one a caller reaches for precisely
-    because it cannot handle the other.
+    One operation with two media types, chosen by ``follow``: ``text/event-stream``
+    for a follow and ``application/json`` for the snapshot. Both are declared on
+    the 200 so a generated client knows about either form.
 
     Args:
         snapshot: The model returned when ``follow=false``.
@@ -66,9 +66,9 @@ def stream(events: AsyncIterator[sse.StreamEvent | str]) -> StreamingResponse:
     """Render a service's events as an SSE response.
 
     Args:
-        events: The event stream, already authorized and opened by the service -
-            so anything that should be a status code has been raised before this
-            is called, and an error envelope was still possible. A str item is a
+        events: The event stream, already authorized and opened by the service:
+            anything that should be a status code has been raised before this is
+            called, while an error envelope was still possible. A str item is a
             frame the service already rendered off the event loop (the log
             streams' line path - see api.services.streams.logs) and passes
             through untouched.
@@ -97,9 +97,9 @@ def stream(events: AsyncIterator[sse.StreamEvent | str]) -> StreamingResponse:
             )
         finally:
             # Deterministic teardown. A client disconnect cancels the response
-            # task and lands here as GeneratorExit; without the explicit aclose
-            # the stream's own teardown - the admission slot, the follower
-            # thread, the open log socket - would wait on the GC.
+            # task and lands here as GeneratorExit; the explicit aclose runs the
+            # stream's own teardown - the admission slot, the follower thread,
+            # the open log socket - instead of leaving it to the GC.
             aclose = getattr(events, "aclose", None)
             if aclose is not None:
                 await aclose()

@@ -19,9 +19,9 @@ from common.names import NAMESPACE_SUFFIX, namespace_for_group
 class RegionRegistry(BaseModel):
     """A region's own registry, overriding the platform default for that region.
 
-    Lives in the regions list - identical in every cluster - because an instance
+    Part of the regions list, which is identical in every cluster: an instance
     composes the manifests for every region, not just its own. It carries no
-    credentials: the list is serialized into a ConfigMap.
+    credentials - the list is serialized into a ConfigMap.
 
     Attributes:
         url: The registry host, with an optional port.
@@ -98,9 +98,9 @@ class RegistryConfig(BaseModel):
     """One internal (mirrored) container registry.
 
     Both the platform default and, once merged with a :class:`RegionRegistry` by
-    :meth:`CommonSettings.registry_for`, one region's resolved registry - the same
-    type either way, since callers want a whole registry rather than a base plus
-    overrides to re-apply.
+    :meth:`CommonSettings.registry_for`, one region's resolved registry: a caller
+    holds a whole registry, never a base plus overrides still to apply
+    (docs/BUILDING.md - Registry layout).
     """
 
     url: str = "registry.internal"
@@ -120,14 +120,14 @@ class RegistryConfig(BaseModel):
     def host(self) -> str:
         """The configured registry host, tolerant of a pasted scheme.
 
-        The chart asks for a bare host, but ``https://registry.internal`` is an
-        easy operator mistake - un-stripped it would double the scheme in
-        :attr:`api_url` and put ``https://`` inside every image reference.
+        The chart asks for a bare host; a scheme in the configured URL is
+        stripped, so ``https://registry.internal`` and ``registry.internal``
+        resolve to the same host.
 
-        Public because it is also the test for "is this reference ours":
+        Also the test for "is this reference ours":
         :func:`common.registry.repository_path` matches references against this
-        same host, so what the platform pushes and what it may reclaim cannot
-        disagree on where the host ends and the repository begins.
+        same host, so what the platform pushes and what it may reclaim agree on
+        where the host ends and the repository begins.
         """
         return registry_host(self.url)
 
@@ -145,11 +145,10 @@ class RegistryConfig(BaseModel):
     def path(self) -> str:
         """Everything between the host and a function's own ``{group}/{name}``.
 
-        Its own property because two callers need exactly this string and must
-        not derive it separately: the image reference hangs off it, and the
-        repository *delete* addresses Quay by the same path with the host
-        removed (docs/BUILDING.md - Registry cleanup on delete). Either part
-        empty is skipped, so a flat ``{host}/{group}/{name}`` install still
+        Two callers read exactly this string: the image reference hangs off it,
+        and the repository *delete* addresses Quay by the same path with the
+        host removed (docs/BUILDING.md - Registry cleanup on delete). Either
+        part empty is skipped, so a flat ``{host}/{group}/{name}`` install still
         produces no leading or doubled slash.
         """
         parts = [p.strip("/") for p in (self.organization, self.repository) if p.strip("/")]
@@ -193,10 +192,9 @@ PROVISION_TIMEOUT = "Timeout"
 class TenantNamespaceConfig(BaseModel):
     """Where a group's workloads live, and how the API reaches the controller.
 
-    One block, shared, because the two ends must agree: the API derives the
-    namespace it writes into and the tenant controller derives the one it
-    creates, and a suffix configured differently on either side would have the
-    API deploying into a namespace nobody provisions.
+    One shared block read by both ends: the API derives the namespace it writes
+    into from ``suffix``, and the tenant controller derives the one it creates
+    from the same value.
 
     Attributes:
         suffix: Appended to the group. Must match the chart's
@@ -206,12 +204,11 @@ class TenantNamespaceConfig(BaseModel):
         token: Shared token presented to (and checked by) the provision
             endpoint. Empty disables the check; the NetworkPolicy is the
             primary control.
-        timeout: Budget for one provision call. It must exceed the
-            controller's own converge budget (``cluster_op_timeout``, 60s for
-            the whole fan-out): a brand-new group's first provision applies
-            the full template set in every region, and a caller that gives up
-            before the work it asked for can finish turns that first create
-            into a guaranteed 503.
+        timeout: Budget for one provision call, which a create waits on. It
+            exceeds the controller's own converge budget (``cluster_op_timeout``,
+            60s for the whole fan-out): a new group's first provision applies the
+            full template set in every region, and giving up before that finishes
+            turns the first create into a 503.
     """
 
     suffix: str = NAMESPACE_SUFFIX
@@ -265,28 +262,24 @@ class CommonSettings(BaseSettings):
     registry: RegistryConfig = Field(default_factory=RegistryConfig)
     # Registry API token per region name (SERVERLESS_REGION_REGISTRY_TOKENS, JSON).
     # Every instance holds every region's: a delete reclaims repositories in all
-    # regions from whichever one took the request. A JSON object rather than a
-    # variable per region, because a region name may contain '-'.
+    # regions from whichever one took the request. Carried as one JSON object,
+    # since a region name may contain '-' and env-var nesting cannot express it.
     region_registry_tokens: dict[str, str] = Field(default_factory=dict)
     build: BuildConfig = Field(default_factory=BuildConfig)
 
     cluster_connect_timeout: float = 2.0
     cluster_read_timeout: float = 5.0
     # Backstop on one cluster's whole operation inside a write fan-out (an apply
-    # is several sequential calls). Named cluster_*, like the socket timeouts
-    # above: it bounds work against one cluster, whatever region carries it.
+    # is several sequential calls). It bounds work against one cluster, whatever
+    # region carries it.
     cluster_op_timeout: float = 60.0
-    # The same backstop for the read fan-outs (list/get/stats). Deliberately
-    # short: these feed pages, and a slow cluster should cost its own column in
-    # the response - which the merge already renders - not the whole page. Kept
-    # apart from cluster_op_timeout because a write is worth waiting a minute
-    # for and a page read never is.
+    # The same backstop for the read fan-outs (list/get/stats). A cluster that
+    # overruns it costs only its own column of the merged response
+    # (docs/ARCHITECTURE.md - Partial-failure semantics).
     cluster_read_op_timeout: float = 5.0
-    # The pool the read fan-outs run on, and how much may queue for it. Reads
-    # get a bounded pool of their own so a burst (a console tab polling rows)
-    # queues predictably and can never drain the process-wide default executor
-    # everything else shares; past workers+queued the read is refused with 503,
-    # which is visible, instead of latency creeping, which is not.
+    # The bounded pool the read fan-outs run on, and how much may queue for it.
+    # It is separate from the process-wide default executor; past
+    # workers + queued, the read is refused with 503.
     cluster_read_workers: int = 16
     cluster_read_max_queued: int = 32
 
@@ -330,15 +323,13 @@ class CommonSettings(BaseSettings):
         """
         profile = self.region(region)
         override = profile.registry if profile else None
-        # Falls back rather than defaulting to "": an empty token disables
-        # cleanup outright, so an unlisted region would silently stop reclaiming.
-        # But only onto the SAME host - the default token belongs to the default
-        # registry, and sending it to a region's overridden registry would be the
-        # wrong credential handed to a different service.
+        # A region with no token of its own falls back to the platform token,
+        # and only when its registry is on the SAME host: the default token
+        # belongs to the default registry and is never sent to another one.
         token = self.region_registry_tokens.get(region) or ""
-        # Compared as canonical hosts, the same normalization the references
-        # and reclaim paths use - the same registry spelled with and without a
-        # scheme must not read as two, silently dropping the fallback token.
+        # Compared as canonical hosts, the same normalization the references and
+        # reclaim paths use, so one registry spelled with and without a scheme
+        # is one host.
         same_host = override is None or registry_host(override.url) == registry_host(
             self.registry.url
         )
@@ -363,8 +354,8 @@ class CommonSettings(BaseSettings):
 class LoopSettings(CommonSettings):
     """Settings for a paced control loop (``common.loop``).
 
-    Shared by the build controller and the tenant controller, so the pacing
-    contract lives once.
+    Read by the build controller and the tenant controller, which pass these
+    values to :func:`common.loop.run_loop`.
     """
 
     # The pass cadence: how long the controller's watch is held open, and the

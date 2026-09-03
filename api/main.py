@@ -1,4 +1,11 @@
-"""FastAPI application factory."""
+"""FastAPI application factory and the app's startup/shutdown sequence.
+
+:func:`create_app` builds the app at import: logging, the offline docs and SSO
+login under the base path, CORS, the request-id middleware, the error handlers
+and the routers. :func:`lifespan` then runs on startup - runtime registry,
+service graph, best-effort cache warmup - and, at exit, shuts the stream pool
+and the cluster clients down in that order.
+"""
 
 from __future__ import annotations
 
@@ -35,9 +42,13 @@ async def _warm(label: str, fn, timeout: float) -> None:
 async def _warmup(settings: Settings, deployer: Deployer) -> None:
     """Warm the one-time caches (OIDC discovery, cluster connections) at startup.
 
-    Best-effort: makes the first request fast and surfaces misconfig in the logs
-    now. A down dependency is logged, not fatal - it is retried lazily on first
-    use, preserving active/active startup.
+    Runs SSO discovery and one connect per configured region concurrently, each
+    off the event loop and bounded by the cluster connect plus read timeout. A
+    failure is logged, not fatal: the cache is filled lazily on first use.
+
+    Args:
+        settings: The settings deciding what there is to warm.
+        deployer: The deployer whose per-region clusters are connected.
     """
     timeout = settings.cluster_connect_timeout + settings.cluster_read_timeout
     tasks = []
@@ -54,23 +65,23 @@ async def _warmup(settings: Settings, deployer: Deployer) -> None:
 async def lifespan(app: FastAPI):
     """Execute startup and shutdown logic.
 
-    Everything before the ``yield`` runs on startup; everything after runs on
-    shutdown.
+    Everything before the ``yield`` runs on startup, in order: the runtime
+    registry, the service graph, then the cache warmup. Everything after runs
+    on shutdown, streams before cluster clients.
 
     Args:
         app: The FastAPI application (provided by the framework).
     """
-    # Local config, not a remote dependency: retrying cannot fix it, and an API
-    # without it would accept functions it can never build.
+    # Local config read from a mounted ConfigMap: a missing or unusable file
+    # raises here and the pod fails to start.
     get_runtimes()
     service = get_workload_service()  # build the service graph (no network)
     await _warmup(get_settings(), service.deployer)  # warm caches, best effort
 
     yield
 
-    # Streams first: their threads hold the cluster clients closed below, and a
-    # follower reading through a client that has just been shut under it logs a
-    # traceback for what is only an orderly shutdown.
+    # Streams first: their threads read through the cluster clients closed on
+    # the next line, so the followers stop before those clients go away.
     get_stream_capacity().shutdown()
     service.deployer.close()  # release per-region cluster HTTP clients
 
@@ -83,7 +94,8 @@ def create_app() -> FastAPI:
     """
     configure_logging()
     settings = get_settings()
-    # Everything the API serves hangs off this, and nothing answers beside it.
+    # Every path the app serves - endpoints, docs, OpenAPI, probes - hangs off
+    # this (docs/ARCHITECTURE.md - REST API Specification).
     base_path = settings.base_path
 
     app = FastAPI(
@@ -115,9 +127,8 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
 
     register_exception_handlers(app)
-    # Under the base path like everything else: the chart builds the kubelet's
-    # probe paths from the same basePath value it hands the code, so the one
-    # setting moves the probes and the API together.
+    # Under the base path like everything else; the chart builds the kubelet's
+    # probe paths from the same basePath value it hands the code.
     app.include_router(health_router, prefix=base_path)
     for router in (info.router, streams.router, functions.router, containers.router):
         app.include_router(router, prefix=api_base(settings))

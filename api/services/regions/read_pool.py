@@ -1,9 +1,8 @@
 """The bounded executor every cluster read runs on, with admission.
 
-The streams' :class:`~api.services.streams.capacity.StreamCapacity` for the
-read fan-outs: a pool sized from config, and a 503 past the bound instead of
-a silently growing queue. :class:`~api.services.regions.deployer.Deployer` is
-the only production caller.
+A thread pool sized from config, with admission: a read past the bound is
+refused with a 503 instead of joining an unbounded queue.
+:class:`~api.services.regions.deployer.Deployer` is the only production caller.
 """
 
 from __future__ import annotations
@@ -24,34 +23,26 @@ class ReadPoolSaturated(ServiceUnavailableError):
 
     Its own type so the fan-out can tell "the API is saturated" (this request's
     503) from a ``ServiceUnavailableError`` a region function raised doing its
-    work (that region's failure row) - the two must not be conflated.
+    work (that region's failure row).
     """
 
 
 class ReadPool:
     """The bounded executor every cluster *read* runs on, with admission.
 
-    The same medicine :class:`~api.services.streams.capacity.StreamCapacity`
-    applies to streams, applied to the read fan-outs. Without it every read
-    rents a thread from the process-wide default executor - sized by a formula,
-    shared with everything, queue unbounded - so a burst of page reads (a
-    console tab polling row stats) makes *unrelated* requests inherit its
-    latency invisibly. Here the pool is sized from config and admission past
-    ``workers + max_queued`` is refused with 503: shed load is visible, a
-    silently growing queue is not.
+    Reads run here rather than on the process-wide default executor: the pool is
+    sized from config and admission past ``workers + max_queued`` reads in flight
+    is refused with a 503.
 
     Admission is counted on the event loop (every caller is a coroutine), so
     the counter needs no lock. What it counts is *thread occupancy*, not
     awaits: a read the caller's ``wait_for`` gave up on is still running on its
     worker - the executor cannot interrupt a thread - so the slot is released
     from the future's done callback, which fires when the thread actually
-    finishes. Released on cancellation instead, a stalling region would fill
-    the pool with zombie reads while the accounting reported it empty, and the
-    503 shedding this class exists for would never fire.
+    finishes.
 
-    Admission is taken for a whole fan-out at once (:meth:`reserve`): refused
-    part-way through, a fan-out would leave the regions it had already started
-    burning the pool for results the 503 throws away.
+    Admission for a whole fan-out is taken at once (:meth:`reserve`): the group
+    is admitted or refused as one, never part-way through.
     """
 
     def __init__(self, workers: int, max_queued: int):
@@ -111,14 +102,12 @@ class ReadPool:
     async def _run_reserved(self, fn, *args):
         """Run a read whose admission :meth:`reserve` already took."""
         loop = asyncio.get_running_loop()
-        # Submitted directly, and the release hangs on the CONCURRENT future:
-        # run_in_executor's asyncio wrapper acknowledges a cancel immediately
-        # even while the thread runs on, so a callback there (or a finally on
-        # the await) would free the slot the moment a caller's wait_for gave
-        # up - long before the worker did. The concurrent future completes only
-        # when the thread actually finishes (or was cancelled before starting),
-        # which is the occupancy this counts. Context copied as start_on does,
-        # so the read's log lines keep the request's correlation id.
+        # Submitted directly, with the release hanging on the CONCURRENT future:
+        # it completes when the thread finishes (or was cancelled before it
+        # started), which is the occupancy this counts, while asyncio's
+        # run_in_executor wrapper acknowledges a cancel while the thread runs on.
+        # Context is copied as start_on does, so the read's log lines keep the
+        # request's correlation id.
         ctx = contextvars.copy_context()
         try:
             concurrent_future = self._executor.submit(ctx.run, fn, *args)

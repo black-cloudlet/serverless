@@ -1,6 +1,6 @@
-"""Interpreting what came back, without reaching a cluster again.
+"""Interpreting objects the caller already fetched, without reaching a cluster.
 
-Every module here takes objects the caller already fetched and returns a value -
-which is what makes these the cheapest rules in the service to test: hand them a
-dict, assert on the answer.
+Every module here takes Kubernetes objects as plain dicts and returns a value:
+the status rollups, the desired-state read-back, resource-usage totals, the
+listing merge, and the ownership predicate. Nothing here performs I/O.
 """

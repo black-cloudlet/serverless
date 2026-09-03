@@ -1,17 +1,13 @@
 """The bounded executor and the admission gate every SSE stream passes through.
 
-The problem this exists for: the Kubernetes client is synchronous, so a followed
-pod log is a thread blocked on a socket for as long as the client stays
-connected - not for the length of a request. Left on the default executor that
-``asyncio.to_thread`` uses, a handful of idle log tails would occupy the same
-threads every ordinary create, read and delete needs, and the API would stop
-answering while looking completely healthy.
+The Kubernetes client is synchronous, so a followed pod log is a thread blocked
+on a socket for as long as the client stays connected - not for the length of a
+request.
 
-So streaming gets a pool of its own, sized from the admission bounds
-(:class:`~api.core.config.StreamConfig`) rather than from a guess, and a gate
-that refuses the stream that would overrun it. Refusing is the point: a 503 with
-a retry is a client's problem to handle, while an accepted stream starved of a
-thread looks to that client like a workload producing no logs.
+Streaming therefore runs on a pool of its own, sized from the admission bounds
+(:class:`~api.core.config.StreamConfig`), behind a gate that refuses with a 503
+any stream that would overrun it
+(docs/ARCHITECTURE.md - A held-open stream holds a thread).
 """
 
 from __future__ import annotations
@@ -33,10 +29,9 @@ logger = get_logger(__name__)
 async def run_on(executor: Executor | None, fn, *args):
     """Run blocking ``fn`` on ``executor``, preserving the request context.
 
-    The context copy is what :func:`asyncio.to_thread` does and a bare
-    ``run_in_executor`` does not: without it the correlation id that the log
-    filter reads is missing from every line a stream's worker thread writes,
-    which is exactly the debugging trail a long-lived stream most needs.
+    The context is copied as :func:`asyncio.to_thread` does and a bare
+    ``run_in_executor`` does not, so the correlation id the log filter reads
+    reaches every line the worker thread writes.
 
     Args:
         executor: The pool to run on, or None for the default one.
@@ -53,7 +48,7 @@ def start_on(executor: Executor | None, fn, *args) -> asyncio.Future:
     """Start blocking ``fn`` on ``executor`` without awaiting it.
 
     The un-awaited form of :func:`run_on`, for a worker that outlives the call
-    that started it (a log follower). Same context copy, same reason.
+    that started it (a log follower). Copies the context the same way.
 
     Args:
         executor: The pool to run on, or None for the default one.
@@ -71,10 +66,9 @@ def start_on(executor: Executor | None, fn, *args) -> asyncio.Future:
 class StreamSlot:
     """One admitted stream, released exactly once no matter how many paths try.
 
-    Idempotent by design: teardown runs from whichever of several owners fires
-    first (the generator's ``finally``, the acceptor's error path, the GC
-    backstop for a generator that was never started), and a double release must
-    not decrement the count below the true number of open streams.
+    Teardown runs from whichever of several owners fires first (the generator's
+    ``finally``, the acceptor's error path, the GC backstop for a generator that
+    was never started); only the first release decrements the open-stream count.
     """
 
     def __init__(self, capacity: StreamCapacity):
@@ -85,8 +79,8 @@ class StreamSlot:
     def release(self) -> None:
         """Give the slot back. Safe to call more than once; only the first counts.
 
-        Locked because the GC backstop may run off the event loop thread; the
-        lock is what turns "several owners may release" into "exactly one does".
+        Locked because the GC backstop may run off the event loop thread, so
+        exactly one of several concurrent releases counts.
         """
         with self._lock:
             if self._released:
@@ -135,11 +129,9 @@ class StreamCapacity:
     def interval(self, requested: float | None) -> float:
         """Resolve a client's requested interval against the configured bounds.
 
-        Clamped rather than rejected. The bounds exist to stop one client asking
-        for a re-read every 50ms or going quiet for an hour, and neither is worth
-        a 400 when the honest answer - "as often as this deployment allows" - is
-        what the caller wanted. The floor is what protects the cluster; the
-        ceiling is what keeps the connection from looking dead.
+        An out-of-range interval is clamped to ``min_interval_seconds`` /
+        ``max_interval_seconds`` rather than rejected; None takes
+        ``interval_seconds``.
 
         Args:
             requested: The client's ``interval``, or None for the default.
@@ -156,11 +148,10 @@ class StreamCapacity:
     def admit(self) -> StreamSlot:
         """Admit one stream, or refuse it.
 
-        Not a queue: waiting for a slot would be the wrong behaviour - the
-        client is holding a connection open expecting data, so being told to
-        come back is strictly better than being connected and silent. The count
-        is locked only because release has a GC backstop that may run off the
-        event loop thread; admission itself always happens on it.
+        Not a queue: a stream over ``max_concurrent`` is refused with a 503
+        immediately, never made to wait for a slot. The count is locked only
+        because release has a GC backstop that may run off the event loop
+        thread; admission itself always happens on it.
 
         Returns:
             The slot; the caller (or whoever it hands the slot to) must
@@ -193,6 +184,5 @@ class StreamCapacity:
 
         ``cancel_futures`` clears what never started; the ones already reading
         are unblocked by their stream being closed as each generator tears down.
-        Waiting here would hold shutdown open for as long as the slowest peer.
         """
         self._executor.shutdown(wait=False, cancel_futures=True)

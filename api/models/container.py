@@ -44,9 +44,9 @@ class ContainerCreate(BaseModel):
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
     # Port the image listens on. Defaults to 8080 - the port Knative injects as
-    # $PORT and the one most images serve on. Send it when the image differs:
-    # nothing can detect that, and the mismatch surfaces as a revision that never
-    # becomes ready rather than as a rejected request.
+    # $PORT and the one most images serve on. Send it when the image serves
+    # elsewhere: a mismatch is not detected here, it surfaces as a revision that
+    # never becomes ready (docs/CONTAINERS.md - API - create & update).
     port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
     @model_validator(mode="after")
@@ -64,13 +64,13 @@ class ContainerUpdate(BaseModel):
     """Replace the mutable spec: the body is the full desired state.
 
     Non-secret fields are replaced, so ``image`` is required as on create and
-    ``port`` returns to its default when omitted. Only redacted secret material is
-    keep-on-omit - it cannot be read back, so omitting it keeps what is stored.
+    ``port`` returns to its default when omitted. Only redacted secret material
+    is keep-on-omit: omitting it keeps what is stored.
     """
 
     image: ImageRef
     # Registry creds: username+token rotates, username-only keeps, neither removes
-    # (public); a token needs a username. See docs/ARCHITECTURE.md - Secrets for the full semantics.
+    # (public); a token needs a username. See docs/ARCHITECTURE.md - Secrets Management.
     registryUsername: str | None = None
     # repr=False as on create: a credential must not print with the spec.
     registryToken: str | None = Field(default=None, repr=False)

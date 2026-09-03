@@ -15,9 +15,9 @@ logger = get_logger(__name__)
 def loop(reconciler: Reconciler, settings: BuildControllerSettings) -> None:
     """Resync and follow, forever (paced by ``common.loop``).
 
-    The watch holds its own interval open, so no interval is passed - only
-    the floor keeps a stream closed at the door from becoming back-to-back
-    relists.
+    Each pass resyncs and then holds the watch open for ``resync_seconds``, so
+    no ``interval_seconds`` is passed to :func:`run_loop`; its minimum pass
+    period is the only floor on a stream that closes immediately.
 
     Args:
         reconciler: The loop's work.

@@ -17,22 +17,19 @@ class _SlotGuardedStream:
     """``inner``'s events, with ``slot`` released however the stream ends.
 
     The slot is held for the life of this object, not of the call that admitted
-    it - which is why it cannot simply be a ``with``. An object rather than a
-    wrapping generator, deliberately: closing a *never-started* generator skips
-    its body, so a ``finally`` in one cannot cover the stream that is handed to
-    the response layer and then never iterated (a client that disconnects
-    before the body begins) - exactly the stream whose slot would otherwise be
-    gone until a restart. Here ``aclose`` always runs, exhaustion and failure
-    release directly, and the ``weakref.finalize`` backstop covers an object
-    the response layer dropped without closing. Release is idempotent, so the
-    several owners cannot double-free.
+    it. Every ending releases it: ``aclose`` releases after closing ``inner``,
+    exhaustion and failure release from ``__anext__``, and a
+    ``weakref.finalize`` backstop releases for an object the response layer
+    dropped without ever closing or iterating it. Release is idempotent, so the
+    several owners cannot double-free
+    (docs/ARCHITECTURE.md - A held-open stream holds a thread).
     """
 
     def __init__(self, slot: StreamSlot, inner: AsyncGenerator[StreamEvent | str, None]):
         self._slot = slot
         self._inner = inner
-        # Bound to the slot only - a reference to `self` here would keep this
-        # object alive forever and the finalizer from ever firing.
+        # Bound to the slot only: a reference to `self` would keep this object
+        # alive and the finalizer would never fire.
         weakref.finalize(self, slot.release)
 
     def __aiter__(self) -> _SlotGuardedStream:
@@ -43,7 +40,7 @@ class _SlotGuardedStream:
             return await self._inner.__anext__()
         except BaseException:
             # StopAsyncIteration included: however the stream ends, the slot
-            # goes back now, not when the caller remembers to aclose.
+            # goes back here rather than on a later aclose.
             self._slot.release()
             raise
 

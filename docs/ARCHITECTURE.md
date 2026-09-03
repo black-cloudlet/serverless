@@ -29,7 +29,7 @@ Per-offering detail is in CONTAINERS.md and FUNCTIONS.md.
 | Cluster auth | **cert-manager `Certificate` CR** (shipped in Helm chart) → client TLS cert; **CN is a DNS name** `serverless-api.clients.{base_domain}` (ACME-issued); that name is the Kubernetes user, bound via RBAC |
 | Topology | **Two separate OpenShift clusters** ("regions") that **trust the same CA**. The **API runs active/active in both clusters**; a DNS record fronts the active API. **Workloads run on the same two clusters**, in one namespace per group. |
 | Region selection | **Deploy to both regions on every deploy.** Each workload's **Route host is identical in both clusters**; a DNS record forwards to the active serverless region (active/passive at the traffic layer, active/active at the deploy layer). |
-| Tenancy | **Namespace-per-group** (`{group}-serverless`), provisioned at runtime by the tenant controller; SSO group → namespace, with ownership labels as defense in depth |
+| Tenancy | **A namespace per group** (`{group}{suffix}`, default suffix `-serverless`), provisioned at runtime by the tenant controller; every resource is **also label-scoped** by SSO group, enforced by the API, as defense in depth |
 | API authn | **SSO (Red Hat Build of Keycloak) OIDC** in front of the API |
 | API authz | Based on **SSO group membership** |
 | Secrets | **External Secrets Operator** - this repo ships **`ExternalSecret` only**, referencing a **pre-existing `ClusterSecretStore`** that points at **HashiCorp Vault** (API stores no secrets) |
@@ -91,7 +91,7 @@ those same two clusters** (fronted by a DNS record pointing at the active region
 | **Tenant / group** | An SSO (Keycloak) group; the unit of ownership and isolation. |
 | **kpack** | The Kubernetes-native Cloud Native Buildpacks controller that builds a function's source into an OCI image (BUILDING.md). |
 | **`Image` (kpack)** | The kpack CR declaring one function's build. Not to be confused with a container image. |
-| **`Builder` (kpack)** | A kpack CR composing a stack and a set of buildpacks into a builder image. One per runtime. |
+| **`ClusterBuilder` (kpack)** | A cluster-scoped kpack CR composing a stack and a set of buildpacks into a builder image. One per runtime, referenced by the `Image`s in every group's namespace. |
 
 ---
 
@@ -192,7 +192,8 @@ the mounted trusted-CA bundle, so cross-language tooling trusts internal TLS wit
 no user action. They are transparent: a var the user sets themselves is left
 as-is (their value wins), and the injected defaults are recorded in a
 `serverless.platform/injected-env` annotation so they're hidden from the
-workload's GET.
+workload's GET - listing them would make a GET body that cannot be sent
+back unchanged.
 
 #### Files (config & secret mounts)
 
@@ -248,6 +249,159 @@ A canonical scaling sub-object in the API:
 }
 ```
 
+### The workload engine and the `Offering` protocol
+
+**One engine, two offerings.** A function and a container are the same
+orchestration with a different tail, so the engine
+(`api.services.workloads.WorkloadService`) never branches on which offering it
+serves. Everything that differs - the response class, which derived Secrets are
+pruned, the state an update carries forward (a function's git token), the build
+status folded into a read, the cleanup after a delete - is a member of
+`api.services.offering.Offering`, implemented once per offering and passed to
+the engine per call. Adding an offering is implementing that protocol rather
+than finding the branches. The engine is a process-wide singleton shared by
+both, which is why the offering travels as an argument rather than being held
+as state.
+
+Routers hold one object per offering: a `FunctionService` or a
+`ContainerService` (`api.services.offering_service.OfferingService`). The base
+class fixes the offering at class level and forwards every read, stream and
+delete; a subclass holds only what its offering adds. The forwarding layer is
+what lets the routers depend on one object each and the test suite override it
+in one place.
+
+**The engine is one class in one file.** The orchestration in
+`api.services.workloads.service` reads front to back in one place; only values
+that stand on their own (`ApplyRequest`, the stream slot guard) live in sibling
+modules, and the package re-exports the public names. What the engine
+orchestrates is split so each part is testable without it: `manifests/` (pure
+builders), `regions/` (fan-out and per-region I/O), `state/` (pure
+interpretation) and the builder. `ApplyRequest` carries the whole apply input
+as one value - the union of both offerings' needs, a container leaving the
+build metadata `None` and a function the pull-secret manifest - so the
+offering-specific tail reads as a group rather than as ever more parameters to
+`apply_workload`.
+
+**The pre-flight checks are engine methods.** `assert_*`, `host_for` and
+`validate_spec` are thin delegations to `api.services.regions.preflight`, kept
+on the engine because that is the object the offering services and the routers
+already hold. `provision_namespace` is called from the engine instead of from
+`preflight` (ARCHITECTURE.md: Tenant Namespaces), because `preflight` is pure
+cluster probes and an HTTP client in it would drag that dependency into every
+test that only wants to check a host.
+
+**One namespace resolution point.** `WorkloadService.namespace_for` is the only
+place in the API a group becomes a namespace - it defers to the shared
+`TenantNamespaceConfig.namespace_for` - and every read and every write goes
+through it, so "where does this land" has one answer per request and no caller can bind
+a namespace of its own. `Deployer.resolve_targets` then binds that namespace
+into every cluster view for the request, so downstream code cannot mix
+namespaces. Registries are read off those resolved clusters
+(`target_registries`) rather than resolved a second time from settings: one
+answer per region instead of two snapshots of the same configuration that can
+drift apart.
+
+**Work happens only when something actually changed.** `retag_build` compares
+the stored tag before touching anything, so the guard costs one GET per region
+per write and a registry delete happens only when a tag really moved.
+`DeleteContext` is one value rather than a `(cluster, object name)` pair,
+because cleanup after a delete reaches past the cluster: the registry addresses
+a function by `{group}/{name}`, not by the object name. A function's runtime is
+checked against the kpack `ClusterBuilder` it names rather than merely against the
+ConfigMap entry (`FunctionService._assert_runtime`), which turns a
+mounted-ConfigMap problem into an immediate, accurate `400`; left to the build
+path it would surface minutes later as a failed background deploy, reading like
+a broken build rather than broken configuration. That runtime registry is a
+constructor argument rather than the process-wide one, because reaching for
+module state would make the service depend on state only `api.dependencies`
+owns and would create an import cycle with it.
+
+**A group's build states are read in one call.** `FunctionOffering.build_states` reads
+every function's build state in a group with one label-selected read, so a listing of
+twenty functions does not cost twenty kpack reads per poll.
+
+**A `202` already sent cannot report a failure.** `ContainerService.pull` logs
+a pull that failed in every region, because the `202` went out long before the
+patch ran: without the log line an all-regions-failed pull completes silently
+and the client's `statusUrl` simply never shows a new revision. For the same
+reason `accept_pull` derives the host when the stored annotation is missing - a
+workload written before that annotation existed still has a host, and it is the
+derived one - rather than answering the `202` with an empty `hostname`.
+
+### Names and manifests
+
+The host and object-name conventions themselves are set out under
+ARCHITECTURE.md: Networking & Exposure; what follows is where those rules live
+and why they live there.
+
+**One place per rule.** The platform-wide rules for a name and a group live in
+`cloudlet_apis.names`; `common.names` re-exports them and keeps only what this
+platform derives - object names, image and cache repositories, the OCI tag
+projected from a branch, and the validators - because that is the half that
+changes when the build pipeline changes. `DNS1123` is imported rather than
+redeclared so a second copy of the regex cannot drift, and the image-reference
+regex is assembled from named parts so each rule of the OCI grammar stays
+legible.
+
+**Label values are sanitized with an ASCII test, not `isalnum()`.**
+`isalnum()` is Unicode-aware while a label value is restricted to ASCII
+`[A-Za-z0-9._-]`, so an SSO username with one accented character would
+otherwise fail every apply with a `422` long after the request was accepted
+(`common.labels._sanitize`). ConfigMap and Secret keys are sanitized the same
+way (`manifests.files._key`), and keys that collide are rejected rather than
+merged, because two distinct mount paths can fold onto one key and merging them
+silently would mount one file's content at another's path. The offering label
+values (`OFFERING_FUNCTION`, `OFFERING_CONTAINER`) sit in `common.labels`
+beside the label key, because the same string is the label, the kind in the URL
+path and the response `type`, and a service that only reads labels - the build
+controller - still has to know them.
+
+**The builder decides what the API server would refuse.** Both a ConfigMap's
+text and binary fields mount identically, so callers should not have to care
+which one their file lands in; but a non-UTF-8 byte written into `data` is
+rejected by the API server or corrupts the file, so `resources.build_configmap`
+makes the split itself.
+
+**A read describes the workload, not the manifest.** `summaries.merge` lists
+the object name verbatim and does not strip a `-{group}` suffix: `api-team` in
+group `team` would list as `api`, and the GET that followed would `404`. A
+workload with no stored port reads as `8080` rather than `null`: every workload
+this version writes stamps a port, so a missing one means the workload predates
+that, and 8080 is genuinely the port it serves on because it is what Knative
+injects when none is declared. (`build_ksvc` still honors `None` for a direct
+caller, leaving the choice to Knative.) The platform-injected CA-trust
+variables are hidden from the same read for the same kind of reason
+(ARCHITECTURE.md: Shared capabilities).
+
+**Interpretation is pure.** Everything in `api.services.state` takes objects
+the caller already fetched and returns a value, so the rules can be exercised
+by handing them a dict - no cluster and no fake client. Ownership is a
+predicate rather than a handler, because every read path asks the same question
+but does something different when the answer is no, and it lives apart from
+`ksvc_state` because weighing an object against a caller is a different kind of
+rule from interpreting the object.
+
+### Control loops and their pacing
+
+**One paced loop for both controllers.** `common.loop.run_loop` is shared by
+the build controller and the tenant controller, so a hardening fix - jitter, a
+backoff cap, shutdown handling - lands once rather than in whichever copy the
+incident happened to point at; the pacing contract is stated once in
+`LoopSettings`, which both controllers' settings subclass. The floor
+(`MIN_PASS_SECONDS`) bounds the whole **pass**, not the sleep, because a pass
+that ends instantly - a watch closed at the door, an empty reconcile - would
+otherwise degenerate into back-to-back LISTs at full speed against the
+apiserver. Backoff is exponential, capped at 60s and reset by a clean pass, so
+a transient failure retries promptly while a sustained outage retries at a
+doubling interval instead of hammering an apiserver that is already struggling.
+
+**Timeouts are named for what they bound.** `cluster_op_timeout` carries the
+`cluster_*` prefix like the socket timeouts because it bounds work against one
+cluster, whatever region carries it. The provision-call budget
+(`TenantNamespaceConfig.timeout`) is deliberately shorter than it, because a
+create waits on that call and its timeout has to be tighter than the general
+cluster-operation backstop.
+
 ---
 
 ## Multi-Region (Active/Active HA) Design
@@ -258,15 +412,17 @@ both clusters **trust the same CA** and the workload **Route host is identical i
 each region is a full, independent replica; a DNS record forwards end-user traffic to the
 active region.
 
-The **client certificate and CA bundle are global** (the same in every cluster), so a
-region profile is just its name and its cluster - the API server URL is **derived**, not
-configured. A workload's namespace is derived too: `{group}{tenantNamespaces.suffix}`,
-identical in both clusters. The `routeDomain`, client cert directory, and CA bundle are
-shared config:
+The **client certificate, CA bundle, and tenant-namespace suffix are global** (the same in
+every cluster), so a region profile is just its name and its cluster - the API server URL is
+**derived**, not configured. A workload's namespace is derived too:
+`{group}{tenantNamespaces.suffix}`, identical in both clusters. The `routeDomain`,
+`tenantNamespaces.suffix`, client cert directory, and CA bundle are shared config:
 
 ```yaml
 baseDomain: example.com                   # each region's API server derives from this
 routeDomain: serverless.{base_domain}     # shared; same host in both clusters
+tenantNamespaces:                         # a group's workloads live in {group}{suffix}
+  suffix: -serverless                     # global; read by the API and the tenant controller
 clientCertDir: /etc/serverless/client     # tls.crt/tls.key (cert-manager), global
 caBundle:                                 # OpenShift-injected, global
   configMap: ca-bundle
@@ -311,6 +467,75 @@ regions:
 }
 ```
 
+- **Admission is reserved for every target before any region starts**
+  (`Deployer.fanout`, `ReadPool.reserve`). Shedding half way through would leave the
+  regions already running burning pool slots for a result the `503` discards.
+- **Per-region status comes from the apply response, not a re-read.** Server-side
+  apply returns the stored object, which is already trusted enough to source the
+  `ownerReference` every derived resource hangs off. Knative has not reconciled
+  microseconds later, so a second GET would report the same pre-reconciliation state at
+  the cost of an extra round trip on every region of every deploy: a workload just
+  written reading as `Deploying` is the right answer.
+- **Results are returned, not written into shared state.** A per-region fetch returns a
+  value (`_RegionRead`) and the fan-out keeps target order, so a region the fan-out gave
+  up on is simply absent from the reads with only its timeout row present. Writing into
+  dicts shared across worker threads would mean snapshotting them against a late write
+  from a region that had already timed out.
+- **The per-region write ordering lives in `region_apply`.** Each ordering constraint is
+  local to one cluster and prevents a specific failure: a stale Secret outliving the spec
+  that dropped it, an orphaned resource whose owner was never applied, a half-built create
+  holding a name. A build-object apply that fails raises (`apply_build_objects`), because
+  the image would never be built and the function's tag is one nothing pushes;
+  `delete_build_objects` runs on every delete even though it is normally a no-op, because
+  it collects build objects applied unowned before builds followed the workload into its
+  namespace - nothing else collects them, and failing a delete over one would report a
+  workload as undeleted when it is gone.
+- **Secret reads fail loud; decoration reads are best-effort.** `region_read.secret_data`
+  turns a non-404 failure into a `503` rather than `{}`: an empty dict makes a valid
+  "keep" look unset and fails the update as a `400`, silently losing a stored secret,
+  where a `503` lets the client retry. Values are read as bytes, since a secret file may
+  hold a keystore or a DER certificate that cannot survive a round trip through `str`, and
+  a stored value that is not valid UTF-8 is skipped rather than guessed at, because it
+  could not have been written through this API. The revision, usage and spec reads degrade
+  to a null field instead, because a status is still worth returning without them.
+- **The usage read reports whether it happened.** `RegionUsage.measured` exists because a
+  cross-region total needs it where the other best-effort reads do not: they degrade to a
+  visible null on the failing region, while a total summed over a region that did not
+  answer is just a smaller number that still looks authoritative. The quantity parse sits
+  inside the same guard as the read, so an unrecognized quantity form (Kubernetes may
+  render one in decimal-exponent notation) cannot turn a healthy workload into a `Failed`
+  region.
+
+### Pre-flight: what is checked before a write
+
+**Host and name are checked in one fan-out.** `preflight.assert_deployable` answers "is
+this host free" and "is this name unused" in one visit per region. Two fan-outs would cost
+two cross-region round trips per deploy and, worse, describe two different instants; asked
+together, a region's two answers cannot disagree about the moment they were taken.
+
+**The check is not atomic with the apply, on purpose.** The apply is a separate operation,
+so a peer can claim the host in between. The guard exists to make that window small and the
+failure loud, which is why `apply_workload` re-runs it immediately before mutating instead
+of trusting the accept-time result.
+
+**A host conflict is reported before a name conflict.** The host conflict is the one an
+idempotent apply would otherwise resolve silently, by hijacking another workload's
+`DomainMapping`.
+
+**The host owner is found with a field selector, and the conflict names holder and
+namespace.** `_host_owner` narrows a cluster-wide question to the single `DomainMapping`
+that could answer it, so it stays one small query rather than a page of every mapping on
+the platform. The message names the holder and its namespace because the owner can live in
+another group's namespace, which the caller cannot see, and a bare "already assigned" would
+be a dead end to debug.
+
+**A default host label that does not fit is a `400` that suggests a `hostname`.** A name
+and group that do not fit together in `{name}-{group}` are a reason to supply an explicit
+`hostname`, not a reason the workload cannot exist. The check lives in
+`preflight.resolve_host` and runs on the create path only; `route.host_for` composes the
+host without it, because read paths recompute a default host for workloads that already
+exist and a read is no place to discover a create-time rule.
+
 ### Partial-failure semantics
 
 Create and update are **asynchronous**: the pre-flight runs synchronously and the call
@@ -347,14 +572,81 @@ absence).
 > Cross-region traffic steering is handled by the **`*.serverless.{base_domain}` DNS record
 > forwarding to the active region** - not by the API.
 
+### The read pool
+
+**Cluster reads run on a bounded pool of their own.** On the process-wide default
+executor - sized by a formula, shared with everything, with an unbounded queue - a burst of
+page reads (a console tab polling row stats) makes unrelated requests inherit its latency
+invisibly. `api.services.regions.read_pool.ReadPool` is sized from `cluster_read_workers`,
+and admission past `cluster_read_workers + cluster_read_max_queued` is refused with a
+`503`: shed load is visible, a silently growing queue is not.
+
+**Saturation has its own exception type.** `ReadPoolSaturated` lets the fan-out tell the
+API's own saturation (this request's `503`) from a `ServiceUnavailableError` a region
+function raised doing its work (that region's failure row). The two must not be conflated.
+
+**A slot is released when the thread finishes, never on cancellation.** The executor cannot
+interrupt a thread, so a read the caller's `wait_for` gave up on is still occupying its
+worker. Released on cancellation, a stalling region would fill the pool with zombie reads
+while the accounting reported it empty, and the `503` shedding would never fire. The
+release therefore hangs on the concurrent future's done callback rather than on the asyncio
+wrapper: `run_in_executor`'s wrapper acknowledges a cancel immediately even while the
+thread runs on, so a callback there - or a `finally` on the await - would free the slot the
+moment the caller gave up.
+
+### The per-region cluster client
+
+Fan-out runs on these clients, one per region, and everything below is what keeps a slow or
+silently dead cluster from becoming this API's problem.
+
+**A `Cluster` is a cluster, not a namespace.** Every namespaced operation on
+`common.cluster.client.Cluster` names its namespace explicitly, so where a write lands is a
+deliberate choice at the call site rather than an inherited default. Code working within one
+namespace binds it once through `NamespacedCluster`, so downstream code cannot mix
+namespaces mid-operation.
+
+**Lazy clients are built under a lock.** A `Cluster` is shared, and its first use routinely
+happens on several fan-out threads at once. Unguarded, two threads each build an
+`ApiClient` and the loser's connection pool is never closed - a socket leak per race - plus
+a discovery-cache race for the dynamic client. Callers may `connect()` eagerly at startup so
+the first request does not pay for API discovery.
+
+**The connect timeout is installed by wrapping `pool_manager.request`.** Setting
+`connection_pool_kw["timeout"]` would not work: urllib3 consults the pool default only for
+its own sentinel, and `kubernetes.client.rest` always passes `timeout=` explicitly - `None`
+for a call with no `_request_timeout`, which resolves to no timeout at all. Discovery and
+the watch are exactly those calls (`common.cluster.pool._default_connect_timeout`).
+
+**Streams carry no read timeout; keepalive bounds them instead.** A watch and a log follow
+are idle between bytes by design, so a read timeout would tear a quiet stream down. That
+leaves them with no defense against a connection that dies silently - a NAT or conntrack
+entry expiring, a load balancer dropping it without RST - over which no server-side timeout
+can arrive. TCP keepalive options on every pool make the kernel probe an idle connection
+after 30s and give up within about a minute more, so a wedged watch costs minutes rather
+than a reconcile loop stuck until restart. The options are added to urllib3's defaults
+rather than substituted for them, because those defaults carry `TCP_NODELAY`.
+
+**Closing a follow closes the socket and releases the connection.** `LogFollow.close` calls
+both `close` and `release_conn`, and neither replaces the other: closing the socket is what
+interrupts the pending read on the follower thread (ARCHITECTURE.md: A held-open stream
+holds a thread), and releasing is what stops the pool holding a connection that will never
+be reused. Failures are swallowed, because this only runs while tearing a stream down,
+where there is nothing left to report to.
+
+**Field selectors are applied by the apiserver.** `Cluster.get` accepts a `field_selector`,
+so a cluster-wide question about one object stays one narrow query instead of a page of
+everything filtered client-side - which is what the host pre-flight asks.
+
 ---
 
 ## Tenant Namespaces
 
 Each SSO group's workloads - and their builds, config Secrets and credentials - live in the
 group's own namespace, **`{group}{suffix}`** (default suffix `-serverless`), in both
-clusters. The namespace is the hard tenancy boundary; the API's group checks and ownership
-labels stay as defense in depth.
+clusters. The name is resolved in exactly one place (`TenantNamespaceConfig.namespace_for`),
+read by both ends. The namespace is the hard tenancy boundary; the API's group checks and
+the ownership labels of ARCHITECTURE.md: Group-based authorization (tenancy) stay as defense
+in depth - they are what makes each resource attributable inside the namespace it lands in.
 
 Namespaces are created at runtime by the **tenant controller** (`tenant_controller/`, its
 own Deployment and image), because the group set is SSO data Helm cannot render. It is a
@@ -386,6 +678,100 @@ The controller has three jobs:
 
 `kubectl get ns -L serverless.platform/group` with the template-hash annotation answers
 "has the new policy reached every tenant"; the per-converge log line is the audit trail.
+
+### The loop is local-only; provisioning reaches both clusters
+
+Each tenant controller converges **its own** cluster from its own cluster's ConfigMap, so
+the two sites never fight while Argo has one synced ahead of the other - the same rule the
+build controller follows (BUILDING.md: Digest propagation). The reconcile loop therefore
+takes only the local cluster, because converging a peer from here is exactly what the
+local-only rule exists to prevent. The **provision** API exists beside that loop because the
+one thing a per-cluster loop cannot fix in time is a create landing in the region whose
+namespace does not exist yet.
+
+**Writing a peer's namespace is sound only because the set is region-neutral.** Both regions
+render the template set from the same chart and values, so the bytes and the hash are
+identical. `region` and `registry` are placeholders rather than chart-rendered values for
+that reason: a per-region value baked in at chart render would mean the two sets never share
+a hash, and a provision writing a peer's namespace would write the wrong region's value.
+During an Argo sync-skew window the peer's own loop pulls its namespace back to the set that
+cluster holds - a legitimate convergence that ends when the sync lands, and the reason a
+per-region value must never enter the set.
+
+### Converging a namespace
+
+**Every converge step is unconditional.** `converge` has exactly one shape, so a caller
+cannot skip the opening apply - which is also the write that creates the namespace - on a
+stale read of someone else's stamp. The namespace name is passed in rather than derived
+inside `converge`, so a changed suffix setting cannot strand namespaces that already exist,
+and the target's name overrides the template's, because a template naming something else
+would create a second namespace mid-converge.
+
+**An empty or `Namespace`-only set is refused everywhere it could act.** A set whose files
+render to nothing reads as a truncated ConfigMap, and obeying it would prune every tenant
+namespace bare. `converge` raises before any write so the stamp stays intact and the next
+pass retries; `reconcile_all` refuses an empty set, because mounted-but-empty is
+indistinguishable from a broken mount; and readiness re-checks the render gate, because
+otherwise a truncated ConfigMap leaves the pod in rotation and turns every provision into a
+`502` that blames the regions for this pod's own bad mount. Parse failures name the file,
+since an operator reading the loop's backoff log needs the ConfigMap key to fix.
+
+**One namespace's failure does not end the pass.** `reconcile_all` counts and skips a
+failing namespace rather than aborting - the same rule as tag GC (BUILDING.md: Registry tag
+GC), since an aborting error would deterministically starve every namespace after it. A
+managed namespace with no group label counts as a failure rather than being converged
+blind, because it is state a human made. An all-failed pass raises: that is one cause rather
+than many, and it should take the loop's error backoff instead of a full resync sleep. The
+pool is shut down with `cancel_futures`, so a SIGTERM mid-pass drops the queue instead of
+working through every namespace already submitted - the pod has a grace period to respect.
+
+### The provision call
+
+**Provisioning is a `PUT`, and it returns the namespace.** The caller states a desired end
+state rather than asking for a job: the API calls it before every create and retries on
+timeout, so "safe to repeat" belongs in the method itself. Re-applying an already-converged
+group is how the caller learns it is converged to *this* template hash rather than last
+release's. The response carries the namespace so the suffix rule has exactly one authority;
+the controller reads that suffix from settings and never from a module default, because
+deriving it two ways would provision `{group}-serverless` while the API deployed into
+`{group}{suffix}` - the exact split the shared configuration block (`TenantNamespaceConfig`)
+exists to prevent.
+
+**A namespace that cannot be confirmed is a `503`, not a create that proceeds.** The
+provision call is a pre-flight, and a check that could not be run has not passed
+(`api.services.tenant_namespace.provision_namespace`). Where no controller is configured - a
+dev cluster, where the namespace is whatever the operator made by hand - the call is skipped
+and the skip is **logged**: skipping is a decision, and a decision should not be silent.
+
+**The shared token is depth, not the primary control.** An empty token setting disables the
+check, because the NetworkPolicy is the primary control and a dev cluster has no Vault to
+take a token from.
+
+**Converges and provisions run on pools of their own.** Converges are independent per
+namespace (the stamp is per namespace), so a template rollout over many tenants is bounded
+by `converge_workers` rather than serialized. The provision API has its own
+`provision_workers` pool, separate from the loop's and from the server's threads: it bounds
+how many converges a burst of creates can have in flight, and it is why a slow region cannot
+reach the server's threads and starve the probes.
+
+**The loop and the provision API share one process.** They share the cluster clients and the
+mounted template set, which is the whole reason they are not two deployments; the clusters
+are passed into `create_app` rather than built there, because two sets would mean two pools
+of connections to the same API servers. The API runs on a background thread so SIGTERM
+unwinds the loop, and startup is awaited so a server that cannot bind is discovered at boot
+rather than by the first provision - the failure crash-loops the pod, which is visible,
+instead of leaving the loop running beside a dead API with nothing in the log to say why.
+The join budget is deliberately longer than uvicorn's graceful-shutdown budget, or it would
+expire just as the server is finishing and the caller would close the cluster clients out
+from under an in-flight converge.
+
+**The chart-to-controller seam is checked before a tenant meets it.**
+`dev/tenant_templates.py` follows the Deployment's projected volume rather than guessing
+ConfigMap names, so a Deployment that projects a ConfigMap the chart does not render fails
+there instead of as a pod that will not mount, and it exits on a missing volume or ConfigMap
+because silently checking nothing is the one outcome it must not have. Until the chart that
+writes the set and the controller that reads it meet, a malformed NetworkPolicy or a
+mistyped placeholder would otherwise be discovered by the first tenant onboarding.
 
 ---
 
@@ -425,9 +811,11 @@ limit (published on `/info` as `naming`).
 **Object naming.** The OpenShift name of the workload (KSVC) and all its derived resources
 (`{workload}-env` Secret, `{workload}-files` ConfigMap/Secret, pull secret) is plain
 **`{name}`** - the group's namespace scopes it, so the platform's primary key is
-**(namespace, name)** and the same name can exist in two groups. `{group}` is the
-**normalized** group (ARCHITECTURE.md: Authentication & Authorization), so a group written
-`My_Team` in SSO appears as `my-team` in the namespace and the host.
+**(namespace, name)** and the same name can exist in two groups. The **host** carries the
+pair: `{name}-{group}` is the default host's first DNS label, because the route domain is
+shared by every group. `{group}` in both the namespace and the host is the **normalized**
+group (ARCHITECTURE.md: Authentication & Authorization), so a group written `My_Team` in SSO
+appears as `my-team` in the namespace and in the host alike.
 
 **Custom hostname.** A client may override the host with a `hostname` field. Because the
 `DomainMapping` name *is* the host, the API **validates the hostname is not already assigned**
@@ -445,9 +833,11 @@ flowchart LR
 
 #### Workload network isolation (NetworkPolicies)
 
-Every tenant namespace gets **default-deny** `NetworkPolicies` (from the tenant template
-set), then reopens only the paths Knative + OpenShift need. Net effect: a workload pod
-**can't talk to another workload pod** - not even in its own namespace - or reach other
+Every tenant namespace gets **default-deny** `NetworkPolicies` - the chart renders them
+into the tenant controller's template set, which applies them to every group namespace -
+then reopens only the paths Knative + OpenShift need. Net effect: a workload pod **can't
+talk to another workload pod** - not even in its own namespace, so there is no cross-tenant
+lateral movement within a group namespace or across them - or reach other
 namespaces, and its egress is constrained:
 
 - **Ingress** - allowed only from the configured system namespaces (Knative activator +
@@ -579,7 +969,9 @@ so the value deciding whose signatures we trust is always a deliberate choice he
 
 ### Group-based authorization (tenancy)
 
-- Tenancy is **shared-namespace, label-scoped**. Every resource the API creates is labeled:
+- Tenancy is **a namespace per group** (ARCHITECTURE.md: Tenant Namespaces), and every
+  resource the API creates is labeled as well, so ownership is legible inside a namespace and
+  selectable across regions:
 
   ```yaml
   metadata:
@@ -602,10 +994,11 @@ so the value deciding whose signatures we trust is always a deliberate choice he
   **asserts the caller is a member** of that group (from the **`groups` claim**); otherwise
   `403`. This makes the acting group unambiguous for users in multiple groups. Authorization
   rules:
-  - **Create/Update:** the workload is named `{name}-{group}` and stamped with that group label.
-  - **Read/Delete by name:** the request targets `{name}-{group}`; the API verifies both that
-    the caller is a member of `group` and that the resource's group label matches; otherwise
-    `403`/`404`.
+  - **Create/Update:** the workload is named `{name}` in the group's namespace and stamped
+    with that group label.
+  - **Read/Delete by name:** the request targets `{name}` in the group's namespace; the API
+    verifies both that the caller is a member of `group` and that the resource's group label
+    matches; otherwise `403`/`404`.
 - Admins (members of a configured **admin group**) may act for any group; **tenant groups**
   are limited to groups the caller belongs to.
 - **Group-name normalization.** A group name is canonicalized in **one place**
@@ -614,7 +1007,7 @@ so the value deciding whose signatures we trust is always a deliberate choice he
   path prefix (`/`), **lowercase**, strip a leading `ggd-<1-4 digits>-`, then fold `_` to `-`.
   (Lowercasing precedes the prefix strip so an upper-case `GGD-1234-` is still recognized.)
   The case and `_` rules exist because both are legal in a Keycloak group but **not** in the
-  DNS-1123 object names and hosts the group is interpolated into (`{name}-{group}`,
+  DNS-1123 namespace and host the group is interpolated into (`{group}{suffix}`,
   `{name}-{group}.{base_domain}`); without them a member of `My_Team` authenticates
   successfully and is then rejected at every request that names their own group. The DNS-1123
   check runs on the **normalized** form, so a name normalization can't rescue (a
@@ -753,7 +1146,7 @@ Nothing may reach the public internet. Everything is mirrored to internal infras
 | Concern | Approach |
 |---------|----------|
 | **Platform & app images** | Mirror to the internal registry; use `ImageDigestMirrorSet` / `ImageContentSourcePolicy` so image pulls resolve internally. |
-| **Buildpack stack & store images** | Mirror the Cloud Native Buildpacks **build**/**run** stack images and the Paketo buildpackages into the internal registry; the kpack release's `ClusterStack`/`ClusterStore` reference them, and the `Builder`s here compose them. **The runtime tarballs themselves are a separate class of artefact** - files on the artifact server, not registry content - and missing them is the most common airgap failure (BUILDING.md: Airgapped Mirror Inventory). |
+| **Buildpack stack & store images** | Mirror the Cloud Native Buildpacks **build**/**run** stack images and the Paketo buildpackages into the internal registry; the kpack release's `ClusterStack`/`ClusterStore` reference them, and the `ClusterBuilder`s here compose them. **The runtime tarballs themselves are a separate class of artefact** - files on the artifact server, not registry content - and missing them is the most common airgap failure (BUILDING.md: Airgapped Mirror Inventory). |
 | **Python dependencies (the API)** | Build the API container against an **internal PyPI mirror** (e.g. Nexus/Artifactory) or vendored wheels; pin all versions. |
 | **Function dependencies (per runtime)** | Buildpacks must resolve language deps from internal mirrors (internal PyPI, Go module proxy/`GOPROXY`, npm registry mirror). Documented as a prerequisite for each runtime. |
 | **Base images** | Both images build on a mirrored **`python:3.14-slim`** base. The version lives in exactly two places - the Dockerfiles and `pyproject` `requires-python` - and a CI `version` job fails the build if they drift, deriving the value the other jobs use; mirror the workload/builder bases likewise. |
@@ -819,8 +1212,14 @@ Endpoint parameters worth knowing beyond the table:
   `tailLines` (clamped to `stream.snapshotTailLines`), `ticket`, and - snapshot
   only - `limitBytes` (clamped to `stream.snapshotMaxBytes`). A follow ends with
   an `end` event when the pod goes away, which on Knative is routine, not an error.
+  `tailLines` opens on the newest lines however old they are, which is the right
+  opening for a pod that has been quiet longer than any `sinceSeconds` window
+  would reach back.
 - `/stream-tickets` takes `{"path": "..."}`; a non-streaming path is a `400`, and
   a deployment with no signing key answers `503` (streams then accept the header only).
+- `/stats/stream` pushes on an `interval` (clamped, ARCHITECTURE.md: Streaming): one
+  connection replaces a client's poll loop, so the cross-region fan-out happens once
+  per interval however many clients are watching.
 
 `statuses` and `errorCodes` exist so a client never hardcodes a vocabulary. `statuses.workload` is the
 `status` set (and is the `Literal` the responses are typed with, so it cannot drift from what is
@@ -833,8 +1232,7 @@ Kubernetes/Knative conditions, so an unrecognized cause is null with the raw tex
 `message`. `errorCodes` is walked off the `APIError` subclasses, so an error added in code
 is published without a second edit. `naming` carries the one rule no per-field schema can
 express: `name` and `group` are each valid at 63 characters, but it is `{name}-{group}` that
-becomes the KSVC name and the first DNS label, and `group` is a path parameter rather than a
-body field. The per-field rules themselves (pattern, maxLength, description, examples) are on
+becomes the host's first DNS label, and `group` is a path parameter rather than a body field. The per-field rules themselves (pattern, maxLength, description, examples) are on
 `/openapi.json`, so a generated client validates them without a second copy.
 
 ### Request semantics
@@ -851,7 +1249,8 @@ and a `statusUrl`; the build/deploy runs in the background. Clients poll
 workflow patterns (ARCHITECTURE.md: REST API Specification).
 
 **Create is strict.** `POST /functions` and `POST /containers` **fail with 409** if a
-workload named `{name}-{group}` already exists in any region (it is not a silent upsert);
+workload named `{name}` already exists in the group's namespace in any region (it is not a
+silent upsert);
 changes go through the `PUT` endpoints.
 
 **`PUT` is a full replace** of the mutable spec and **404s** if the workload doesn't
@@ -868,7 +1267,7 @@ definition, use `POST .../functions/{name}/build`.
 
 **Typed endpoints are offering-scoped:** `/functions/{name}` only acts on a function and
 `/containers/{name}` only on a container - a name that is the other offering returns 404.
-(The OpenShift object name stays `{name}-{group}`; the offering is a label, not in the name.)
+(The OpenShift object name is `{name}`; the offering is a label, not in the name.)
 
 ### Shared sub-schemas
 
@@ -877,7 +1276,7 @@ definition, use `POST .../functions/{name}/build`.
 // The acting group is NOT a body field - it is the {group} path segment on every
 // endpoint (/api/serverless/v1/groups/{group}/...). The caller must be a member (else 403).
 {
-  "name": "orders-api",                 // DNS-1123, required. OpenShift object name is {name}-{group}.
+  "name": "orders-api",                 // DNS-1123, required. OpenShift object name is {name}.
   "hostname": "orders",                 // optional custom host; default {name}-{group}.{route_domain}.
                                         // a single label, or one level under {route_domain}
                                         // ({label}.{route_domain}); must not be assigned (else 409).
@@ -903,6 +1302,39 @@ definition, use `POST .../functions/{name}/build`.
   "regions": ["central", "south"]         // optional; default = all regions (HA)
 }
 ```
+
+### Validation at the edge
+
+**Caller-supplied names are validated where they arrive.** A pod name from the URL path is
+constrained to Kubernetes' own rule (`validate_pod_name`) because it is the one
+caller-supplied string on the read path that could reach somewhere other than the resource
+it names - a `..` or a `/` in a path segment is how a get becomes a get of something else.
+This is not an authorization check; that is decided against the pod's labels
+(ARCHITECTURE.md: Authorizing a pod). Env var names are validated at the edge for a
+different reason: an unchecked name the API server refuses would be accepted with a `202`
+and die in the background apply, as a per-region error about a field the caller cannot see.
+The 253-character cap on one comes from the `{workload}-env` Secret key, since Kubernetes
+puts no length limit on a container env name.
+
+**The JSON schema documents but does not validate.** The `Annotated` types carry
+`WithJsonSchema` rather than a `pattern`, because a real pattern runs before the
+`AfterValidator`: it would reject `My_Team` before `normalize_group` could canonicalize it,
+and `/src` before `validate_source_path` could strip it. The validator stays the only
+authority. Those validators live in `common` and are re-exported by `api.models.common` -
+they bound what can be written to a cluster and the builder applies them off the HTTP path,
+so they cannot belong to the request layer, and the API still imports them from one place.
+
+**Base64 is checked in the model and again in the resolver.** `FileMount` rejects
+undecodable content at the HTTP edge, because the accept path echoes the submitted spec back
+through `describe.redact_files` before service-layer validation runs, so a check further in
+would be reached too late to answer with a `400`. The lenient decode in `resolve_files`
+stays as a second line of defense for non-HTTP callers.
+
+**The stream path pattern is compiled per call.** `validate_stream_path`
+(`api/models/stream.py`) enumerates the paths a ticket may be minted for, and builds its
+pattern from the base path on each call: the base path is configuration, so compiling at
+import would freeze the first value ever read and the tests that vary it would match against
+the wrong prefix. `re` caches compilations, so the per-call cost is nil.
 
 ### ServiceNow integration (frontend)
 
@@ -1076,6 +1508,46 @@ slot back. Guarding the whole generator matters: a client that disconnects immed
 at its **first** suspension point, and those are exactly the streams that would otherwise leak
 threads.
 
+**Rendering happens on the follower thread.** A pod can log tens of thousands of lines a
+second, and rendering each on the event loop - model dump, frame, one generator hop per
+line - starved the loop until the health probes missed and the kubelet restarted the pod,
+killing every stream on it; the clients then reconnected onto the surviving replica and took
+it down the same way. The follower thread in `api.services.streams.logs` renders the line
+path and the loop only forwards bytes, one yield per buffer drain. Adjacent frames are
+concatenated per drain for the same reason: one yield and one transport write per drain
+instead of per line is the difference between a busy loop and a starved one.
+
+**The hand-off is a hand-rolled bounded buffer, not an `asyncio.Queue`.** Filling a Queue
+from a thread means one `call_soon_threadsafe` per line, and scheduling those is itself
+unbounded - a pod that outruns its reader would grow the loop's callback queue instead of
+the buffer, the same leak one level down. `_Buffer` is bounded in **bytes as well as lines**
+(`StreamConfig.queue_max_bytes` beside `stream.queueSize`), because a pod that writes
+without newlines makes every "line" a piece of up to `LogFollow.MAX_LINE_BYTES` (1 MiB), and
+a thousand of those is a gigabyte, which a line count alone bounds nothing against.
+`MAX_LINE_BYTES` exists one level down for the same reason: a container writing megabytes
+with no newline - binary spew, a runaway single-line JSON dump - would otherwise grow an
+unbounded partial-line buffer inside the API process.
+
+**The follow and its stop handle are one locked object.** `_Tail` is touched from both the
+follower thread and the event loop; without the lock, a client that disconnects during the
+opening round trip leaves a thread following a pod nobody is reading.
+
+**The deadline rollover flushes and reports drops first.** When a stream reaches
+`stream.maxSeconds`, buffered lines are delivered and the drop count reported before the
+`end` event, so the rollover does not cost the client lines that had already arrived and a
+client reconnecting across it does not read the log as gapless when lines were skipped.
+
+**The request context is copied into the worker.** `capacity.run_on` copies contextvars into
+the thread, as `asyncio.to_thread` does and a bare `run_in_executor` does not. Without it
+the correlation id the log filter reads is missing from every line a stream's worker
+writes - exactly the debugging trail a long-lived stream most needs.
+
+**Slot release is idempotent; shutdown does not wait.** `StreamSlot.release` is safe to call
+from whichever owner fires first (the generator's `finally`, the acceptor's error path, the
+GC backstop), because a double release must not drive the open count below the true number
+of streams. `StreamCapacity.shutdown` does not wait for running threads, because waiting
+would hold shutdown open for as long as the slowest peer.
+
 ### The Route would cut them
 
 OpenShift's router times a connection out after **30s** by default, which would sever every
@@ -1138,6 +1610,37 @@ that name is running.
 The pod name is also a path segment that reaches a request to the cluster's API server, so it is
 constrained at the edge to what Kubernetes itself accepts as a pod name (`validate_pod_name`).
 
+### SSE framing
+
+`api.services.streams.sse` owns the wire format, so the stream tests assert on typed events
+instead of parsing text - matching the rest of the API, where a service returns a model and
+the framework renders it. The response headers **disable buffering explicitly** for the
+intermediaries in the path, because a buffered event stream is indistinguishable from a hung
+one until the buffer happens to flush. The streaming `200` is declared by hand in
+`routers.streaming.RESPONSES`, because FastAPI infers a response schema from the return
+annotation and a `StreamingResponse` has none to infer.
+
+A log line carries the node's timestamp as a field of its own (`LogLine`) rather than
+leaving clients to re-parse the line prefix, in the timezone every other API timestamp
+(`createdAt`) uses, so a client formats one timezone rather than two.
+
+### What the pod roster reports
+
+A pod with **no metrics reading is still listed**. metrics-server has not scraped a pod that
+started a second ago, and that is precisely the pod a client most wants to follow, so the
+roster lists it with `usage: null`. Readiness is reported beside `phase` rather than folded
+into it, because conflating the two is how a UI shows a workload as up while its requests
+fail. Restarts count the queue-proxy sidecar even though usage does not, because a
+queue-proxy that keeps restarting is a pod that keeps dropping traffic.
+
+### A requested interval is clamped, never rejected
+
+The bounds on a stream's `interval` exist to stop one client asking for a re-read every
+50 ms or going quiet for an hour, and neither is worth a `400` when "as often as this
+deployment allows" is what the caller wanted: the floor protects the cluster, the ceiling
+keeps the connection from looking dead. The first reading of a stats stream is emitted
+immediately, so the client is not left with an empty panel until the first interval elapses.
+
 ### Errors after the first byte
 
 Everything that can fail with a status code is settled **before** the response begins: the slot is
@@ -1178,6 +1681,32 @@ The repo is organized as services + a shared library so a builder microservice
 could be added as a second package without restructuring: the API talks to the
 build system through `common.build.BuildBackend` - today the in-process
 `KpackBackend`, later a remote client - with no change to the orchestration.
+
+### Application wiring
+
+**The version comes from package metadata.** `pyproject.toml` is the single source of truth
+for the version, and installed package metadata is where that value is readable at runtime.
+
+**The API version segment is applied once.** `V1` (`api/core/paths.py`) is applied where the
+routers are included, so a v2 is a second `include_router` call rather than an edit to every
+router module. `api_base` takes `settings` as an argument rather than reading the cached
+settings, because every service holds its own settings object and a caller must not be
+answered from a different configuration than the one it was built with.
+
+**`optional_auth` is a dependency of its own.** FastAPI resolves dependencies by identity,
+so keeping the header half of stream authentication as a separate dependency
+(`api/auth/deps.py`) lets a test - or any app wiring - override it exactly the way it
+overrides `require_auth` everywhere else, which a `try` inside `require_stream_auth` would
+not allow.
+
+**The runtime registry is loaded at startup and may kill the pod.** It is local
+configuration, not a remote dependency: retrying cannot fix it, and an API without it would
+accept functions it can never build. A missing or unusable file therefore surfaces as a
+failed pod rather than as a `500` on the first function request.
+
+**Streams shut down before the cluster clients.** A follower reading through a client that
+has just been closed under it logs a traceback for what is only an orderly shutdown, so the
+lifespan shuts the stream pool down first.
 
 ---
 

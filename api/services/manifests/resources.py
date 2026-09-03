@@ -18,10 +18,9 @@ def build_configmap(name: str, labels: dict[str, str], data: dict[str, str | byt
     """Build a ConfigMap manifest, routing non-text values to ``binaryData``.
 
     A ConfigMap's ``data`` holds UTF-8 text only; anything else belongs in
-    ``binaryData`` as base64. Both mount identically, so the caller need not care
-    which a given file lands in - but writing a non-UTF-8 byte into ``data`` would
-    be rejected by the API server (or corrupt the file), so the split is made here
-    rather than left to the caller.
+    ``binaryData`` as base64. Each value is decoded as UTF-8 to decide which field
+    it lands in; the API server rejects a non-UTF-8 byte written into ``data``.
+    Both fields mount identically, so the caller need not care which is used.
 
     Args:
         name: The ConfigMap name.

@@ -1,8 +1,8 @@
 """The paced control loop the long-running services share.
 
-One pacing/backoff policy for the build controller and the tenant controller, so a
-hardening fix (jitter, a backoff cap, shutdown handling) lands once instead of
-in whichever copy the incident pointed at.
+The build controller and the tenant controller both run their pass through
+:func:`run_loop`, so pacing, error backoff and shutdown handling have one
+implementation.
 """
 
 from __future__ import annotations
@@ -16,18 +16,18 @@ from cloudlet_apis.logging import get_logger
 
 logger = get_logger(__name__)
 
-# The least a pass *period* may be, measured from one pass's start to the
-# next: a pass that ends instantly (a watch closed at the door, an empty
-# reconcile) cannot degenerate into back-to-back LISTs at full speed.
+# The least a pass *period* may be, measured from one pass's start to the next.
+# It applies to a pass that ends instantly (a watch closed at the door, an empty
+# reconcile) as much as to a slow one.
 MIN_PASS_SECONDS = 1.0
 
-# A sustained outage retries at a doubling interval rather than hammering an
-# apiserver that is already struggling; a clean pass resets it.
+# Ceiling on the error backoff, which doubles while failures persist; a clean
+# pass resets it to error_backoff_seconds.
 MAX_BACKOFF_SECONDS = 60.0
 
 
 def _terminate(signum: int, _frame) -> None:
-    """Raise, so a sleeping or blocking pass unwinds now rather than later."""
+    """Log the signal and raise SystemExit, unwinding a sleeping or blocking pass."""
     logger.info("received signal %s, shutting down", signum)
     raise SystemExit(0)
 
@@ -53,9 +53,9 @@ def run_loop(
     tenant controller's reconcile) passes its resync interval. Either way a pass
     that overran its period simply starts again.
 
-    A raising pass sleeps ``error_backoff_seconds``, doubling up to
-    ``MAX_BACKOFF_SECONDS`` while failures persist, so a transient failure
-    retries promptly and a sustained outage does not hammer the cluster.
+    A raising pass is logged and sleeps ``error_backoff_seconds``, doubling up to
+    ``MAX_BACKOFF_SECONDS`` while failures persist; the next clean pass resets
+    the backoff.
 
     Args:
         run_pass: One pass of the service's work.

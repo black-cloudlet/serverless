@@ -1,9 +1,8 @@
 """Extract the chart's tenant template set and render it for one group.
 
-The seam this closes: the chart *writes* the set and the tenant controller *reads*
-it, and until they meet, a malformed NetworkPolicy or a mistyped placeholder is
-discovered by the first tenant onboarding. CI runs this over a real
-``helm template`` so the failure lands on the pull request instead.
+The chart *writes* the template set and the tenant controller *reads* it; this
+is where the two meet. CI runs it over a real ``helm template`` output, so a
+malformed NetworkPolicy or a mistyped placeholder fails the pull request.
 
     helm template serverless-api charts/serverless-api > rendered.yaml
     python dev/tenant_templates.py rendered.yaml > tenant-objects.yaml
@@ -14,8 +13,8 @@ second: what it prints is what would land in a tenant namespace, ready for
 kubeconform.
 
 ``--digest`` prints the set's hash alone. Rendering the chart for each region
-and comparing the two is how the region-neutrality the provision fan-out depends
-on gets asserted rather than assumed (tenant_controller/provision.py).
+and comparing the two digests asserts the region-neutrality the provision
+fan-out depends on (tenant_controller/provision.py).
 """
 
 from __future__ import annotations
@@ -39,9 +38,9 @@ SAMPLE_REGISTRY = "registry.example.internal"
 def template_set(rendered: str) -> TemplateSet:
     """The template set the chart ships, assembled the way the kubelet does.
 
-    Follows the tenant controller's own projected volume rather than guessing
-    at ConfigMap names, so a Deployment that projects a ConfigMap the chart
-    does not render fails here instead of as a pod that will not mount.
+    Reads the tenant controller Deployment's projected volume to learn which
+    ConfigMaps hold the set, then loads their keys as one set - the same files
+    the kubelet would mount.
 
     Args:
         rendered: A whole ``helm template`` output.
@@ -51,8 +50,7 @@ def template_set(rendered: str) -> TemplateSet:
 
     Raises:
         SystemExit: If the render holds no such volume, or names a ConfigMap it
-            does not contain. Silently checking nothing is the one outcome this
-            script must not have.
+            does not contain; the script exits rather than check an empty set.
     """
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     config_maps = {

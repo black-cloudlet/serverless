@@ -2,12 +2,10 @@
 
 One rule, in one place. Every read path asks it - the single GET, the stats
 view, the log snapshot, the update's state load, and the delete - and each does
-something different when the answer is no, which is why what is shared here is
-the predicate - and, for the paths that answer 404, :func:`hidden_404`, the
-response that keeps a denial indistinguishable from absence.
-
-Not in :mod:`api.services.state.ksvc_state`: that module is pure interpretation of a
-Kubernetes object, and this one weighs the object against a caller.
+something different when the answer is no, so what is shared here is the
+predicate :func:`owned_by` and, for the paths that answer 404,
+:func:`hidden_404`, which keeps a denial indistinguishable from absence
+(docs/ARCHITECTURE.md - Error model).
 """
 
 from __future__ import annotations
@@ -24,14 +22,14 @@ logger = get_logger(__name__)
 def owned_by(obj: dict, user: Principal, offering: str) -> bool:
     """Whether ``obj`` belongs to a group ``user`` may act for, in this offering.
 
-    Both halves matter. The group is the tenancy boundary. The offering is
-    checked too because functions and containers share one namespace and one
-    name space, so a container could otherwise be reached through the
-    functions path.
+    Both halves must hold. The group is the tenancy boundary. The offering is
+    checked as well because functions and containers share one namespace and one
+    name space, so a container could otherwise be reached through the functions
+    path.
 
-    A caller who fails this must be told the workload does not exist rather than
-    that they may not have it - the callers do that, since a 404 is right for a
-    read and a delete has to record the region instead.
+    A caller who fails this is told the workload does not exist, never that they
+    may not have it; each caller does that for itself, since a read answers 404
+    and a delete has to record the region first.
 
     Args:
         obj: The workload's KSVC, already fetched.

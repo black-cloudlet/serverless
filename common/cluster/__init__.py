@@ -5,7 +5,7 @@ One package, five concerns: :mod:`~common.cluster.client` talks to a cluster,
 names what it talks about, :mod:`~common.cluster.pool` is the urllib3 plumbing
 under it, and :mod:`~common.cluster.follow` is the one response that outlives
 its request. Everything public is re-exported here, so
-``from common.cluster import ...`` keeps working unchanged.
+``from common.cluster import ...`` reaches all of it.
 """
 
 from common.cluster.client import Cluster, clusters_for, select_local

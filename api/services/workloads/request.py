@@ -15,12 +15,10 @@ logger = get_logger(__name__)
 class ApplyRequest:
     """Everything one apply needs, as a value instead of a signature.
 
-    :meth:`WorkloadService.apply_workload` took twenty-five keyword arguments, and
-    the reason it could is that they were the *union* of both offerings' needs -
-    a container passed five dead build-metadata nulls, a function
-    passed a dead pull-secret manifest. Bundling them does not by itself fix
-    that, but it puts the whole input in one place where the offering-specific
-    tail is visible as a group rather than as more parameters.
+    Built by the offering service and handed to
+    :meth:`WorkloadService.apply_workload`. The fields are the *union* of both
+    offerings' needs: a container leaves the build metadata None, a function
+    leaves the pull-secret manifest None.
 
     Attributes:
         name: Workload name.
@@ -35,8 +33,8 @@ class ApplyRequest:
         size: Resource t-shirt size.
         hostname: Optional custom host; None takes the default.
         regions: Target region names, or None for all.
-        port: The container port to stamp. Always set - both offerings default
-            it to 8080 rather than leaving it implicit.
+        port: The container port to stamp. Always set; both offerings default
+            it to 8080.
         created: True for a create - enables the absence check and the
             rollback of a half-applied workload, and picks the success status.
         pull_secret_name: Name of the image-pull Secret the KSVC references.

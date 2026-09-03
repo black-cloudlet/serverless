@@ -28,12 +28,12 @@ the build flow, and what the API owns versus the build controller.
 |-------|----------|
 | Build engine | **kpack** (Kubernetes-native Cloud Native Buildpacks), not `func`/Tekton |
 | kpack install | The `kpack` Helm chart is a **subchart** of the platform chart |
-| Buildpack content | `ClusterStack` and `ClusterStore` ship in the **kpack chart** (cluster-scoped); the `Builder`s ship in the **serverless-api chart** |
+| Buildpack content | `ClusterStack` and `ClusterStore` ship in the **kpack chart**; the per-runtime `ClusterBuilder`s ship in the **serverless-api chart**. All three kinds are cluster-scoped |
 | Cluster singletons | Stack and store are cluster-wide, so the engine release owns them; the serverless-api chart references them by name |
 | Languages | `go`, `python`, `node` |
 | Stack | **One shared** jammy base stack for all languages |
 | Build locality | **Build where you run** - every region the function is deployed to builds its own copy, into its own registry (BUILDING.md: Active/Active Behaviour) |
-| Build namespace | The **workloads** namespace, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
+| Build namespace | The workload's **own** namespace, `{group}{suffix}`, so a function's Image is owned by its KSVC and one git Secret serves both the API and kpack (DEPLOYING.md: Chart Topology) |
 | Image CR writer | The **API** (POST / PUT / `POST .../build`; a git webhook is planned, not implemented) |
 | Digest propagation | The **build controller**, its own Deployment, watches `status.latestImage` in its own cluster and applies the ksvc with the new digest **there only** (BUILDING.md: Digest propagation) |
 | Write model | **Full server-side apply** of the desired spec - never a partial patch |
@@ -44,7 +44,7 @@ the build flow, and what the API owns versus the build controller.
 | Build cache | **Registry**, at `{base}/{group}/{name}_cache` - not kpack's default PVC per `Image`, which scales with the function count |
 | Registry cleanup | Function delete **deletes both repositories in every region's registry** through Quay's management API, with a per-region OAuth token - robots cannot call it (BUILDING.md: Registry cleanup on delete) |
 | Registry tag GC | The **build controller** prunes kpack's per-build tags, **its own region's registry only**, on an hours-scale sweep off the loop thread. Kept per function: the branch tag, every tag on the serving digest, the newest N builds beyond those. Requires **one region per registry** - enforced at render and re-checked by the controller (BUILDING.md: Registry tag GC) |
-| Registry layout | Each region's own `registry.url` (from `regions[].registry`) + optional `registry.organization` + `build.builderRepository`. **One** root for the Builders this platform composes and the functions it builds; the mirrored kpack and Paketo content sits on a separate, shared registry nothing writes to (BUILDING.md: Registry layout) |
+| Registry layout | Each region's own `registry.url` (from `regions[].registry`) + optional `registry.organization` + `build.builderRepository`. **One** root for the ClusterBuilders this platform composes and the functions it builds; the mirrored kpack and Paketo content sits on a separate, shared registry nothing writes to (BUILDING.md: Registry layout) |
 | Git credential | **Per function** - caller-supplied, on a per-function ServiceAccount the API creates; never platform-wide |
 
 ---
@@ -77,18 +77,25 @@ the build flow, and what the API owns versus the build controller.
 
 ```
 ClusterStack  (build + run base images)  ┐
-ClusterStore  (buildpackages)            ├──► Builder ──► composes and PUSHES a
-order         (explicit components)      ┘                builder image to the registry
+ClusterStore  (buildpackages)            ├──► ClusterBuilder ──► composes and PUSHES a
+order         (explicit components)      ┘                       builder image to the registry
 ```
 
-A `Builder` must report `Ready` with a `status.latestImage` before any `Image` referencing
-it will build. **This is the first thing to check when a build never starts** - in an
-airgapped cluster it usually means the Stack or Store could not pull from the mirror.
+A `ClusterBuilder` must report `Ready` with a `status.latestImage` before any `Image`
+referencing it will build. **This is the first thing to check when a build never starts** -
+in an airgapped cluster it usually means the Stack or Store could not pull from the mirror.
+
+The builders are **cluster-scoped**. An `Image` resolves a namespaced `Builder` in the
+`Image`'s own namespace, and every function's `Image` lives in its group's namespace,
+`{group}{suffix}` (DEPLOYING.md: Chart Topology) - a namespaced builder would have to exist in
+every one of them. One `ClusterBuilder` per runtime serves them all. Their names are
+cluster-scoped with them, so the chart assumes the one-release-per-cluster topology it is
+installed with: two releases in one cluster would fight over the same three names.
 
 ### Language mapping
 
-| Runtime | Builder | Detection groups (supported paths) |
-|---------|---------|-----------------------------------|
+| Runtime | ClusterBuilder | Detection groups (supported paths) |
+|---------|----------------|-----------------------------------|
 | `go` | `go` | vendored (`go-mod-vendor`), non-vendored (`go mod download`) |
 | `python` | `python` | `requirements.txt` (pip), `pyproject.toml` (poetry x2) |
 | `node` | `node` | npm (`npm-install`) |
@@ -182,14 +189,20 @@ API. Numbers are coerced to strings, because an unquoted `defaultVersion: 3.12` 
 in YAML and rejecting it would take down every runtime over a missing pair of quotes.
 
 The file is **required and has no fallback**. A built-in default list would be
-indistinguishable from a real one at the API surface while naming no Builder, so a broken
-mount would look like a working platform right up until the first function failed to
-build. Instead `load_runtimes` raises, the lifespan loads it before serving, and a
+indistinguishable from a real one at the API surface while naming no ClusterBuilder, so a
+broken mount would look like a working platform right up until the first function failed
+to build. Instead `load_runtimes` raises, the lifespan loads it before serving, and a
 misconfigured pod never reaches readiness.
 
-A runtime that is present but maps to no Builder - a partially filled ConfigMap - is
+A runtime that is present but maps to no ClusterBuilder - a partially filled ConfigMap - is
 caught separately, as a `400 runtime 'python' is not buildable` before the 202, rather
 than minutes later as a failed background deploy that reads like a broken build.
+
+**The loader carries no HTTP layer.** `api/services/builder/runtimes.py` only loads and
+validates; the cached, request-injectable registry is assembled in `api/dependencies.py`.
+Nothing in the loader reaches FastAPI, so a service with no HTTP surface - the build
+controller, or anything else that has to resolve a runtime - reuses the same loading and
+validation rather than a second copy of it.
 
 **Coupling warning.** Axis 2 is bounded by axis 1: a pinned buildpackage only *contains*
 certain interpreter versions, and in an airgapped cluster there is no fallback download.
@@ -204,14 +217,14 @@ decided by *who writes*:
 | Content | Registry | Written by |
 |---|---|---|
 | kpack's own images; the Paketo stack and buildpackages | **the kpack registry**, shared | the mirror scripts, once |
-| Composed `Builder` images | **the region's own** | that region's kpack |
+| Composed `ClusterBuilder` images | **the region's own** | that region's kpack |
 | Function images, and their build caches | **the region's own** | that region's kpack |
 
 Everything read-only is shared, so the airgap mirror inventory stays a single copy
 (BUILDING.md: Airgapped Mirror Inventory). Everything written is local, so two clusters
 can never race to push one tag - which is what lets every region build the function it runs
-(BUILDING.md: Active/Active Behaviour). The composed `Builder` sits on the local side even
-though it is *made* of mirrored content: composing it is a push.
+(BUILDING.md: Active/Active Behaviour). The composed `ClusterBuilder` sits on the local
+side even though it is *made* of mirrored content: composing it is a push.
 
 Registries that namespace their repositories - Harbor projects, Quay and GitLab
 organizations, Artifactory repository keys - need a path segment between the host and
@@ -221,7 +234,7 @@ one everything the platform builds sits under, and the rest derives from those t
 ```
 {region registry url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
 
-  base/{name}                                       Builder tags
+  base/{name}                                       ClusterBuilder tags
   base/{group}/{name}:{branch}                      function images (the API)
   base/{group}/{name}_cache:latest                  build layer cache (BUILDING.md: Build cache)
 ```
@@ -230,10 +243,10 @@ Only the **host** varies per region. The path segments are how repositories are 
 and naming them differently per region would buy nothing while giving `RegistryConfig.path`
 two answers - so `regions[].registry` normally sets `url` alone.
 
-One value covers the Builders and the functions deliberately: they are pushed by the same
-credential, mirrored together, and cleaned up against the same root, so a second value
-would only be a second thing to keep in step. A function cannot collide with a Builder -
-a Builder is one path component below the base and a function is two.
+One value covers the ClusterBuilders and the functions deliberately: they are pushed by the
+same credential, mirrored together, and cleaned up against the same root, so a second value
+would only be a second thing to keep in step. A function cannot collide with a ClusterBuilder
+- a ClusterBuilder is one path component below the base and a function is two.
 
 Either segment may be empty and is then skipped, so the flat `{host}/{group}/{name}`
 layout still produces no doubled slash. `RegistryConfig.path` is the single derivation:
@@ -399,8 +412,8 @@ Internal TLS (git, the registry, the artifact server) is signed by the internal 
 build pod must trust it - **verification is never disabled**.
 
 **Mechanism: a Kyverno `ClusterPolicy`** that mutates kpack build pods, mounting the
-existing OpenShift-injected `ca-bundle` ConfigMap (already created in the workloads
-namespace by `templates/ca-bundle.yaml`) and setting the per-tool CA env vars.
+existing OpenShift-injected `ca-bundle` ConfigMap (already created in each group's
+namespace by the tenant template set) and setting the per-tool CA env vars.
 
 Two properties make this the right choice over a CNB `ca-certificates` service binding:
 
@@ -494,6 +507,12 @@ Instead there are **two kinds of ServiceAccount**:
 | `kpack-builder` | the chart, in the API namespace | both registry credentials, no git one | `ClusterBuilder` objects (compose + push a builder image; never clone source) |
 | `{workload}-build` | the **API**, per function, in the workload's namespace | that function's git Secret **+** both registry credentials | the function's `Image` |
 
+The chart creates `kpack-builder` **in the API's namespace**, and both registry
+ExternalSecrets with it: a `ClusterBuilder` is cluster-scoped and has no namespace of its
+own to resolve an account in, so it names that one through `spec.serviceAccountRef`. The
+function builds themselves run in the group's namespace, where the tenant template set has
+already placed this region's registry credential.
+
 The per-function account is created alongside the function and named on its `Image`:
 
 ```yaml
@@ -542,6 +561,20 @@ kpack creates:      ├──► SourceResolver     ← resolves the git ref to 
                           │
                           └──► Pod          ← the CNB lifecycle
 ```
+
+**The `Image` takes the workload's object name verbatim.** kpack stamps that name onto
+every `Build` as the `image.kpack.io/image` label value, and a label value caps at 63
+characters - the same limit already enforced on a workload name. Naming the `Image`
+verbatim keeps those two limits one limit: any name the API accepts is a name kpack can
+label with, and a function gets no tighter a name budget than any other workload. An
+affix would silently shrink the platform-wide limit for functions alone.
+`common.kpack.build_image_name` stays a function even though it is the identity, so the
+rule has one home and the code that applies an `Image` cannot disagree with the code that
+deletes one.
+
+The build `ServiceAccount` is the deliberate exception, suffixed `-build`
+(`{workload}-build`): it reads like the workload's other derived objects in a
+listing, and unlike the `Image` name it is never written where a label value has to fit.
 
 ### Inside the build pod
 
@@ -628,12 +661,22 @@ reclaimed by name and no region is written to that the request did not ask for.
 `plan` therefore takes the registries the build pushes to - `{region: RegistryConfig}`,
 whose keys *are* the building regions - rather than resolving them itself. The caller holds
 the clusters and each carries its own registry, so there is one resolution path rather
-than a second snapshot of it.
+than a second snapshot of it (`KpackBackend.plan`, `api/services/builder/kpack_backend.py`).
 
 `manifests` is emitted on **every** create and update, not only when a build input changed.
 Re-applying an unchanged spec is a no-op kpack does not rebuild from, but it recreates the
 `Image` on a region that has never had one - which is what makes a PUT after a switchover
 self-healing (BUILDING.md: Active/Active Behaviour).
+
+**`BuildRequest` validates itself on construction** (`common/build.py`). Its fields become
+Kubernetes object names and an image reference, and the build path is reachable away from
+the HTTP edge - where the request model's own validation has not run - so the inputs are
+checked where they are assembled rather than only where they arrive.
+
+**A failed trigger is raised, not swallowed** (`BuildBackend.trigger`, implemented by
+`KpackBackend.trigger`). A status read that cannot reach a region degrades a field and the
+answer is still useful; triggering is the whole point of the call it belongs to, so a
+swallowed error there is a rebuild that silently never happens.
 
 ### Who writes the ksvc image
 
@@ -734,6 +777,13 @@ apply, like every other write path (BUILDING.md: Active/Active Behaviour), of an
 that has been stripped of the metadata the server owns (`managedFields`, `resourceVersion`,
 `uid`, …) and of any pinned `spec.template.metadata.name`, which Knative would reject.
 
+**The KSVC it writes is the one the `Image` names.** `Reconciler._roll_out`
+(`build_controller/reconciler.py`) takes the namespace off the `Image` object rather than
+deriving it, so the KSVC that gets the digest is always the one that `Image` was built
+for. Finding no KSVC there is expected rather than an error: an `Image` whose delete
+cascade has not run yet has none, and neither does one applied before builds followed the
+workload into its group's namespace.
+
 Two things stop a write. The repository is deliberately **not** one of them: this is the
 only writer of the image after the create (BUILDING.md: Who writes the ksvc image), so
 refusing a moved one would strand the workload on a repository nothing pushes to.
@@ -770,7 +820,7 @@ redundancy that matters is within a region, and identical applies converge there
 ### A region builds what it runs
 
 Each region builds in its **own** cluster, into its **own** registry, so the full build stack
-(kpack, Stack, Store, Builders) is installed in every cluster and a function deployed to
+(kpack, Stack, Store, ClusterBuilders) is installed in every cluster and a function deployed to
 two regions has an `Image` in both. Nothing crosses a region boundary at runtime: the image a
 region serves was built there, from a registry it owns, and published by its own controller.
 
@@ -826,7 +876,7 @@ replicated source of truth.
 Concurrent writers are safe **only** if the composed spec is a pure function of the function
 definition. Duplicate builds come from nonces, not from concurrency:
 
-1. **Deterministic name** - the workload's own `{name}-{group}`.
+1. **Deterministic name** - the workload's own `{name}`.
 2. **No timestamps, UUIDs or counters** anywhere in the spec.
 3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type
    and setting it forces a rebuild on every apply.
@@ -908,6 +958,12 @@ like the rest of the spec (BUILDING.md: Convergence rules). Lowering them takes 
 each function's next build, not at once - kpack prunes when it creates a `Build`, so an
 untouched function keeps its existing history until something rebuilds it.
 
+**Whatever reads that history orders it on the build-number label**, never on the
+creation timestamp: a timestamp has one-second resolution, while kpack numbers the builds
+itself, so the number is both exact and the ordering kpack's own tooling uses. That is
+what `common.kpack.latest_build` sorts on - and it is the `Build` the explicit rebuild
+annotates (BUILDING.md: What causes a new Build).
+
 ### Registry cleanup on delete
 
 Deleting a function deletes its image repository and its cache repository outright, **in
@@ -973,8 +1029,10 @@ to delete.
 The `/api/v1` mechanics themselves - how a repository or a tag is addressed, and how each
 HTTP outcome is judged (2xx deleted, 404 already gone, 401/403 names the token's missing
 namespace admin) - live in `common.registry.RegistryClient`, a domain module either
-service may import. `api.services.builder.registry` keeps only the policy of *what* a
-function event reclaims; anything else the platform reclaims through the management API
+service may import - a context manager over **one** `httpx` connection, because every
+method needs the same base URL, token and timeout and a sweep over many repositories
+should handshake once rather than per call. `api.services.builder.registry` keeps only
+the policy of *what* a function event reclaims; anything else the platform reclaims through the management API
 (the build controller's tag pruning) speaks to Quay through the same client, so the two
 services cannot drift in how they address it.
 
@@ -1029,7 +1087,9 @@ registry would each delete tags the other still serves. So the chart requires
 `regions[].registry.url` on every region and refuses to render two regions on one registry
 (BUILDING.md: Registry layout), and the controller independently refuses to sweep - loudly,
 naming the regions and the shared host - when its resolved registry matches another
-region's, as the backstop for a hand-rolled config.
+region's (`TagGC._blocked`, `build_controller/gc.py`), as the backstop for a hand-rolled
+config. Refusing is the safe answer because the alternative is not a smaller sweep: it is
+deleting tags a peer's KSVC is pinned to.
 
 Per function repository, a sweep **keeps**: the current **branch tag** (a create deploys
 at it; a switchover region rebuilds into it); every tag on the **digest of
@@ -1052,9 +1112,11 @@ token; `buildController.gc.{enabled,intervalSeconds,keepBuilds}` are the knobs, 
 content" switch - stops the GC exactly as it stops cleanup on delete. The sweep fires on
 an hours-scale interval (default 6h) and runs on its **own daemon thread**: it is
 registry-bound I/O that must never sit between the reconcile loop's relist and its
-watch, where every minute spent is a minute no digest rolls out. The next deadline is
-set when a sweep starts, so a failing registry retries at the next *due* resync; a sweep
-still running when the next is due is logged and not doubled. The tag listing itself is
+watch, where every minute spent is a minute no digest rolls out. **The first sweep is not
+waited for**: `TagGC` starts with a zero deadline, so a restarted controller shows its GC
+working - or says why it is not - within one pass rather than an interval later. The next
+deadline is set when a sweep starts, so a failing registry retries at the next *due*
+resync; a sweep still running when the next is due is logged and not doubled. The tag listing itself is
 page-capped (`common/registry.py`), so paging that never terminates - a proxy dropping
 the `page` param - becomes a warning and an empty listing (no listing = no deletes),
 never a wedged thread.
@@ -1108,7 +1170,7 @@ metadata:
 spec:
   # {base}/{group}/{name}:{branch projected to a legal OCI tag} (BUILDING.md: Registry layout)
   tag: registry.internal/<org>/<repo>/payments/hello:main
-  builder:
+  builder:                             # cluster-scoped, so no namespace to name
     kind: ClusterBuilder
     name: python
   serviceAccountName: hello-build      # per-function: its git token + both registry creds
@@ -1128,13 +1190,17 @@ spec:
 
 ### ClusterBuilder (serverless-api chart, per region)
 
+Cluster-scoped, one per runtime (BUILDING.md: Buildpack Topology). The object is
+cluster-wide but its content is this region's: each region's release composes the builder
+from the mirrored stack and store and pushes it to its own registry.
+
 ```yaml
 apiVersion: kpack.io/v1alpha2
 kind: ClusterBuilder
 metadata:
-  name: python
+  name: python                       # cluster-scoped: no namespace of its own
 spec:
-  serviceAccountRef:
+  serviceAccountRef:                 # namespaced: the account the chart puts in the API namespace
     name: kpack-builder
     namespace: serverless-api
   tag: registry.internal/<org>/serverless/builders/python
@@ -1179,10 +1245,11 @@ one release.
 
 ### Build ServiceAccount (registry push/pull + git)
 
-The account the **Builders** run as. No git credential: a Builder composes and pushes a
-builder image, it never clones source - but it does read two registries, pulling the stack
-and store from the kpack registry and pushing the composed builder to this region's. The
-per-function build account is in BUILDING.md: Registry & Git Credentials.
+The account the **ClusterBuilders** run as, in the API's namespace - the one they name in
+`spec.serviceAccountRef`. No git credential: composing a builder image never clones source -
+but it does read two registries, pulling the stack and store from the kpack registry and
+pushing the composed builder to this region's. The per-function build account is in
+BUILDING.md: Registry & Git Credentials.
 
 ```yaml
 apiVersion: v1
@@ -1212,6 +1279,8 @@ spec:
     - name: mount-ca-bundle
       match:
         any:
+          # Every group namespace, matched on the label the tenant controller stamps:
+          # they are created at runtime, so there is no list of names to hold here.
           - resources:
               kinds: [Pod]
               namespaceSelector:
@@ -1330,10 +1399,10 @@ These are pulled from the **kpack registry**, which is shared by every region an
 nobody - so the inventory is mirrored once, not once per region.
 
 The **composed builder images** this platform *produces* are the exception: they are pushed
-to `{region registry base}/<lang>` by that region's `Builder` objects (the base already carries
-`build.builderRepository`), so that repository must exist and be writable in **each** region's
-registry. Composing is a push, and two clusters pushing one builder tag is the race
-per-region registries exist to remove.
+to `{region registry base}/<lang>` by that region's `ClusterBuilder` objects (the base
+already carries `build.builderRepository`), so that repository must exist and be writable
+in **each** region's registry. Composing is a push, and two clusters pushing one builder
+tag is the race per-region registries exist to remove.
 
 ### Runtime distributions - **not images**
 

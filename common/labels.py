@@ -32,10 +32,9 @@ ANNOTATION_EMPTY_SINCE = "serverless.platform/empty-since"
 # Operator opt-out: a namespace carrying this (any value) is never collected.
 ANNOTATION_KEEP = "serverless.platform/keep"
 
-# The two values LABEL_OFFERING takes. They live beside the key rather than in
-# the API's service layer because they are the same string in three places - the
-# label, the API kind in the URL path, and the response `type` - and a service
-# that only reads labels (the build service) still has to know them.
+# The two values LABEL_OFFERING takes. The same string appears in three places -
+# the label, the API kind in the URL path, and the response `type` - and a
+# service that only reads labels (the build service) reads it from here.
 OFFERING_FUNCTION = "function"
 OFFERING_CONTAINER = "container"
 
@@ -87,10 +86,10 @@ def workload_labels(
 def _sanitize(value: str) -> str:
     """Make an arbitrary identifier safe for a label value (<=63 chars).
 
-    ASCII alphanumerics only: ``isalnum()`` alone is Unicode-aware, and a label
-    value is restricted to ASCII ``[A-Za-z0-9._-]`` - an SSO username with one
-    accented character would otherwise fail every apply with a 422 long after
-    the request was accepted.
+    A label value is restricted to ASCII ``[A-Za-z0-9._-]``, so the test is
+    ASCII alphanumerics - ``isalnum()`` alone is Unicode-aware. Anything else
+    becomes ``-``; the result is cut to 63 characters, stripped of leading and
+    trailing ``-_.``, and falls back to ``unknown`` when nothing is left.
     """
     safe = "".join(c if (c.isascii() and c.isalnum()) or c in "-_." else "-" for c in value)
     return safe[:63].strip("-_.") or "unknown"

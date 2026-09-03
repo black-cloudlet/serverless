@@ -22,11 +22,11 @@ class BuildControllerSettings(LoopSettings):
     # registry (docs/BUILDING.md - Registry tag GC). Also needs the registry
     # API token; without one the GC announces itself off and does nothing.
     gc_enabled: bool = True
-    # Hours-scale, not the resync's minutes: garbage accrues one tag per build,
-    # and each sweep re-derives everything, so nothing is lost by waiting.
+    # Sweep interval, hours-scale rather than the resync's minutes; each sweep
+    # re-derives what to delete from live state.
     gc_interval_seconds: int = Field(default=21600, gt=0)
-    # Newest per-build tags kept beyond the protected ones, so recent builds
-    # stay addressable - mirroring build.history.success's default of 3.
+    # Newest per-build tags kept beyond the protected ones; mirrors
+    # build.history.success's default of 3.
     gc_keep_builds: int = Field(default=3, ge=0)
 
 

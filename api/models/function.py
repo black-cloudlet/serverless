@@ -41,8 +41,8 @@ class FunctionCreate(BaseModel):
     gitToken: str = Field(repr=False)
     runtime: str
     # One of the runtime's advertised `versions` (GET /api/serverless/v1/functions/info).
-    # Omitted means the platform default for that runtime - never the
-    # buildpack's own default, which drifts with the buildpackage.
+    # Omitted means the platform default for that runtime, not the buildpack's
+    # own default.
     version: str | None = None
     env: list[EnvVar] = Field(default_factory=list)
     files: list[FileMount] = Field(default_factory=list)
@@ -51,10 +51,9 @@ class FunctionCreate(BaseModel):
     regions: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
-    # Identical to a container's, deliberately: an app either serves on 8080 or
-    # it does not, and which offering built it changes nothing. A buildpack app
-    # that reads $PORT gets 8080 either way; one that hardcodes another port can
-    # say so instead of never becoming ready.
+    # Container port the built app listens on, with the same rules and default a
+    # container has. A buildpack app that reads $PORT gets 8080; send another
+    # port when the app hardcodes one (docs/FUNCTIONS.md - API - create & update).
     port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
@@ -83,22 +82,21 @@ class FunctionUpdate(BaseModel):
     hostname: Hostname | None = None
     # Replaced, NOT keep-on-omit - the same rule `version` follows: omitting it
     # returns the function to 8080 rather than keeping the port deployed. Only
-    # secret material is keep-on-omit, because only it cannot be read back.
+    # secret material is keep-on-omit.
     port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
 class FunctionResponse(WorkloadResponse):
     """A function, shaped like FunctionCreate (gitToken redacted) + live status.
 
-    No image is exposed: the built image is an internal artifact - the client
-    deals in source (gitRepo/branch), not images.
+    The built image is not part of the response; a function is described by its
+    source (``gitRepo``/``branch``/``path``) and its build state.
     """
 
     type: Literal["function", "container"] = "function"
     runtime: str | None = None
     # The version the caller asked for, or None when they took the default. The
-    # default itself is on GET /api/serverless/v1/functions/info, so a client can resolve
-    # what None means without this echoing a value nobody submitted.
+    # default itself is published on GET /api/serverless/v1/functions/info.
     version: str | None = None
     gitRepo: str | None = None
     branch: str | None = None

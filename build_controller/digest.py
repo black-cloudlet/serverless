@@ -1,8 +1,8 @@
 """Rewriting a read-back Knative Service to run a newly built digest.
 
-The API owns the KSVC spec; the controller owns one field of it, so what it
-applies is the live object edited, not a composed one. Pure dict work
-(docs/BUILDING.md - What it writes).
+The API owns the KSVC spec and the controller owns one field of it, so these
+helpers edit the live object read back from the cluster instead of composing
+one. Pure dict work (docs/BUILDING.md - What it writes).
 """
 
 from __future__ import annotations
@@ -45,11 +45,9 @@ def deployed_image(ksvc: dict) -> str | None:
 def needs_image(ksvc: dict, image: str) -> bool:
     """Whether ``image`` should replace what this KSVC currently runs.
 
-    No if it already runs it, or if it is not a function - an Image's digest has
-    no business on a container that reused a deleted function's name. The
-    repository is not compared: after the create this is the only writer of the
-    image, so refusing a moved one would strand the workload on a repository
-    nothing pushes to (docs/BUILDING.md - What it writes).
+    False when the KSVC already runs that reference, and when it is not labelled
+    as a function. Only the whole reference is compared, so a build that moved to
+    another repository still rolls out (docs/BUILDING.md - What it writes).
 
     Args:
         ksvc: The live Knative Service object.

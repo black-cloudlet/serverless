@@ -16,8 +16,7 @@ def aggregate(statuses: list[RegionStatus]) -> str:
     """Overall status for the create/update path.
 
     Raises RegionTotalFailure when every region failed; otherwise delegates the rollup
-    to overall_status, mapping an unreachable region to ``Failed``. One definition of
-    the rollup, shared with the read paths, so the two cannot drift.
+    to overall_status, mapping an unreachable region to ``Failed``.
 
     Args:
         statuses: The per-region results of the apply fan-out.
@@ -39,8 +38,8 @@ def aggregate(statuses: list[RegionStatus]) -> str:
 def overall_status_for_regions(statuses: list[RegionStatus]) -> str:
     """Roll up RegionStatus objects, mapping an unreachable region to ``Failed``.
 
-    Single projection shared by the create path (aggregate) and the GET read path
-    so the two can't drift.
+    The projection shared by the create path (:func:`aggregate`) and the GET read
+    path.
 
     Args:
         statuses: The per-region statuses.
@@ -54,11 +53,11 @@ def overall_status_for_regions(statuses: list[RegionStatus]) -> str:
 def overall_status(statuses: list[str]) -> str:
     """Collapse per-region KSVC statuses into one overall status (GET / list).
 
-    A ``Failed`` region makes the whole deployment ``Failed`` - one vocabulary for
-    the region rows and the rollup; a ``Terminating`` one makes
-    it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in flight is
-    ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal rollout with one
-    region ahead, NOT a failure. That is what stops a false ``Failed`` while coming up.
+    A ``Failed`` region makes the whole deployment ``Failed``; a ``Terminating`` one
+    makes it ``Terminating``. Otherwise all-``Ready`` is ``Ready`` and anything in
+    flight is ``Deploying`` - including mixed ``Ready`` + ``Deploying``, a normal
+    rollout with one region ahead, NOT a failure
+    (docs/ARCHITECTURE.md - Partial-failure semantics).
 
     Args:
         statuses: The per-region status strings.

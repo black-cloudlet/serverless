@@ -1,17 +1,16 @@
 """Reading a workload's stored and live state back out of a region.
 
 The counterpart to :mod:`api.services.regions.region_apply`: everything here fetches from
-one cluster and nothing writes. It is separate from :mod:`api.services.state.ksvc_state`
-because these calls do I/O - which is what makes their error handling the
-interesting part, and why it differs per function rather than being uniform:
+one cluster and nothing writes. Unlike :mod:`api.services.state.ksvc_state` these calls
+do I/O, and their error handling differs per function:
 
 * the **kept-values** reads (:func:`secret_data`, :func:`secret_text`) fail loud.
   Returning ``{}`` for a Secret that exists but could not be read would make a
   valid "keep" look unset and fail the update as a 400, losing a stored secret.
 * the **decoration** reads (:func:`revision`, :func:`region_usage`,
   :func:`describe_spec`) are best-effort. A workload whose replica count or live
-  usage could not be fetched still has a status worth returning. ``region_usage``
-  also reports *that* it failed, because its caller sums across regions.
+  usage could not be fetched still returns a status. ``region_usage`` also
+  reports *that* it failed, because its caller sums across regions.
 
 Every function here blocks, and is called through ``asyncio.to_thread`` or the
 deployer's fan-out.
@@ -99,14 +98,12 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, na
 def secret_data(cluster: NamespacedCluster, name: str) -> dict[str, bytes]:
     """Raw ``data`` of a Secret (base64 -> bytes); ``{}`` if it doesn't exist.
 
-    Bytes, not text: a secret file may hold a keystore or a DER certificate, and
-    decoding that to ``str`` here would either raise or produce something that
-    cannot be re-encoded when the keep is written back.
+    Bytes, not text: a secret file may hold binary content (a keystore, a DER
+    certificate) that does not survive a round trip through ``str``.
 
     Used by the update path so a redacted "keep" field echoed back is preserved. A
-    genuine 404 means no stored values (``{}``). Any other error must NOT be
-    swallowed: ``{}`` would make a valid keep look unset and fail it as a 400, so it
-    surfaces as a 503 and the update is retried rather than losing a secret.
+    genuine 404 means no stored values (``{}``). Any other error surfaces as a 503
+    instead: ``{}`` would make a valid keep look unset and fail it as a 400.
 
     Raises:
         ServiceUnavailableError: If the Secret exists but couldn't be read.
@@ -131,10 +128,8 @@ def secret_data(cluster: NamespacedCluster, name: str) -> dict[str, bytes]:
 def secret_text(cluster: NamespacedCluster, name: str) -> dict[str, str]:
     """:func:`secret_data` as text, for the values that genuinely are text.
 
-    Env values and the git token become a container env var and an HTTP basic-auth
-    password, both of which are strings by definition. A stored value that is not
-    valid UTF-8 could not have been written through this API, so it is skipped
-    rather than guessed at.
+    Env values and the git token are strings by definition: a container env var and
+    an HTTP basic-auth password. A stored value that is not valid UTF-8 is skipped.
     """
     out: dict[str, str] = {}
     for key, raw in secret_data(cluster, name).items():
@@ -200,10 +195,10 @@ def revision(cluster: NamespacedCluster, name: str | None) -> dict | None:
 class RegionUsage:
     """One region's usage read: whether it could be taken, and what it showed.
 
-    ``measured`` is what a cross-region total needs and the other best-effort reads
-    here do not: they degrade to a null field on the region that failed, which is
-    visible, while a total summed over a region that did not answer is just a
-    smaller number that still looks authoritative.
+    Attributes:
+        measured: Whether the read and the parse both succeeded. A caller summing
+            across regions uses it to tell a real zero from a missing answer.
+        total: The region's summed usage, or None when ``measured`` is False.
     """
 
     measured: bool
@@ -213,12 +208,10 @@ class RegionUsage:
 def region_usage(cluster: NamespacedCluster, name: str) -> RegionUsage:
     """Best-effort live cpu/memory summed over one region's running pods.
 
-    Never raises: an unreadable metrics API must not fail a status that is
-    otherwise worth returning. The *parse* is inside the guard for the same
-    reason the read is - a quantity in a form :mod:`api.services.state.metrics`
-    does not recognise (Kubernetes may render one in decimal-exponent notation)
-    would otherwise escape into the fan-out, where it becomes a ``Failed`` region
-    and a ``Failed`` rollup for a workload that is serving perfectly well.
+    Never raises. Both the read and the parse run inside the guard, so a quantity
+    in a form :mod:`api.services.state.metrics` does not recognise (Kubernetes may
+    render one in decimal-exponent notation) yields ``measured=False`` instead of
+    escaping into the fan-out as a ``Failed`` region.
 
     Returns:
         The region's usage, with ``measured=False`` if the read or the parse failed.

@@ -1,9 +1,10 @@
 """Workload external exposure via a Knative DomainMapping.
 
-We never create OpenShift Routes by hand - the Serverless Operator creates one
-per Knative ingress. To expose a custom, cluster-independent host we create a
-``DomainMapping`` (identical in both clusters) and the operator provisions the
-Route. A wildcard DNS record forwards to the active region.
+The Serverless Operator creates one OpenShift Route per Knative ingress, so no
+Route is written here. A ``DomainMapping`` - identical in both clusters - binds
+the workload's custom, cluster-independent host to its KSVC, and the operator
+provisions the Route from it. A wildcard DNS record forwards to the active
+region (docs/ARCHITECTURE.md - Route host convention).
 """
 
 from __future__ import annotations
@@ -22,10 +23,9 @@ HOST_TEMPLATE = default_host_label("{name}", "{group}") + ".{routeDomain}"
 def host_for(name: str, group: str, route_domain: str) -> str:
     """The default external host for a workload: ``{name}-{group}.{route_domain}``.
 
-    Deliberately does not check the pair's length: read paths recompute a
-    default host for workloads that already exist, and a read is no place to
-    discover a create-time rule. The check lives on the create path, in
-    ``preflight.resolve_host``.
+    Composes the host without checking the name/group pair's length; that check
+    runs on the create path, in ``preflight.resolve_host``. Read paths call this
+    to recompute the default host of a workload that already exists.
     """
     return f"{default_host_label(name, group)}.{route_domain}"
 

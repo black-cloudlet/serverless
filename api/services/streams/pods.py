@@ -1,22 +1,19 @@
 """Streaming which pods a workload currently has, on the local region.
 
-This is the endpoint that makes per-pod log streaming usable: a pod name is the
-path segment ``/logs/pods/{pod}`` takes, and until this existed the only way to
-learn one was to read every pod's logs.
+A pod name is the path segment ``/logs/pods/{pod}`` takes, so a client reads this
+roster first and then opens a log stream for one of its entries.
 
-It is a stream rather than a lookup because the answer expires. Knative replaces
-a workload's pods on every revision and removes them all on scale-to-zero, so a
-roster fetched once is a roster that quietly stops being true - a client would
-have to poll it at exactly the cadence this pushes at anyway.
+It pushes on an interval rather than answering once because the roster expires:
+Knative replaces a workload's pods on every revision and removes them all on
+scale-to-zero (docs/ARCHITECTURE.md - Streaming).
 
 Local region only, matching the log streams it feeds: a pod name is only useful
 where its log can be read.
 
-Two reads per tick, and they are different kinds of thing. The Pod list is
-authoritative membership. The PodMetrics list is usage, joined on by name and
-best-effort - metrics-server has not scraped a pod that started a second ago, and
-that is precisely the pod a client is most likely to want to follow, so a missing
-measurement must never hide the pod.
+Two reads per tick. The Pod list is authoritative membership. The PodMetrics list
+is usage, joined on by name and best-effort - metrics-server may not yet have
+scraped a pod that started a second ago, and a missing measurement never hides
+the pod.
 """
 
 from __future__ import annotations
@@ -66,8 +63,7 @@ def _ready(pod: dict) -> bool:
     """Whether the pod's Ready condition is true.
 
     Reported next to ``phase`` rather than folded into it: a pod is ``Running``
-    from the moment its containers start, which is before it serves traffic, and
-    conflating the two is how a UI shows a workload as up while requests fail.
+    from the moment its containers start, which is before it serves traffic.
     """
     conditions = (pod.get("status", {}) or {}).get("conditions", []) or []
     return any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
@@ -77,8 +73,7 @@ def _restarts(pod: dict) -> int:
     """Restarts summed over the pod's containers, sidecar included.
 
     The sidecar is counted here though its *usage* is not: a queue-proxy that
-    keeps restarting is a pod that keeps dropping traffic, which is exactly what
-    someone reading this is trying to find out.
+    keeps restarting is a pod that keeps dropping traffic.
     """
     statuses = (pod.get("status", {}) or {}).get("containerStatuses", []) or []
     return sum(int(s.get("restartCount") or 0) for s in statuses)
@@ -117,8 +112,8 @@ def read_roster(cluster: NamespacedCluster, workload: str) -> list[PodInfo]:
         The pods, ordered by name. Empty when scaled to zero.
     """
     pods = cluster.get(ResourceKind.POD, label_selector=_selector(workload))
-    # Best-effort, and deliberately after the authoritative list: usage is a
-    # decoration, and an unreadable metrics API must not empty the roster.
+    # Best-effort, and read after the authoritative pod list: an unreadable
+    # metrics API leaves usage null instead of emptying the roster.
     try:
         measured = cluster.get(ResourceKind.POD_METRICS, label_selector=_selector(workload))
         usage = _usage_by_pod(measured)
@@ -176,10 +171,9 @@ async def follow(
     yield StreamEvent("pods", first)
 
     while True:
-        # Slept in heartbeat-sized pieces rather than one interval: at the top of
-        # the configured range a listing is a minute apart, and a connection that
-        # sends nothing for a minute is one an idle-timeout somewhere in the path
-        # will close out from under both ends.
+        # Slept in heartbeat-sized pieces, not in one interval: at the top of the
+        # configured range a listing is a minute apart, and a connection that
+        # sends nothing for that long is reaped by an idle timeout in the path.
         due = min(loop.time() + interval, deadline)
         while True:
             now = loop.time()
@@ -189,8 +183,8 @@ async def follow(
             if loop.time() < due:
                 yield heartbeat()
         if loop.time() >= deadline:
-            # Said out loud, exactly as the log stream does: without an `end` a
-            # client cannot tell the scheduled rollover from a dropped connection.
+            # An explicit `end`, as the log stream sends: it tells the client the
+            # scheduled rollover apart from a dropped connection.
             yield StreamEvent(
                 "end", StreamEnd(reason="the stream reached its time limit; reconnect")
             )

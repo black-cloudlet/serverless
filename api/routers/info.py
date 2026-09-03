@@ -34,18 +34,18 @@ from common.names import MAX_HOST_LABEL, default_host_label
 
 router = APIRouter(tags=["info"])
 
-# A poll ends here; every other workload status is still in flight. Derived from
-# the same Literal, so a new status cannot be added without landing on one side.
-# Two values and done, Kubernetes-style: a poller stops on Failed whatever the
-# cause - the cause (reason) is for the UI, not the loop.
+# The workload statuses a poll ends on; every other status is still in flight.
+# Values of the same WorkloadStatus Literal, published on /info as
+# statuses.terminal (docs/ARCHITECTURE.md - REST API Specification).
 TERMINAL_STATUSES = ("Ready", "Failed")
 
 
 def _port_rules() -> PortCapability:
-    """The container port rules, identical for both offerings.
+    """The container port rules, identical for both offerings' info documents.
 
-    One function rather than two literals: the offerings agreeing is the point,
-    and two call regions constructing this separately is how they stop agreeing.
+    Returns:
+        The bounds and applied default, taken from the model constants both
+        offerings validate against.
     """
     return PortCapability(required=False, default=DEFAULT_PORT, min=PORT_MIN, max=PORT_MAX)
 

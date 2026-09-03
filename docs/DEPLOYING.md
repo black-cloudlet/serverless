@@ -39,21 +39,25 @@ flowchart LR
 
 - **Helm chart (this repo)** templates: the API's `Namespace` (annotated
   `argocd.argoproj.io/sync-options: Delete=false,Prune=false` so ArgoCD never
-  prunes/deletes it; workload namespaces are per group, provisioned at runtime by the
-  tenant controller - ARCHITECTURE.md: Tenant Namespaces), the trusted-CA-bundle
-  `ConfigMap`, a `serverless-api-regions`
+  prunes/deletes it; workload namespaces are per group, `{group}{suffix}`, provisioned at
+  runtime by the tenant controller - ARCHITECTURE.md: Tenant Namespaces), the
+  trusted-CA-bundle `ConfigMap`, a `serverless-api-regions`
   **`ConfigMap`** holding just the **regions list** - each region's name and its cluster, which
   is the whole profile, since the API server URL is derived from the cluster name and the
   base domain - loaded into both Deployments as the `SERVERLESS_REGIONS` env var (the rest of
   the config is plain `env` on each), a `serverless-api-runtimes` **`ConfigMap`** holding the
   available runtimes, mounted as a YAML file, the **tenant template set** (the per-namespace
-  ConfigMaps: default-deny NetworkPolicies, CA bundle, RBAC, build prerequisites -
-  ARCHITECTURE.md: Tenant Namespaces), **three `Deployment`s** - the API, the build
-  controller (watches and writes this region only, BUILDING.md: Digest propagation) and the
-  tenant controller - configured under `api`, `buildController` and
+  ConfigMaps the tenant controller applies into every `{group}{suffix}` namespace:
+  default-deny NetworkPolicies - ARCHITECTURE.md: Networking & Exposure - CA bundle, RBAC,
+  build prerequisites - ARCHITECTURE.md: Tenant Namespaces), **three `Deployment`s** - the
+  API, the build controller (watches and writes this region only, BUILDING.md: Digest
+  propagation) and the tenant controller - configured under `api`, `buildController` and
   `tenantNamespaces.controller` respectively, sharing the root `image` section for registry
-  and pull policy - a `Service` and `Route` for the API alone, ClusterRoles for the
-  client-cert CN users, cert-manager `Certificate`s, **one ESO `ExternalSecret`
+  and pull policy - a `Service` and `Route` for the API alone, with a configurable
+  host/labels/annotations (the build controller serves nothing; the tenant controller takes
+  a ClusterIP `Service` and no Route, its only caller being the API one namespace away),
+  ClusterRoles for the client-cert CN users, bound where each may write (DEPLOYING.md:
+  RBAC), cert-manager `Certificate`s, **one ESO `ExternalSecret`
   per kind of data** (each its own target Secret, referencing the pre-existing
   `ClusterSecretStore`; enabled ones `envFrom`'d into the API), and `values.yaml` describing
   the region profiles. It does **not** ship a
@@ -75,7 +79,7 @@ This repo's chart **consumes** cluster capabilities that are installed and manag
 | **cert-manager** | issues the API's ACME client certificate (ARCHITECTURE.md: Authentication & Authorization) | OLM (mirrored) |
 | **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (ARCHITECTURE.md: Secrets Management) | OLM (mirrored) |
 | **RHBK** | OIDC identity provider (ARCHITECTURE.md: Authentication & Authorization) | platform-managed |
-| **kpack** + its cluster build content | the build engine, plus the `ClusterStack` and `ClusterStore` the `Builder`s here reference by name | the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`), in the platform chart |
+| **kpack** + its cluster build content | the build engine, plus the `ClusterStack` and `ClusterStore` the `ClusterBuilder`s here reference by name | the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`), in the platform chart |
 
 On OpenShift you must use the **OpenShift Serverless Operator** - not an upstream/community
 or Helm-based Knative install. The chart assumes the operator's conventions (kourier in
@@ -98,13 +102,14 @@ serverless-api chart                            one release per cluster/region
 ├── ClusterBuilder x3       ...... go | python | node  [cluster-scoped]
 ├── runtimes ConfigMap      ...... runtime -> builder + version + build env
 ├── kpack-builder SA        ...... registry push/pull (ClusterBuilders only, no git; API namespace)
-├── ExternalSecret          ...... this region's registry dockerconfigjson (BUILDING.md: Registry & Git Credentials)
-├── ExternalSecret          ...... the kpack registry's, pull-only (omitted when it is the region registry)
+├── ExternalSecret          ...... this region's registry dockerconfigjson, API namespace (BUILDING.md: Registry & Git Credentials)
+├── ExternalSecret          ...... the kpack registry's, pull-only, API namespace (omitted when it is the region registry)
 ├── ExternalSecret          ...... every region's Quay OAuth token for registry cleanup (BUILDING.md: Registry cleanup on delete)
 ├── NetworkPolicy           ...... egress/ingress for build pods only (DEPLOYING.md: Network policy for build pods)
 ├── Kyverno ClusterPolicy   ...... CA bundle -> build pods (BUILDING.md: Trust: CA Injection)  [cluster-scoped]
 ├── SCC + ClusterRole       ...... build pods' CNB uid/gid, off by default (DEPLOYING.md: OpenShift SCC for builds)  [cluster-scoped]
 ├── build-controller Deploy ...... Image watch -> ksvc digest (BUILDING.md: Digest propagation)
+├── tenant-controller       ...... Deploy + the template set for each {group}{suffix} namespace (ARCHITECTURE.md: Tenant Namespaces)
 └── (existing: API Deployment + Service + Route, namespaces, CA bundle,
     regions/runtimes ConfigMaps, Certificate, RBAC, tenant NetworkPolicies)
 ```
@@ -114,20 +119,20 @@ by the kpack chart's defaults, which create no stacks or stores. Seed them from 
 repo's `examples/clusterbuild-values.yaml`, keeping the stack and store **names** in step
 with `build.stack.name` / `build.store.name` here, and every buildpack id the orders below
 name present as a store source. Nothing checks either link at install time - kpack reports
-a broken one on the Builder's status.
+a broken one on the ClusterBuilder's status.
 
 ### Builds run beside the workloads
 
 A function's build objects - its `Image`, its build `ServiceAccount` and its git
-`Secret` - live in the workload's own tenant namespace, beside the KSVC they belong to
-(the `ClusterBuilder`s are cluster-scoped, shared by every namespace). Three things
-follow, and each removes a moving part rather than adding one:
+`Secret` - live in the workload's own namespace, `{group}{suffix}`, beside the KSVC they
+belong to (the `ClusterBuilder`s are cluster-scoped, shared by every namespace). Three
+things follow, and each removes a moving part rather than adding one:
 
 | | |
 |---|---|
 | **Ownership** | A function's `Image` and build `ServiceAccount` are ordinary owned resources of its KSVC, carrying the same `ownerReference` as its env Secret and DomainMapping. Deleting the function garbage-collects them - no explicit cleanup path, and no way to orphan an `Image` that would rebuild a deleted function forever (BUILDING.md: Lifecycle & Cleanup). ownerReferences cannot cross namespaces, so this only works co-located. |
 | **One git credential** | The workload's `{workload}-git` Secret is the *only* copy of the token. It is `kubernetes.io/basic-auth` carrying `kpack.io/git`, which is the shape kpack clones with, and the API reads the password back to rebuild on a later edit. Split across namespaces this had to be two Secrets holding the same token. |
-| **One registry credential per region, per namespace** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in the workload's namespace, materialized there by the tenant template set's `ExternalSecret`. The **name** is identical everywhere because every region's KSVC references it; the contents are that region's, from a per-region Vault path (BUILDING.md: Registry & Git Credentials). |
+| **One registry credential per region, per namespace** | `serverless-registry-creds` is pushed with, pulled with by the build pod, and pulled with by the function's KSVC - all in the workload's own namespace, materialized there by the tenant template set's `ExternalSecret` rather than one on each side of a build/run split. The **name** is identical in every namespace and every region because every region's KSVC references it; the contents are that region's, from a per-region Vault path (BUILDING.md: Registry & Git Credentials). |
 
 The cost is that build pods - which execute tenant source and resolve tenant dependency
 trees - are scheduled beside the running functions and share their namespace boundary.
@@ -142,21 +147,30 @@ That boundary is `networkPolicy` and quota, so the two are worth stating plainly
   same namespace quota. `build.resources` bounds it (BUILDING.md: Build pod resources); size the namespace quota for
   concurrent builds plus the running functions, not just the latter.
 
-**Why the split is by scope.** `ClusterStack` and `ClusterStore` are **cluster-scoped
-singletons**: one object per name per cluster, shared by every consumer. A per-region
-application release cannot own something cluster-wide without two releases eventually
-fighting over the same object, so they sit in the kpack chart
+**Why the split.** `ClusterStack` and `ClusterStore` are **cluster-scoped singletons**:
+one object per name per cluster, shared by every consumer. They belong to the build engine
+rather than to this application, so they sit in the kpack chart
 (`clusterBuild.stacks` / `clusterBuild.stores`) alongside the controller that reconciles
 them and the ServiceAccount they pull with. The kpack chart stays generic: it creates
 whatever stacks and stores its values describe and knows nothing about Paketo or this
 platform.
 
-`Builder`s are namespaced and per-region, so they stay here, referencing the stack and store
-by name (`build.stack.name` / `build.store.name`). The cost of the split is that the
-`Builder` -> `ClusterStore` id contract now spans two releases: a buildpack id in an order
-with no matching source in the store shows up as a permanently not-Ready `Builder`, not as
-a chart error. Check `kubectl get clusterstore <name> -o yaml` first when a Builder will
-not become Ready.
+The builders are per-region content - each region's release composes and pushes its own
+builder images to its own registry - so they stay here, referencing the stack and store by
+name (`build.stack.name` / `build.store.name`). They are `ClusterBuilder`s all the same: an
+`Image` resolves a namespaced `Builder` in the `Image`'s own namespace, and every function's
+`Image` lives in its group's `{group}{suffix}` namespace, so a namespaced builder would need
+a copy in every one of them; one cluster-scoped builder per runtime serves them all. Having
+no namespace of its own, a `ClusterBuilder` names its account through
+`spec.serviceAccountRef` - the `kpack-builder` ServiceAccount and the registry credentials it
+reads sit in the API's namespace. Cluster-scoped names in a per-region release do assume the
+one-release-per-cluster topology the chart is installed with; two releases in one cluster
+would fight over them.
+
+The cost of the split is that the `ClusterBuilder` -> `ClusterStore` id contract spans two
+releases: a buildpack id in an order with no matching source in the store shows up as a
+permanently not-Ready `ClusterBuilder`, not as a chart error. Check
+`kubectl get clusterstore <name> -o yaml` first when a builder will not become Ready.
 
 **Ordering.** kpack's CRDs are templated (not in a `crds/` directory) so the conversion
 webhook can target the release namespace. A `ClusterStack`/`ClusterStore` therefore cannot
@@ -204,8 +218,10 @@ the API must not be able to do. Neither can do the other's damage:
 
 Every tenant namespace is default-deny with a narrow allowlist, and a build pod needs
 more than a function does - git, the registry, the artifact mirror. The template set's
-build policy selects **only** pods labelled `kpack.io/build`. NetworkPolicies are
-additive, so tenant pods keep exactly the egress they had; nothing is widened for them.
+build policy (`networkPolicy.build`) selects **only** pods labelled `kpack.io/build`.
+NetworkPolicies are additive, so tenant pods keep exactly the egress they had; nothing is
+widened for them. Both sets of policies are part of the tenant template set, so every
+`{group}{suffix}` namespace carries them.
 
 An off-cluster git/registry/mirror is already covered by the namespace's external-egress
 rule. `egressNamespaces` / `egressCIDRs` are for in-cluster ones, which that rule excludes
@@ -223,7 +239,7 @@ own range and rejects an explicit one outside it. With no other SCC available to
 ServiceAccount, admission finds nothing that admits it and the build never starts:
 
 ```
-pods "hello-team-build-1-build-pod" is forbidden: unable to validate against any
+pods "hello-build-1-build-pod" is forbidden: unable to validate against any
 security context constraint: ... .spec.securityContext.fsGroup: Invalid value:
 []int64{1000}: 1000 is not an allowed group, provider restricted-v2:
 .initContainers[0].runAsUser: Invalid value: 1001: must be in the ranges:
@@ -233,10 +249,10 @@ security context constraint: ... .spec.securityContext.fsGroup: Invalid value:
 The tail of that message is the useful part: it names the exact ids the pod asked for, which
 is what `build.scc.runAsUser` and `.fsGroup` have to match.
 
-**This fails per function, not per install.** A ClusterBuilder is composed by the kpack
+**This fails per function, not per install.** A `ClusterBuilder` is composed by the kpack
 controller itself (no build pod), but a function build runs as the `{workload}-build`
-account the API creates at request time - so the symptom appears on the first function
-build, after everything else looked healthy.
+account the API creates at request time in the group's own namespace - so the symptom
+appears on the first function build, after everything else looked healthy.
 
 `build.scc.enabled` ships a `SecurityContextConstraints` granting exactly those ids and
 nothing more: no host namespaces, no added capabilities, no privilege escalation, all
@@ -245,9 +261,10 @@ only for pods `restricted-v2` cannot admit and everything else in the namespace 
 usual constraint. Reach for the shipped `anyuid` instead and you also permit uid 0.
 
 Because the per-function accounts cannot be named ahead of time, the template set's
-RoleBinding grants it to each tenant namespace's whole ServiceAccount group. That is a
-real widening - a tenant KSVC pod in that namespace could also request uid 1000 - and it
-is why the SCC is written this narrowly.
+RoleBinding grants it to each tenant namespace's whole ServiceAccount group, with subject
+`system:serviceaccounts:{group}{suffix}`. That is a real widening - a tenant KSVC pod in
+that namespace could also request uid 1000 - and it is why the SCC is written this
+narrowly.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
@@ -278,14 +295,14 @@ build ServiceAccount, Kyverno CA policy) are under BUILDING.md: Sample Manifests
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: orders-api              # the plain workload name; the namespace scopes it
-  namespace: team-serverless     # {group}{tenantNamespaces.suffix}
+  name: orders-api             # the plain workload name; the namespace scopes it
+  namespace: team-serverless   # {group}{tenantNamespaces.suffix}
   labels:
     serverless.platform/group: team
     serverless.platform/workload: orders-api
     serverless.platform/managed-by: serverless-api
   annotations:
-    serverless.platform/host: orders-api-team.serverless.example.com
+    serverless.platform/host: orders-api-team.serverless.example.com   # {name}-{group}.{route_domain}
 spec:
   template:
     metadata:
@@ -346,15 +363,15 @@ metadata:
 apiVersion: serving.knative.dev/v1beta1
 kind: DomainMapping
 metadata:
-  name: orders-api-team.serverless.example.com   # the custom host
-  namespace: team-serverless
+  name: orders-api-team.serverless.example.com   # the custom host, {name}-{group}.{route_domain}
+  namespace: team-serverless                     # the KSVC's namespace
   labels:
     serverless.platform/group: team
     serverless.platform/workload: orders-api
     serverless.platform/offering: container
 spec:
   ref:
-    name: orders-api             # the workload's KSVC
+    name: orders-api             # the workload's KSVC, named {name}
     kind: Service
     apiVersion: serving.knative.dev/v1
 ```
