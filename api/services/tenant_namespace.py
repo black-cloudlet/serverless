@@ -1,21 +1,17 @@
 """A group's namespace: asking the tenant controller to provision it.
 
-The API cannot create namespaces - that is the whole point of the split - so
-before it writes a workload it asks the component that can. "Provisioned"
-means *exists and converged to the current template set*, in every region, so
-a workload never deploys into a namespace still carrying last release's
-policies.
+The API cannot create namespaces, so before it writes a workload it asks the
+component that can (docs/DEPLOYING.md - RBAC). "Provisioned" means *exists and
+converged to the current template set*, in every region, so a workload never
+deploys into a namespace still carrying last release's policies.
 
-Not under ``regions/``, though it is about every region: nothing here fans
-out. It makes one call to one Service, and the controller is what reaches the
-clusters.
+Nothing here fans out: it makes one call to one Service, and the controller is
+what reaches the clusters.
 
-This is a pre-flight check, and it obeys the rule the rest of them do: a check
-that could not be run has not passed. An unreachable tenant controller is a
-503, not a shrug - deploying into a namespace nobody has confirmed is the
-failure the call exists to prevent. A controller that *answered and refused*
-is different: that is a configuration mismatch between the two ends, reported
-as such rather than as something a retry would fix.
+This is a pre-flight check, and a check that could not be run has not passed:
+an unreachable tenant controller is a 503, not a create that proceeds. A
+controller that answered and refused is a configuration mismatch between the
+two ends, reported as such.
 """
 
 from __future__ import annotations
@@ -72,8 +68,7 @@ async def provision_namespace(
     """
     if not config.controller_url:
         # No tenant controller configured - a dev cluster, where the namespace
-        # is whatever the operator made by hand. Skipping is a decision, so it
-        # is logged rather than silent.
+        # is whatever the operator made by hand. The skip is logged.
         logger.debug("no tenant controller configured; skipping provision for group '%s'", group)
         return
 
@@ -105,17 +100,15 @@ async def provision_namespace(
     rows = body.get("regions") or []
     unconverged = [row.get("region", "?") for row in rows if row.get("status") != PROVISION_READY]
     if not rows:
-        # A 200 that names no region is not a provisioned namespace - it is an
-        # answer this code does not understand, and what could not be confirmed
-        # has not passed. Defaulting to "no rows, so nothing unconverged" would
-        # have read silence as consent.
+        # A 200 naming no region is an answer this code does not understand,
+        # and what could not be confirmed has not passed: it fails closed like
+        # an unreachable controller.
         raise ServiceUnavailableError(
             f"the tenant controller gave no per-region answer for group '{group}'"
         )
     if unconverged:
-        # A partial answer is not a success: a deploy writes to every region,
-        # so anything short of every region ready would put a workload in a
-        # namespace that is not prepared.
+        # The controller reports per region and a deploy writes to every one
+        # of them, so anything short of every region ready fails the call.
         raise ServiceUnavailableError(
             f"the namespace for group '{group}' is not ready in "
             f"region(s): {', '.join(sorted(unconverged))}"

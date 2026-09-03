@@ -2,8 +2,7 @@
 
 Two jobs, one process: the level-triggered loop that converges this cluster,
 and the HTTP call the API makes before a workload deploys. They share the
-cluster clients and the mounted template set, which is the whole reason they
-are not two deployments.
+cluster clients and the mounted template set.
 """
 
 from __future__ import annotations
@@ -26,12 +25,11 @@ logger = get_logger(__name__)
 
 # How long uvicorn lets in-flight requests finish once asked to stop.
 API_SHUTDOWN_SECONDS = 5.0
-# How long the loop then waits for that thread. Deliberately longer than the
-# budget above: the join must normally outlast uvicorn's own graceful
-# shutdown, or it expires just as the server is finishing and the caller
-# closes the cluster clients out from under an in-flight converge.
+# How long the loop then waits for that thread. Longer than the budget above,
+# so the join outlasts uvicorn's own graceful shutdown; the cluster clients are
+# closed once it returns.
 API_JOIN_SECONDS = 15.0
-# A server that cannot bind must not be discovered by the first provision.
+# How long `serve` waits for the server to report that it is listening.
 API_STARTUP_SECONDS = 10.0
 
 
@@ -47,9 +45,8 @@ def run_pass(cluster: Cluster, settings: TenantControllerSettings, *, force: boo
         force: Converge even stamp-matching namespaces (the drift repair).
 
     Raises:
-        RuntimeError: If every managed namespace failed to converge - one
-            cause, not many, so it takes the loop's backoff rather than a
-            full resync sleep.
+        RuntimeError: If every managed namespace failed to converge; the loop
+            then takes its error backoff instead of the resync interval.
     """
     templates = TemplateSet.load(settings.templates_dir)
     seen, _converged, failed = reconcile_all(
@@ -94,8 +91,9 @@ def serve(
     """Start the provision API on a background thread.
 
     Background, so the loop keeps the main thread: uvicorn installs no signal
-    handlers off it (it checks), leaving SIGTERM to unwind the loop as before.
-    Daemon, so a server that will not stop cannot hold the pod past its grace.
+    handlers off the main thread (it checks), leaving SIGTERM to unwind the
+    loop. Daemon, so a server that will not stop cannot hold the pod past its
+    grace period. Blocks until the server is listening.
 
     Args:
         settings: For the listen port.
@@ -122,10 +120,12 @@ def serve(
 def _await_startup(server: uvicorn.Server, thread: threading.Thread) -> None:
     """Block until the server is listening, or say why it never will be.
 
-    uvicorn answers a bind failure with ``sys.exit`` *inside this thread*,
-    which Python discards silently - so without this the loop would run on
-    beside a dead API and every provision would be refused with nothing in the
-    log to say so. Raising instead crash-loops the pod, which is visible.
+    uvicorn answers a bind failure with ``sys.exit`` *inside the server
+    thread*, which Python discards silently, so a dead server shows up here as
+    a thread that is no longer alive rather than as an exception. Polls
+    ``server.started`` and the thread every 50ms until ``API_STARTUP_SECONDS``,
+    then raises: a crash-looping pod is visible, where a loop running on beside
+    a dead API and refusing every provision is not.
 
     Raises:
         RuntimeError: If the server stopped, or did not start in time.
@@ -143,9 +143,10 @@ def _await_startup(server: uvicorn.Server, thread: threading.Thread) -> None:
 def stop(server: uvicorn.Server, thread: threading.Thread) -> None:
     """Ask the server to stop and wait for it, so shutdown stays ordered.
 
-    The wait matters: the server's own shutdown drains the provision pool, and
-    only once that returns may the caller close the cluster clients those
-    converges write through.
+    The join is what orders shutdown: the server's own shutdown drains the
+    provision pool, and only once it returns may the caller close the cluster
+    clients those converges write through. A thread still alive after
+    ``API_JOIN_SECONDS`` is logged and left; the caller closes anyway.
     """
     server.should_exit = True
     thread.join(timeout=API_JOIN_SECONDS)
@@ -162,9 +163,8 @@ def run() -> None:
     settings = get_settings()
     install_terminate_handlers()
 
-    # Every region: provisioning writes to all of them. The loop below still takes
-    # only the local one - converging a peer cluster from here is what the
-    # local-only rule exists to prevent.
+    # Every region: provisioning writes to all of them. The loop below takes
+    # only the local one, per the local-only rule.
     clusters = clusters_for(settings)
     local = select_local(clusters, settings.local_region)
     logger.info(

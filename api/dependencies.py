@@ -1,4 +1,17 @@
-"""Cached service singletons wired into the FastAPI dependency system."""
+"""Cached service singletons wired into the FastAPI dependency system.
+
+Each factory is ``lru_cache``d, so the whole graph is one instance per process,
+built bottom-up the first time anything asks for it: the settings, then the
+runtime registry, the multi-region :class:`Deployer` and the stream pool, then
+the shared :class:`WorkloadService` that composes them, then the per-offering
+services the routers are injected with. ``api.main`` calls the factories during
+lifespan startup, so the graph exists before the first request and shutdown has
+a handle on the pieces that own threads or sockets.
+
+The ``Annotated`` aliases at the bottom are what the routers declare; FastAPI
+resolves each to the cached instance, and a test replaces one through
+``app.dependency_overrides``.
+"""
 
 from __future__ import annotations
 
@@ -22,15 +35,18 @@ def get_runtimes() -> RuntimeRegistry:
     """The cached runtime registry, read once from the mounted ConfigMap.
 
     Raises on a missing or unusable file (see ``load_runtimes``); ``api.main``
-    calls it during startup so that surfaces as a failed pod rather than a 500
-    on the first function request.
+    calls it first during startup, so that failure lands on the pod.
     """
     return load_runtimes(get_settings().runtimes_file)
 
 
 @lru_cache
 def get_deployer() -> Deployer:
-    """The cached multi-region Deployer (one set of cluster clients per process)."""
+    """The cached multi-region Deployer (one set of cluster clients per process).
+
+    Its clients are warmed during startup and closed at lifespan exit, both
+    through the :class:`WorkloadService` that holds it.
+    """
     return Deployer(get_settings())
 
 
@@ -38,16 +54,20 @@ def get_deployer() -> Deployer:
 def get_stream_capacity() -> StreamCapacity:
     """The cached stream pool and admission gate (one per process).
 
-    Separate from the engine that uses it because it owns threads: ``api.main``
-    shuts it down with the app, which needs a handle that does not depend on
-    having built the service graph.
+    It owns the stream worker threads. ``api.main`` shuts it down first at
+    lifespan exit through this accessor, without going through the service
+    graph.
     """
     return StreamCapacity(get_settings().stream)
 
 
 @lru_cache
 def get_workload_service() -> WorkloadService:
-    """The shared, offering-agnostic engine both offering services compose."""
+    """The shared, offering-agnostic engine both offering services compose.
+
+    Assembles the deployer, the kpack build backend built over the runtime
+    registry, and the stream pool. Building it opens no connections.
+    """
     settings = get_settings()
     return WorkloadService(
         settings,
@@ -59,13 +79,19 @@ def get_workload_service() -> WorkloadService:
 
 @lru_cache
 def get_function_service() -> FunctionService:
-    """The cached FunctionService (composes the shared workload engine)."""
+    """The cached FunctionService (the shared engine with the runtime registry).
+
+    Injected into the functions router as ``FunctionDep``.
+    """
     return FunctionService(get_workload_service(), get_runtimes())
 
 
 @lru_cache
 def get_container_service() -> ContainerService:
-    """The cached ContainerService (composes the shared workload engine)."""
+    """The cached ContainerService (composes the shared workload engine).
+
+    Injected into the containers router as ``ContainerDep``.
+    """
     return ContainerService(get_workload_service())
 
 

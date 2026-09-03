@@ -2,12 +2,12 @@
 
 Pure, like :mod:`api.services.state.ksvc_state`: it takes what the fan-out already
 fetched and returns the response objects. The listing's I/O - the fan-out and
-the build-state read - stays in the engine, so the merge rules that decide what
-a workload deployed to one region of two reads as are testable with plain dicts.
+the build-state read - stays in the engine.
 
-The merge is deliberately partial-tolerant. A region that did not answer is simply
-absent from the input, and a workload's rollup covers only the regions that did
-return it, so a single-region workload reads ``Ready`` rather than ``Failed``.
+The merge is partial-tolerant. A region that did not answer is simply absent
+from the input, and a workload's rollup covers only the regions that did return
+it, so a workload found in one region of two reads ``Ready`` rather than
+``Failed`` (docs/ARCHITECTURE.md - Partial-failure semantics).
 """
 
 from __future__ import annotations
@@ -60,10 +60,10 @@ def merge(
             continue
         for obj in items:
             meta = obj.get("metadata", {}) or {}
-            # The object name IS the workload name now - the namespace carries
-            # the group. Stripping a "-{group}" suffix here would rename a
-            # workload that happens to end in one: `api-team` in group `team`
-            # would list as `api`, and the GET that followed would 404.
+            # The object name is the workload name; the namespace carries the group,
+            # so no suffix is stripped here. Stripping a "-{group}" suffix would
+            # rename a workload that ends in one: `api-team` in group `team` would
+            # list as `api`, and the GET that followed would 404.
             name = meta.get("name", "")
             annotations = meta.get("annotations", {}) or {}
             status, _ = ksvc_state.ksvc_status(obj)

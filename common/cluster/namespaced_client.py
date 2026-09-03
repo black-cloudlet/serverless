@@ -16,10 +16,10 @@ from common.config import RegistryConfig
 class NamespacedCluster:
     """A :class:`Cluster` with one namespace curried into every operation.
 
-    Bound once where the namespace is decided, so downstream code cannot mix
-    namespaces mid-operation. The view owns no connection - hence no
-    ``close``; closing is the owner's call. Duck-typed, so a test's fake
-    cluster can stand in underneath.
+    The namespace is bound once, where it is decided, and every method forwards
+    to the underlying cluster with it. The view owns no connection and has no
+    ``close``; the holder of the Cluster closes that. The underlying cluster is
+    duck-typed, so a test's fake cluster can stand in underneath.
     """
 
     def __init__(self, cluster, namespace: str):
@@ -53,7 +53,7 @@ class NamespacedCluster:
 
     def apply(self, manifest: dict, *, field_manager: str | None = None) -> list[dict]:
         """Server-side apply into the bound namespace (see Cluster.apply)."""
-        # Forwarded only when set, so fakes need the parameter only if used.
+        # Forwarded only when set, so a fake needs the parameter only if used.
         extra: dict = {"field_manager": field_manager} if field_manager else {}
         return self.cluster.apply(manifest, namespace=self.namespace, **extra)
 

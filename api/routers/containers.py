@@ -173,14 +173,14 @@ async def stream_container_pods(
 ) -> Response:
     """The container's pods on the current region - streamed, or read once.
 
-    Streams by default, because the answer expires: Knative replaces a workload's
-    pods on every revision and removes them all on scale-to-zero, so a roster
-    fetched once quietly stops being true. ``follow=false`` returns a single JSON
-    roster instead, for a caller that cannot hold a connection open.
+    Streams by default: Knative replaces a workload's pods on every revision and
+    removes them all on scale-to-zero, so the roster changes underneath a client.
+    ``follow=false`` returns a single JSON roster instead, for a caller that
+    cannot hold a connection open.
 
-    Local region only, matching the log endpoint it feeds - a pod name is only
-    useful where its log can be read. This is where the ``{pod}`` for
-    ``/logs/pods/{pod}`` comes from; nothing else in the API returns one.
+    Local region only, like the log endpoint it feeds. This is where the
+    ``{pod}`` for ``/logs/pods/{pod}`` comes from; nothing else in the API
+    returns one.
 
     Events (when following): ``pods`` (the full roster, the first sent
     immediately) and ``error``. Lines beginning with ``:`` are heartbeats. An
@@ -253,9 +253,9 @@ async def stream_container_pod_logs(
         sinceSeconds: Start the log this many seconds back.
         limitBytes: Cap the bytes read; ``follow=false`` only, clamped to the
             deployment's snapshot ceiling.
-        tailLines: Start at the newest this-many lines instead, however old
-            they are - the right opening for a pod that has been quiet longer
-            than any time window. Clamped to the deployment's snapshot bound.
+        tailLines: Start at the newest this-many lines instead, however old they
+            are; unlike ``sinceSeconds`` it is bounded by a line count, not a
+            time window. Clamped to the deployment's snapshot bound.
 
     Returns:
         The event stream, or the snapshot.
@@ -294,10 +294,8 @@ async def stream_container_stats(
 ) -> StreamingResponse:
     """Follow the container's live state (Server-Sent Events).
 
-    The streaming form of ``/stats``, reporting exactly the same body on an
-    interval instead of on request. One connection replaces a client's poll
-    loop, so the fan-out happens once per interval however many clients are
-    watching.
+    The streaming form of ``/stats``, pushing exactly the same body every
+    ``interval`` seconds instead of on request.
 
     Events: ``stats`` (a :class:`WorkloadStatsResponse`, the first sent
     immediately) and ``error`` (the workload is gone, or no region could answer).

@@ -1,15 +1,14 @@
 """The tenant template set: Helm-rendered manifests, loaded and rendered per group.
 
-The chart ships final YAML with two placeholders - ``{{namespace}}`` and
-``{{group}}``, the runtime facts Helm cannot know. The hash is over the raw
+The chart ships final YAML holding the placeholders listed in
+``PLACEHOLDERS`` - the runtime facts Helm cannot know. The hash is over the raw
 text, so it names the set itself: one stamp per ConfigMap, whatever the group.
 
 A set is read, validated and parsed once, at load: every placeholder becomes a
-YAML-safe sentinel *before* parsing - so a template may write ``{{namespace}}``
-unquoted, as YAML authors do - and rendering per namespace is then a walk over
-the parsed docs swapping sentinels for values. Everything a bad set can be
-caught for is caught here, into the loop's backoff, before a namespace is
-touched.
+YAML-safe sentinel *before* parsing, so a template may write ``{{namespace}}``
+unquoted. Rendering per namespace is then a walk over the parsed docs swapping
+sentinels for values. A bad set fails at load, into the loop's backoff, before
+any namespace is touched.
 """
 
 from __future__ import annotations
@@ -29,12 +28,11 @@ from common.cluster import ResourceKind
 # is a template bug and fails at load; braces that are not this shape (a
 # Go-template payload in a ConfigMap) pass through untouched.
 #
-# `region` and `registry` are what keep the SET region-neutral while its OUTPUT
-# is not: both regions' charts render the same bytes, so the hash matches
-# everywhere, and the values are resolved against whichever cluster is being
-# written to. Without them a per-region value - a Vault path, a registry host -
-# would be baked in at chart render, the two regions' sets would never share a
-# hash, and a provision writing a peer's namespace would write the wrong one.
+# `region` and `registry` keep the SET region-neutral while its OUTPUT is not:
+# both regions' charts render the same bytes, so the hash matches everywhere,
+# and the two values are resolved against whichever cluster is being written
+# to. A per-region value - a Vault path, a registry host - therefore belongs in
+# a placeholder, never in the chart-rendered text.
 PLACEHOLDERS = ("namespace", "group", "region", "registry")
 _SENTINELS = {name: f"__serverless_placeholder_{name}__" for name in PLACEHOLDERS}
 _TOKEN = re.compile(r"\{\{([a-z]+)\}\}")
@@ -49,9 +47,9 @@ TEMPLATE_KINDS = (
     ResourceKind.ROLE_BINDING,
     ResourceKind.SECRET,
     ResourceKind.SERVICE_ACCOUNT,
-    # A tenant namespace needs the region's registry credential, and ESO is how
-    # every other Secret on this platform arrives. The tenant controller writes the
-    # ExternalSecret; ESO fills the Secret it names.
+    # The tenant controller writes the ExternalSecret; ESO fills the Secret it
+    # names - how the namespace gets the region's registry credential
+    # (docs/ARCHITECTURE.md - Secrets Management).
     ResourceKind.EXTERNAL_SECRET,
 )
 _ALLOWED_KINDS = {k.kind for k in TEMPLATE_KINDS} | {"Namespace"}
@@ -61,10 +59,9 @@ _ALLOWED_KINDS = {k.kind for k in TEMPLATE_KINDS} | {"Namespace"}
 class TemplateSet:
     """One loaded template set: raw sources, their hash, and the parsed docs.
 
-    Parsed and validated once at construction - a bad set fails at load, into
-    the loop's backoff, before any namespace is touched - and rendered per
-    namespace by substituting over the parsed structures, so a pass over N
-    namespaces parses each file once instead of N times.
+    Parsed and validated once at construction, then rendered per namespace by
+    substituting over the parsed structures, so a pass over N namespaces parses
+    each file once instead of N times.
     """
 
     # (filename, raw text), sorted by filename so the hash and the render
@@ -131,9 +128,8 @@ class TemplateSet:
     def renders_contents(self) -> bool:
         """Whether the set holds anything below the Namespace itself.
 
-        The rule ``converge`` refuses on, readable without rendering: a set
-        that produces only a Namespace would prune every tenant namespace
-        bare, so readiness rejects it before the endpoint has to.
+        A set holding only a Namespace counts as broken: ``converge`` refuses
+        it and readiness reports not-ready on it. Readable without rendering.
         """
         return any(doc.get("kind") != "Namespace" for _name, doc in self.docs)
 
@@ -168,8 +164,7 @@ def _parse(sources: tuple[tuple[str, str], ...]) -> list[tuple[str, dict]]:
     Raises:
         ValueError: On an unknown placeholder, YAML that does not parse, a
             malformed manifest, or a kind outside the template vocabulary
-            (``TEMPLATE_KINDS``). Always ValueError, always naming the file:
-            an operator reading the backoff log needs the key to fix.
+            (``TEMPLATE_KINDS``). Always ValueError, always naming the file.
     """
     docs: list[tuple[str, dict]] = []
     for name, text in sources:

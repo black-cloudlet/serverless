@@ -28,21 +28,18 @@ class TenantControllerSettings(LoopSettings):
     # change the stamp). Roughly hourly at the default resync.
     full_resync_passes: int = Field(default=12, gt=0)
 
-    # Converges run on a thread pool of this size: independent per namespace
-    # (the stamp is per namespace), so a template rollout over many tenants
-    # is bounded by the pool, not serialized.
+    # A reconcile pass runs its converges on a thread pool of this size. They
+    # are independent per namespace, since the stamp is per namespace.
     converge_workers: int = Field(default=4, ge=1)
 
-    # The provision API's own pool, separate from the loop's. It is the bound
-    # on how many converges a burst of creates can have in flight, and the
-    # reason a slow region cannot reach the server's threads and starve the
-    # probes.
+    # The provision API's own pool, separate from the loop's. It bounds how
+    # many converges a burst of creates has in flight, and keeps a slow region
+    # off the server's request threads, where it would starve the probes.
     provision_workers: int = Field(default=8, ge=1)
 
     # Namespace GC: collect tenant namespaces that have stayed empty of
-    # workloads for the whole grace period. Off by default - "may the platform
-    # delete things" is the operator's call (the registry.deleteOnFunctionDelete
-    # precedent).
+    # workloads for the whole grace period. Deletion is off unless an operator
+    # turns it on.
     gc_enabled: bool = False
     gc_interval_seconds: int = Field(default=3600, gt=0)
     gc_grace_seconds: int = Field(default=86400, gt=0)

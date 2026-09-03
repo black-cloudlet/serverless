@@ -1,13 +1,12 @@
 """The tenant controller's internal HTTP surface: provision a group, plus the probes.
 
-Internal only. There is no SSO and no browser here: the caller is the platform
-API in its own namespace, reaching a Service that a NetworkPolicy scopes to it,
-and the optional shared token below is depth behind that - not the primary
-control.
+Internal only: no SSO and no browser. The caller is the platform API in its own
+namespace, reaching a ClusterIP Service that a NetworkPolicy scopes to it; the
+optional shared token below is a second layer behind that policy.
 
-Deliberately not built on the API's app factory. That one wires SSO, CORS,
-offline docs and a base path, all of which would put the JWT stack in an image
-whose whole point is that it carries less than the API does.
+The app is assembled here rather than through the API's app factory, which
+wires SSO, CORS, offline docs and a base path - and with them the JWT stack
+this image does not ship (docs/BUILDING.md - Two images).
 """
 
 from __future__ import annotations
@@ -56,9 +55,8 @@ class ProvisionResponse(BaseModel):
 
     Attributes:
         group: The normalized group.
-        namespace: The namespace the group's workloads live in. Returned
-            rather than left for the caller to re-derive, so the suffix rule
-            has exactly one authority.
+        namespace: The namespace the group's workloads live in, as this
+            controller derived it from the group.
         templateHash: The template set every listed region was converged to.
         regions: One row per region, in configured order.
     """
@@ -72,20 +70,17 @@ class ProvisionResponse(BaseModel):
 def create_app(clusters: Sequence[Cluster], settings: TenantControllerSettings) -> FastAPI:
     """Build the tenant controller's HTTP app over an already-built set of clusters.
 
-    The clusters are passed in rather than built here: the reconcile loop in
-    the same process holds the local one, and two sets would mean two pools of
-    connections to the same API servers.
-
     Args:
-        clusters: One cluster per configured region (the provision fan-out).
+        clusters: One cluster per configured region (the provision fan-out),
+            the same client objects the reconcile loop in this process uses.
         settings: The tenant controller's settings.
 
     Returns:
         The configured application.
     """
     # The converges' own pool, not the server's threads: a provision holds a
-    # pool slot for as long as the slowest region takes, and a probe must
-    # never have to queue behind one.
+    # pool slot for as long as its slowest region takes, so a probe answers on
+    # a thread no converge occupies.
     pool = ThreadPoolExecutor(
         max_workers=settings.provision_workers, thread_name_prefix="provision"
     )
@@ -96,9 +91,9 @@ def create_app(clusters: Sequence[Cluster], settings: TenantControllerSettings) 
         yield
         # Queued converges are dropped; a running one is left to finish, and
         # is bounded by the cluster client's own connect/read timeouts rather
-        # than by anything here. Draining before the caller in main.py closes
-        # the cluster clients is the point: an in-flight converge must not
-        # lose the connection it is writing through.
+        # than by anything here. The drain completes before main.py closes the
+        # cluster clients, so an in-flight converge keeps the connection it is
+        # writing through.
         pool.shutdown(wait=True, cancel_futures=True)
 
     app = FastAPI(
@@ -134,11 +129,10 @@ def _router(
 
         Readiness and provisioning both go through it, so the probe cannot
         report ready on a set the endpoint would then refuse. Nothing here
-        touches a cluster, per the platform's probe rule - a probe that did
-        would take the pod out on someone else's outage. Every condition it
-        does check is this pod's own configuration, which is exactly what
-        readiness is for: a bad ConfigMap stalls its own rollout instead of
-        failing every create.
+        touches a cluster, per the platform's probe rule
+        (docs/ARCHITECTURE.md - Endpoints); every condition it checks is this
+        pod's own configuration, so a bad ConfigMap stalls its own rollout
+        instead of failing every create.
 
         Returns:
             The loaded template set.
@@ -162,10 +156,9 @@ def _router(
             logger.warning("not ready: template set at %s is empty", settings.templates_dir)
             raise ServiceUnavailableError("template set is empty")
         if not templates.renders_contents:
-            # The rule converge refuses on. Checked here too, or a truncated
-            # ConfigMap would leave the pod in rotation and turn every
-            # provision into a 502 blaming the regions for this pod's own bad
-            # mount.
+            # The rule converge refuses on, checked here as well so a truncated
+            # ConfigMap takes the pod out of rotation instead of turning every
+            # provision into a 502 blaming the regions for this pod's mount.
             logger.warning(
                 "not ready: template set at %s renders only a Namespace", settings.templates_dir
             )
@@ -188,17 +181,18 @@ def _router(
     async def provision_group(group: Group, request: Request) -> ProvisionResponse:
         """Provision the group's namespace in every region, to the current set.
 
-        PUT, because the caller states a desired end state rather than asking
-        for a job: the API calls this before every deploy and retries it on
-        timeout, so "safe to repeat" belongs in the method, not only in the
-        paragraph below.
-
-        Idempotent, and cheap when there is nothing to do: a namespace already
-        stamped with the current template hash costs one read per region.
+        The platform API calls this before every deploy, and retries it on
+        timeout. A PUT states a desired end state: it is idempotent, and cheap
+        when there is nothing to do - a namespace already stamped with the
+        current template hash costs one read per region, and the response
+        names the hash it carries.
 
         Async, and the converges run on the app's own pool, so a slow region
-        holds a pool slot rather than one of the server's threads - the
+        holds a pool slot rather than one of the server's threads, and the
         probes stay answerable through a peer region's outage.
+
+        A region that fails or times out gets its own row; the call succeeds
+        as long as one region converged.
 
         Args:
             group: The owning group (from the request path, normalized).
@@ -227,9 +221,8 @@ def _router(
         )
         rows = [RegionResult(region=o.region, status=o.status, message=o.message) for o in outcomes]
         if not any(outcome.ok for outcome in outcomes):
-            # The platform's existing verdict for a fan-out where nothing
-            # landed, so the API's preflight fails the create the same way a
-            # total deploy failure does.
+            # No region landed: the same verdict a fan-out deploy raises, so
+            # the API's preflight fails the create the same way.
             raise RegionTotalFailure(
                 f"could not provision namespace '{namespace}' in any region",
                 details=[row.model_dump() for row in rows],
@@ -244,12 +237,10 @@ def _router(
 def _check_token(request: Request, configured: str) -> None:
     """Match the bearer token against the configured shared secret.
 
-    An empty setting disables the check: the NetworkPolicy is the primary
-    control, and a dev cluster has no Vault to take a token from.
-
-    The comparison is spelled out here rather than taken from
-    ``cloudlet_apis.auth``: importing anything from that package pulls in the
-    JWT stack, which is precisely what this image does not ship.
+    An empty setting disables the check, leaving the NetworkPolicy as the only
+    control. The comparison is spelled out here rather than taken from
+    ``cloudlet_apis.auth``, an import that would pull the JWT stack into this
+    image (docs/BUILDING.md - Two images).
 
     Args:
         request: The incoming request.

@@ -1,18 +1,16 @@
 """Provisioning a group's namespace on demand, in every region at once.
 
-The reconcile loop is deliberately local-only and level-triggered. Provision is
-the other half: the call the API makes before a workload deploys, and the one
-path that must reach **both** clusters - a create landing in a region whose
-namespace does not exist yet is exactly what a per-cluster loop cannot fix in
-time.
+The reconcile loop is local-only and level-triggered; provisioning is the other
+half. The API calls it before a workload deploys, and it is the one path that
+reaches **both** clusters, so a create can land in a region whose namespace the
+local loop has not made yet.
 
-Writing a peer's namespace from *this* pod's template set is sound only
-because the set is region-neutral: both regions render it from the same chart
-and the same values, so the bytes - and therefore the hash - are identical.
-The exception is the gap while Argo syncs one cluster ahead of the other,
-where the peer's own loop will pull its namespace back to the set that
-cluster actually holds. That is a legitimate convergence, it ends when the
-sync lands, and it is why a per-region value must never enter the set.
+A peer's namespace is written from *this* pod's template set. The set is
+region-neutral - both regions render it from the same chart and the same
+values, so the bytes, and therefore the hash, are identical. While Argo has
+one cluster synced ahead of the other the two sets differ; the peer's own loop
+then pulls its namespace back to the set that cluster holds, and that ends
+when the sync lands.
 
 Nothing here is exclusive with the loop: both call the same idempotent
 ``converge`` under the same field manager, so the two racing on one namespace
@@ -68,13 +66,13 @@ async def provision(
     """Converge ``namespace`` in every region concurrently, one row per region.
 
     A region that fails or times out yields its own row instead of aborting
-    the others: the caller decides what a partial result means, exactly as it
-    does for a partial deploy.
+    the others; the caller decides what a partial result means, the same way
+    it does for a partial deploy (docs/ARCHITECTURE.md - Partial-failure
+    semantics).
 
-    Async, and the blocking converges run on a *caller-owned* pool: the
-    request thread is never held, so a slow region cannot consume the server's
-    threads and starve the probes, and the pool's size is the one bound on how
-    much converging is in flight at once.
+    Async, and the blocking converges run on a *caller-owned* pool rather than
+    on the event loop or the server's request threads. The pool's size is the
+    bound on how much converging is in flight at once.
 
     Args:
         clusters: The clusters to converge in, one per region.
@@ -100,8 +98,8 @@ async def provision(
         )
         for cluster in clusters
     ]
-    # One wait for all of them, so the budget is the fan-out's: two dead
-    # regions cost one deadline, not one deadline each.
+    # One wait covering all of them: the timeout is the fan-out's budget, so
+    # two dead regions cost one deadline between them, not one each.
     await asyncio.wait([future for _region, future in pending], timeout=timeout)
     return [_outcome(region, future, timeout) for region, future in pending]
 

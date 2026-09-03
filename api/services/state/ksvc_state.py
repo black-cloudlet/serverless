@@ -1,12 +1,10 @@
 """Reading state out of Knative objects the caller already holds.
 
 Pure: every function here takes a Kubernetes object as a plain dict and returns
-a value. Nothing reaches a cluster, which is what separates this module from
-:mod:`api.services.regions.region_read` - that one fetches, this one interprets what was
-fetched. It is also why these are the cheapest rules in the service to test:
-hand them a dict, assert on the answer.
+a value. Nothing reaches a cluster - :mod:`api.services.regions.region_read`
+fetches, this module interprets what was fetched.
 
-The dicts are API responses, so every level is read defensively (:func:`dig`) -
+The dicts are API responses, so every level is read defensively (:func:`dig`):
 a Knative object that has not been reconciled yet is missing most of what a
 reconciled one has, and that is normal, not an error.
 """
@@ -27,8 +25,8 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 def dig(obj: dict, *path: str, default=None):
     """Walk a nested dict by ``path``, treating a missing/None level as absent.
 
-    Replaces the repeated ``(d.get(k, {}) or {})`` chains used to read Kubernetes
-    objects defensively.
+    A level that is missing, None, or not a dict stops the walk and yields
+    ``default``.
 
     Args:
         obj: The dict to walk.
@@ -49,15 +47,14 @@ def dig(obj: dict, *path: str, default=None):
 
 
 def with_build_status(overall: str, build: BuildStatusView | None) -> str:
-    """Fold a function's build state into the KSVC rollup (docs/FUNCTIONS.md).
+    """Fold a function's build state into the KSVC rollup, build first.
 
-    The build is checked FIRST: a function whose image does not exist yet is not
-    broken, but its KSVC is failing to pull one, which would read as ``Failed`` for
-    a whole normal first build. A failed build is the honest cause of that same
-    symptom, so the rollup still reads ``Failed`` - the phase set stays closed,
-    Kubernetes-style - and the caller names the cause on ``reason``
-    ("BuildFailed", authoritative from the kpack Image) with the build's own
-    text on ``message``.
+    The build is checked before the KSVC: a running build reports ``Building``
+    and a failed build reports ``Failed`` whatever the KSVC says, and any other
+    build state hands the verdict back to ``overall``. The phase set stays
+    closed - the caller names the cause on ``reason`` ("BuildFailed",
+    authoritative from the kpack Image) with the build's own text on
+    ``message`` (docs/FUNCTIONS.md - Function Status Resolution).
 
     Args:
         overall: The rollup of the per-region KSVC statuses.
@@ -78,11 +75,10 @@ def with_build_status(overall: str, build: BuildStatusView | None) -> str:
 def roll_up_builds(builds: Iterable[BuildStatusView | None]) -> BuildStatusView | None:
     """Collapse the per-region build states into the one the workload reports.
 
-    Every region builds its own copy (docs/BUILDING.md - Active/Active Behaviour), so "the
-    function's build" is no longer a single thing. A failure anywhere wins, and
-    carries its own message: it is the actionable state, and reporting ``Ready``
-    because the other region managed it would hide the region that did not. Failing
-    that, a build still running anywhere means the rollout is not finished.
+    Every region builds its own copy (docs/BUILDING.md - Active/Active Behaviour), so a
+    workload has one build state per region. A failed build anywhere wins and carries its
+    own message; failing that, a build still running anywhere; failing that, the first
+    state seen (docs/FUNCTIONS.md - Function Status Resolution).
 
     Args:
         builds: Each region's build status; None where a region has no build.
@@ -103,29 +99,18 @@ def roll_up_builds(builds: Iterable[BuildStatusView | None]) -> BuildStatusView 
 def regions_with_build_status(
     regions: list[RegionStatus], builds: Mapping[str, BuildStatusView | None]
 ) -> list[RegionStatus]:
-    """Apply the build-first rule to the per-region rows, not just the rollup.
+    """Apply the build-first rule to the per-region rows as well as the rollup.
 
-    :func:`with_build_status` fixes the headline while a build runs, but each region
-    row is read straight off its KSVC - and that KSVC is failing to pull an image
-    kpack has not pushed yet. Left alone the detail view says ``Building`` at the
-    top and ``Failed`` - ``Unable to fetch image ...`` in the regions table
-    immediately below it, which reads as a broken deploy during what is a normal
-    first build.
+    :func:`with_build_status` folds the headline; this folds the rows the detail view
+    shows underneath it. Each row is folded against **its own** region's build, looked
+    up by region name (docs/FUNCTIONS.md - Function Status Resolution):
 
-    So while a region's build is in flight, that region reports ``Building`` and
-    drops the pull error - reason and message both: they are symptoms of the
-    build running there, not an independent failure, and a ``reason`` left on
-    the row is what the headline promotes, which read as ``Building`` +
-    ``ImagePullFailed`` on every surface. A ``Failed`` build keeps the row
-    ``Failed`` but names the cause - ``reason: "BuildFailed"``, with the
-    build's own text as the message - because the image genuinely will not
-    arrive, and the pull error alone points at the registry when the cause is
-    the build. A row that is not failing is left alone either way: a region
-    still serving its previous revision is telling the truth.
-
-    Each row is folded against **its own** region's build. A build running in one
-    region says nothing about whether another region's image exists, so a shared
-    verdict would mask a real failure next to a healthy neighbour.
+    - ``Failed`` row, ``Building`` build: the row becomes ``Building`` with ``reason``
+      and ``message`` cleared - the pull error is the running build, and a ``reason``
+      left on the row is what the headline promotes.
+    - ``Failed`` row, ``Failed`` build: the row stays ``Failed`` and names the cause,
+      ``reason: "BuildFailed"`` with the build's own text as the message.
+    - Any other row is passed through unchanged.
 
     Args:
         regions: The per-region statuses read from the KSVCs.
@@ -186,12 +171,12 @@ _REASON_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 def failure_cause(rev: dict | None, ksvc: dict | None = None) -> str | None:
     """Map failing conditions to a machine-readable cause (``STATUS_REASONS``).
 
-    Best-effort by design: the reasons and messages this reads are stable-ish
-    Kubernetes and Knative codes, not a contract, so an unrecognized failure
-    returns None and the caller reports only the raw ``message`` text. The
-    Revision is scanned before the KSVC for the same reason
-    :func:`revision_failure_message` prefers it - its sub-conditions name the
-    real cause where the KSVC's aggregate repeats the verdict.
+    Joins the ``reason`` and ``message`` of every condition whose status is ``False``
+    and matches ``_REASON_RULES`` against the result. Best-effort: the codes it reads
+    are not a contract, so an unrecognized failure returns None and the caller reports
+    the raw ``message`` text alone (docs/FUNCTIONS.md - Function Status Resolution).
+    The Revision is scanned before the KSVC: its sub-conditions name the real cause
+    where the KSVC's aggregate repeats the verdict.
 
     Args:
         rev: The failing Revision, when one was read.
@@ -224,8 +209,8 @@ def extract_image(obj: dict) -> str | None:
 def creation_time(obj: dict) -> datetime | None:
     """The workload's creation time (`metadata.creationTimestamp`) in Israel time."""
     ts = dig(obj, "metadata", "creationTimestamp")
-    # A non-string (or missing) timestamp has no valid parse; str keeps the
-    # try to just the fromisoformat ValueError (avoids a multi-except tuple).
+    # A missing or non-string timestamp has no valid parse, so the only error the
+    # try below has to catch is fromisoformat's ValueError.
     if not isinstance(ts, str):
         return None
     try:
@@ -250,7 +235,7 @@ def ksvc_status(obj: dict) -> tuple[str, str | None]:
     if dig(obj, "metadata", "deletionTimestamp"):
         return "Terminating", revision
     # True = Ready, False = terminal failure, Unknown/absent = progressing.
-    # The False/Unknown split is what lets a poller stop instead of spinning.
+    # ``Failed`` is terminal, so a poller stops on it.
     state = (ready or {}).get("status")
     if state == "True":
         return "Ready", revision

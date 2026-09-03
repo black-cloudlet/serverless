@@ -1,8 +1,8 @@
 """Parse and aggregate live resource usage from the metrics API (PodMetrics).
 
 ``metrics.k8s.io`` reports per-container usage as Kubernetes *quantity* strings
-(e.g. cpu ``"1234567n"``, memory ``"123456Ki"``). We sum across all containers
-of all the workload's pods into one figure per region.
+(e.g. cpu ``"1234567n"``, memory ``"123456Ki"``). Usage is summed across all
+containers of all the workload's pods into one figure per region.
 
 Figures are carried as :class:`Usage` - raw floats - and rounded only at the
 edge, so a per-region total can be summed again into a workload total without
@@ -101,8 +101,8 @@ class Usage:
 def total(usages: Iterable[Usage]) -> Usage | None:
     """Add measured usages up, or None when nothing was measured.
 
-    None rather than a zero: a workload consuming nothing and a workload nobody
-    measured are different answers.
+    None means nothing was measured, which is a different answer from a measured
+    zero.
     """
     summed: Usage | None = None
     for usage in usages:

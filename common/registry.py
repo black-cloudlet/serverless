@@ -29,10 +29,10 @@ logger = get_logger(__name__)
 
 # Quay's maximum page size for the tag listing; fewer round-trips per repository.
 _TAG_PAGE_LIMIT = 100
-# A listing that outlives this many pages (10,000 tags) is not a big repository,
-# it is paging that does not terminate - a proxy dropping the `page` param
-# serves page one with `has_additional` forever, and this loop runs on the
-# reconcile loop's only thread.
+# Cap on the pages one tag listing walks (10,000 tags). Paging can fail to
+# terminate - a proxy that drops the `page` param serves page one with
+# `has_additional` set forever - and this loop runs on the reconcile loop's only
+# thread.
 _TAG_MAX_PAGES = 100
 
 
@@ -41,9 +41,8 @@ def repository_path(registry: RegistryConfig, image: str) -> str | None:
 
     ``/api/v1`` routes address a repository as ``{namespace}/{repository}`` with
     no host, so the host is checked and then removed. None when the reference
-    sits on a different host: this API and its token address one registry, and
-    a path sent to another one would either 404 or, worse, hit a same-named
-    repository there.
+    sits on a different host: this client and its token address one registry,
+    and a path derived here is never sent to another.
 
     Args:
         registry: Registry settings, carrying the host.
@@ -76,17 +75,15 @@ class TagInfo:
 class RegistryClient:
     """One registry's management API, spoken over one HTTP connection.
 
-    A context manager: every method needs the same base URL, token and timeout,
-    and a sweep over many repositories should reuse one connection rather than
-    re-handshake per call.
+    A context manager: the connection opens on ``__enter__`` and every call on
+    it shares one base URL, token and timeout, so a sweep over many repositories
+    handshakes once.
 
-    Methods translate HTTP statuses into logs and return values rather than
-    raising: for every caller a leftover repository or tag is worth a log line,
-    never a failed operation (docs/BUILDING.md - Lifecycle & Cleanup), and the
-    refusals are diagnosed here once - a 401/403 names the token's missing
-    namespace admin, a 404 is the outcome already arrived at. Transport errors
-    do raise: only the caller knows what an unreachable registry means for the
-    operation it is in the middle of.
+    Methods turn HTTP statuses into log lines and return values instead of
+    raising: a leftover repository or tag is logged, never a failed operation
+    (docs/BUILDING.md - Lifecycle & Cleanup). A 401/403 is logged as the token
+    lacking namespace admin, a 404 as the outcome already reached. Transport
+    errors propagate to the caller.
     """
 
     def __init__(self, registry: RegistryConfig):
@@ -131,9 +128,8 @@ class RegistryClient:
         """Every active tag in a repository, across however many pages Quay serves.
 
         Empty on a 404 (never pushed, or deleted mid-sweep) and on any other
-        refusal, logged - which is the safe direction for the one consumer that
-        acts on this: a pruner deletes only what a listing returned, so "no
-        listing" is "no deletes", never "delete everything".
+        refusal, which is logged. A pruner deletes only what a listing returned,
+        so an empty listing deletes nothing.
 
         Args:
             repo: The ``{namespace}/{repository}`` path the Quay route expects.
@@ -164,9 +160,8 @@ class RegistryClient:
             )
             if not body.get("has_additional"):
                 return tags
-        # Paging that never terminates, not a big repository. A partial listing
-        # is not returned: "newest N" judged on a partial set could prune a tag
-        # that is genuinely among the newest.
+        # Non-terminating paging. A partial listing is not returned: a "newest N"
+        # judged on a partial set could prune a tag that is among the newest.
         logger.warning(
             "tag listing of '%s' did not terminate after %d pages; treating as unlistable",
             repo,
@@ -195,14 +190,11 @@ class RegistryClient:
     def _deleted(resp: httpx.Response, subject: str) -> bool:
         """Judge one delete's outcome, identically for a repository and a tag.
 
-        One ladder, because the registry answers both routes the same way and a
-        status Quay starts returning tomorrow (a 429, a quota 402) must get the
-        same diagnosis whichever kind of delete surfaces it first.
-
-        The outcomes are read off httpx rather than compared against literals:
-        ``is_success`` is the whole 2xx class, which is what "deleted" means
-        here. Quay answers a delete with 204, but listing the codes we happen
-        to have seen would quietly log a successful 200 as a failure.
+        The registry answers the repository and the tag route the same way, so
+        both run through one ladder: any 2xx (``is_success``, not a list of the
+        codes Quay happens to send) is a delete, a 404 is already gone and is not
+        logged, a 401/403 is the token lacking namespace admin, and any other
+        status is logged as a failure.
 
         Args:
             resp: The registry's answer.

@@ -1,10 +1,10 @@
 """Naming rules for what THIS platform builds out of a name and a group.
 
 The platform-wide part - what a name and a group may be, and how a group is
-normalized - lives in :mod:`cloudlet_apis.names` and is re-exported below, since
-every API has to agree on it. What stays here is what only we derive: object
-names, image and cache repositories, the OCI tag projected from a branch, and the
-git/image/path validators. Those change when the build pipeline changes.
+normalized - lives in :mod:`cloudlet_apis.names` and is re-exported below, so
+every API agrees on it. What stays here is what this platform derives on its own:
+object names, image and cache repositories, the OCI tag projected from a branch,
+and the git/image/path validators.
 
 ``api.models.common`` re-exports the ``Annotated`` types, so request models and
 query params keep importing them from there.
@@ -17,9 +17,9 @@ import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
-# The platform-wide rules, re-exported so this module stays the one import region
-# for naming in this repository (see the module docstring). DNS1123 is imported
-# rather than redeclared: a second copy of the regex is a second thing to drift.
+# The platform-wide rules, re-exported so this module is the one import site for
+# naming in this repository (see the module docstring). DNS1123 is imported, so
+# there is a single copy of that regex.
 from cloudlet_apis.names import (  # noqa: F401
     DNS1123,
     Group,
@@ -30,8 +30,8 @@ from cloudlet_apis.names import (  # noqa: F401
 )
 from pydantic import AfterValidator, WithJsonSchema
 
-# DNS-1123 *subdomain* - Kubernetes' rule for a pod name. Dotted labels are
-# permitted because the rule permits them, not because Knative produces one.
+# DNS-1123 *subdomain* - Kubernetes' rule for a pod name: dot-separated
+# DNS-1123 labels, at most MAX_POD_NAME characters.
 DNS1123_SUBDOMAIN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$")
 MAX_POD_NAME = 253
 
@@ -49,7 +49,7 @@ CACHE_SUFFIX = "_cache"
 # An image reference, per the OCI distribution grammar:
 #   [domain[:port]/]path[/path...][:tag][@algorithm:hex]
 # Path components are lowercase - the registry rejects anything else - while a
-# tag may carry upper case. Assembled from the parts so each rule is legible.
+# tag may carry upper case.
 _IMG_DOMAIN_LABEL = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
 _IMG_DOMAIN = rf"{_IMG_DOMAIN_LABEL}(?:\.{_IMG_DOMAIN_LABEL})*(?::[0-9]{{1,5}})?"
 _IMG_PATH_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
@@ -63,27 +63,25 @@ IMAGE_REFERENCE = re.compile(
 _IMAGE_MAX = 512
 
 # A DNS label's cap, which the first label of the default host has to fit.
-# A workload's own name is capped by `validate_name` at the same 63; what needs
-# its own rule is the PAIR, and only where the pair still appears - see
+# A workload's own name is capped by `validate_name` at the same 63; this rule
+# bounds the name and group PAIR, which appears only in that label - see
 # `default_host_label`.
 MAX_HOST_LABEL = 63
 
 # A Namespace name is a DNS-1123 label, so it shares the 63-character cap.
 MAX_NAMESPACE_NAME = 63
-# Tenant namespaces are `{group}-serverless`: group-first for readability; the
-# suffix keeps any group from naming an existing cluster namespace.
+# Tenant namespaces are `{group}-serverless`: the group first, then the suffix,
+# which keeps any group from naming an existing cluster namespace.
 NAMESPACE_SUFFIX = "-serverless"
-# Group-first means a `kube-*`/`openshift-*` group would produce a namespace
-# that reads as the system's own.
+# A group with one of these prefixes would produce a namespace that reads as the
+# system's own, so `namespace_for_group` refuses it.
 _RESERVED_NAMESPACE_PREFIXES = ("kube-", "openshift-")
 
 # An environment variable name, exactly as Kubernetes accepts one
 # (`util/validation.IsEnvVarName`). It is also used verbatim as the key of the
 # workload's `{workload}-env` Secret, and this is a subset of what a Secret key
-# allows, so one rule covers both writers. The length cap is that key's, too:
-# Kubernetes puts none on a container env name itself, so the Secret key is the
-# binding constraint - without the cap here, a longer name on a secret var
-# would be accepted (202) and die in the background apply.
+# allows, so one rule covers both writers. The 253-character cap is that Secret
+# key's; Kubernetes puts no length limit on a container env name itself.
 ENV_VAR_NAME = re.compile(r"^[-._a-zA-Z][-._a-zA-Z0-9]*$")
 MAX_ENV_VAR_NAME = 253
 # A ConfigMap/Secret key is capped here, and a mount path becomes one (see
@@ -118,15 +116,14 @@ def validate_hostname(host: str) -> str:
 def validate_git_url(url: str) -> str:
     """Validate a source repository URL as http(s) with a host and no userinfo.
 
-    The clone authenticates with a basic-auth Secret, which only applies over
-    http(s). An scp-style ref has no scheme, so it becomes a ``kpack.io/git``
-    annotation kpack cannot match, failing as an auth error nowhere near its cause.
-    An empty URL passes every downstream check and fails the same way.
+    The clone authenticates with a basic-auth Secret, which applies only over
+    http(s), so a scheme other than http/https, an scp-style ref (which carries
+    no scheme), a missing host and an empty URL are all refused.
 
-    Embedded credentials are rejected rather than stripped: the URL is written
-    verbatim to ``Image.spec.source.git.url``, so a password in it would sit in
-    plaintext on an object with much wider read access than the Secret. The
-    token belongs in the Secret, which is where the caller already sends it.
+    Embedded credentials are rejected, not stripped: the URL is written verbatim
+    to ``Image.spec.source.git.url``, an object with much wider read access than
+    the Secret. The token travels as ``gitToken``
+    (docs/BUILDING.md - Git credential - per function, never shared).
 
     Args:
         url: The repository URL.
@@ -153,21 +150,14 @@ def validate_image_ref(image: str) -> str:
     """Validate a container image reference the caller wants deployed.
 
     The value is written verbatim to ``containers[0].image`` and is parsed by
-    :func:`api.services.manifests.secrets.registry_of` to key the pull secret, so an
-    unusable reference passes every check here and surfaces minutes later as a
-    bare ``ErrImagePull`` on a revision - the failure mode the other validators
-    in this module exist to prevent.
+    :func:`api.services.manifests.secrets.registry_of` to key the pull secret.
 
     Enforces the OCI distribution grammar: an optional ``domain[:port]``, one or
     more lowercase path components, and an optional ``:tag`` and/or
-    ``@algorithm:hex`` digest. Surrounding whitespace is stripped (a value pasted
-    from a console usually carries some); whitespace *inside* is rejected, since
-    a reference cannot contain any and its presence means the field holds
-    something other than an image.
+    ``@algorithm:hex`` digest, in at most ``_IMAGE_MAX`` characters. Surrounding
+    whitespace is stripped; whitespace inside is rejected.
 
-    A reference with no tag is accepted and means ``:latest``, as it does
-    everywhere else - that it is a poor thing to deploy is a policy question,
-    not a well-formedness one.
+    A reference with no tag is accepted and means ``:latest``.
 
     Args:
         image: The image reference.
@@ -195,14 +185,13 @@ def validate_image_ref(image: str) -> str:
 def validate_branch(branch: str) -> str:
     """Validate a git branch name.
 
-    Deliberately permissive about ``/``, which is ordinary in a branch name and
-    is kept verbatim as the git revision. It is only the derived image tag that
-    cannot hold one, and :func:`image_tag` handles that separately - rejecting
-    ``feature/login`` here would ban a naming convention most repositories use.
+    ``/`` is permitted and kept verbatim as the git revision; only the derived
+    image tag cannot hold one, and :func:`image_tag` projects it separately.
 
     Rejects what git itself rejects and what would be unsafe downstream: empty
     or whitespace-only, whitespace or control characters anywhere, a leading
-    ``-`` (reads as a flag), and the sequences git forbids in a ref.
+    ``-`` (reads as a flag), the sequences git forbids in a ref, and anything
+    over 255 characters.
 
     Args:
         branch: The candidate branch name.
@@ -229,15 +218,13 @@ def validate_branch(branch: str) -> str:
 def validate_pod_name(pod: str) -> str:
     """Validate a pod name taken from the request path.
 
-    Not decoration. This value is interpolated into a request to the cluster's
-    API server, so it is the one caller-supplied string on the read path that
-    could reach somewhere other than the resource it names - ``..`` or a ``/``
-    in a path segment is how a get becomes a get of something else. Constraining
-    it to what Kubernetes itself accepts as a pod name settles that at the edge,
-    before any service sees it.
+    The value is interpolated into a request to the cluster's API server, so it
+    is constrained at the edge, before any service sees it, to what Kubernetes
+    itself accepts as a pod name: a ``..`` or a ``/`` in a path segment would
+    address a resource other than the one named.
 
-    It is not an authorization check and does not pretend to be: whether the pod
-    is *this workload's* is decided against its labels, where the answer is.
+    It is not an authorization check: whether the pod is *this workload's* is
+    decided against its labels.
 
     Args:
         pod: The pod name from the path.
@@ -289,12 +276,9 @@ def validate_source_path(path: str) -> str:
 def validate_env_var_name(name: str) -> str:
     """Validate an environment variable name.
 
-    Here for the same reason :func:`validate_image_ref` is: the value is written
-    verbatim into the container's ``env`` **and**, for a secret var, used as the
-    key of the ``{workload}-env`` Secret. Unchecked, a name the API server
-    refuses is accepted (202) and dies in the background apply as a per-region
-    error about a field the caller cannot see - the failure mode the validators
-    in this module exist to prevent.
+    The value is written verbatim into the container's ``env`` **and**, for a
+    secret var, used as the key of the ``{workload}-env`` Secret, so this one
+    rule has to satisfy both writers.
 
     The rule is Kubernetes' own ``IsEnvVarName``: ``[-._a-zA-Z][-._a-zA-Z0-9]*``,
     which cannot start with a digit and, since it may not begin with ``.``
@@ -328,14 +312,14 @@ def validate_env_var_name(name: str) -> str:
 def validate_mount_path(path: str) -> str:
     """Validate the path a file is mounted at inside the container.
 
-    Two consumers, both of which reject silently late. Kubernetes requires a
-    non-empty ``mountPath`` containing no ``:``; and the path is projected into
-    the backing ConfigMap/Secret key the file is stored under
-    (``api.services.manifests.files._key``), which is capped and cannot address
-    a parent directory.
+    Two consumers set the rule. Kubernetes requires a non-empty ``mountPath``
+    containing no ``:``; and the path is projected into the backing
+    ConfigMap/Secret key the file is stored under
+    (``api.services.manifests.files._key``), which is capped at
+    ``MAX_MOUNT_PATH`` and cannot address a parent directory.
 
-    ``..`` is refused rather than normalised: the mount is a ``subPath`` of a
-    shared volume, so a path escaping it would not mean what it says.
+    ``..`` is refused, not normalised: the mount is a ``subPath`` of a shared
+    volume, so a path escaping it would not mean what it says.
 
     Args:
         path: The candidate mount path.
@@ -364,10 +348,10 @@ def validate_mount_path(path: str) -> str:
 def default_host_label(name: str, group: str) -> str:
     """The first label of a workload's default host: ``{name}-{group}``.
 
-    The one place the pair is composed. It survives the move to a namespace per
-    group because DNS is global - two groups' ``app`` cannot both be
-    ``app.{routeDomain}`` - and because the platform's wildcard certificate
-    covers exactly one label, so a two-level host would not be covered.
+    The one place the pair is composed. DNS is global, so two groups' ``app``
+    cannot both be ``app.{routeDomain}``; the platform's wildcard certificate
+    covers exactly one label, so the host stays one label deep
+    (docs/ARCHITECTURE.md - Route host convention (recommendation)).
 
     Args:
         name: The workload name.
@@ -382,12 +366,11 @@ def default_host_label(name: str, group: str) -> str:
 def validate_default_host_label(name: str, group: str, limit: int = MAX_HOST_LABEL) -> str:
     """Check that the default host's first label fits, and return it.
 
-    The old ``{name}-{group}`` object name is gone - the namespace scopes a
-    workload now, so its cluster name is plain ``{name}``. The pair rule did not
-    go with it: it MOVED here, to the one place the pair is still written. What
-    changes is the consequence. Over the limit used to mean the workload could
-    not be created at all; now it means only that the *default* host will not
-    fit, and a caller-supplied ``hostname`` is the way through.
+    The pair is written in exactly one place: the default host's first label.
+    A workload's cluster name is plain ``{name}``, scoped by its group's
+    namespace, so the label is the only thing the pair's length bounds. Over
+    the limit means only that the *default* host will not fit, and a
+    caller-supplied ``hostname`` is the way through.
 
     Args:
         name: The workload name.
@@ -413,10 +396,9 @@ def validate_default_host_label(name: str, group: str, limit: int = MAX_HOST_LAB
 def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
     """The namespace a group's workloads live in: ``{group}{suffix}``.
 
-    One home for the mapping, like :func:`default_host_label`: the API, the
-    tenant controller and the GC must derive the same name. The group arrives
-    normalized; the checks here are the namespace's own, on the suffixed
-    whole.
+    One home for the mapping: the API, the tenant controller and the GC derive
+    the same name from here. The group arrives normalized; the checks here are
+    the namespace's own, on the suffixed whole.
 
     Args:
         group: The normalized owning group.
@@ -452,19 +434,18 @@ def image_tag(branch: str) -> str:
     """Reduce a branch name to a legal OCI tag.
 
     A git branch may contain ``/``; an OCI tag may not, and must start with an
-    alphanumeric or ``_``. So the tag is a *projection* of the branch, not the
-    branch itself - ``feature/login`` builds from that exact ref but pushes to
-    ``feature-login``.
+    alphanumeric or ``_`` and fit in ``_TAG_MAX`` characters. The tag is
+    therefore a *projection* of the branch, not the branch itself -
+    ``feature/login`` builds from that exact ref but pushes to ``feature-login``.
 
-    Two branches differing only in replaced characters collide on one tag
-    (``feature/login`` and ``feature-login``). Accepted: the alternative is a tag
-    nobody can read in a registry listing. The revision is never rewritten, so a
-    build always compiles the branch that was asked for.
+    Two branches differing only in replaced characters land on one tag
+    (``feature/login`` and ``feature-login``). The revision is never rewritten,
+    so a build always compiles the branch that was asked for.
 
     A branch can also project to *nothing*: git refs are UTF-8, so one with no ASCII
     is legal and every character of it is replaced. The empty tag would make the
-    reference ``repo:``, so those fall back to a digest of the branch - unreadable,
-    but deterministic, which is what convergence needs.
+    reference ``repo:``, so those fall back to ``b-`` plus a digest of the
+    branch, which is deterministic for a given branch.
 
     Args:
         branch: The branch name (already validated).
@@ -503,8 +484,7 @@ def tag_of(image: str) -> str | None:
 
     The counterpart of :func:`repository_of`, splitting the same grammar the
     same way: the digest is cut first, and a ``:`` counts as a tag separator
-    only past the last ``/`` - a registry host may carry a port. Here, beside
-    the functions it mirrors, so a fix to one edge cannot miss the other.
+    only past the last ``/`` - a registry host may carry a port.
 
     Args:
         image: An image reference (already validated).
@@ -537,11 +517,10 @@ def digest_of(image: str | None) -> str | None:
 def image_repository(group: str, name: str) -> str:
     """The repository a function's images are pushed to: ``{group}/{name}``.
 
-    The other half of an image reference from :func:`image_tag`, and here for the
-    same reason: it is a naming rule, and the code that pushes to a repository and
-    the code that deletes one must agree on it exactly.
+    The other half of an image reference from :func:`image_tag`: the code that
+    pushes to a repository and the code that deletes one derive it here.
 
-    No projection needed, unlike the tag. Both parts are DNS-1123 labels, already
+    Nothing is projected, unlike the tag. Both parts are DNS-1123 labels, already
     a subset of what an OCI path component allows, so there is nothing to rewrite.
 
     Args:
@@ -557,13 +536,9 @@ def image_repository(group: str, name: str) -> str:
 def cache_repository(group: str, name: str) -> str:
     """The repository a function's build cache is pushed to: ``{group}/{name}_cache``.
 
-    The ``_`` is what makes a collision with the image repository impossible
-    rather than unlikely: a name is a DNS-1123 label admitting only ``[a-z0-9-]``,
-    so no function can be named ``{name}_cache``. A reserved *tag* in the image
-    repository would not be safe the same way - a branch named ``cache`` projects
-    to exactly that tag (:func:`image_tag`) - and neither would a nested
-    ``{name}/cache`` path, which adds a repository level that Quay accepts only
-    with extended repository names enabled.
+    The ``_`` makes a collision with the image repository impossible: a name is
+    a DNS-1123 label admitting only ``[a-z0-9-]``, so no function can be named
+    ``{name}_cache`` (docs/BUILDING.md - Build cache).
 
     Args:
         group: The owning group.
@@ -578,11 +553,11 @@ def cache_repository(group: str, name: str) -> str:
 def _schema(description: str, example: str, **fields) -> WithJsonSchema:
     """Describe a validated string for OpenAPI, without constraining it.
 
-    ``WithJsonSchema`` documents; it does not validate. That is the point: a real
-    ``pattern`` runs BEFORE the AfterValidator, so it would reject "My_Team"
-    before :func:`normalize_group` could canonicalise it, and "/src" before
-    :func:`validate_source_path` could strip it. The validator stays the only
-    authority; this is what a client generates code from.
+    ``WithJsonSchema`` documents; it does not validate. A real ``pattern`` runs
+    BEFORE the AfterValidator, so it would reject "My_Team" before
+    :func:`normalize_group` canonicalises it, and "/src" before
+    :func:`validate_source_path` strips it. The validator is the only authority;
+    this is what a client generates code from.
 
     Args:
         description: What the field means, shown in the generated client.

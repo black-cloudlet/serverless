@@ -1,9 +1,8 @@
 """The tenant-namespace controller (docs/ARCHITECTURE.md - Tenant Namespaces).
 
-A second deployment beside the API, like the build controller, existing for
-privilege separation: creating and deleting Namespaces and RoleBindings is
-cluster-scoped power the internet-facing API must not hold. Level-triggered:
-the loop converges every managed namespace to the Helm-rendered template set,
-keyed by the set's hash stamped on each namespace - which is what carries a
-``helm upgrade`` to namespaces that already exist.
+A deployment beside the API, with its own cluster identity: it is the only
+component that creates and deletes Namespaces and RoleBindings
+(docs/DEPLOYING.md - RBAC). Level-triggered: the loop converges every managed
+namespace to the Helm-rendered template set, keyed by the set's hash stamped on
+each namespace, so a ``helm upgrade`` reaches namespaces that already exist.
 """

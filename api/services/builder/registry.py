@@ -7,9 +7,8 @@ behind with nothing to ever address it again
 (docs/BUILDING.md - Moving a function's repository).
 
 Policy only - *which* repositories a function event reclaims, and that the
-whole cleanup is best-effort. How the registry is spoken to is
-:class:`common.registry.RegistryClient`, shared with the build controller so
-the two services cannot drift in how they address Quay
+whole cleanup is best-effort. How the registry is spoken to lives in
+:class:`common.registry.RegistryClient`, shared with the build controller
 (docs/BUILDING.md - Registry cleanup on delete).
 """
 
@@ -27,9 +26,10 @@ logger = get_logger(__name__)
 def delete_function_repositories(registry: RegistryConfig, group: str, name: str) -> None:
     """Delete a function's image and cache repositories.
 
-    Best-effort and never raises: the workload is already gone platform-wide by
-    the time this runs, and failing a delete over leftover registry content
-    would report a function as undeleted when it is not.
+    Runs once, after every region has confirmed the workload delete, and never
+    raises: a repository left behind is logged, not reported to the caller
+    (docs/BUILDING.md - Registry cleanup on delete). Skipped entirely when the
+    registry is not configured for deletes.
 
     Args:
         registry: Registry settings, carrying the host and the API token.
@@ -52,9 +52,10 @@ def delete_function_repositories(registry: RegistryConfig, group: str, name: str
 def reclaim_moved_repositories(registry: RegistryConfig, previous_tag: str) -> None:
     """Delete the repositories a function pushed to before its tag moved.
 
-    Nothing addresses them once the tag changes - cleanup on delete derives the
-    *current* layout - so without this a layout change leaks a repository and its
-    cache per function, permanently.
+    Nothing addresses them once the tag changes: cleanup on delete derives the
+    *current* layout. Called after the ``Image`` has been replaced and the new
+    build has a tag of its own, so the running pods keep the image they hold
+    (docs/BUILDING.md - Moving a function's repository).
 
     Args:
         registry: Registry settings, carrying the host and the API token.
@@ -68,9 +69,10 @@ def reclaim_moved_repositories(registry: RegistryConfig, previous_tag: str) -> N
 def moved_repositories(registry: RegistryConfig, previous_tag: str) -> list[str]:
     """The host-relative image and cache repositories ``previous_tag`` pushed to.
 
-    Empty when the reference is on a different host - the shared derivation
-    (:func:`common.registry.repository_path`) refuses those, and the refusal is
-    logged here because only this caller knows it means "not reclaiming".
+    Empty when the reference is on a different host: the shared derivation
+    (:func:`common.registry.repository_path`) refuses those, and this logs the
+    refusal as "not reclaiming". The cache repository is the image repository plus
+    :data:`~common.names.CACHE_SUFFIX`.
 
     Args:
         registry: Registry settings, carrying the host.

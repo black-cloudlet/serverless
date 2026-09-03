@@ -25,9 +25,9 @@ GIT_ANNOTATION = "kpack.io/git"
 def registry_of(image: str) -> str:
     """The registry host an image reference points at, used to key its pull secret.
 
-    The org runs several registries, so this comes from the client's image, not our
-    platform registry. Falls back to Docker Hub when the reference names no registry.
-    The first path segment counts as a host only if it looks like one.
+    The host is read off the caller's own image reference. The first path segment
+    counts as a host only when it contains a ``.`` or a ``:`` or is ``localhost``;
+    otherwise the reference names no registry and this falls back to Docker Hub.
 
     Args:
         image: The image reference (e.g. ``reg.example.com/team/app:tag``).
@@ -137,9 +137,10 @@ def build_git_secret(
     """Build the ``kubernetes.io/basic-auth`` Secret holding a function's git token.
 
     One Secret serves both readers: the API reads it back to rebuild without the
-    token being re-supplied, and kpack clones with it - which is why it is basic-auth
-    carrying ``kpack.io/git``, the only shape kpack reads. One object is possible
-    only because builds run in the workload's own namespace.
+    token being re-supplied, and kpack clones with it. It is ``basic-auth``
+    annotated ``kpack.io/git`` because that is the only shape kpack reads, and one
+    object suffices because builds run in the workload's own namespace
+    (docs/BUILDING.md - Git credential - per function, never shared).
 
     Args:
         name: The Secret name (``{workload}-git``).

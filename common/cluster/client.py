@@ -24,17 +24,14 @@ from common.errors import NotFoundError, ValidationError
 class Cluster:
     """A single region's cluster connection and resource operations.
 
-    The Kubernetes client is synchronous and the connection is established lazily
-    (on first use) so one unreachable region can't fail or block startup.
+    The Kubernetes client is synchronous and the connection is established lazily,
+    on first use (docs/ARCHITECTURE.md - Partial-failure semantics).
 
-    It is also the handle callers pass around to mean "this region", which is why
-    :attr:`registry` hangs off it: the registry a region pushes to and pulls from
-    is part of what that region *is*, and a caller holding the cluster should not
-    have to look it up by name.
+    A Cluster is the handle callers pass around to mean "this region", and
+    :attr:`registry` is that region's registry.
 
-    A Cluster is a *cluster*, not a namespace: every namespaced operation
-    names its namespace explicitly, so where a write lands is always a
-    deliberate choice. Code working within one namespace binds it once via
+    It is cluster-scoped, not namespace-scoped: every namespaced operation names
+    its namespace explicitly. Code working within one namespace binds it once via
     :meth:`in_namespace` and passes the view around.
     """
 
@@ -48,9 +45,7 @@ class Cluster:
         """
         self.region: str = region_config.name
         self.name: str = region_config.cluster
-        # Resolved here so anything holding a cluster has that region's registry
-        # rather than reaching for the platform default, which on a per-region
-        # path is silently the wrong one.
+        # This region's registry, resolved once, not the platform default.
         self.registry: RegistryConfig = settings.registry_for(region_config.name)
 
         self._configuration = client.Configuration()
@@ -63,10 +58,7 @@ class Cluster:
         self._api_client_obj: client.ApiClient | None = None
         self._dynamic_client_obj: DynamicClient | None = None
         # Guards the lazy builds and close(): a Cluster is shared, and its first
-        # use routinely happens on several fan-out threads at once. Unguarded,
-        # two threads each build an ApiClient and the loser's connection pool is
-        # never closed - a socket leak per race, and a discovery-cache race for
-        # the dynamic client.
+        # use routinely happens on several fan-out threads at once.
         self._client_lock = threading.Lock()
         self._connect_timeout: float = settings.cluster_connect_timeout
         self._opts: dict = {
@@ -85,12 +77,12 @@ class Cluster:
         with self._client_lock:
             if self._api_client_obj is None:
                 api_client = client.ApiClient(self._configuration)
-                # So no call can hang on an unanswered SYN - discovery and the
-                # watch included, which pass no timeout of their own. Ordinary
-                # calls carry their read timeout via `self._opts`.
+                # Gives every request a connect timeout, discovery and the watch
+                # included: those pass none of their own. Ordinary calls carry
+                # connect and read timeouts through `self._opts`.
                 _default_connect_timeout(api_client, self._connect_timeout)
-                # Keepalive is what bounds the streams that read timeout
-                # deliberately does not - see _keepalive_socket_options.
+                # TCP keepalive bounds the long-lived streams, which carry no
+                # read timeout - see _keepalive_socket_options.
                 api_client.rest_client.pool_manager.connection_pool_kw["socket_options"] = (
                     _keepalive_socket_options()
                 )
@@ -116,8 +108,7 @@ class Cluster:
     def connect(self) -> None:
         """Eagerly establish the connection (API discovery).
 
-        So the first request doesn't pay for it. Idempotent - a no-op once
-        connected. Blocking.
+        Idempotent - a no-op once connected. Blocking.
         """
         _ = self._dynamic_client
 
@@ -132,9 +123,9 @@ class Cluster:
                 cluster-scoped manifest (a Namespace itself), where the value
                 is ignored.
             field_manager: The SSA field-manager name to write under. None
-                keeps the client library's default. A component that must own
-                its fields distinctly (the tenant controller, whose re-applies
-                remove the fields it no longer declares) passes its own.
+                keeps the client library's default; a component whose re-applies
+                must remove the fields it no longer declares (the tenant
+                controller) passes its own.
 
         Returns:
             The applied object(s) as dicts (including server-assigned fields).
@@ -184,9 +175,8 @@ class Cluster:
                 namespaces (or addresses a cluster-scoped kind); a named get
                 of a namespaced kind needs a real namespace.
             field_selector: Field selector for the list form, e.g.
-                ``metadata.name=x``. The apiserver applies it, so a
-                cluster-wide question about one object stays one narrow query
-                instead of a page of everything filtered here.
+                ``metadata.name=x``. The apiserver applies it, so the listing
+                comes back already narrowed.
 
         Returns:
             The object dict (named get) or a list of object dicts (list form).
@@ -248,13 +238,12 @@ class Cluster:
     ) -> Iterator[tuple[str, dict]]:
         """Follow changes to a kind, yielding ``(event_type, object)`` as they arrive.
 
-        Blocking, and deliberately finite: ``timeout_seconds`` closes the stream
-        and ends the iteration, so a caller relists and an expired
-        ``resource_version`` heals itself. The per-request read timeout is not
-        applied - a watch is idle between events by design. (The default
-        installed in ``_api_client`` bounds only the connect, for the same
-        reason: a read bound there would tear down a quiet watch, and the
-        dynamic client's ``watch`` accepts no per-request override.)
+        Blocking and finite: ``timeout_seconds`` closes the stream and ends the
+        iteration, after which a caller relists and watches again
+        (docs/BUILDING.md - One pass). No read timeout applies to a watch: the
+        per-request timeouts in ``self._opts`` are not passed, the default
+        installed in ``_api_client`` bounds only the connect, and the dynamic
+        client's ``watch`` accepts no per-request override.
 
         Args:
             kind: The resource kind to follow.
@@ -281,12 +270,11 @@ class Cluster:
     def patch(self, kind: ResourceKind, name: str, body: dict, *, namespace: str | None) -> dict:
         """Merge-patch one field of an existing resource.
 
-        Deliberately narrow next to :meth:`apply`, which is how everything the
-        platform *owns* is written: a full server-side apply is create-or-update
-        by construction, where a patch 404s on an absent object. This exists for
-        the one thing that is not desired state - annotating a kpack ``Build`` to
-        ask for another build - where composing and applying the whole object
-        would mean owning a resource kpack creates.
+        Everything the platform owns is written with :meth:`apply` instead
+        (docs/BUILDING.md - Ownership: API vs Build Service); this carries the
+        one write that is not desired state - annotating a kpack ``Build`` to
+        ask for another build. A patch 404s on an absent object where an apply
+        would create it.
 
         Merge patch, not strategic: strategic merge is unavailable on custom
         resources.
@@ -405,26 +393,22 @@ class Cluster:
         as the container writes, so the caller reads until the pod stops, the
         stream is closed, or the connection drops.
 
-        ``_preload_content=False`` is what makes that possible - the generated
-        client would otherwise read the whole response into a string before
+        ``_preload_content=False`` is what makes that possible: the generated
+        client otherwise reads the whole response into a string before
         returning, which for ``follow=True`` never completes. The raw urllib3
         response comes back instead, and :class:`LogFollow` owns it.
 
-        No read timeout is applied. A follow is idle between lines by design, so
-        the per-request timeout that protects an ordinary call would end this one
-        on a quiet workload; the caller bounds it instead (its own deadline, and
-        :meth:`LogFollow.close`).
+        No read timeout is applied. The caller bounds the stream instead - its
+        own deadline, and :meth:`LogFollow.close`
+        (docs/ARCHITECTURE.md - A held-open stream holds a thread).
 
         Args:
             pod: The pod name.
             namespace: The pod's namespace.
             container: The container to read.
-            since_seconds: Start this many seconds back, so a client sees recent
-                context rather than only what arrives after it connected.
+            since_seconds: Start this many seconds back, if set.
             tail_lines: Start at the newest this-many lines instead, however old
-                they are - what a viewer opening an *existing* pod wants, since a
-                pod quiet for longer than any time window would otherwise show
-                nothing until it next writes.
+                they are, if set.
 
         Returns:
             The open stream.
@@ -443,9 +427,8 @@ class Cluster:
                 tail_lines=tail_lines,
                 follow=True,
                 _preload_content=False,
-                # Connect timeout only: without it a black-holed API server
-                # wedges the follower thread (and its admission slot) for the
-                # OS TCP timeout. The read side stays unbounded, as documented.
+                # Connect timeout only; the read side stays unbounded, as
+                # documented above.
                 _request_timeout=(self._connect_timeout, None),
             )
         except Exception as exc:
@@ -495,11 +478,9 @@ def select_local(clusters: dict[str, Cluster], local_region: str | None) -> Clus
     """The cluster this process sits in, from :func:`clusters_for`'s mapping.
 
     Matched on the region name first, then the cluster name, so either spelling in
-    the chart resolves. A configured name that matches nothing is an error, not
-    a fallback: silently adopting the first region would have this process build,
-    reconcile and serve as a region it is not. Only an *unset* name falls back,
-    for the single-region install that never says which one it is. Shared, because
-    the API and the controller mean the same thing by "local".
+    the chart resolves (docs/ARCHITECTURE.md - Multi-Region). A configured name
+    that matches nothing raises rather than falling back; only an *unset* name
+    falls back, to the first configured region.
 
     Args:
         clusters: The per-region clients.

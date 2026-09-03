@@ -6,8 +6,9 @@ other derived resources, and kpack does the rest: clone, detect, build with
 Cloud Native Buildpacks, push to the internal registry.
 
 They are owned resources of the workload, in its own namespace, so the KSVC's
-ownerReference garbage-collects them. That co-location is also why a function
-needs only ONE git Secret: kpack reads the workload's own ``{workload}-git``.
+ownerReference garbage-collects them. That co-location is what makes ONE git
+Secret enough: kpack reads the workload's own ``{workload}-git`` from the
+ServiceAccount named on the ``Image``, in the ``Image``'s own namespace.
 
 Declaring is not completing, so ``plan`` returns the deterministic tag the
 build will push to. Callers deploy against that tag and read progress back
@@ -68,10 +69,10 @@ class KpackBackend:
     def pull_secret(self) -> str | None:
         """The registry Secret a built function's KSVC pulls its image with.
 
-        The same credential kpack pushes with - one image, one registry, one
-        credential - so a function never needs registry details from the caller.
-        None when unset, so the KSVC does not reference a Secret that the chart
-        never created.
+        The same credential kpack pushes with: one image, one registry, one
+        credential, so a function never carries registry details from the caller.
+        None when the setting is empty, so the KSVC never references a Secret the
+        chart did not create (docs/BUILDING.md - Two registries, three credentials).
         """
         return self._build.registry_secret or None
 
@@ -90,8 +91,8 @@ class KpackBackend:
     def cache_ref(self, req: BuildRequest, registry: RegistryConfig) -> str | None:
         """Where a build caches its layers, or None to leave it to kpack.
 
-        A sibling of the image repository in the same registry, so the cache
-        follows the image rather than being pulled across regions.
+        A sibling repository of the image in the same registry the build pushes to
+        (docs/BUILDING.md - Build cache).
 
         Args:
             req: The build request.
@@ -113,14 +114,12 @@ class KpackBackend:
         overrides), so nothing is composed here beyond pinning the version.
 
         The version variable is **always** written when the runtime names one,
-        including when the caller asked for nothing. Leaving it unset would hand
-        the choice to the buildpack's own default, which moves when the
-        buildpackage is upgraded - so an untouched function could silently
-        rebuild on a different language version, and airgapped it could ask for a
-        toolchain that was never mirrored. Precedence is caller, then an explicit
-        ``buildEnv`` pin, then the platform default: a caller can only choose from
-        the list the operator advertised, so an operator who wants no choice
-        leaves ``versions`` empty and the request is rejected before here.
+        including when the caller asked for nothing, so the buildpack's own moving
+        default never decides it. Precedence is the caller's version, then an
+        explicit ``buildEnv`` pin, then the runtime's ``defaultVersion``; the
+        entry for that variable is replaced, not appended to
+        (docs/BUILDING.md - Axis 2 - runtime version). A version outside the
+        runtime's advertised ``versions`` is rejected before this is reached.
 
         Args:
             runtime: The requested runtime name.
@@ -161,17 +160,16 @@ class KpackBackend:
         the KSVC's other derived resources and have them owner-stamped.
 
         The git Secret is replicated; the Image and ServiceAccount are per region.
-        Each region pushes to its own registry, so the objects are identical but
-        for the tag and the cache reference, and no two regions contend for one
-        repository (docs/BUILDING.md - Registry layout).
+        Each region pushes to its own registry, so those objects are identical but
+        for the tag and the cache reference (docs/BUILDING.md - Registry layout).
 
         Args:
             req: The build request.
             labels: Ownership labels to stamp on each manifest.
             registries: The registry each building region pushes to, keyed by region
                 name. Its keys are the regions that build - the workload's
-                targets. Passed in rather than resolved here: the caller holds
-                the clusters, and each carries its own registry.
+                targets - and each is resolved by the caller from that region's
+                cluster.
 
         Returns:
             The build plan; each region's manifests are in dependency order.
@@ -221,12 +219,11 @@ class KpackBackend:
     def trigger(self, cluster: NamespacedCluster, name: str, group: str) -> bool:
         """Ask kpack for one more build of the function's current inputs.
 
-        Patches the annotation onto the latest ``Build``, which is where kpack
-        looks for it (:data:`~common.kpack.BUILD_TRIGGER_ANNOTATION`) and the
-        reason a rebuild leaves the ``Image`` untouched: the desired state stays
-        a pure function of the function definition, so the next ordinary apply
-        neither carries a nonce forward nor drops one and rebuilds again
-        (docs/BUILDING.md - Convergence rules).
+        Patches :data:`~common.kpack.BUILD_TRIGGER_ANNOTATION` onto the latest
+        ``Build``, which is where kpack looks for it. The ``Image`` is left
+        untouched, so the desired state stays a pure function of the function
+        definition and the next ordinary apply neither carries a nonce forward nor
+        drops one and rebuilds again (docs/BUILDING.md - Convergence rules).
 
         Args:
             cluster: The cluster holding the Image (always the local region).
@@ -239,8 +236,7 @@ class KpackBackend:
 
         Raises:
             Exception: If the Builds could not be listed or the patch failed.
-                Unlike a status read, this one is the whole point of the call: a
-                swallowed error is a rebuild that silently never happens.
+                Propagated, not swallowed the way a status read's error is.
         """
         image_name = kpack.build_image_name(name)
         builds = cluster.get(
@@ -278,9 +274,10 @@ class KpackBackend:
 
         Returns:
             The build status, or None when the function has no Image on this
-            cluster - which is the normal case for a region that has never built
-            it, and must fall through to the KSVC status rather than read as a
-            failure (docs/FUNCTIONS.md - Function Status Resolution).
+            cluster - the normal case for a region that has never built it, and
+            the signal for the caller to fall through to the KSVC status
+            (docs/FUNCTIONS.md - Function Status Resolution). Also None when the
+            Image could not be read at all.
         """
         image_name = kpack.build_image_name(name)
         try:
@@ -296,14 +293,15 @@ class KpackBackend:
     def statuses(self, cluster: NamespacedCluster, group: str) -> dict[str, BuildStatus]:
         """Read every function build state a group has on one cluster, in one call.
 
-        Keyed by the ``workload`` label - the workload's name - because that is
-        what the Image carries and what the caller already has
-        from the KSVC it is annotating. The Image's name is the same string
-        (:func:`common.kpack.build_image_name`), but the label is the
+        One label-selected read per call, selecting on group and offering. Results are
+        keyed by the ``workload`` label - the workload's own name, which is what the
+        caller already holds from the KSVC it is annotating. The Image's name is the
+        same string (:func:`common.kpack.build_image_name`), but the label is the
         selection contract, so it is what this read stands on.
 
-        Never an error: a listing that could not read kpack falls through to the
-        KSVC statuses, exactly as :meth:`status` does for a single workload.
+        Never raises: a listing that could not read kpack returns empty and falls
+        through to the KSVC statuses, as :meth:`status` does for a single workload
+        (docs/FUNCTIONS.md - Function Status Resolution).
 
         Args:
             cluster: The cluster to read (normally the local region).

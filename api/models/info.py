@@ -27,12 +27,12 @@ class RuntimeCapability(BaseModel):
 class NamingRule(BaseModel):
     """The limit on ``name`` and ``group`` *together* - the default host's label.
 
-    No per-field schema can express this: the halves are validated separately
-    and each may be 63 characters, but their join is the default host's first
-    DNS label. It binds only the *default* host - a create that supplies its
-    own ``hostname`` is free of it - so a form should warn on the pair, not
-    block it. Published because ``group`` is a path parameter, so it is not
-    even in the body being validated.
+    The halves are validated separately and each may be 63 characters, but it is
+    their join that forms the default host's first DNS label, and ``group`` is a
+    path parameter rather than a body field - so no per-field schema carries this
+    rule. It binds only the *default* host - a create that supplies its own
+    ``hostname`` is free of it - so it is published for a form to warn on the
+    pair before submitting, rather than to block it.
 
     Attributes:
         template: How the default host's first label is composed.
@@ -80,8 +80,7 @@ class PortCapability(BaseModel):
     Attributes:
         required: Whether a port must be supplied on create/update.
         default: Applied when the caller sends none - the port Knative injects
-            as ``$PORT``. Published so a form can pre-fill it instead of
-            hardcoding the number.
+            as ``$PORT``. Published so a form can pre-fill it.
         min: The smallest accepted port.
         max: The largest accepted port.
     """

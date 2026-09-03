@@ -3,7 +3,8 @@
 Pure functions (no cluster access). Everything here is recoverable from the KSVC
 itself except non-secret file contents, which the caller supplies via
 ``configmaps`` (one extra read). Secret material - secret env values, secret file
-contents, registry creds - is deliberately never reconstructed.
+contents, registry creds - is never reconstructed
+(docs/FUNCTIONS.md - Redaction & keep-on-write).
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ def redact_files(files: list[FileMount]) -> list[FileView]:
 
     Non-secret content echoes back in canonical form: text when the bytes are
     UTF-8, else base64 with ``encoding: base64`` - the same split the live read
-    makes - so what the caller sees does not depend on which encoding they chose
-    to send, and either view round-trips on update.
+    makes, so either view round-trips on update
+    (docs/FUNCTIONS.md - Redaction & keep-on-write).
 
     Args:
         files: The submitted file mounts.
@@ -184,9 +185,10 @@ def _injected_env_names(ksvc: dict) -> set[str]:
 def _env(ksvc: dict) -> list[EnvVarView]:
     """Read back the container env as views (secretKeyRef values redacted).
 
-    Platform-injected CA-trust defaults are omitted - they aren't part of the
-    user's spec. A var the user set themselves is never injected, so it is never
-    listed as injected and reads back normally.
+    Names listed in the injected-env annotation - the platform's CA-trust
+    defaults - are omitted, since they are not part of the user's spec. A var
+    the user set is never injected, so it is never listed there and reads back
+    normally.
     """
     injected = _injected_env_names(ksvc)
     out: list[EnvVarView] = []
@@ -261,11 +263,8 @@ def parse_spec(
         scaling=_scaling(ksvc),
         env=_env(ksvc),
         files=_files(ksvc, configmaps),
-        # Coalesced, not passed through: every workload this version writes stamps
-        # a port, so a missing one means the workload predates that - and 8080 is
-        # genuinely the port it serves on, since that is what Knative injects when
-        # none is declared. Reporting null would describe the manifest instead of
-        # the workload.
+        # Coalesced, not passed through: a KSVC with no stamped port serves on the
+        # port Knative injects when none is declared, which is DEFAULT_PORT.
         port=container_port(ksvc) or DEFAULT_PORT,
         registryUsername=registry_username,
         gitRepo=meta.get(ANNOTATION_GIT_URL),

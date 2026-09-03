@@ -3,8 +3,8 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    # Single source of truth: the version declared in pyproject.toml, read from
-    # the installed package metadata.
+    # The version declared in pyproject.toml, read from the installed package
+    # metadata.
     __version__ = version("serverless-api")
 except PackageNotFoundError:  # running from a source tree that isn't installed
     __version__ = "0.0.0"

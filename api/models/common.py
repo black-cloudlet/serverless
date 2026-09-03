@@ -1,4 +1,11 @@
-"""Shared schemas and label constants used across the API."""
+"""Shared schemas and label constants used across the API.
+
+The response models both offerings return (the per-region rows, the status
+rollup, the pod roster and log shapes), the annotation and label keys the
+manifests stamp, and the ``Annotated`` path and query types the routers
+validate with. The name and image-reference validators are re-exported from
+:mod:`common.names`, so request models and the builder apply the same rules.
+"""
 
 from __future__ import annotations
 
@@ -20,8 +27,9 @@ from common.labels import (  # noqa: F401
     MANAGED_BY_VALUE,
 )
 
-# In `common` because they bound what can be written to a cluster, and the
-# builder applies them off the HTTP path. Re-exported for one import region.
+# Name/reference types and validators bound what can be written to a cluster, so
+# they live in `common` and are applied off the HTTP path by the builder too.
+# Re-exported here for one import region.
 from common.names import (  # noqa: F401
     DNS1123,
     HOSTNAME,
@@ -68,21 +76,20 @@ ANNOTATION_PULL_STAMP = "serverless.platform/pull-stamp"
 CA_BUNDLE_VOLUME = "ca-bundle"
 
 # Container port bounds (a TCP port). The single source the field validators on
-# both offerings and the /info capabilities projection read, so they can't drift.
+# both offerings and the /info capabilities projection read.
 PORT_MIN = 1
 PORT_MAX = 65535
 # Knative's own default, and what it injects as $PORT when a container declares
-# no port. Applied as the field default for both offerings rather than left
-# implicit, so a workload's port is a value you can read back, not a convention
-# you have to know.
+# no port. Applied as the field default for both offerings, so a workload's port
+# is stamped on the KSVC and read back rather than left implicit.
 DEFAULT_PORT = 8080
 
 # Knative autoscaler metrics. concurrency/rps use the default KPA (scale-to-zero
 # capable); cpu/memory use the HPA autoscaler class (no scale-to-zero).
 ScalingMetric = Literal["concurrency", "rps", "cpu", "memory"]
 _KPA_METRICS = {"concurrency", "rps"}
-# Per-metric target defaults and bounds (the single source both the validator and
-# the /info capabilities projection read, so they can't drift).
+# Per-metric target defaults and bounds - the single source both the validator
+# and the /info capabilities projection read.
 _TARGET_MIN = 1
 _KPA_TARGET_DEFAULT = 100  # concurrency/rps: absolute request count per replica
 _HPA_TARGET_DEFAULT = 70  # cpu/memory: utilization percentage
@@ -98,19 +105,17 @@ _METRIC_UNITS = {
 # request-only so the workload is never throttled.
 WorkloadSize = Literal["small", "medium", "large"]
 
-# The rollup a client polls on. A Literal, not a comment, so it is enforced on
-# every response and /info can advertise it instead of a portal hardcoding it.
-# A closed set, like a Kubernetes phase: causes never get promoted into it -
-# they go on `reason` - so a new interesting failure is an additive reason
-# string, not a breaking change to every client's switch.
+# The rollup a client polls on, enforced on every response and published on
+# /info as statuses.workload. A closed set, like a Kubernetes phase: a cause is
+# never promoted into it, it goes on `reason`.
 WorkloadStatus = Literal["Pending", "Building", "Deploying", "Ready", "Failed", "Terminating"]
 # Per-region values that reach a response. RegionStatus is also the return type of the
 # internal host/absence probes (Available, Absent, ...), so the field itself stays
 # a plain str and only the client-facing set is published.
-# "Building" appears here for the same reason it appears in WorkloadStatus: while a
-# function's image is still being built, every region's KSVC is failing to pull an
-# image that does not exist yet, and reporting that as "Failed" describes the
-# symptom instead of the cause (docs/FUNCTIONS.md - Function Status Resolution).
+# "Building" covers the window in which a function's image is still being built:
+# every region's KSVC is failing to pull an image that does not exist yet, and
+# that is reported as Building, not Failed, here and in WorkloadStatus alike
+# (docs/FUNCTIONS.md - Function Status Resolution).
 REGION_STATUSES = ("Ready", "Building", "Deploying", "Failed", "Terminating", "Timeout")
 # Machine-readable causes behind a Failed region or rollup, published on /info so
 # a UI can switch on them - the Kubernetes reason/message pair, one level up.
@@ -168,16 +173,15 @@ class FileMount(BaseModel):
 
     ``content`` carries the file, and ``encoding`` says how: ``text`` (the
     default) means the string *is* the file, ``base64`` means the string is the
-    file's raw bytes base64-encoded - for a keystore or a DER certificate, which
-    have no text form a JSON string could carry.
+    file's raw bytes base64-encoded - for binary content such as a keystore or a
+    DER certificate.
 
     A secret file may omit ``content``, meaning "keep the stored content" on
     update (the redacted read - ``secret: true, content: null`` - can be sent
     straight back). A non-secret file always needs content.
 
-    The mounted file is always read-only: Kubernetes mounts ConfigMap and
-    Secret volumes read-only regardless of what the pod spec asks for, so the
-    API offers no knob it could not honor.
+    The mounted file is always read-only: Kubernetes mounts ConfigMap and Secret
+    volumes read-only regardless of what the pod spec asks for.
     """
 
     mountPath: MountPath
@@ -194,11 +198,8 @@ class FileMount(BaseModel):
     def _check(self) -> "FileMount":
         """Validate the content (present unless a secret keep, decodable if base64).
 
-        Whether base64 ``content`` decodes is a property of the field, so it is
-        settled here rather than in the service layer. It has to be: the accept
-        path echoes the submitted spec back (``describe.redact_files``) as an
-        argument expression, which runs *before* the service-layer validation, so
-        a check further in would be reached too late to answer with a 400.
+        Runs at model-parse time, so an undecodable or non-UTF-8 file is rejected
+        with a 400 before any service-layer code touches the spec.
         """
         if self.keep and not self.secret:
             raise ValueError("file requires 'content'")
@@ -222,8 +223,9 @@ class FileMount(BaseModel):
     def decoded(self) -> bytes:
         """The file's content as raw bytes (``b""`` for a keep).
 
-        Bytes because a file is a byte string: ``encoding: base64`` exists so a
-        caller can mount a keystore or a DER certificate, which have no text form.
+        Returns:
+            ``content`` base64-decoded when ``encoding`` is ``base64``, else its
+            UTF-8 encoding.
         """
         if self.content is None:
             return b""
@@ -266,9 +268,12 @@ class Scaling(BaseModel):
     def capabilities(cls) -> "ScalingCapabilities":
         """Project the per-metric scaling rules for the public /info endpoint.
 
-        Derived from the same constants the validator enforces (``_KPA_METRICS``,
-        the target defaults/bounds, the duration cap), so the advertised
-        capabilities can't drift from what a create request will accept.
+        Built from the same constants the validator enforces (``_KPA_METRICS``,
+        the target defaults and bounds, the duration cap), so what is advertised
+        is what a create request accepts.
+
+        Returns:
+            The per-metric capabilities and the ``scaleDownDelay`` rules.
         """
         metrics = []
         for name in get_args(ScalingMetric):
@@ -384,11 +389,8 @@ class ScalingCapabilities(BaseModel):
 class RegionStatus(BaseModel):
     """The deploy/health state of a workload at a single region.
 
-    Carries no live usage: measuring it is a cluster call of its own, and this is
-    on the full GET, which is not the endpoint to poll. ``replicas`` stays because
-    it is free - it comes off the Revision read that the per-region failure detail
-    needs anyway. Usage lives on :class:`RegionStatusDetail`, which only the status
-    view returns.
+    The full GET's per-region row. It carries no live cpu/memory usage; that is
+    reported by the stats view, on :class:`RegionStats`.
 
     Attributes:
         region: The region name.
@@ -420,9 +422,8 @@ class ResourceUsage(BaseModel):
 class RegionStats(BaseModel):
     """One region's live state, as the stats view reports it.
 
-    Not a :class:`RegionStatus`: that one is the full GET's row, and carries the
-    rollout detail (``revision``, ``error``) rather than what a workload is
-    consuming right now.
+    The full GET returns :class:`RegionStatus` instead, which carries the rollout
+    detail (``revision``, ``message``) rather than live usage.
 
     Attributes:
         region: The region name.
@@ -493,9 +494,8 @@ class FileView(BaseModel):
 class BuildStatusView(BaseModel):
     """A function's image build state, read from the local region's kpack Image.
 
-    State and reason only. The built image stays internal - a function's client
-    deals in source, not images - so it is on :class:`common.build.BuildStatus`,
-    which the build service reads, and never on the response.
+    State and message only; the built image itself is not part of any response
+    (it is on :class:`common.build.BuildStatus`, which the build service reads).
 
     Attributes:
         state: Building / Ready / Failed / Unknown.
@@ -510,18 +510,14 @@ class WorkloadStatsResponse(BaseModel):
     """A workload's live state only - the endpoint to poll.
 
     Carries what changes on its own and none of the desired-state config, which
-    a client already holds and which cannot change unless it changes it. That is
-    what lets this be read every couple of seconds without re-reading the
-    workload's backing Secret on every tick.
+    is returned by the full GET.
 
     Attributes:
-        status: The rollup, identical to the full GET's - ``Building``
-            included, since the build is still read even though it is not
-            reported here.
+        status: The rollup, identical to the full GET's, ``Building`` included.
         reason: The first recognized per-region ``reason``, as on the full GET.
         replicas: Running pods across every region. None if any region's is unknown.
         usage: Cpu/memory across every region. None if any region could not be
-            measured, rather than a total quietly missing one.
+            measured.
         regions: One entry per region that has the workload.
     """
 
@@ -542,9 +538,8 @@ class WorkloadResponse(WorkloadBase):
 
     regions: list[RegionStatus] = []
     statusUrl: str | None = None
-    # The first recognized per-region `reason`, so a client that only reads the
-    # headline still learns *why* a Failed rollup failed. None when no region's
-    # cause was recognized (or nothing failed).
+    # The first recognized per-region `reason`, repeated at the top level. None
+    # when no region's cause was recognized (or nothing failed).
     reason: str | None = None
     # desired-state config common to both offerings (secret values redacted)
     scaling: Scaling | None = None
@@ -555,11 +550,10 @@ class WorkloadResponse(WorkloadBase):
 class PodInfo(BaseModel):
     """One of the workload's pods on the local region.
 
-    Everything a client needs to pick a pod to follow, and to understand why one
-    it was following went away. ``usage`` comes from the metrics API and is
-    joined on by name, so it is null for a pod too new to have been scraped -
-    the pod is still listed, because for choosing a log stream the newest pod is
-    the one that matters most.
+    What a client needs to pick a pod to follow, and to see why one it was
+    following went away. ``usage`` comes from the metrics API and is joined on by
+    name, so it is null for a pod too new to have been scraped; the pod is listed
+    either way.
 
     Attributes:
         pod: The pod name - the path segment ``/logs/pods/{pod}`` takes.
@@ -567,8 +561,7 @@ class PodInfo(BaseModel):
         phase: The pod phase (Running, Pending, Succeeded, Failed, Unknown).
         ready: Whether its Ready condition is true - a Running pod is not
             necessarily serving.
-        restarts: Restarts summed over the pod's containers. A rising count is
-            the symptom a log stream is usually opened to explain.
+        restarts: Restarts summed over the pod's containers.
         startedAt: When the pod started, in Israel local time.
         usage: Live cpu/memory for this pod's user container(s), excluding the
             queue-proxy sidecar; null when it has not been measured.
@@ -586,11 +579,8 @@ class PodInfo(BaseModel):
 class PodRoster(BaseModel):
     """The ``pods`` event: which pods the workload has on this region, right now.
 
-    The local region only, like the log streams it feeds: a pod name is only
-    useful where its log can be read. Empty ``pods`` is a normal state, not an
-    error - the workload is deployed here and scaled to zero - which is why this
-    is a stream rather than a lookup that would have to keep being repeated to
-    notice it stopped being true.
+    The local region only, like the log streams it feeds. Empty ``pods`` is a
+    normal state, not an error: the workload is deployed here and scaled to zero.
 
     Attributes:
         name: The workload name.
@@ -610,8 +600,8 @@ class PodRoster(BaseModel):
 class LogLine(BaseModel):
     """One line from a followed pod log (the ``log`` event of a logs stream).
 
-    A line, not a blob: the node's timestamp is split off into its own field
-    rather than left as a prefix every client would have to re-parse.
+    The node's timestamp is split off into ``time``; ``message`` carries the rest
+    of the line.
 
     Attributes:
         pod: The pod the line came from.
@@ -683,11 +673,9 @@ class PodLogSnapshot(BaseModel):
 class StreamEnd(BaseModel):
     """The ``end`` event: the stream finished on purpose, and why.
 
-    Distinct from ``error`` because a pod's log ending is not a failure - it is
-    what happens when the pod is scaled down or replaced by a new revision, which
-    on Knative is routine. A client that treats it as an error shows the user a
-    red banner for a successful deploy; one that is told can go back to the
-    ``pods`` stream and pick the pod that replaced it.
+    Distinct from ``error``: a pod's log ending is not a failure, it is what a
+    scale-down or a new revision looks like. A client can go back to the ``pods``
+    stream and pick the pod that replaced it.
 
     Attributes:
         reason: Why the stream ended, in a form worth showing a user.
@@ -699,9 +687,8 @@ class StreamEnd(BaseModel):
 class StreamWarning(BaseModel):
     """The ``warning`` event: the stream is degraded but still running.
 
-    Its own event because the alternative is silence. A log stream that dropped
-    lines because the client could not keep up is showing an incomplete picture,
-    and a client that is not told reads the gap as "the pod logged nothing".
+    Sent when a log stream discards lines because the client is reading too
+    slowly, so a gap in the lines is reported rather than silent.
 
     Attributes:
         message: What was degraded, in a form worth showing a user.
@@ -715,11 +702,10 @@ class StreamWarning(BaseModel):
 class StreamError(BaseModel):
     """The ``error`` event: the stream is ending, and why.
 
-    Once the response has begun there is no status code left to send, so this is
-    the only way a stream can report that the workload was deleted or a region
-    stopped answering. It carries the same ``code`` vocabulary as the error
-    envelope (``/info`` publishes it), so a client switches on one set of values
-    whichever way the failure reaches it.
+    Once the response has begun there is no status code left to send, so a later
+    failure - the workload deleted, a region no longer answering - arrives as
+    this event. It carries the same ``code`` vocabulary as the error envelope,
+    which ``/info`` publishes.
 
     Attributes:
         code: The machine-readable error code (e.g. ``NOT_FOUND``).

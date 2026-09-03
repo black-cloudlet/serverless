@@ -1,10 +1,7 @@
 """Server-Sent Events framing: the wire format, and the event the services yield.
 
-Kept apart from the streams themselves so the services stay in the business of
-producing *events* and only the router turns them into bytes. That split is what
-lets the stream tests assert on typed events instead of parsing text, and it is
-the same shape as the rest of the API, where a service returns a model and the
-framework renders it.
+The framing lives apart from the streams themselves: the services yield typed
+*events* and only the router turns them into bytes.
 
 The format is the one the EventSource specification defines: ``field: value``
 lines, a blank line ending each event, and a leading ``:`` marking a comment
@@ -19,10 +16,8 @@ from pydantic import BaseModel
 
 MEDIA_TYPE = "text/event-stream"
 
-# Set on the response, not guessed at by the proxy in front of it. `no-transform`
-# and `X-Accel-Buffering` both say the same thing to two different intermediaries:
-# do not buffer this, because a buffered event stream is indistinguishable from a
-# hung one until the buffer happens to flush.
+# Set on the response itself. `no-transform` and `X-Accel-Buffering` say the same
+# thing to two different intermediaries: do not buffer this response.
 HEADERS = {
     "Cache-Control": "no-cache, no-store, no-transform",
     "Connection": "keep-alive",
@@ -30,9 +25,8 @@ HEADERS = {
 }
 
 # How long a client waits before reconnecting, sent once at the top of a stream.
-# A stream ends on its own every `max_seconds` (see StreamConfig), so this is not
-# an error path - it is the normal cadence, and the default of 3s would have every
-# client reconnecting three seconds after every scheduled close.
+# A stream ends on its own every `max_seconds` (see StreamConfig), so reconnecting
+# is the normal cadence and not an error path.
 RETRY_MS = 2000
 
 
@@ -74,9 +68,9 @@ def render(event: StreamEvent) -> str:
     if event.data is None:
         return f": {event.name}\n\n"
     body = event.data.model_dump_json()
-    # One `data:` line per line of payload. JSON from pydantic carries no
-    # newlines today, but the rule is the format's, not the payload's: a single
-    # embedded newline would otherwise silently truncate the event.
+    # One `data:` line per line of payload: an embedded newline would otherwise
+    # truncate the event. Pydantic's JSON carries none, but the rule belongs to
+    # the format rather than to the payload.
     lines = "".join(f"data: {line}\n" for line in body.split("\n"))
     return f"event: {event.name}\n{lines}\n"
 

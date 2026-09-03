@@ -1,8 +1,7 @@
 """Converging tenant namespaces to the template set, one cluster at a time.
 
-Local-only, like the build controller: each tenant controller converges its own
-cluster from its own cluster's ConfigMap, so the two sites never fight during
-Argo sync skew. The stamp protocol makes a converge crash-safe:
+Local-only: each tenant controller converges its own cluster, from its own
+cluster's ConfigMap. The stamp protocol makes a converge crash-safe:
 
 1. Apply the Namespace *without* the hash annotation (under SSA this removes
    the old stamp, marking the converge in progress).
@@ -47,14 +46,12 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
     """Bring one tenant namespace to the template set (the stamp protocol above).
 
     Idempotent throughout, so the provision call and the loop can both run it.
-    Every step is unconditional: the protocol has one shape, so a caller
-    cannot skip the opening apply - which is also the write that creates the
-    namespace - on a stale read of someone else's stamp.
+    Every step runs unconditionally, whatever stamp the namespace carries; the
+    opening apply is also the write that creates the namespace.
 
     Args:
         cluster: The cluster to converge in (cluster-scoped client).
-        namespace: The namespace's name - passed, not derived, so a changed
-            suffix setting cannot strand existing namespaces.
+        namespace: The namespace's name, passed in rather than derived here.
         group: The owning (normalized) group.
         templates: The loaded template set.
 
@@ -63,7 +60,7 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
             ends the pass.
     """
     # Rendered for the cluster being written to, not for this pod: a provision
-    # converges peers, and a per-region value must follow the target.
+    # converges peer regions, so per-region values follow the target.
     manifests = templates.render(
         namespace=namespace, group=group, region=cluster.region, registry=cluster.registry.url
     )
@@ -72,13 +69,12 @@ def converge(cluster: Cluster, namespace: str, group: str, templates: TemplateSe
         ns_manifest = {"apiVersion": "v1", "kind": "Namespace", "metadata": {}}
     contents = [m for m in manifests if m["kind"] != "Namespace"]
     if not contents:
-        # Files that render to nothing read as a truncated ConfigMap, and
-        # obeying them would prune the namespace bare. Raised before any
-        # write, so the stamp survives and the next pass retries.
+        # A set that renders nothing below the Namespace counts as broken.
+        # Raised before any write, so the stamp survives and the next pass
+        # retries.
         raise ValueError(f"template set {templates.digest} rendered no namespaced contents")
 
-    # The target's name wins over the template's: a template naming something
-    # else would create a second namespace mid-converge.
+    # The target's name wins over whatever name the template carries.
     ns_manifest = _stamped(ns_manifest, group)
     ns_manifest["metadata"]["name"] = namespace
 
@@ -195,20 +191,17 @@ def reconcile_all(
 ) -> tuple[int, int, int]:
     """Converge every managed namespace in this cluster whose stamp is stale.
 
-    One namespace failing is logged and skipped, never the end of the pass
-    (``TagGC``'s rule: an aborting error would starve every namespace after
-    it, deterministically). An empty set is refused: mounted-but-empty is
-    indistinguishable from a broken mount, and obeying it would prune every
-    tenant namespace bare.
+    Two rules hold the pass together: one namespace failing is logged, counted
+    and skipped, and the pass carries on with the rest; an empty template set
+    is refused outright, converging nothing and returning ``(0, 0, 0)``.
 
     Args:
         cluster: The local cluster (cluster-scoped client).
         templates: The currently mounted template set.
         force: Converge even stamp-matching namespaces - the periodic drift
             repair, since a deleted object does not change the stamp.
-        workers: Converges run on a thread pool of this size - independent
-            per namespace, so a template rollout over many tenants is bounded
-            by the pool, not serialized.
+        workers: Converges run on a thread pool of this size, one namespace
+            per task.
 
     Returns:
         ``(seen, converged, failed)``, for the log line and the pass verdict.
@@ -228,7 +221,7 @@ def reconcile_all(
         name = meta.get("name", "")
         group = (meta.get("labels") or {}).get(LABEL_GROUP)
         if not group:
-            # Ours by label but unattributable - a human made this state.
+            # Managed by label, but unattributable: counted as failed, skipped.
             logger.warning("managed namespace '%s' carries no group label; skipping", name)
             failed += 1
             continue
@@ -251,9 +244,8 @@ def reconcile_all(
         try:
             outcomes = list(pool.map(one, stale))
         finally:
-            # cancel_futures, so a SIGTERM mid-pass drops the queue instead of
-            # working through every namespace map() already submitted - the
-            # pod has a grace period to respect.
+            # cancel_futures drops whatever map() has queued but not started,
+            # so a SIGTERM mid-pass waits only for the running converges.
             pool.shutdown(wait=True, cancel_futures=True)
     converged = outcomes.count(True)
     failed += outcomes.count(False)
@@ -296,11 +288,9 @@ def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None
     """Delete managed objects the current template set no longer renders.
 
     Only prunable kinds, only controller-labeled objects: the API's workload
-    Secrets and a tenant's own objects are invisible to it. Listed here, per
-    namespace, rather than from a pass-wide cluster-wide listing: a
-    tenant controller that could list every Secret in the cluster is a far larger
-    grant than one scoped to the namespaces it owns, and a listing read at
-    prune time cannot miss what another writer created mid-pass.
+    Secrets and a tenant's own objects are invisible to it. The listing is per
+    namespace and read at prune time, so it covers objects another writer
+    created earlier in the pass (docs/DEPLOYING.md - RBAC).
 
     Args:
         cluster: The cluster to prune in.

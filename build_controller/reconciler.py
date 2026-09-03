@@ -1,12 +1,13 @@
 """The control loop: watch local kpack Images, roll their digests onto the local KSVC.
 
-Both ends are local, and for the same reason: a region builds what it runs and
-pushes to its own registry (docs/BUILDING.md - Active/Active Behaviour), so the Image is here
-because this region built it, and the digest it produced is only pullable here.
-Nothing in this loop reads or writes a peer cluster.
+Both ends are local: a region builds what it runs and pushes to its own registry
+(docs/BUILDING.md - Active/Active Behaviour), so the Image is here because this
+region built it, and the digest it produced is only pullable here. Nothing in
+this loop reads or writes a peer cluster.
 
-One pass relists and then watches from that point, so nothing is lost when a
-stream drops. No leader election (docs/BUILDING.md - Digest propagation).
+One pass relists and then watches from that point, so a dropped stream costs a
+relist and no change is missed. There is no leader election
+(docs/BUILDING.md - Digest propagation).
 """
 
 from __future__ import annotations
@@ -48,10 +49,9 @@ class Reconciler:
 
         Args:
             settings: Shared settings (regions, local region, TLS material).
-            gc_factory: Builds the tag GC from the *resolved* region name - a
-                factory because ``local_region`` may be unset or a cluster name,
-                and the GC must prune the registry of the region actually
-                watched. None runs the loop without GC.
+            gc_factory: Builds the tag GC from the *resolved* region name, the
+                region actually watched, which ``local_region`` may name only as
+                a cluster or not at all. None runs the loop without GC.
 
         Raises:
             ValidationError: If no regions are configured.
@@ -59,11 +59,8 @@ class Reconciler:
         # Every region is constructed only to pick this one out; the rest are
         # dropped unconnected, since nothing here touches a peer.
         self._local = select_local(clusters_for(settings), settings.local_region)
-        # No namespace binding: an Image now lives in its group's namespace,
-        # so the watch spans all of them and each roll-out uses the Image's own.
-        # Binding one namespace here is how this loop went blind the moment
-        # workloads moved - it would list zero Images and no digest would ever
-        # reach a KSVC.
+        # No namespace is bound: an Image lives in its group's namespace, so the
+        # watch spans all of them and each roll-out uses the Image's own.
         self._gc = gc_factory(self._local.region) if gc_factory else None
 
     @property
@@ -79,8 +76,8 @@ class Reconciler:
         """Reconcile every Image once, and return where a watch should resume.
 
         Returns:
-            The listing's resourceVersion, or None to watch from now - safe,
-            since the relist just reconciled everything.
+            The listing's resourceVersion, or None to watch from now, the relist
+            having just reconciled everything.
         """
         images, version = self._local.list_resources(
             ResourceKind.KPACK_IMAGE, label_selector=IMAGE_SELECTOR, namespace=None
@@ -90,8 +87,8 @@ class Reconciler:
         logger.info("resynced %d image(s) in %s", len(images), self._local.region)
         if self._gc is not None:
             # After the rollouts, on the same listing: the GC judges tags
-            # against each Image's latest state, so it rides the relist that
-            # just fetched it and costs no second LIST. Paced internally.
+            # against each Image's latest state, as just fetched. Paced
+            # internally (docs/BUILDING.md - Registry tag GC).
             self._gc.maybe_sweep(images)
         return version
 
@@ -113,8 +110,8 @@ class Reconciler:
                 self.reconcile(image)
         except ApiException as exc:
             # 410 Gone is the server compacting history out from under the
-            # watch - routine, and the next pass's relist is the cure. Anything
-            # else is a real failure and takes the loop's error backoff.
+            # watch; the next pass's relist resumes from a fresh listing.
+            # Anything else takes the loop's error backoff.
             if exc.status != 410:
                 raise
             logger.info("watch expired (resourceVersion too old); resyncing")
@@ -147,9 +144,8 @@ class Reconciler:
         Args:
             workload: The workload's object name.
             digest: The image reference to run.
-            namespace: The Image's own namespace - taken from the object rather
-                than derived, so the KSVC this writes is always the one the
-                Image was built for.
+            namespace: The Image's own namespace, taken from the object, so the
+                KSVC written is the one the Image was built for.
 
         Returns:
             True if the KSVC was applied.
@@ -159,7 +155,7 @@ class Reconciler:
             ksvc = cluster.get(ResourceKind.KNATIVE_SERVICE, workload)
         except NotFoundError:
             # An Image outliving its KSVC: the delete cascade has not collected
-            # it yet, or it was applied before builds followed the workload.
+            # it yet.
             return False
         except Exception:  # noqa: BLE001 - one bad read is not the loop's end
             logger.exception("could not read '%s' in %s", workload, cluster.region)

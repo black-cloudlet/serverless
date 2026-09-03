@@ -1,13 +1,12 @@
 """The build domain shared by the API (client) and the build service.
 
-Both sides import these types, so the request/response shape can't drift between
-the caller and the backend. :class:`BuildBackend` is implemented today by the
-in-process ``KpackBackend``; a remote build microservice would implement the
-same protocol with no change to callers.
+Both sides import these types, so the request/response shape cannot drift between
+the caller and the backend. :class:`BuildBackend` is the protocol they meet on,
+implemented by the in-process ``KpackBackend``.
 
-The protocol is named ``BuildBackend``, not ``Builder``: kpack has its own
-``Builder`` CR (the buildpack composition an ``Image`` references by name, see
-docs/BUILDING.md - Buildpack Topology), and one spelling cannot mean both.
+``BuildBackend`` is not kpack's ``Builder`` CR, which is the buildpack
+composition an ``Image`` references by name (docs/BUILDING.md - Buildpack
+Topology).
 """
 
 from __future__ import annotations
@@ -38,10 +37,9 @@ if TYPE_CHECKING:  # a type hint only - importing it would pull the k8s client
 class BuildRequest:
     """Inputs for building a function image from source.
 
-    Validated on construction rather than trusted: these fields become
-    Kubernetes object names and an image reference, and the build path is
-    reachable off the HTTP edge (the webhook, and later the build service),
-    where request-model validation has not run.
+    Validated on construction: these fields become Kubernetes object names and
+    an image reference, and the build path is reachable off the HTTP edge, where
+    request-model validation has not run.
 
     Attributes:
         name: Workload name (DNS-1123 label).
@@ -57,9 +55,9 @@ class BuildRequest:
             still written explicitly into the build env, never left to the
             buildpack.
         owner: Creating username, stamped on the build objects' labels.
-        revision: Exact commit to build. None means build the branch head,
-            which is what create/update do; the webhook path will pin the
-            pushed SHA here so a rebuild is idempotent.
+        revision: Exact commit to build. None builds the branch head, which is
+            what create and update do; a pinned SHA builds exactly that commit,
+            whatever the branch has moved to.
     """
 
     name: Name
@@ -100,13 +98,12 @@ class BuildPlan:
     """What declaring a build produces, split by how far each piece travels.
 
     Attributes:
-        replicated: Manifests every region needs. The git credential lives here:
-            a region must be able to rebuild from a token it already holds, which
-            is the switchover story (docs/BUILDING.md - Active/Active).
-        per_region: The build objects each region applies, keyed by region name. Per
-            region because each pushes to its own registry, so the tag differs;
-            one shared tag would have two clusters racing to push it
-            (docs/BUILDING.md - Registry layout).
+        replicated: Manifests every region needs. The git credential lives here,
+            so a region rebuilds from a token it already holds
+            (docs/BUILDING.md - Active/Active).
+        per_region: The build objects each region applies, keyed by region name.
+            Each region pushes to its own registry, so the tag differs per
+            region (docs/BUILDING.md - Registry layout).
     """
 
     replicated: list[dict]
@@ -205,15 +202,13 @@ class BuildBackend(Protocol):
         """Ask for one more build of inputs that have not changed.
 
         The counterpart to :meth:`plan`, and the only imperative call in this
-        protocol: ``plan`` describes desired state, and re-applying desired state
-        that already matches is by design a no-op no backend rebuilds from. A
-        rebuild request is not a state change - the caller is asking for the same
-        source to be built again, against today's base image and dependencies -
-        so it cannot be expressed as one without putting a nonce in the spec and
-        rebuilding forever.
+        protocol: ``plan`` describes desired state, and re-applying a spec that
+        already matches is a no-op no backend rebuilds from. Building the same
+        source again - against today's base image and dependencies - is
+        therefore a call of its own (docs/BUILDING.md - What causes a new Build).
 
         Call it *after* applying the plan, so a region that has no build objects
-        gets them (and builds) rather than being triggered into nothing.
+        gets them (and builds) first.
 
         Args:
             cluster: The cluster holding the build (always the local region).
@@ -234,10 +229,8 @@ class BuildBackend(Protocol):
     def statuses(self, cluster: NamespacedCluster, group: str) -> dict[str, BuildStatus]:
         """Every build state a group has on one cluster, keyed by workload object name.
 
-        The listing counterpart of :meth:`status`. It exists as its own call
-        rather than a loop over :meth:`status` because a listing needs the whole
-        group at once: one label-selected read answers for every workload,
-        where the loop would be a round trip per workload on every poll.
+        The listing counterpart of :meth:`status`: one label-selected read
+        answers for every workload in the group, whatever their number.
 
         Args:
             cluster: The cluster to read (normally the local region).
@@ -274,16 +267,11 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
 def cache_reference(registry_base: str, req: BuildRequest) -> str:
     """Where a build's layer cache lives: ``{base}/{group}/{name}_cache:latest``.
 
-    The registry form of kpack's cache, preferred over the volume form because
-    that one is a PVC per function (docs/BUILDING.md - Build cache).
+    The registry form of kpack's cache (docs/BUILDING.md - Build cache).
 
-    The ``_`` is what makes a collision with a function image impossible rather
-    than unlikely: a name is a DNS-1123 label, which admits only ``[a-z0-9-]``,
-    so no function can ever be named ``{name}_cache``. A reserved *tag* in the
-    function's own repository would not be safe the same way - a branch named
-    ``cache`` projects to exactly that tag (:func:`common.names.image_tag`) - and
-    neither would a nested ``{name}/cache`` path, which adds a repository level
-    that Quay only accepts with extended repository names enabled.
+    The ``_`` makes a collision with a function image impossible: a name is a
+    DNS-1123 label, which admits only ``[a-z0-9-]``, so no function can be named
+    ``{name}_cache``.
 
     Args:
         registry_base: Registry host, plus organization when the registry has

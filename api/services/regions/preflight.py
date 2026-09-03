@@ -1,13 +1,12 @@
 """The checks that run before a workload is written, and what they refuse.
 
 Everything here answers "may this deploy proceed?" and nothing here mutates.
-They are grouped because they share one rule that is easy to lose when it is
-spread across an orchestrator: **a check that could not be run has not passed**.
-An unreachable region cannot prove a host is free, so these fail closed with a 503
-rather than reading silence as consent - see :func:`assert_all_regions_checked`.
+One rule holds across all of them: **a check that could not be run has not
+passed**. An unreachable region cannot prove a host is free, so these fail closed
+with a 503 - see :func:`assert_all_regions_checked`
+(docs/ARCHITECTURE.md - Partial-failure semantics).
 
-:class:`~api.services.workloads.WorkloadService` exposes these as methods; the
-logic lives here so it can be read (and tested) without the deploy path around it.
+:class:`~api.services.workloads.WorkloadService` exposes these as methods.
 """
 
 from __future__ import annotations
@@ -56,9 +55,7 @@ def resolve_host(name: str, hostname: str | None, group: str, domain: str) -> st
             label would be too long (pass a hostname instead).
     """
     if not hostname:
-        # The pair rule, at the one place the pair is still written. A name and
-        # group that no longer fit together are now only a reason to supply a
-        # hostname, not a reason the workload cannot exist.
+        # The name/group pair rule, checked where the default host label is built.
         try:
             validate_default_host_label(name, group)
         except ValueError as exc:
@@ -86,9 +83,9 @@ def validate_spec(
 ) -> None:
     """Validate a spec synchronously, before the request is accepted.
 
-    Runs the in-memory resolution the apply will later perform, so bad input fails as
-    a 400 at accept time instead of being accepted (202) and dying silently in the
-    background deploy.
+    Runs the in-memory resolution the apply will later perform, so bad input fails
+    as a 400 at accept time rather than in the background deploy that follows the
+    202.
 
     Args:
         name: Workload name.
@@ -104,8 +101,8 @@ def validate_spec(
     Raises:
         ValidationError: If the env or files cannot be resolved.
     """
-    # The name/group pair is no longer checked here: it binds the default host,
-    # not the object name, so `resolve_host` is where it belongs now.
+    # The name/group pair is not checked here: it binds the default host, not
+    # the object name, so `resolve_host` checks it.
     resolve_files(name, group, owner, files, kept_files)
     resolve_env(name, group, owner, env, kept_env)
 
@@ -121,21 +118,16 @@ async def assert_deployable(
 ) -> None:
     """Assert a workload can be deployed: host free, and optionally name unused.
 
-    Both questions are answered in ONE visit per region. They used to be two
-    separate fan-outs, which cost two cross-region round trips per deploy and -
-    worse - described two different instants; asking together means a region's
-    two answers cannot disagree about the moment they were taken.
+    Both questions are answered in ONE visit per region, so a region's two
+    answers describe the same instant.
 
-    Only a real 404 means free/absent. An unreachable region can't prove either,
-    so this fails closed (503) rather than treating silence as consent -
-    otherwise a create against a down peer could hijack its DomainMapping or
-    overwrite a workload it is still serving.
+    Only a real 404 means free/absent. An unreachable region cannot prove either,
+    so this fails closed with a 503 (docs/ARCHITECTURE.md - Partial-failure
+    semantics).
 
-    This does not make the deploy atomic, and is not meant to: the apply that
-    follows is a separate operation, so a peer can still claim the host in
-    between. It is the guard that makes that window small and the failure
-    loud, which is why the apply path runs it again immediately before
-    mutating rather than trusting the accept-time result.
+    The check is not atomic with the write: the apply that follows is a separate
+    operation, so a peer can claim the host in between. The apply path runs this
+    again immediately before mutating instead of trusting the accept-time result.
 
     Args:
         deployer: The multi-region fan-out helper.
@@ -159,8 +151,8 @@ async def assert_deployable(
             if owner is not None:
                 return RegionStatus(region=cluster.region, status="Taken", message=owner)
         if require_absent:
-            # Namespace-scoped, and that is the point: the same name in another
-            # group is a different workload now, living in another namespace.
+            # Namespace-scoped: the same name in another group is a different
+            # workload, living in another namespace.
             try:
                 cluster.get(ResourceKind.KNATIVE_SERVICE, name)
                 return RegionStatus(region=cluster.region, status="Exists")
@@ -169,8 +161,7 @@ async def assert_deployable(
         return RegionStatus(region=cluster.region, status="Available")
 
     statuses = await deployer.fanout(targets, probe)
-    # The host conflict is reported first: it is the one an idempotent apply
-    # would silently resolve by hijacking another workload's mapping.
+    # A host conflict is reported ahead of a name conflict.
     taken = next((s for s in statuses if s.status == "Taken"), None)
     if taken is not None:
         raise ConflictError(f"hostname '{host}' is already assigned to {taken.message}")
@@ -187,10 +178,9 @@ def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) ->
     holding it may live in someone else's. A get by name cannot span namespaces,
     so this lists the platform's own DomainMappings and matches on the name.
 
-    The owner is identified by workload AND group. The workload label alone
-    stopped being unique the moment two groups could each have an ``app``, and
-    "is this my own mapping?" answered on the workload label alone would let one
-    group's update quietly adopt another's host.
+    The owner is identified by workload AND group: the workload label alone is
+    not unique across groups, so a mapping counts as this workload's own only
+    when both labels match.
 
     Args:
         cluster: The region to ask, as a namespace-bound view - the underlying
@@ -203,9 +193,8 @@ def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) ->
         A description of the workload holding the host, or None when it is
         free or already this workload's own.
     """
-    # Both selectors go to the apiserver: the field one narrows a cluster-wide
-    # question to the single object that could answer it, so this stays one
-    # small query rather than a page of every DomainMapping on the platform.
+    # Both selectors are applied by the apiserver; the field selector narrows the
+    # cluster-wide list to the single object that could answer.
     mappings = cluster.cluster.get(
         ResourceKind.DOMAIN_MAPPING,
         label_selector=f"{LABEL_MANAGED_BY}={MANAGED_BY_VALUE}",
@@ -224,8 +213,8 @@ def _host_owner(cluster: NamespacedCluster, host: str, name: str, group: str) ->
         labels = meta.get("labels") or {}
         if labels.get(LABEL_WORKLOAD) == name and labels.get(LABEL_GROUP) == group:
             return None
-        # Who holds it, and where: the owner can be in a namespace the caller
-        # cannot see, so "already assigned" alone would be a dead end to debug.
+        # Report which workload holds it and where: the owner can live in a
+        # namespace the caller cannot see.
         if foreign is None:
             foreign = (
                 f"{labels.get(LABEL_WORKLOAD) or '?'} in namespace {meta.get('namespace') or '?'}"

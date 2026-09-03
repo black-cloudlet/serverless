@@ -1,8 +1,8 @@
 """Domain errors: the shared catalog, plus the ones only this platform raises.
 
 The base class and the general HTTP failures come from
-:mod:`cloudlet_apis.errors` and are re-exported here, so every
-``from common.errors import ...`` in this repository keeps working.
+:mod:`cloudlet_apis.errors` and are re-exported here, so this repository imports
+every domain error from one module.
 
 The classes below are ours. ``error_catalog()`` walks subclasses at call time,
 so ``/info`` publishes them without the shared package knowing they exist.
@@ -10,7 +10,7 @@ so ``/info`` publishes them without the shared package knowing they exist.
 
 from __future__ import annotations
 
-# Re-exported for existing importers - see the module docstring.
+# Re-exported so this repository imports them from here - see the module docstring.
 from cloudlet_apis.errors import (  # noqa: F401
     APIError,
     ConflictError,

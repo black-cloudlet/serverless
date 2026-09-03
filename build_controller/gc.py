@@ -8,35 +8,23 @@ any user action, so they grow even for functions nobody touches. Nothing else
 reclaims them short of deleting the function
 (docs/BUILDING.md - Registry tag GC).
 
-Local by design, like the reconciler this rides in: a region builds what it runs
-and pushes to its own registry, so each controller prunes exactly the registry
-its region filled, and no cross-region call exists. That premise is load-bearing,
-so it is *checked*: every region must build into its own registry (the chart
-refuses to render otherwise), and a controller that finds another region on its
-registry host refuses to sweep - two regions pruning one repository would each
-protect only their own serving digest and delete the other's
-(docs/BUILDING.md - Registry tag GC). And *reconciled*, unlike the API's fire-once
-cleanup on delete: garbage is re-derived from live state every sweep, so a
-crash or an unreachable registry leaks nothing permanently - the next sweep
-collects it.
+Local, like the reconciler this rides in: a region builds what it runs and
+pushes to its own registry, so each controller prunes exactly the registry its
+region filled, and makes no cross-region call. The premise is checked - a
+controller that finds another region on its registry host refuses to sweep. The
+sweep is reconciling: garbage is re-derived from live state every time, so an
+interrupted or failed sweep leaks nothing permanently and the next one collects
+it.
 
-What survives a sweep (:func:`garbage`), and why deleting the rest is safe:
+What survives a sweep (:func:`garbage`):
 
-- the function's **current branch tag** (the tag half of ``Image.spec.tag``) -
-  a create deploys at it, and a switchover region rebuilds into it;
-- every tag still pointing at the **digest of** ``status.latestImage`` -
-  deleting the last tag on a manifest lets the registry collect the manifest,
+- the function's **current branch tag** (the tag half of ``Image.spec.tag``);
+- every tag still pointing at the **digest of** ``status.latestImage``, since
+  deleting the last tag on a manifest lets the registry collect the manifest
   and the KSVC pinned to that digest could no longer pull on a node change;
-- the **newest** ``gc_keep_builds`` build tags beyond all of those, so recent
-  builds stay addressable, mirroring the Build history kpack itself keeps;
-- any tag the listing reports **without a digest** - it cannot be proven safe;
-- everything, when the Image records **no successful build**: a fresh Image
-  over a repository still holding a previous incarnation's tags would
-  otherwise be swept with nothing digest-protected at all.
-
-An older *revision* can pin a digest outside that set; Quay's time machine is
-the accepted backstop for one that re-pulls after its tags are pruned
-(docs/BUILDING.md - Registry tag GC).
+- the **newest** ``gc_keep_builds`` build tags beyond all of those;
+- any tag the listing reports **without a digest**, which cannot be proven safe;
+- everything, when the Image records **no successful build**.
 """
 
 from __future__ import annotations
@@ -65,13 +53,10 @@ def garbage(
 ) -> list[TagInfo]:
     """The tags nothing needs anymore - the pure half of the sweep.
 
-    Every protected tag is set aside *before* the newest-``keep`` window is
-    cut, so the window is spent entirely on deletable build history: the
-    branch tag is re-pushed by every build and the newest build tag always
-    carries the serving digest, so counting either would silently shrink the
-    retained history below what ``keep`` promises. Tags without a digest are
-    set aside the same way - they cannot be proven safe, and the safe
-    direction is to keep them.
+    Protected tags are set aside *before* the newest-``keep`` window is cut, so
+    ``keep`` counts only deletable build history and a protected tag never
+    consumes a slot. A tag with no digest cannot be proven safe and is set aside
+    the same way (docs/BUILDING.md - Registry tag GC).
 
     Args:
         tags: The repository's active tags, in any order.
@@ -96,19 +81,16 @@ class TagGC(PeriodicSweep):
 
     Constructed with the *resolved* region name - which cluster this controller
     actually watches - so the registry it prunes is the one that region's builds
-    fill. It runs only when configuration allows deletion (``gc_enabled`` AND
-    ``registry.deleteOnFunctionDelete`` - the operator's one switch for "may
-    the platform delete registry content"), the registry has an API token, and
-    no other region shares this registry's host. Whichever way that lands, it is
-    said at startup - and, for a reason that could change under a running pod
-    (a token that syncs late needs a pod restart to be seen), repeated once
-    per interval - so an operator reads the state off the log instead of
-    deducing it from silence.
+    fill. It sweeps only when ``gc_enabled`` and
+    ``registry.deleteOnFunctionDelete`` are both on, the registry has an API
+    token, and no other region shares this registry's host. Whichever way that
+    lands is logged at startup, and a blocking reason again once per interval,
+    since one can be fixed under a running pod.
 
     The pacing and thread scaffolding live on :class:`common.loop.PeriodicSweep`:
     the sweep is registry-bound I/O that must never sit between the reconcile
     loop's relist and its watch, where every minute spent is a minute no digest
-    rolls out.
+    rolls out (docs/BUILDING.md - Registry tag GC).
     """
 
     label = "tag GC"
@@ -123,9 +105,9 @@ class TagGC(PeriodicSweep):
         super().__init__(settings.gc_interval_seconds, region, "tag-gc")
         self._registry = settings.registry_for(region)
         self._keep = settings.gc_keep_builds
-        # Silent off: the operator asked for no GC, once at startup is enough.
+        # Off by configuration: silent, logged once at startup.
         self._configured_off = not settings.gc_enabled
-        # Loud off: a state the operator likely wants fixed, re-said per interval.
+        # Blocked: loud - logged at startup and again once per interval.
         self._off_reason = self._blocked(settings, region)
         if self._configured_off:
             logger.info("tag GC off: disabled by configuration")
@@ -150,10 +132,10 @@ class TagGC(PeriodicSweep):
         Returns:
             An operator-readable reason, or None.
         """
-        # One region per registry is the safety premise: two controllers pruning
-        # one repository each protect only their own serving digest and delete
-        # the other's. The chart enforces it at render; this is the backstop
-        # for a hand-rolled config.
+        # One region per registry: a controller protects only its own region's
+        # serving digest, so it refuses to sweep a registry another region
+        # shares. The chart refuses to render such a config; this is the
+        # backstop for a hand-rolled one.
         sharing = [
             other
             for other in settings.region_names
@@ -190,10 +172,8 @@ class TagGC(PeriodicSweep):
     def sweep(self, images: Iterable[dict]) -> None:
         """Prune every function's repository, one connection for the lot.
 
-        One function failing - a listing that times out, a transport error -
-        is logged and skipped, never the end of the sweep: the Image listing
-        order is stable, so an error that aborted the pass would starve every
-        function after the failing one on every sweep, deterministically.
+        One function failing - a listing that times out, a transport error - is
+        logged and skipped; the rest of the sweep continues.
 
         Args:
             images: The kpack Images to derive repositories and live state from.
@@ -254,9 +234,9 @@ class TagGC(PeriodicSweep):
         digest = digest_of(latest)
         if not digest:
             # A fresh Image (created, re-created, or post-switchover) whose
-            # status has not landed yet - but the repository may still hold a
-            # previous incarnation's tags, including the one still serving.
-            # With nothing digest-protected, pruning would be a guess.
+            # status has not landed yet. The repository may still hold a
+            # previous incarnation's tags, including the one still serving, and
+            # with nothing digest-protected nothing here is prunable.
             logger.info(
                 "tag GC: skipping '%s': its Image records no successful build yet", workload
             )
@@ -272,7 +252,7 @@ class TagGC(PeriodicSweep):
         if not doomed:
             return 0
         # Each delete logs its own tag name in RegistryClient; this line is the
-        # per-function verdict an operator greps for.
+        # per-function verdict.
         deleted = sum(1 for tag in doomed if client.delete_tag(repo, tag.name))
         logger.info(
             "tag GC: '%s': pruned %d of %d tag(s) in '%s' (kept the branch tag, "

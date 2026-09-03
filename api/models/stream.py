@@ -1,8 +1,9 @@
 """Which paths a stream ticket may be minted for.
 
 The request/response schemas ship with the flow itself
-(:mod:`cloudlet_apis.auth.tickets`); what stays here is the one decision that
-is this API's alone - the allowlist the mint runs every path through.
+(:mod:`cloudlet_apis.auth.tickets`); this module holds the allowlist the mint
+runs every requested path through (docs/ARCHITECTURE.md - Browsers cannot send
+an ``Authorization`` header).
 """
 
 from __future__ import annotations
@@ -14,11 +15,10 @@ from cloudlet_apis.errors import ValidationError
 from api.core.config import get_settings
 from api.core.paths import api_base
 
-# The only paths a ticket may be minted for. Anchored and explicit rather than
-# "any path this API serves": a ticket is a bearer credential in a URL, so what
-# it can open is enumerated, not inferred. The name/group/pod segments are left
-# permissive - authorization is redone from the ticket's own Principal when the
-# stream opens, so this is about the shape, not the identity.
+# The only paths a ticket may be minted for, anchored and enumerated. The
+# name/group/pod segments are left permissive: authorization is redone from the
+# ticket's own Principal when the stream opens, so this matches the shape of a
+# path, not the identity in it.
 _STREAM_SUFFIX = (
     r"/groups/[^/]{1,63}/(?:functions|containers)/[^/]{1,63}/"
     r"(?:pods|stats/stream|logs/pods/[^/]{1,253})$"
@@ -28,9 +28,8 @@ _STREAM_SUFFIX = (
 def stream_path_pattern() -> re.Pattern[str]:
     """The streaming paths, anchored at where this API is actually served.
 
-    Built per call rather than at import: the base is configuration, and the
-    tests that vary it would otherwise be matching against the first value ever
-    read. ``re`` caches the compilation.
+    The base path is read from settings on every call, so a changed setting takes
+    effect immediately; ``re`` caches the compilation.
 
     Returns:
         The compiled pattern a mintable path must match.

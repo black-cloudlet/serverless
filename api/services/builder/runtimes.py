@@ -6,11 +6,11 @@ editing the ConfigMap - no image rebuild.
 
 Loading only: the cached, request-injectable registry is assembled in
 :mod:`api.dependencies` with the platform's other singletons, so this module
-stays free of FastAPI and can be reused by a service that has no HTTP layer.
+carries no FastAPI import.
 
-The file is **required**, with no fallback: a default list would name no Builder
-while looking real at the API surface, so a broken mount would pass for a working
-platform until the first function failed to build.
+The file is **required** and has no fallback: :func:`load_runtimes` raises when
+it is missing, unreadable, malformed or empty, and the lifespan loads it before
+serving (docs/BUILDING.md - Where it lives).
 """
 
 from __future__ import annotations
@@ -31,13 +31,11 @@ class RuntimeConfigError(RuntimeError):
 class RuntimeSpec(BaseModel):
     """One available runtime, as the chart renders it into the runtimes ConfigMap.
 
-    Every field is read by :class:`~api.services.builder.kpack_backend.KpackBackend`, so this is a
-    contract with the ConfigMap, not a bag of strings. ``extra="allow"`` keeps genuine
-    forward-compatibility: an unknown key is preserved, so a newer chart can ship first.
-
-    Numbers are coerced to strings because the ConfigMap is hand-editable YAML,
-    where an unquoted ``defaultVersion: 3.12`` is a float - rejecting it would
-    take the whole runtimes file down over a missing pair of quotes.
+    Every field is read by :class:`~api.services.builder.kpack_backend.KpackBackend`, so this
+    is the contract with the ConfigMap (docs/BUILDING.md - Where it lives).
+    ``extra="allow"`` preserves unknown keys, so a newer chart can be rolled out ahead of
+    the API. Numbers are coerced to strings: the ConfigMap is hand-editable YAML, where an
+    unquoted ``defaultVersion: 3.12`` is a float.
 
     Attributes:
         name: The runtime a caller asks for (``runtime`` on a function).
@@ -97,9 +95,9 @@ def load_runtimes(path: str) -> RuntimeRegistry:
     The file shape is ``{"runtimes": [{"name": "python", ...}, ...]}`` - see
     :class:`RuntimeSpec`.
 
-    Loud when missing: the chart always mounts it, so absent or empty means a broken
-    mount. Raising makes that a startup failure, so a misconfigured pod never passes
-    readiness instead of accepting functions it can never build.
+    The chart always mounts the file, so absent or empty means a broken mount. Raising
+    here makes that a startup failure and a misconfigured pod never reaches readiness
+    (docs/BUILDING.md - Where it lives).
 
     Args:
         path: Path to the mounted runtimes YAML file.

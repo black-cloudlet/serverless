@@ -10,10 +10,10 @@ class LogFollow:
 
     Two threads touch one of these and they do different things. The worker
     thread iterates :meth:`lines`, blocked on the socket in between. The event
-    loop calls :meth:`close`, which is the only way to end that block early -
-    setting a flag would not, because the flag is only read between lines and a
-    quiet workload produces none. Closing the socket makes the pending read fail,
-    the iteration stops, and the thread is returned to the pool.
+    loop calls :meth:`close`, which ends that block by closing the socket: the
+    pending read fails, the iteration stops, and the thread is returned to the
+    pool. The ``_closed`` flag alone does not end it, being read only between
+    lines (docs/ARCHITECTURE.md - A held-open stream holds a thread).
     """
 
     def __init__(self, response):
@@ -25,19 +25,17 @@ class LogFollow:
         self._response = response
         self._closed = False
 
-    # A line still waiting for its newline is held in memory; past this it is
-    # emitted as if the newline had arrived. A container that writes megabytes
-    # with no newline at all - binary spew, a runaway single-line JSON dump -
-    # would otherwise grow the buffer without bound, and the buffer lives in
-    # the API's process: that is an OOM kill wearing a log line's clothes.
+    # A line still waiting for its newline is held in memory; past this many
+    # bytes it is emitted as if the newline had arrived, so a container writing
+    # without newlines cannot grow the buffer without bound.
     MAX_LINE_BYTES = 1024 * 1024
 
     def lines(self) -> Iterator[str]:
         """Yield complete log lines as the container writes them (blocking).
 
-        Chunks are reassembled here rather than trusted to arrive line-aligned:
-        the transfer is chunked by the API server at whatever boundary it likes,
-        so a single write can be split across chunks and several can share one.
+        The API server chunks the transfer at whatever boundary it likes, so a
+        single write can be split across chunks and several can share one:
+        chunks are reassembled here into whole lines.
 
         Yields:
             One log line at a time, newline stripped. A trailing partial line is
@@ -67,11 +65,9 @@ class LogFollow:
     def close(self) -> None:
         """End the stream, unblocking a thread waiting on it. Idempotent.
 
-        Both calls matter and neither replaces the other: ``close`` drops the
-        socket, which is what interrupts the pending read, and ``release_conn``
-        is what stops the pool holding a connection that will never be reused.
-        Failures are swallowed - this only ever runs while tearing a stream
-        down, where there is nothing left to report to.
+        ``close`` drops the socket, which interrupts the pending read;
+        ``release_conn`` stops the pool holding a connection that will never be
+        reused. Failures are swallowed; this runs only during teardown.
         """
         self._closed = True
         for end in (self._response.close, self._response.release_conn):
