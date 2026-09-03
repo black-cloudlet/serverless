@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 
 from cloudlet_apis.auth import Principal
 from pydantic import ValidationError as PydanticValidationError
 
-from api.models.common import (
-    PodLogSnapshot,
-    PodRoster,
-    WorkloadStatsResponse,
-    WorkloadSummary,
-)
 from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
 from api.services.builder.runtimes import RuntimeRegistry
 from api.services.offering import FUNCTION
+from api.services.offering_service import OfferingService
 from api.services.state import describe as describe_svc
-from api.services.streams.sse import StreamEvent
 from api.services.workloads import ApplyRequest, WorkloadService
 from api.services.workloads.service import run_background
 from common.build import BuildPlan, BuildRequest
@@ -26,36 +20,34 @@ from common.errors import ValidationError
 from common.labels import OFFERING_FUNCTION, workload_labels
 
 
-class FunctionService:
-    """Function-specific orchestration; delegates the shared work to WorkloadService."""
+class FunctionService(OfferingService):
+    """Function orchestration: the runtime check and the build, over the engine.
+
+    Create and update validate the runtime, plan the kpack build and hand the
+    engine an :class:`ApplyRequest` carrying the build objects; rebuild plans
+    the build alone from the stored inputs. Reads, streams and delete are
+    :class:`OfferingService`'s.
+    """
+
+    offering = FUNCTION
 
     def __init__(self, engine: WorkloadService, runtimes: RuntimeRegistry):
         """Initialize the service.
 
         Args:
             engine: The shared workload engine doing the cross-region work.
-            runtimes: The available-runtimes registry. Required rather than
-                defaulted: reaching for the process-wide registry here would
-                make the service depend on module state that only the DI layer
-                should own, and would put api.dependencies and this module in an
-                import cycle.
+            runtimes: The available-runtimes registry, supplied by the DI layer
+                (``api.dependencies.get_function_service``).
         """
-        self._engine = engine
+        super().__init__(engine)
         self._runtimes = runtimes
 
     def _assert_runtime(self, runtime: str, version: str | None = None) -> None:
         """Reject an unknown/unbuildable runtime or version (400, before the 202).
 
-        Checking that it maps to a Builder - not just that it exists - is what
-        turns a mounted-ConfigMap problem into an immediate, accurate 400. Left
-        to the build path it would surface minutes later as a failed background
-        deploy, which reads like a broken build rather than broken configuration.
-
-        The version is checked against the same ``versions`` list ``/info``
-        advertises, so what a client is offered and what a create accepts cannot
-        disagree. Airgapped that is not a formality: only the advertised versions
-        are mirrored, so an unlisted one has no toolchain to download and would
-        fail deep inside the build.
+        Checks that the runtime is in the mounted ConfigMap and that it maps to
+        a kpack Builder, and the version against the same ``versions`` list
+        ``/info`` advertises (docs/FUNCTIONS.md - Overview).
 
         Args:
             runtime: The requested runtime.
@@ -73,14 +65,13 @@ class FunctionService:
             )
         if not spec.builder:
             raise ValidationError(
-                f"runtime '{runtime}' is not buildable: it maps to no kpack Builder. "
+                f"runtime '{runtime}' is not buildable: it maps to no kpack ClusterBuilder. "
                 "The runtimes ConfigMap is missing or incomplete."
             )
         if version is None:
             return
-        # No versionEnv means there is no build variable to set, and an empty
-        # `versions` means the runtime pins its own - both are "not selectable",
-        # so accepting a version would silently ignore it.
+        # No versionEnv means there is no build variable to set; an empty
+        # `versions` means the runtime pins its own. Neither is selectable.
         if not spec.versionEnv or not spec.versions:
             raise ValidationError(
                 f"runtime '{runtime}' does not offer a choice of version; omit 'version'"
@@ -112,7 +103,7 @@ class FunctionService:
         return self._engine.builder.plan(req, labels, registries)
 
     # Validate synchronously for an immediate 400/404/409, then build and deploy
-    # in the background behind a 202 - a function build is slow.
+    # in the background behind a 202 (docs/ARCHITECTURE.md - Request semantics).
     def _echo(self, spec) -> dict:
         """Submitted config echoed back on the spec (secrets/gitToken never echoed)."""
         return dict(
@@ -192,9 +183,9 @@ class FunctionService:
         Every input comes back off the workload itself - the KSVC's annotations
         and the ``{workload}-git`` Secret - which is the same reconstruction a
         region that has never built the function does after a switchover
-        (docs/BUILDING.md - Reconstruction after switchover). Nothing is taken
-        from the request: a rebuild asks for the *current* definition to be built
-        again, so accepting inputs here would make it an update in disguise.
+        (docs/BUILDING.md - Reconstruction after a gap). Nothing is taken
+        from the request (docs/FUNCTIONS.md - Building again without changing
+        anything).
 
         Args:
             name: The workload name.
@@ -228,10 +219,8 @@ class FunctionService:
                 "cannot rebuild: no git token is stored for this function; "
                 "send one with a PUT instead"
             )
-        # The only path that builds a BuildRequest out of stored state rather than
-        # a validated request body, so it is the only one where the dataclass's own
-        # validation can fail. Untranslated that is a 500 for a hand-edited
-        # annotation, or for a rule tightened since the function was created.
+        # Built from stored state rather than from a validated request body, so
+        # the model's own validation can fail here; it is translated into a 400.
         try:
             return BuildRequest(
                 name=name,
@@ -257,8 +246,8 @@ class FunctionService:
         """Validate and accept a rebuild request, scheduling the build (202).
 
         Loads and authorizes the function synchronously, so a missing workload,
-        a missing token or a runtime that has since left the ConfigMap is an
-        immediate 404/400 rather than a background failure nobody sees.
+        a missing token or a runtime no longer in the ConfigMap is an immediate
+        404/400 (docs/FUNCTIONS.md - Building again without changing anything).
 
         Args:
             group: The owning group (from the request path).
@@ -276,7 +265,7 @@ class FunctionService:
         existing = await self._engine.load_existing(name, FUNCTION, user, group)
         req = self._build_request(name, group, existing, user)
         # A runtime can be removed from the ConfigMap after a function was built
-        # with it; that is a 400 now, not a build that fails minutes later.
+        # with it; that is a 400 here, before the 202.
         self._assert_runtime(req.runtime, req.version)
         background.add_task(run_background, self.build, group, name, user, existing)
         host = existing.get("host") or self._engine.host_for(name, None, group)
@@ -334,7 +323,8 @@ class FunctionService:
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
         """
-        # A region builds what it runs, so the plan covers exactly the targets.
+        # A region builds what it runs, so the plan covers exactly the targets
+        # (docs/BUILDING.md - A region builds what it runs).
         registries = self._engine.target_registries(spec.regions)
         plan = self._plan(
             BuildRequest(
@@ -352,9 +342,8 @@ class FunctionService:
             registries,
         )
 
-        # No absence probe here: apply_workload runs one combined host+absence pass
-        # over the same targets immediately before it mutates, which is both a
-        # stronger guard (nothing happens in between) and one fewer cross-region trip.
+        # No absence probe here: apply_workload runs one combined host+absence
+        # pass over the same targets immediately before it mutates.
         body, code = await self._engine.apply_workload(
             ApplyRequest(
                 name=spec.name,
@@ -390,6 +379,79 @@ class FunctionService:
         )
         return body, code
 
+    @staticmethod
+    def _assert_rebuildable(spec: FunctionUpdate, existing: dict, token: str | None) -> None:
+        """Refuse an update that changes a build input with no token to build it.
+
+        This only refuses an untokenised rebuild; what rebuilds is kpack's own
+        diff of the Image spec. ``version`` counts as a build input like
+        ``branch`` and ``runtime``: it is replaced, not kept, so omitting it
+        returns the function to the platform default and that is a change
+        (docs/ARCHITECTURE.md - Request semantics).
+
+        Args:
+            spec: The update request.
+            existing: The stored state the request replaces.
+            token: The token the rebuild would use - the request's, else the
+                stored one - or None when there is neither.
+
+        Raises:
+            ValidationError: If a build input changed and there is no token.
+        """
+        changed = (
+            spec.gitRepo != existing.get("gitUrl")
+            or spec.branch != existing.get("branch")
+            or spec.path != (existing.get("path") or "")
+            or spec.runtime != existing.get("runtime")
+            or spec.version != existing.get("version")
+        )
+        if changed and token is None:
+            raise ValidationError(
+                "a git token is required to rebuild; none was supplied and none is stored"
+            )
+
+    def _plan_update(
+        self,
+        name: str,
+        group: str,
+        spec: FunctionUpdate,
+        token: str,
+        user: Principal,
+        registries: Mapping[str, RegistryConfig],
+    ) -> BuildPlan:
+        """Declare the build an update's inputs describe, in every region.
+
+        Emitted on EVERY update that has a token. Re-applying an unchanged spec
+        is a no-op kpack does not rebuild from, but it recreates a missing
+        Image after a switchover.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+            spec: The update request, carrying the build inputs.
+            token: The git token to build with.
+            user: The authenticated caller, stamped as the build's owner.
+            registries: The registry each region builds into.
+
+        Returns:
+            The build plan.
+        """
+        return self._plan(
+            BuildRequest(
+                name=name,
+                group=group,
+                git_url=spec.gitRepo,
+                branch=spec.branch,
+                path=spec.path,
+                git_token=token,
+                runtime=spec.runtime,
+                version=spec.version,
+                owner=user.username,
+            ),
+            user,
+            registries,
+        )
+
     async def update(
         self,
         group: str,
@@ -424,73 +486,30 @@ class FunctionService:
 
         # Full replace, so the build inputs are the request's. The token is the
         # redacted keep: the stored one is reused unless the client sent a new one.
-        runtime = spec.runtime
-        version = spec.version
-        git_url = spec.gitRepo
-        branch = spec.branch
-        path = spec.path
-        stored_token = existing.get("git_token")
-        token = spec.gitToken or stored_token
+        token = spec.gitToken or existing.get("git_token")
+        self._assert_rebuildable(spec, existing, token)
 
-        # Only to refuse an untokenised rebuild; what rebuilds is kpack's own
-        # diff of the Image spec, not this.
-        build_inputs_changed = (
-            git_url != existing.get("gitUrl")
-            or branch != existing.get("branch")
-            or path != (existing.get("path") or "")
-            or runtime != existing.get("runtime")
-            # A version change is a build input like any other. Omitting it returns
-            # the function to the platform default, which is also a rebuild - the
-            # field is replaced, not kept, like branch and runtime.
-            or version != existing.get("version")
-        )
-        if build_inputs_changed and token is None:
-            raise ValidationError(
-                "a git token is required to rebuild; none was supplied and none is stored"
-            )
-
-        # Never rewritten here, whatever changed. After the create, the image is
-        # the controller's alone (docs/BUILDING.md - Digest propagation): the
-        # build this update declares has not pushed yet, so anything written now
-        # is a revision of the code already running. Per region, because each runs
-        # what its own build pushed - one value would move a peer onto this
-        # region's registry.
-        image = existing["image"]
+        # The image is never rewritten here, whatever changed. After the create,
+        # it is the controller's alone (docs/BUILDING.md - Digest propagation):
+        # the build this update declares has not pushed yet, so anything written
+        # now is a revision of the code already running. Kept per region, since
+        # each region runs what its own build pushed.
         images = dict(existing.get("images") or {})
         registries = self._engine.target_registries(None)
-        replicated: list[dict] = []
-        region_resources: dict[str, list[dict]] = {}
+        plan = None
         if token is not None:
-            # Emitted on EVERY update. Re-applying an unchanged spec is a no-op kpack does
-            # not rebuild from, but it recreates a missing Image after a switchover.
-            plan = self._plan(
-                BuildRequest(
-                    name=name,
-                    group=group,
-                    git_url=git_url,
-                    branch=branch,
-                    path=path,
-                    git_token=token,
-                    runtime=runtime,
-                    version=version,
-                    owner=user.username,
-                ),
-                user,
-                registries,
-            )
-            replicated = plan.replicated
-            region_resources = plan.manifests_by_region
+            plan = self._plan_update(name, group, spec, token, user, registries)
             # A region not running it yet deploys at its own tag and reads
             # Building until its first build lands, exactly as a create does.
             for region, tag in plan.tags.items():
                 images.setdefault(region, tag)
 
-        body, code = await self._engine.apply_workload(
+        return await self._engine.apply_workload(
             ApplyRequest(
                 name=name,
                 user=user,
                 group=group,
-                image=image,
+                image=existing["image"],
                 images=images,
                 env=spec.env,
                 files=spec.files,
@@ -505,186 +524,16 @@ class FunctionService:
                 pull_secret_name=self._engine.builder.pull_secret,
                 created=False,
                 # stamp the (possibly updated) build metadata; never the token
-                runtime=runtime,
-                version=version,
-                git_url=git_url,
-                branch=branch,
-                path=path,
+                runtime=spec.runtime,
+                version=spec.version,
+                git_url=spec.gitRepo,
+                branch=spec.branch,
+                path=spec.path,
                 prev_host=existing.get("host"),
                 kept_env=existing.get("env_values"),
                 kept_files=existing.get("files_values"),
-                extra_secrets=replicated,
-                region_resources=region_resources,
+                extra_secrets=plan.replicated if plan else [],
+                region_resources=plan.manifests_by_region if plan else {},
             ),
             FUNCTION,
         )
-        return body, code
-
-    async def get(self, name: str, group: str, user: Principal) -> FunctionResponse:
-        """Get one function with live per-region status.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The full single-function response.
-        """
-        return await self._engine.get(FUNCTION, name, user, group)
-
-    async def stats(self, name: str, group: str, user: Principal) -> WorkloadStatsResponse:
-        """Read the function's live state (the poll view).
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The rollup plus per-region replicas and usage.
-        """
-        return await self._engine.stats(FUNCTION, name, user, group)
-
-    async def pods(self, name: str, group: str, user: Principal) -> PodRoster:
-        """The function's pods on the current region, read once.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-
-        Returns:
-            The roster.
-        """
-        return await self._engine.pods(FUNCTION, name, user, group)
-
-    async def pod_logs(
-        self,
-        name: str,
-        group: str,
-        user: Principal,
-        *,
-        pod: str,
-        container: str,
-        since_seconds: int | None,
-        limit_bytes: int | None,
-        tail_lines: int | None = None,
-    ) -> PodLogSnapshot:
-        """One of the function's pods' logs as it stands, read once.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            pod: The pod to read.
-            container: The pod container to read.
-            since_seconds: Only lines newer than this, if set.
-            limit_bytes: Cap on the bytes read, if set.
-            tail_lines: Newest lines wanted, if set; clamped to the snapshot bound.
-
-        Returns:
-            The snapshot.
-        """
-        return await self._engine.pod_logs(
-            FUNCTION,
-            name,
-            user,
-            group,
-            pod=pod,
-            container=container,
-            since_seconds=since_seconds,
-            limit_bytes=limit_bytes,
-            tail_lines=tail_lines,
-        )
-
-    async def stream_pods(
-        self, name: str, group: str, user: Principal, *, interval: float | None
-    ) -> AsyncIterator[StreamEvent]:
-        """Stream which pods the function has on the current region.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            interval: Seconds between listings; None takes the default.
-
-        Returns:
-            The event stream.
-        """
-        return await self._engine.stream_pods(FUNCTION, name, user, group, interval=interval)
-
-    async def stream_pod_logs(
-        self,
-        name: str,
-        group: str,
-        user: Principal,
-        *,
-        pod: str,
-        container: str,
-        since_seconds: int | None,
-        tail_lines: int | None = None,
-    ) -> AsyncIterator[StreamEvent]:
-        """Follow one of the function's pods' logs, on the current region.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            pod: The pod to follow.
-            container: The pod container to read.
-            since_seconds: How far back the log starts, if set.
-            tail_lines: Start at the newest this-many lines instead, if set.
-
-        Returns:
-            The event stream.
-        """
-        return await self._engine.stream_pod_logs(
-            FUNCTION,
-            name,
-            user,
-            group,
-            pod=pod,
-            container=container,
-            since_seconds=since_seconds,
-            tail_lines=tail_lines,
-        )
-
-    async def stream_stats(
-        self, name: str, group: str, user: Principal, *, interval: float | None
-    ) -> AsyncIterator[StreamEvent]:
-        """Push the function's live state on an interval.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-            interval: Seconds between readings; None takes the default.
-
-        Returns:
-            The event stream.
-        """
-        return await self._engine.stream_stats(FUNCTION, name, user, group, interval=interval)
-
-    async def list(self, group: str, user: Principal, sort: str = "name") -> list[WorkloadSummary]:
-        """List the group's functions.
-
-        Args:
-            group: The owning group.
-            user: The authenticated caller.
-            sort: Sort key, "name" or "createdAt".
-
-        Returns:
-            The per-workload summaries.
-        """
-        return await self._engine.list(FUNCTION, user, group, sort)
-
-    async def delete(self, name: str, group: str, user: Principal) -> None:
-        """Delete a function and its derived resources.
-
-        Args:
-            name: The workload name.
-            group: The owning group.
-            user: The authenticated caller.
-        """
-        await self._engine.delete(FUNCTION, name, user, group)
