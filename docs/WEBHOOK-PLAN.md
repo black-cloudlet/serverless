@@ -9,6 +9,7 @@
 - [Is it possible?](#is-it-possible)
 - [Design decisions](#design-decisions)
 - [What a push does](#what-a-push-does)
+- [Active/active: one delivery, two builds](#activeactive-one-delivery-two-builds)
 - [How `/build` works once a function is pinned](#how-build-works-once-a-function-is-pinned)
 - [API surface](#api-surface)
 - [Storage](#storage)
@@ -79,6 +80,39 @@ Everything from "reconstruct" on is the existing rebuild path with two differenc
 revision is the SHA, and there is no trigger. A region the function does not run in is
 skipped, as today.
 
+## Active/active: one delivery, two builds
+
+Yes - the image exists in every region, but as **two independent builds, not a copy**. A
+region builds what it runs, in its own cluster, into its own registry (BUILDING.md - A
+region builds what it runs), and one region per registry is enforced twice: the chart
+refuses to render two regions on one registry, and the build controller refuses to sweep
+when it detects one (BUILD-CONTROLLER.md - Registry tag GC). So a push produces:
+
+| | region-a | region-b |
+|---|---|---|
+| `Image` | `spec.revision = 9f2c1ab`, `spec.tag = regA/team/hello:main` | `spec.revision = 9f2c1ab`, `spec.tag = regB/team/hello:main` |
+| Build | its own, in its own cluster | its own, in its own cluster |
+| Digest | `sha256:aaa…` | `sha256:bbb…` - **different**; builds are not bit-reproducible (BUILDING.md - Accepted consequences) |
+| Rolled onto the KSVC by | that region's build controller | that region's build controller |
+
+The webhook changes nothing about this. GitLab delivers **once**, to the shared host; DNS
+routes it to whichever region is active; that API instance fans the apply out to every
+region the function runs in, exactly as `POST .../build` already does through
+`WorkloadService.apply_build` (a region without the KSVC is skipped, as today). A GitLab
+retry that lands on the other region applies the same spec and builds nothing - rule 4.
+
+**This is where the pin earns its keep a second time.** Without it, each region's kpack
+`SourceResolver` re-resolves `main` on its own schedule. Two pushes in quick succession
+can leave region-a resolving commit 1 and region-b commit 2, and the two regions then serve
+*different source* until something rebuilds them - a divergence nothing in the platform
+reports, because the per-region digests are expected to differ anyway. Pinning the pushed
+SHA closes that: both regions are handed the same commit, so they converge on source even
+though they will never converge on bytes.
+
+What stays as it is today: a build can succeed in one region and fail in the other, which
+reads as `Failed`/`BuildFailed` beside `Building` on the same `statusUrl` the 202 hands
+back. The webhook needs no partial-failure story of its own.
+
 ## How `/build` works once a function is pinned
 
 The webhook changes the Image's **revision**, never its **tag** - the tag follows the
@@ -90,7 +124,7 @@ alone:
 |----------------|------------------------------------|-----------|-------|--------|
 | Never pushed (no pin) | `revision = branch` | no-op | `TRIGGER` on the latest `Build` | A build of the branch head - today's behaviour, unchanged. |
 | Pinned at `9f2c1ab` by a push | `revision = 9f2c1ab` | no-op (the Image already says so) | `TRIGGER` on the latest `Build` | A build of **`9f2c1ab`** against today's base image and buildpacks. |
-| Pinned, and the region has no `Image` (post-switchover) | `revision = 9f2c1ab` | **creates** the Image | builds on its own; nothing to trigger | The reconstruction gap closes at the pinned commit, not at the branch head. |
+| Pinned, and the region has no `Image` (post-switchover) | `revision = 9f2c1ab` | **creates** the Image | builds on its own; nothing to trigger | The reconstruction gap closes at the pinned commit, not at the branch head - so a region rejoining does not silently come back on newer source than its peer. |
 
 So the endpoint keeps its one meaning - *build the current definition again, against today's
 dependencies* - and the pin only sharpens what "current definition" refers to. This is also
