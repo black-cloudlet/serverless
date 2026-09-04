@@ -618,6 +618,66 @@ build:
             - { id: paketo-buildpacks/environment-variables, optional: true }
             - { id: paketo-buildpacks/image-labels, optional: true }
 
+# Backups of what a tenant namespace holds, through Trident Protect
+# (docs/TENANT-CONTROLLER.md - Backups). The parts ride the tenant template set,
+# so an existing namespace picks them up on the next reconcile pass.
+#
+# OFF by default: it needs two things this chart cannot provide - the Trident
+# Protect CRDs on the cluster, and an AppVault declared on it. Where Trident
+# Protect IS installed, turn it on and name the AppVault.
+backup:
+  enabled: false
+
+  appVault:
+    # The AppVault the copies are written to, by name. Declared once per cluster
+    # in the `trident-protect` namespace (it holds the object store's
+    # credentials); this chart never creates one.
+    #
+    # It reaches the tenant namespace VERBATIM, so a shared AppVault is just its
+    # name. For a bucket per region, write the tenant controller's own region
+    # token - it resolves against whichever cluster is being converged, and the
+    # template set stays byte-identical in both regions:
+    #
+    #   name: serverless-{{region}}
+    #
+    # `{{ .Values.global.region }}` is NOT the way to write that: values.yaml is
+    # not rendered as a template, and the chart refuses a name carrying anything
+    # but the region token rather than let the braces reach a Schedule.
+    name: ""
+
+  # Restic or Kopia, Trident Protect's two backup engines; a schedule may
+  # override it.
+  dataMover: Kopia
+
+  # Snapshots kept behind each backup, unless a schedule overrides it. Zero
+  # deliberately: a snapshot needs a CSI driver with snapshot support under every
+  # volume in the namespace, while the backup is the copy that leaves the cluster.
+  snapshotRetention: "0"
+
+  # One Schedule per entry, named `{namespace}-{region}-{name}`; retention is per
+  # schedule, so the hourly copies expire without touching the weekly one.
+  #
+  # `granularity` decides which time fields the entry must carry - Hourly needs
+  # `minute`, Daily adds `hour`, Weekly adds `dayOfWeek` (0 is Sunday), Monthly
+  # adds `dayOfMonth`. The chart refuses to render an entry missing one, or one
+  # with no `backupRetention`. Retentions are quoted: the CRD's fields are strings.
+  schedules:
+    - name: hourly
+      granularity: Hourly
+      minute: "0"
+      backupRetention: "2"
+    - name: daily
+      granularity: Daily
+      hour: "0"
+      minute: "0"
+      backupRetention: "2"
+    - name: weekly
+      granularity: Weekly
+      dayOfWeek: "0"
+      hour: "0"
+      minute: "0"
+      backupRetention: "1"
+
 # A region is one deployment location; its cluster's API server is DERIVED as
 # https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
 # Identical in every cluster - an instance composes the peer's manifests from it,

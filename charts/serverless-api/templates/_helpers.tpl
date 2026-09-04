@@ -283,6 +283,61 @@ chart that cannot see the cluster. */}}
 {{- end -}}
 {{- end -}}
 
+{{/* Fail fast on backup config that would render a Schedule Trident Protect
+refuses. It reports a bad one on the Schedule's own status, in a namespace
+nobody is watching, so the first anyone would hear of it is a restore that has
+nothing to restore from. */}}
+{{- define "serverless-api.validateBackup" -}}
+{{- if .Values.backup.enabled -}}
+{{- if not .Values.backup.appVault.name -}}
+{{- fail "serverless-api: backup.appVault.name is required when backup.enabled - a Schedule with no AppVault has nowhere to write its copies. It names an AppVault the storage administrator declares on the cluster; this chart never creates one." -}}
+{{- end -}}
+{{/* The name reaches the tenant namespace verbatim, so the ONLY templating it
+may carry is the tenant controller's own region token. Anything else - a Helm
+expression, which values.yaml is not rendered through - would land in the
+Schedule as literal braces and be reported nowhere this release can see. */}}
+{{- $token := include "serverless-api.tenantRegionToken" . -}}
+{{- if contains "{{" (replace $token "" .Values.backup.appVault.name) -}}
+{{- fail (printf "serverless-api: backup.appVault.name %q may only carry %s, which the tenant controller resolves per cluster; values.yaml is not a template, so anything else reaches the Schedule as literal text." .Values.backup.appVault.name $token) -}}
+{{- end -}}
+{{- if not .Values.backup.schedules -}}
+{{- fail "serverless-api: backup.enabled with no backup.schedules would declare the application and never back it up. Set backup.enabled=false, or give it at least one schedule." -}}
+{{- end -}}
+{{/* Which time fields each granularity requires; without them it never fires. */}}
+{{- $required := dict "Hourly" (list "minute") "Daily" (list "minute" "hour") "Weekly" (list "minute" "hour" "dayOfWeek") "Monthly" (list "minute" "hour" "dayOfMonth") -}}
+{{- $seen := list -}}
+{{- range .Values.backup.schedules -}}
+{{- $schedule := . -}}
+{{- if not $schedule.name -}}
+{{- fail "serverless-api: every backup.schedules entry needs a `name`; it is the suffix of the Schedule object's own name." -}}
+{{- end -}}
+{{- if has $schedule.name $seen -}}
+{{- fail (printf "serverless-api: two backup.schedules entries are named %q; they would render one Schedule, and the second would overwrite the first." $schedule.name) -}}
+{{- end -}}
+{{- $seen = append $seen $schedule.name -}}
+{{- $granularity := $schedule.granularity | toString -}}
+{{- if not (hasKey $required $granularity) -}}
+{{- fail (printf "serverless-api: backup schedule %q has granularity %q; Trident Protect takes one of %s." $schedule.name $granularity (join ", " (keys $required | sortAlpha))) -}}
+{{- end -}}
+{{/* Set, not merely present: `minute: ""` is how NetApp's own examples write a
+field a granularity does not use, and it would render a Schedule with no time to
+fire at. `dig`'s default covers the absent case, `not` the empty one, and both
+leave a legitimate "0" or 0 alone. */}}
+{{- range $field := index $required $granularity -}}
+{{- if not (dig $field "" $schedule | toString) -}}
+{{- fail (printf "serverless-api: backup schedule %q is %s, so it needs `%s` set; without it the Schedule has no time to run at." $schedule.name $granularity $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (dig "backupRetention" "" $schedule | toString) -}}
+{{- fail (printf "serverless-api: backup schedule %q has no `backupRetention`; how many copies to keep is the one thing a schedule cannot default." $schedule.name) -}}
+{{- end -}}
+{{- if not (dig "snapshotRetention" $.Values.backup.snapshotRetention $schedule | toString) -}}
+{{- fail (printf "serverless-api: backup schedule %q resolves `snapshotRetention` to nothing; set it on the schedule, or set backup.snapshotRetention (\"0\" keeps no snapshot)." $schedule.name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 The tenant controller's object name and selector labels, on the same reasoning as the
 build controller's: a distinct ``app.kubernetes.io/name`` keeps the API's

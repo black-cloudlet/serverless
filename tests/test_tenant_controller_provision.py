@@ -87,6 +87,9 @@ class _Cluster:
         self.applied.append((manifest, namespace))
         return [manifest]
 
+    def serves(self, kind):
+        return True  # every kind of the vocabulary exists on this fake
+
     def get(self, kind, name=None, label_selector=None, *, namespace):
         if name is None:
             return []  # nothing left over, so the prune deletes nothing

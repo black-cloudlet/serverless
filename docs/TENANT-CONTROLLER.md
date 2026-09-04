@@ -2,10 +2,10 @@
 
 The tenant controller owns tenant namespaces: one per SSO group, in both clusters, holding
 everything a workload needs before it is deployed - network policy, RBAC, the CA bundle, the
-build prerequisites. This document covers the namespace model, the template set it renders,
-the provision call the API makes before every deploy, the reconcile loop, and the namespace
-GC. The rules for who may act for a group are in API.md: Group-based authorization
-(tenancy).
+build prerequisites, and the backup schedules that keep a copy of it. This document covers
+the namespace model, the template set it renders, the provision call the API makes before
+every deploy, the reconcile loop, backups, and the namespace GC. The rules for who may act
+for a group are in API.md: Group-based authorization (tenancy).
 
 ## Contents
 
@@ -15,6 +15,7 @@ GC. The rules for who may act for a group are in API.md: Group-based authorizati
 - [The provision call](#the-provision-call)
 - [The reconcile loop](#the-reconcile-loop)
 - [Converging a namespace](#converging-a-namespace)
+- [Backups](#backups)
 - [Namespace GC](#namespace-gc)
 - [When it goes wrong](#when-it-goes-wrong)
 
@@ -54,10 +55,11 @@ the cluster clients would close under an in-flight converge.
 **What lands in a tenant namespace comes from the tenant template set**: ConfigMaps the
 chart renders as final YAML, mounted into the controller and applied per namespace. Today
 the set carries the CA-bundle ConfigMap, the default-deny NetworkPolicies (ARCHITECTURE.md:
-Networking & Exposure), the API's RoleBinding, and the build prerequisites (SCC RoleBinding,
-registry credentials). It writes the `ExternalSecret`; ESO fills the Secret it names, which
-is how a namespace gets the region's registry credential (ARCHITECTURE.md: Secrets
-Management).
+Networking & Exposure), the API's RoleBinding, the build prerequisites (SCC RoleBinding,
+registry credentials), and - where it is enabled - the namespace's Trident Protect
+Application and Schedules (Backups, below). It writes the `ExternalSecret`; ESO fills the
+Secret it names, which is how a namespace gets the region's registry credential
+(ARCHITECTURE.md: Secrets Management).
 
 The operator's day-2 workflow stays *edit values → Argo sync*: the set's hash is stamped on
 each namespace, and a hash mismatch triggers a re-apply.
@@ -67,7 +69,7 @@ each namespace, and a hash mismatch triggers a re-apply.
 | Mount | `templatesDir`, default `/etc/serverless/tenant-templates`. Whole-ConfigMap, **never `subPath`** - a subPath mount is not refreshed, and the refresh is how a `helm upgrade` reaches the loop |
 | Hash | SHA-256 over `(filename, text)` pairs sorted by filename, first 16 hex chars. Over the raw text, so it names the set itself, whatever the group |
 | Placeholders | `{{namespace}}`, `{{group}}`, `{{region}}`, `{{registry}}` - the runtime facts Helm cannot know. Any other `{{token}}` of that shape fails at load; braces that are not that shape (a Go template in a ConfigMap payload) pass through |
-| Kinds | `NetworkPolicy`, `ConfigMap`, `RoleBinding`, `Secret`, `ServiceAccount`, `ExternalSecret`, plus `Namespace`. The render gate and the prune iterate the same tuple, so a set can never create what the prune cannot collect |
+| Kinds | `NetworkPolicy`, `ConfigMap`, `RoleBinding`, `Secret`, `ServiceAccount`, `ExternalSecret`, Trident Protect's `Application` and `Schedule`, plus `Namespace`. The render gate and the prune iterate the same tuple, so a set can never create what the prune cannot collect. A kind whose CRD the cluster does not serve is skipped by the prune rather than listed - an uninstalled optional add-on must not fail every converge |
 | Validation | Read, validated and parsed **once, at load**. Each placeholder becomes a YAML-safe sentinel *before* parsing, so `name: {{namespace}}` may be unquoted; rendering is then a walk over the parsed docs. A bad set fails into the loop's backoff before any namespace is touched, naming the file |
 
 **An empty set, or one that renders only a `Namespace`, is refused everywhere it could
@@ -204,7 +206,10 @@ because the prune and the GC select on them.
 The **prune** deletes controller-labeled objects of the prunable kinds that the current
 render did not produce. The API's workload Secrets and a tenant's own objects are invisible
 to it. The listing is per namespace and read at prune time, so it covers objects another
-writer created earlier in the same pass.
+writer created earlier in the same pass. A kind the cluster's apiserver does not serve is
+skipped: part of the vocabulary is an optional add-on, and listing an uninstalled CRD is a
+404 on the resource itself rather than an empty list, which would fail every converge on
+every cluster that does not run it.
 
 The provision path adds two duties the loop's converge must not have. A namespace being
 **deleted** fails rather than passing: its stamp is still readable, but nothing can be
@@ -212,6 +217,78 @@ created in it, and reporting `Ready` would break the fail-closed contract. And t
 `empty-since` stamp is **cleared**, because the caller is about to deploy and a clock left
 running would let the sweep delete the namespace under an accepted deploy. The loop must not
 clear it, or the GC could never collect.
+
+## Backups
+
+A tenant namespace is the only copy of what a group has deployed: its Knative Services,
+their config and git Secrets, the RoleBindings, the build prerequisites. Nothing else in the
+platform keeps a copy - the namespace GC deleting one cascades everything inside it
+(Namespace GC, below), and so does a `kubectl delete ns` typed into the wrong terminal.
+**Backups are how that stops being unrecoverable**, through Trident Protect, the same
+component the rest of the platform's applications are backed up with.
+
+The parts ride the tenant template set like everything else, so an existing namespace picks
+them up on the next reconcile pass - there is no separate rollout, and no namespace can be
+left out of one.
+
+| Object | One per | Name |
+|---|---|---|
+| `Application` (`protect.trident.netapp.io/v1`) | tenant namespace, per region | `{namespace}-{region}` |
+| `Schedule` | schedule entry, per namespace, per region | `{namespace}-{region}-{schedule}` |
+
+**The application is the namespace**, declared with an empty `labelSelector` - the whole
+namespace is the unit being protected, and selecting by label would silently drop whatever
+a later release adds without that label. Its name carries the region because the same
+namespace exists in both clusters and is backed up in both: without it the two copies share
+one name wherever they are listed together, which is a shared AppVault bucket or a restore.
+The region arrives as the set's `{{region}}` placeholder, so the set itself stays
+byte-identical in both regions.
+
+The default ladder is three schedules, and retention is per schedule, so the hourly copies
+expire without touching the weekly one:
+
+| Schedule | Granularity | Kept | For |
+|---|---|---|---|
+| `hourly` | Hourly, on the hour | 2 | the mistake noticed immediately |
+| `daily` | Daily, at midnight | 2 | the one noticed the next morning |
+| `weekly` | Weekly, Sunday midnight | 1 | the one noticed late |
+
+`snapshotRetention` is `0` by default: a snapshot is a storage-level copy that needs a CSI
+driver with snapshot support under every volume in the namespace, while the backup is the
+copy that leaves the cluster - and the copy this exists for. `backup.dataMover` picks the
+engine (Kopia by default, or Restic), per schedule or for all of them.
+
+**Off by default, because the chart cannot supply either prerequisite**: Trident Protect's
+CRDs installed on the cluster, and an `AppVault` holding the object store's credentials.
+The AppVault is the storage administrator's to declare, once per cluster in the
+`trident-protect` namespace, and this chart never creates one - a tenant namespace only
+references it by name. Turning backups on without naming one fails the release rather than
+rendering Schedules that write nowhere; so does a schedule missing the time fields its
+granularity requires (Hourly needs `minute`, Daily adds `hour`, Weekly adds `dayOfWeek`,
+Monthly adds `dayOfMonth`), because Trident Protect reports that on the Schedule's own
+status in a namespace nobody is watching.
+
+`backup.appVault.name` reaches the tenant namespace **verbatim**, so a shared AppVault is
+just its name. For a bucket per region, write the `{{region}}` placeholder into it
+(`serverless-{{region}}`) and the controller resolves it against whichever cluster it is
+writing to. The build part's Vault paths get the same effect by substitution, from values
+built out of `.Values.global.region` a few lines away; a name an operator writes freely
+cannot be treated that way, because a shared name that merely happened to contain the
+region word would quietly become per-region and the two regions' sets would stop matching.
+A name carrying anything else in braces fails the release - values.yaml is not rendered as
+a template, so `{{ .Values.global.region }}` would reach the Schedule as literal text.
+
+Turning backups **off** removes the part from the set, and the prune collects the
+`Application` and the `Schedule`s out of every tenant namespace on the next pass - they
+carry no owner reference, and the namespace outlives the switch. That is also why the
+tenant controller's ClusterRole grants those two kinds whether or not backups are enabled:
+a grant that came and went with the switch would fail exactly the pass that has to clean
+up. Where Trident Protect is not installed at all, the rules name resources nothing serves,
+which is inert, and the prune skips a kind the cluster does not serve.
+
+Restores are not automated here and deliberately so: a `BackupRestore` writes into a live
+namespace, and choosing which backup and what to keep is an operator decision, not a
+reconcile loop's. `tridentctl protect` and the CRs are the interface.
 
 ## Namespace GC
 
@@ -257,3 +334,6 @@ read with the template-hash annotation, answers "has the new policy reached ever
 | A namespace's hash stays stale | Its converge is failing; the pass logs it and continues | Read the named exception; a managed namespace with no group label is skipped as failed until it is labelled |
 | A namespace is `Terminating` and provisions fail | A delete is still in flight | Retry once it is gone |
 | A namespace vanished | Namespace GC collected it after the grace period | The next deploy re-provisions it; annotate `serverless.platform/keep` to hold one |
+| Every converge fails naming `Application` or `Schedule` | `backup.enabled` on a cluster with no Trident Protect CRDs - the applies have nothing to write to (the prune tolerates a missing CRD; an apply cannot) | Install Trident Protect, or set `backup.enabled: false` |
+| Namespaces converge, but no backup ever runs | The `Schedule`s were applied and Trident Protect refused them - usually an `appVaultRef` naming an AppVault that does not exist on that cluster | `kubectl get schedule -n {group}-serverless -o yaml` and read the status; check the AppVault name per region |
+| A schedule stops running after a restore | Trident Protect disables an application's schedules for an in-place restore. The set never declares `spec.enabled`, so the converge leaves that alone rather than switching them back on underneath it | Re-enable them when the restore is done |

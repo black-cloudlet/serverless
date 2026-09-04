@@ -57,6 +57,27 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   provision with a 4xx surfaces as `PROVISIONING_REJECTED` (config mismatch
   between the two ends), no longer as a retryable 503.
 
+### Added (tenant namespace backups)
+
+- **Tenant namespaces are backed up by Trident Protect.** The tenant template
+  set carries a `protect.trident.netapp.io/v1` `Application` per namespace per
+  region, named `{namespace}-{region}` and covering the whole namespace, plus
+  one `Schedule` per `backup.schedules` entry - by default hourly (keep 2),
+  daily (keep 2) and weekly (keep 1). Riding the template set means an existing
+  namespace picks them up on the next reconcile pass, and the prune collects
+  them again if backups are turned off. Off by default (`backup.enabled`),
+  because it needs Trident Protect's CRDs on the cluster and an `AppVault` the
+  storage administrator declares; the chart never creates one and refuses to
+  render a release that enables backups without naming it, or a schedule whose
+  granularity leaves a time field unset. `backup.appVault.name` reaches the
+  namespace verbatim and takes the set's own `{{region}}` placeholder for a
+  bucket per region, so both regions still render one byte-identical set.
+- The tenant controller's prune now **skips a kind the cluster's apiserver does
+  not serve** instead of listing it. The template vocabulary now includes an
+  optional add-on's CRDs, and listing an uninstalled CRD is a 404 on the
+  resource itself, which would have failed every converge on every cluster
+  without Trident Protect installed.
+
 ### Added (namespace GC)
 
 - **Empty tenant namespaces are collected, slowly and loudly.** The tenant
