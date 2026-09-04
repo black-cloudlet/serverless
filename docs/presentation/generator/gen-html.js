@@ -11,7 +11,7 @@ function graphSvg(v) {
   <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs>`;
   v.edges.forEach((e, i) => {
     const p = anchors(byId[e.from], byId[e.to]);
-    out += `<line class="edge build-auto" style="--d:${(i + v.nodes.length) * 70}ms" x1="${p.x1}" y1="${p.y1}" x2="${p.x2}" y2="${p.y2}" ${e.dashed ? 'stroke-dasharray="6 6"' : ""} marker-end="url(#ah)"/>`;
+    out += `<line class="edge build-auto${e.dashed ? "" : " draw"}" style="--d:${(i + v.nodes.length) * 70}ms" x1="${p.x1}" y1="${p.y1}" x2="${p.x2}" y2="${p.y2}" ${e.dashed ? 'stroke-dasharray="6 6"' : 'pathLength="1"'} marker-end="url(#ah)"/>`;
   });
   v.nodes.forEach((n, i) => {
     const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
@@ -30,7 +30,7 @@ function visual(v) {
     case "graph": return graphSvg(v);
     case "stack": return `<div class="stack">${v.layers.map(([t, s, tone], i) => `<div class="layer ${tone || ""} build-auto" style="--d:${i * 80}ms"><b>${esc(t)}</b><span>${esc(s)}</span></div>`).join("")}</div>`;
     case "table": return `<table class="cmp build-auto"><thead><tr>${v.head.map((h, i) => `<th class="${i === 2 ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r) => `<tr>${r.map((c, i) => `<td class="${i === 0 ? "k" : i === 2 ? "acc" : ""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
-    case "stats": return `<div class="stats">${v.items.map(([b, s], i) => `<div class="stat build-auto" style="--d:${i * 90}ms"><div class="big">${esc(b)}</div><div class="sm">${esc(s)}</div></div>`).join("")}</div>`;
+    case "stats": return `<div class="stats">${v.items.map(([b, s], i) => `<div class="stat build-auto" style="--d:${i * 90}ms"><div class="big" data-n="${esc(b)}">${esc(b)}</div><div class="sm">${esc(s)}</div></div>`).join("")}</div>`;
     case "code": return `<pre class="code build-auto">${v.lines.map(([t, tone]) => `<span class="${tone}">${esc(t)}</span>`).join("\n")}</pre>`;
     case "lifecycle": return `<div class="life"><div class="row">${v.phases.map((p, i) => `<span class="chip ${p === "Ready" ? "ok" : ""} build-auto" style="--d:${i * 90}ms">${esc(p)}</span>${i < v.phases.length - 1 ? '<span class="arr">→</span>' : ""}`).join("")}</div><div class="row failed build-auto" style="--d:400ms"><span class="chip bad">Failed</span><span class="why">with a reason:</span></div><div class="row reasons build-auto" style="--d:480ms">${v.failed.map((r) => `<code>${esc(r)}</code>`).join("")}</div></div>`;
     case "phases": return `<ol class="phases">${v.items.map(([t, s], i) => `<li class="build-auto ${i === 6 ? "ok" : ""}" style="--d:${i * 70}ms"><code>${esc(t)}</code><span>${esc(s)}</span></li>`).join("")}</ol>`;
@@ -44,7 +44,7 @@ function slideHtml(s, i) {
   if (s.kind === "title") {
     return `<section class="slide title" data-i="${i}">
       <div class="kicker build" data-step="0">${esc(s.kicker)}</div>
-      <h1 class="build" data-step="0">${esc(s.title)}</h1>
+      <h1 class="build" data-step="0">${s.title.split(" ").map((w, k) => `<span class="w" style="--i:${k}">${esc(w)}</span>`).join(" ")}</h1>
       <p class="sub build" data-step="0">${esc(s.sub)}</p>
       <p class="meta build" data-step="0">${esc(s.meta)}</p>
       <div class="pulse" aria-hidden="true"><span></span><span></span><span></span></div>${notes}</section>`;
@@ -59,7 +59,7 @@ function slideHtml(s, i) {
     return `<section class="slide closing" data-i="${i}">
       <div class="kicker">${esc(s.kicker)}</div>
       <h1>${esc(s.title)}</h1>
-      <div class="stats wide">${s.stats.map(([b, t], k) => `<div class="stat build" data-step="${k + 1}"><div class="big">${esc(b)}</div><div class="sm">${esc(t)}</div></div>`).join("")}</div>
+      <div class="stats wide">${s.stats.map(([b, t], k) => `<div class="stat build" data-step="${k + 1}"><div class="big" data-n="${esc(b)}">${esc(b)}</div><div class="sm">${esc(t)}</div></div>`).join("")}</div>
       <ul class="lines">${s.lines.map((l, k) => `<li class="build" data-step="${s.stats.length + k + 1}">${esc(l)}</li>`).join("")}</ul>
       <p class="thanks build" data-step="${s.stats.length + s.lines.length + 1}">Thank you. Questions?</p>
       <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
@@ -96,7 +96,7 @@ html,body{height:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}
 .deck{position:fixed;inset:0;display:grid;place-items:center;background:var(--paper)}
 .stage{position:relative;width:min(100vw,177.78vh);aspect-ratio:16/9;container-type:size;overflow:hidden;background:var(--paper)}
-.slide{position:absolute;inset:0;padding:6cqh 6cqw;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(1.2cqh);transition:opacity .45s ease,transform .45s ease,visibility 0s .45s}
+.slide{position:absolute;inset:0;padding:6cqh 6cqw;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(1.2cqh) scale(.985);transition:opacity .45s ease,transform .45s ease,visibility 0s .45s}
 .slide.on{opacity:1;visibility:visible;transform:none;transition:opacity .45s ease,transform .45s ease,visibility 0s}
 .slide.leaving{opacity:0;transform:translateY(-1.2cqh)}
 .kicker{font-family:var(--mono);font-size:1.7cqw;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:500}
@@ -109,11 +109,19 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
 .mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
 /* builds */
-.build{opacity:0;transform:translateY(1cqh);transition:opacity .4s ease,transform .4s ease}
+.build{opacity:0;transform:translateX(-1.6cqw);transition:opacity .45s ease,transform .6s cubic-bezier(.2,.9,.25,1.15)}
 .build.on{opacity:1;transform:none}
 .slide.on .build-auto{animation:rise .5s ease both;animation-delay:calc(var(--d,0ms) + .2s)}
+.slide.on .graph .node.build-auto{animation:pop .55s cubic-bezier(.2,.9,.25,1.25) both;animation-delay:calc(var(--d,0ms) + .25s);transform-box:fill-box;transform-origin:center}
+.slide.on .graph .edge.draw{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .6s ease both;animation-delay:calc(var(--d,0ms) + .3s)}
+.slide.on .title h1 .w{display:inline-block;animation:rise .6s cubic-bezier(.2,.9,.25,1.15) both;animation-delay:calc(var(--i,0) * 110ms + .15s)}
+.slide.on .section h1{animation:wipe .75s cubic-bezier(.2,.8,.2,1) both}
+.slide.on .section .sub{animation:rise .6s ease both;animation-delay:.5s}
+@keyframes pop{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:none}}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
 @keyframes rise{from{opacity:0;transform:translateY(1cqh)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion: reduce){.build,.slide{transition:none}.slide.on .build-auto{animation:none}}
+@media (prefers-reduced-motion: reduce){.build,.slide{transition:none}.slide.on *{animation:none!important}}
 /* title */
 .title{justify-content:center}
 .title h1{font-size:9.2cqw;max-width:75%}
@@ -198,12 +206,21 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
   var progress=document.getElementById('progress');
   var notesPanel=document.getElementById('notes'), notesText=document.getElementById('notesText');
   var cur=0, step=0, showNotes=false;
+  var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function maxStep(i){var m=0;slides[i].querySelectorAll('.build').forEach(function(b){m=Math.max(m,+b.dataset.step||0)});return m;}
   function paint(){
     slides.forEach(function(s,i){
       s.classList.toggle('on',i===cur);
       if(i===cur){s.querySelectorAll('.build').forEach(function(b){b.classList.toggle('on',(+b.dataset.step||0)<=step)});}
       else{s.querySelectorAll('.build').forEach(function(b){b.classList.remove('on')});}
+    });
+    slides.forEach(function(s,i){ if(i!==cur){ s.querySelectorAll('.big[data-n]').forEach(function(el){ el.dataset.done=''; el.textContent=el.dataset.n; }); } });
+    slides[cur].querySelectorAll('.big[data-n]').forEach(function(el){
+      var host=el.closest('.build'); if(host && !host.classList.contains('on')) return;
+      if(el.dataset.done) return; el.dataset.done='1';
+      var n=parseInt(el.dataset.n,10); if(isNaN(n)||reduced){ el.textContent=el.dataset.n; return; }
+      var t0=null; function tick(ts){ if(t0===null) t0=ts; var p=Math.min(1,(ts-t0)/900); var e=1-Math.pow(1-p,3); el.textContent=Math.round(n*e); if(p<1) requestAnimationFrame(tick); else el.textContent=el.dataset.n; }
+      requestAnimationFrame(tick);
     });
     progress.style.width=((cur+1)/slides.length*100)+'%';
     var n=slides[cur].querySelector('.notes');

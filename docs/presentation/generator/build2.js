@@ -12,7 +12,16 @@ const pres = new pptxgen();
 pres.layout = "LAYOUT_WIDE";
 pres.title = "From Knative to the Portal";
 
-const step = (n) => ({ objectName: `step:${n}` });
+const step = (n, eff = "wipeL") => ({ objectName: `step:${n}:${eff}` });
+// While fn runs, every shape/text added to the slide is tagged auto:N:<effect> so animate.js
+// plays it automatically when the slide opens, staggered in document order.
+function autoWrap(s, fn) {
+  const origShape = s.addShape.bind(s), origText = s.addText.bind(s);
+  let n = 0;
+  s.addShape = (type, o) => origShape(type, Object.assign({ objectName: `auto:${n++}:${type === pres.shapes.LINE ? "wipeL" : "wipeD"}` }, o));
+  s.addText = (t, o) => origText(t, Object.assign({ objectName: `auto:${n++}:${(o && o.fontSize || 0) >= 40 ? "zoom" : "fade"}` }, o));
+  try { fn(); } finally { s.addShape = origShape; s.addText = origText; }
+}
 function txt(s, text, o) { s.addText(text, Object.assign({ fontFace: FB, color: C.ink, margin: 0, isTextBox: true }, o)); }
 function foot(s, i) { txt(s, `${String(i + 1).padStart(2, "0")} / ${TOTAL}`, { x: ML, y: H - 0.65, w: 2, h: 0.3, fontFace: FM, fontSize: 10, color: C.muted }); }
 function kicker(s, t, color) { txt(s, t.toUpperCase(), { x: ML, y: 0.55, w: 10, h: 0.3, fontFace: FM, fontSize: 11, color: color || C.accent, charSpacing: 3, bold: true }); }
@@ -134,17 +143,19 @@ slides.forEach((sd, i) => {
   s.background = { color: sd.kind === "section" ? C.accent : C.paper };
   if (sd.notes) s.addNotes(sd.notes);
   if (sd.kind === "title") {
-    txt(s, sd.kicker.toUpperCase(), { x: ML, y: 2.0, w: 8, h: 0.35, fontFace: FM, fontSize: 12, color: C.accent, charSpacing: 4, bold: true });
-    txt(s, sd.title, { x: ML, y: 2.4, w: 8.4, h: 2.0, fontFace: FD, fontSize: 66, bold: true, valign: "middle", lineSpacingMultiple: 0.95 });
-    txt(s, sd.sub, { x: ML, y: 4.5, w: 8, h: 0.6, fontFace: FD, fontSize: 24, italic: true, color: C.muted });
-    txt(s, sd.meta, { x: ML, y: 5.4, w: 6, h: 0.35, fontFace: FM, fontSize: 11, color: C.muted });
-    [2.4, 1.7, 1.0].forEach((d, k) => s.addShape(pres.shapes.OVAL, { x: 11.0 - d / 2, y: 3.75 - d / 2, w: d, h: d, fill: { color: C.paper, transparency: 100 }, line: { color: C.accent, width: 1.5, transparency: 30 + k * 25 } }));
+    autoWrap(s, () => {
+      txt(s, sd.kicker.toUpperCase(), { x: ML, y: 2.0, w: 8, h: 0.35, fontFace: FM, fontSize: 12, color: C.accent, charSpacing: 4, bold: true });
+      txt(s, sd.title, { x: ML, y: 2.4, w: 8.4, h: 2.0, fontFace: FD, fontSize: 66, bold: true, valign: "middle", lineSpacingMultiple: 0.95 });
+      txt(s, sd.sub, { x: ML, y: 4.5, w: 8, h: 0.6, fontFace: FD, fontSize: 24, italic: true, color: C.muted });
+      txt(s, sd.meta, { x: ML, y: 5.4, w: 6, h: 0.35, fontFace: FM, fontSize: 11, color: C.muted });
+      [1.0, 1.7, 2.4].forEach((d, k) => s.addShape(pres.shapes.OVAL, { x: 11.0 - d / 2, y: 3.75 - d / 2, w: d, h: d, fill: { color: C.paper, transparency: 100 }, line: { color: C.accent, width: 1.5, transparency: 80 - k * 25 } }));
+    });
     return;
   }
   if (sd.kind === "section") {
     if (sd.num) txt(s, sd.num, { x: ML, y: 1.0, w: 6, h: 2.6, fontFace: FD, fontSize: 150, bold: true, color: "FFFFFF", valign: "middle" });
-    txt(s, sd.title, { x: ML, y: sd.num ? 3.7 : 2.4, w: 11.5, h: sd.num ? 1.0 : 1.6, fontFace: FD, fontSize: sd.num ? 48 : 64, bold: true, color: "FFFFFF", valign: "middle" });
-    txt(s, sd.sub, { x: ML, y: sd.num ? 4.75 : 4.1, w: 10, h: 0.6, fontFace: FD, fontSize: 22, italic: true, color: "FFFFFF" });
+    txt(s, sd.title, Object.assign({ x: ML, y: sd.num ? 3.7 : 2.4, w: 11.5, h: sd.num ? 1.0 : 1.6, fontFace: FD, fontSize: sd.num ? 48 : 64, bold: true, color: "FFFFFF", valign: "middle" }, { objectName: "auto:0:wipeL" }));
+    txt(s, sd.sub, Object.assign({ x: ML, y: sd.num ? 4.75 : 4.1, w: 10, h: 0.6, fontFace: FD, fontSize: 22, italic: true, color: "FFFFFF" }, { objectName: "auto:1:fade" }));
     txt(s, `${String(i + 1).padStart(2, "0")} / ${TOTAL}`, { x: ML, y: H - 0.65, w: 2, h: 0.3, fontFace: FM, fontSize: 10, color: "FFFFFF" });
     return;
   }
@@ -153,15 +164,15 @@ slides.forEach((sd, i) => {
     const sw = (W - 2 * ML - 5 * 0.25) / 6;
     sd.stats.forEach(([b, t], k) => {
       const x = ML + k * (sw + 0.25);
-      txt(s, b, Object.assign({ x, y: 2.2, w: sw, h: 1.0, fontFace: FD, fontSize: 48, bold: true, color: C.accent, valign: "bottom" }, step(k + 1)));
-      txt(s, t, Object.assign({ x, y: 3.22, w: sw, h: 0.35, fontFace: FM, fontSize: 10.5, color: C.muted }, step(k + 1)));
+      txt(s, b, Object.assign({ x, y: 2.2, w: sw, h: 1.0, fontFace: FD, fontSize: 48, bold: true, color: C.accent, valign: "bottom" }, step(k + 1, "zoom")));
+      txt(s, t, Object.assign({ x, y: 3.22, w: sw, h: 0.35, fontFace: FM, fontSize: 10.5, color: C.muted }, step(k + 1, "fade")));
     });
     sd.lines.forEach((l, k) => {
       const y = 4.1 + k * 0.55, n = sd.stats.length + k + 1;
       s.addShape(pres.shapes.RECTANGLE, Object.assign({ x: ML, y: y + 0.19, w: 0.12, h: 0.12, fill: { color: C.accent }, line: { color: C.accent, width: 0 } }, step(n)));
       txt(s, l, Object.assign({ x: ML + 0.32, y, w: 8.5, h: 0.5, fontSize: 18, valign: "middle" }, step(n)));
     });
-    txt(s, "Thank you. Questions?", Object.assign({ x: 8.5, y: 5.8, w: 4.1, h: 0.7, fontFace: FD, fontSize: 26, bold: true, align: "right", valign: "middle" }, step(sd.stats.length + sd.lines.length + 1)));
+    txt(s, "Thank you. Questions?", Object.assign({ x: 8.5, y: 5.8, w: 4.1, h: 0.7, fontFace: FD, fontSize: 26, bold: true, align: "right", valign: "middle" }, step(sd.stats.length + sd.lines.length + 1, "zoom")));
     foot(s, i);
     return;
   }
@@ -172,7 +183,7 @@ slides.forEach((sd, i) => {
     s.addShape(pres.shapes.RECTANGLE, Object.assign({ x: ML, y: y + lh / 2 - 0.07, w: 0.13, h: 0.13, fill: { color: C.accent }, line: { color: C.accent, width: 0 } }, step(k + 1)));
     txt(s, l, Object.assign({ x: ML + 0.35, y, w: 5.45, h: lh, fontSize: n > 5 ? 17 : 19, valign: "middle", bold: false }, step(k + 1)));
   });
-  visual(s, sd.visual);
+  autoWrap(s, () => visual(s, sd.visual));
   foot(s, i);
 });
 

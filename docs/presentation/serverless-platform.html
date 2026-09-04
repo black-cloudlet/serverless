@@ -20,7 +20,7 @@ html,body{height:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}
 .deck{position:fixed;inset:0;display:grid;place-items:center;background:var(--paper)}
 .stage{position:relative;width:min(100vw,177.78vh);aspect-ratio:16/9;container-type:size;overflow:hidden;background:var(--paper)}
-.slide{position:absolute;inset:0;padding:6cqh 6cqw;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(1.2cqh);transition:opacity .45s ease,transform .45s ease,visibility 0s .45s}
+.slide{position:absolute;inset:0;padding:6cqh 6cqw;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(1.2cqh) scale(.985);transition:opacity .45s ease,transform .45s ease,visibility 0s .45s}
 .slide.on{opacity:1;visibility:visible;transform:none;transition:opacity .45s ease,transform .45s ease,visibility 0s}
 .slide.leaving{opacity:0;transform:translateY(-1.2cqh)}
 .kicker{font-family:var(--mono);font-size:1.7cqw;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:500}
@@ -33,11 +33,19 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
 .mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
 /* builds */
-.build{opacity:0;transform:translateY(1cqh);transition:opacity .4s ease,transform .4s ease}
+.build{opacity:0;transform:translateX(-1.6cqw);transition:opacity .45s ease,transform .6s cubic-bezier(.2,.9,.25,1.15)}
 .build.on{opacity:1;transform:none}
 .slide.on .build-auto{animation:rise .5s ease both;animation-delay:calc(var(--d,0ms) + .2s)}
+.slide.on .graph .node.build-auto{animation:pop .55s cubic-bezier(.2,.9,.25,1.25) both;animation-delay:calc(var(--d,0ms) + .25s);transform-box:fill-box;transform-origin:center}
+.slide.on .graph .edge.draw{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .6s ease both;animation-delay:calc(var(--d,0ms) + .3s)}
+.slide.on .title h1 .w{display:inline-block;animation:rise .6s cubic-bezier(.2,.9,.25,1.15) both;animation-delay:calc(var(--i,0) * 110ms + .15s)}
+.slide.on .section h1{animation:wipe .75s cubic-bezier(.2,.8,.2,1) both}
+.slide.on .section .sub{animation:rise .6s ease both;animation-delay:.5s}
+@keyframes pop{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:none}}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
 @keyframes rise{from{opacity:0;transform:translateY(1cqh)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion: reduce){.build,.slide{transition:none}.slide.on .build-auto{animation:none}}
+@media (prefers-reduced-motion: reduce){.build,.slide{transition:none}.slide.on *{animation:none!important}}
 /* title */
 .title{justify-content:center}
 .title h1{font-size:9.2cqw;max-width:75%}
@@ -111,7 +119,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
   <div class="stage" id="stage" tabindex="0" aria-label="Slideshow. Use arrow keys to navigate.">
     <section class="slide title" data-i="0">
       <div class="kicker build" data-step="0">Cloudlet's Serverless</div>
-      <h1 class="build" data-step="0">From Knative to the Portal</h1>
+      <h1 class="build" data-step="0"><span class="w" style="--i:0">From</span> <span class="w" style="--i:1">Knative</span> <span class="w" style="--i:2">to</span> <span class="w" style="--i:3">the</span> <span class="w" style="--i:4">Portal</span></h1>
       <p class="sub build" data-step="0">What we built, and why.</p>
       <p class="meta build" data-step="0">Team review · September 2026</p>
       <div class="pulse" aria-hidden="true"><span></span><span></span><span></span></div><div class="notes" hidden>Open with the one-sentence promise: a developer gives us code or an image and gets a running, addressable service in both regions without ever seeing Kubernetes.</div></section>
@@ -137,7 +145,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Kubernetes building blocks for serverless</li><li class="build" data-step="2">Service owns Configuration and Route</li><li class="build" data-step="3">Every change is an immutable Revision</li><li class="build" data-step="4">KPA: concurrency in, replicas out</li><li class="build" data-step="5">Activator wakes revisions from zero</li><li class="build" data-step="6">DomainMapping: your own hostname</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="300" y1="74" x2="140" y2="140"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="300" y1="74" x2="460" y2="140"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="140" y1="204" x2="140" y2="270"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="340" y1="302" x2="260" y2="302" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node accent build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:350ms" x1="300" y1="74" x2="140" y2="140" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:420ms" x1="300" y1="74" x2="460" y2="140" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:490ms" x1="140" y1="204" x2="140" y2="270" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="340" y1="302" x2="260" y2="302" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node accent build-auto" style="--d:0ms">
       <rect x="170" y="10" width="260" height="64" rx="8"/>
       <text x="300" y="38" class="nl">Knative Service</text>
       <text x="300" y="57" class="ns">the one object you write</text>
@@ -185,7 +193,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <h1>One call, every cluster</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Functions from git, containers from images</li><li class="build" data-step="2">Validate now, answer 202, poll status</li><li class="build" data-step="3">Closed status vocabulary, published on /info</li><li class="build" data-step="4">FastAPI, Pydantic, cloudlet-apis</li><li class="build" data-step="5">One Helm chart, rendered per region</li></ul>
-      <div class="visual"><div class="stats"><div class="stat build-auto" style="--d:0ms"><div class="big">2</div><div class="sm">offerings</div></div><div class="stat build-auto" style="--d:90ms"><div class="big">202</div><div class="sm">every write</div></div><div class="stat build-auto" style="--d:180ms"><div class="big">0</div><div class="sm">kubectl for users</div></div><div class="stat build-auto" style="--d:270ms"><div class="big">2</div><div class="sm">regions per deploy</div></div></div></div>
+      <div class="visual"><div class="stats"><div class="stat build-auto" style="--d:0ms"><div class="big" data-n="2">2</div><div class="sm">offerings</div></div><div class="stat build-auto" style="--d:90ms"><div class="big" data-n="202">202</div><div class="sm">every write</div></div><div class="stat build-auto" style="--d:180ms"><div class="big" data-n="0">0</div><div class="sm">kubectl for users</div></div><div class="stat build-auto" style="--d:270ms"><div class="big" data-n="2">2</div><div class="sm">regions per deploy</div></div></div></div>
     </div>
     <div class="foot"><span class="mono">08 / 23</span></div><div class="notes" hidden>The API is a FastAPI control plane. Every write validates synchronously then returns 202 with a statusUrl; the status vocabulary is closed and published on /info so no client hardcodes it. One Helm chart, rendered by ArgoCD once per region.</div></section>
 <section class="slide content" data-i="8">
@@ -216,7 +224,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Client certificate mTLS, always</li><li class="build" data-step="2">No kubeconfig, no service-account token</li><li class="build" data-step="3">The certificate's CN is the user</li><li class="build" data-step="4">Address derived from the region name</li><li class="build" data-step="5">Every write is server-side apply</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="270" y1="75" x2="330" y2="75"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="455" y1="110" x2="455" y2="200"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="330" y1="235" x2="270" y2="235"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="300" y1="330" x2="145" y2="270" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:350ms" x1="270" y1="75" x2="330" y2="75" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:420ms" x1="455" y1="110" x2="455" y2="200" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:490ms" x1="330" y1="235" x2="270" y2="235" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="300" y1="330" x2="145" y2="270" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
       <rect x="20" y="40" width="250" height="70" rx="8"/>
       <text x="145" y="71" class="nl">cert-manager</text>
       <text x="145" y="90" class="ns">ACME, internal CA</text>
@@ -245,7 +253,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">The API runs in both regions</li><li class="build" data-step="2">One deploy fans out to both</li><li class="build" data-step="3">No leader election, deterministic specs</li><li class="build" data-step="4">A region builds what it runs</li><li class="build" data-step="5">State lives in the Knative Service</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:280ms" x1="300" y1="70" x2="150" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:350ms" x1="300" y1="70" x2="450" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="280" y1="210" x2="320" y2="210" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="150" y1="270" x2="300" y2="340" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="450" y1="270" x2="300" y2="340" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node accent build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:280ms" x1="300" y1="70" x2="150" y2="150" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:350ms" x1="300" y1="70" x2="450" y2="150" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="280" y1="210" x2="320" y2="210" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="150" y1="270" x2="300" y2="340" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="450" y1="270" x2="300" y2="340" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node accent build-auto" style="--d:0ms">
       <rect x="150" y="10" width="300" height="60" rx="8"/>
       <text x="300" y="36" class="nl">DNS</text>
       <text x="300" y="55" class="ns">*.serverless.{domain} → active region</text>
@@ -270,7 +278,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">A namespace per SSO group</li><li class="build" data-step="2">Separate process, separate certificate</li><li class="build" data-step="3">The API never creates namespaces</li><li class="build" data-step="4">Provision before every deploy, fail closed</li><li class="build" data-step="5">Reconcile the local cluster only</li><li class="build" data-step="6">Garbage-collect empty namespaces, opt-in</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="240" y1="63" x2="340" y2="63"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="460" y1="96" x2="150" y2="200"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="460" y1="96" x2="450" y2="200"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="300" y1="340" x2="460" y2="96" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:350ms" x1="240" y1="63" x2="340" y2="63" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:420ms" x1="460" y1="96" x2="150" y2="200" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:490ms" x1="460" y1="96" x2="450" y2="200" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="300" y1="340" x2="460" y2="96" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
       <rect x="20" y="30" width="220" height="66" rx="8"/>
       <text x="130" y="59" class="nl">API</text>
       <text x="130" y="78" class="ns">writes workloads only</text>
@@ -303,7 +311,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Container: run this image</li><li class="build" data-step="2">Function: here is my repository</li><li class="build" data-step="3">A build takes minutes, not milliseconds</li><li class="build" data-step="4">A build is retried and logged</li><li class="build" data-step="5">Rebuilds fire on CVE patches, unasked</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:420ms" x1="190" y1="60" x2="400" y2="60"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="190" y1="220" x2="215" y2="220"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="385" y1="220" x2="400" y2="220"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="300" y1="330" x2="300" y2="250" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:420ms" x1="190" y1="60" x2="400" y2="60" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:490ms" x1="190" y1="220" x2="215" y2="220" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:560ms" x1="385" y1="220" x2="400" y2="220" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="300" y1="330" x2="300" y2="250" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
       <rect x="20" y="30" width="170" height="60" rx="8"/>
       <text x="105" y="56" class="nl">image</text>
       <text x="105" y="75" class="ns">container</text>
@@ -336,7 +344,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">No Dockerfile, buildpacks detect the language</li><li class="build" data-step="2">Rebase: patch the base without rebuilding</li><li class="build" data-step="3">kpack: Image, Build, Pod</li><li class="build" data-step="4">Our kpack repo is a Helm chart</li><li class="build" data-step="5">Airgap mirror scripts included</li><li class="build" data-step="6">ClusterBuilders: go, python, node</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:420ms" x1="190" y1="50" x2="250" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="190" y1="150" x2="250" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="190" y1="250" x2="250" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="345" y1="180" x2="345" y2="300"  marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:420ms" x1="190" y1="50" x2="250" y2="150" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:490ms" x1="190" y1="150" x2="250" y2="150" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:560ms" x1="190" y1="250" x2="250" y2="150" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:630ms" x1="345" y1="180" x2="345" y2="300" pathLength="1" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
       <rect x="20" y="20" width="170" height="60" rx="8"/>
       <text x="105" y="46" class="nl">ClusterStack</text>
       <text x="105" y="65" class="ns">base images</text>
@@ -377,7 +385,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Watches Image.status.latestImage</li><li class="build" data-step="2">Applies the digest onto the Service</li><li class="build" data-step="3">Both ends stay in one region</li><li class="build" data-step="4">Only ever writes digests</li><li class="build" data-step="5">Ships with no web stack</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="180" y1="95" x2="220" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="380" y1="95" x2="420" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="500" y1="130" x2="500" y2="240"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="100" y1="240" x2="100" y2="130" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:350ms" x1="180" y1="95" x2="220" y2="95" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:420ms" x1="380" y1="95" x2="420" y2="95" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:490ms" x1="500" y1="130" x2="500" y2="240" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="100" y1="240" x2="100" y2="130" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
       <rect x="20" y="60" width="160" height="70" rx="8"/>
       <text x="100" y="91" class="nl">kpack Image</text>
       <text x="100" y="110" class="ns">latestImage changes</text>
@@ -410,7 +418,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Next.js 16, server components</li><li class="build" data-step="2">Keycloak token stays server-side</li><li class="build" data-step="3">The SSO group is the project</li><li class="build" data-step="4">Forms are built from /info</li><li class="build" data-step="5">Live logs over SSE tickets</li><li class="build" data-step="6">Airgap-native: no CDN, no fonts</li></ul>
       <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
-  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="170" y1="95" x2="225" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="375" y1="95" x2="430" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="300" y1="130" x2="300" y2="230" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="170" y1="265" x2="430" y2="95" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="95" y1="130" x2="95" y2="230" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto draw" style="--d:350ms" x1="170" y1="95" x2="225" y2="95" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto draw" style="--d:420ms" x1="375" y1="95" x2="430" y2="95" pathLength="1" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="300" y1="130" x2="300" y2="230" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="170" y1="265" x2="430" y2="95" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="95" y1="130" x2="95" y2="230" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
       <rect x="20" y="60" width="150" height="70" rx="8"/>
       <text x="95" y="91" class="nl">Browser</text>
       <text x="95" y="110" class="ns">React 19</text>
@@ -452,7 +460,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
 <section class="slide closing" data-i="22">
       <div class="kicker">What we built</div>
       <h1>Code in, a running service out.</h1>
-      <div class="stats wide"><div class="stat build" data-step="1"><div class="big">4</div><div class="sm">repositories</div></div><div class="stat build" data-step="2"><div class="big">3</div><div class="sm">services</div></div><div class="stat build" data-step="3"><div class="big">23</div><div class="sm">endpoints</div></div><div class="stat build" data-step="4"><div class="big">2</div><div class="sm">regions</div></div><div class="stat build" data-step="5"><div class="big">3</div><div class="sm">runtimes</div></div><div class="stat build" data-step="6"><div class="big">0</div><div class="sm">kubectl</div></div></div>
+      <div class="stats wide"><div class="stat build" data-step="1"><div class="big" data-n="4">4</div><div class="sm">repositories</div></div><div class="stat build" data-step="2"><div class="big" data-n="3">3</div><div class="sm">services</div></div><div class="stat build" data-step="3"><div class="big" data-n="23">23</div><div class="sm">endpoints</div></div><div class="stat build" data-step="4"><div class="big" data-n="2">2</div><div class="sm">regions</div></div><div class="stat build" data-step="5"><div class="big" data-n="3">3</div><div class="sm">runtimes</div></div><div class="stat build" data-step="6"><div class="big" data-n="0">0</div><div class="sm">kubectl</div></div></div>
       <ul class="lines"><li class="build" data-step="7">Operator owns Knative; we own the contract</li><li class="build" data-step="8">Deterministic specs, so no leader</li><li class="build" data-step="9">Builds declared, watched, rolled in</li><li class="build" data-step="10">The second product is cheaper</li></ul>
       <p class="thanks build" data-step="11">Thank you. Questions?</p>
       <div class="foot"><span class="mono">23 / 23</span></div><div class="notes" hidden>Close on the four takeaways and open for questions.</div></section>
@@ -468,12 +476,21 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
   var progress=document.getElementById('progress');
   var notesPanel=document.getElementById('notes'), notesText=document.getElementById('notesText');
   var cur=0, step=0, showNotes=false;
+  var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function maxStep(i){var m=0;slides[i].querySelectorAll('.build').forEach(function(b){m=Math.max(m,+b.dataset.step||0)});return m;}
   function paint(){
     slides.forEach(function(s,i){
       s.classList.toggle('on',i===cur);
       if(i===cur){s.querySelectorAll('.build').forEach(function(b){b.classList.toggle('on',(+b.dataset.step||0)<=step)});}
       else{s.querySelectorAll('.build').forEach(function(b){b.classList.remove('on')});}
+    });
+    slides.forEach(function(s,i){ if(i!==cur){ s.querySelectorAll('.big[data-n]').forEach(function(el){ el.dataset.done=''; el.textContent=el.dataset.n; }); } });
+    slides[cur].querySelectorAll('.big[data-n]').forEach(function(el){
+      var host=el.closest('.build'); if(host && !host.classList.contains('on')) return;
+      if(el.dataset.done) return; el.dataset.done='1';
+      var n=parseInt(el.dataset.n,10); if(isNaN(n)||reduced){ el.textContent=el.dataset.n; return; }
+      var t0=null; function tick(ts){ if(t0===null) t0=ts; var p=Math.min(1,(ts-t0)/900); var e=1-Math.pow(1-p,3); el.textContent=Math.round(n*e); if(p<1) requestAnimationFrame(tick); else el.textContent=el.dataset.n; }
+      requestAnimationFrame(tick);
     });
     progress.style.width=((cur+1)/slides.length*100)+'%';
     var n=slides[cur].querySelector('.notes');
