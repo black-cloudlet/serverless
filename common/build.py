@@ -57,12 +57,11 @@ class BuildRequest:
             still written explicitly into the build env, never left to the
             buildpack.
         owner: Creating username, stamped on the build objects' labels.
-        commit: The exact commit a git push delivered. None builds
-            ``revision`` - its head, when it names a branch - which is what
-            create, update and the explicit rebuild do. Set only by the webhook,
-            and it wins over ``revision`` for what is built; the image *tag*
-            still follows ``revision``, so a push moves the digest that tag
-            points at rather than the tag itself.
+        commit: The exact commit a git push delivered, which wins over
+            ``revision`` for what is built. None builds ``revision`` - its head,
+            where that names a branch - as create, update and the rebuild do.
+            The image *tag* still follows ``revision``, so a push moves the
+            digest that tag points at, not the tag.
     """
 
     name: Name
@@ -252,13 +251,12 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
 
     Shared so the API and the build backend agree on where a build's image lands.
 
-    The tag is the *revision* projected into what an OCI tag allows - a git ref
-    may contain ``/`` and a tag may not, so ``feature/login`` pushes to
-    ``feature-login``. It is never derived from ``commit``: a pushed commit
-    moves the digest this tag points at, not the tag, so the tag stays the one
-    the caller's revision names and the Image is never recreated for a push
-    (``spec.tag`` is immutable). Only the tag is rewritten; the build still
-    compiles the exact ref or commit (see ``BuildRequest.build_revision``).
+    The tag is the *revision* projected into what an OCI tag allows, so
+    ``feature/login`` pushes to ``feature-login``. Never derived from
+    ``commit``: a push moves the digest this tag points at, not the tag, which
+    is what keeps the Image (whose ``spec.tag`` is immutable) from being
+    recreated on every push. Only the tag is rewritten; the build compiles the
+    exact ref or commit (see ``BuildRequest.build_revision``).
 
     Args:
         registry_base: Registry host, plus organization when the registry has

@@ -308,24 +308,19 @@ def _split(
 def _stamp_commit(cluster: NamespacedCluster, name: str, commit: str | None) -> bool:
     """Record - or clear - the commit a git push pinned, on one region's KSVC.
 
-    A merge patch of ``metadata.annotations`` only. Deliberately not the
-    template's: a pin says which *source* the next build compiles, not which
-    image the workload runs, so nothing here should cut a Knative revision. The
-    running revision keeps serving until the build controller rolls the new
-    digest out, exactly as for any other build.
-
-    Clearing writes an explicit ``null`` rather than relying on a later apply to
-    omit the key: the annotation is written by a merge patch, so a server-side
-    apply that simply does not set it is not guaranteed to remove it.
+    ``metadata.annotations`` only, not the template's: a pin says which *source*
+    to compile next, not which image to run, so it must cut no Knative revision.
+    Clearing writes an explicit ``null``, since the annotation is set by a merge
+    patch and an apply that merely omits the key may not remove it.
 
     Args:
         cluster: The region to write to.
         name: The workload name.
-        commit: The commit to pin, or None to clear the pin.
+        commit: The commit to pin, or None to clear.
 
     Returns:
         True if the workload is here and was stamped; False if it does not run
-        in this region, which is not a failure - the build apply skips it too.
+        here - not a failure, since the build apply skips it too.
     """
     patch = {"metadata": {"annotations": {ANNOTATION_GIT_COMMIT: commit}}}
     try:
@@ -938,17 +933,14 @@ class WorkloadService:
             plan: The build plan to apply (its git Secret included, so the region
                 that builds can always clone).
             trigger: Ask kpack for one more build of an unchanged spec. False
-                where the applied spec is itself the change kpack builds from -
-                a webhook pinning a new commit, or a rebuild clearing one - since
-                a trigger on top would produce a second build (docs/BUILDING.md -
+                where the applied spec is itself the change it builds from - a
+                push pinning a commit, or a rebuild clearing one - since a
+                trigger too would make a second build (docs/BUILDING.md -
                 Convergence rules).
-            commit: The commit a push pinned, stamped on the workload so every
-                later reconstruction carries it. None *clears* any stored pin,
-                returning the function to its revision's head.
-            had_commit: Whether a pin was stored before this call. Decides
-                nothing here; it is the caller's record of why ``trigger`` is
-                what it is, and is accepted so the annotation write can be
-                skipped when there is neither a pin to set nor one to clear.
+            commit: The commit a push pinned, stamped so later reconstructions
+                carry it. None *clears* any stored pin.
+            had_commit: Whether a pin was stored. Only skips the annotation
+                write when there is neither one to set nor one to clear.
 
         Returns:
             True if an existing build was triggered in any region; False if
@@ -957,9 +949,9 @@ class WorkloadService:
         targets = self.targets_for(group)
         await self.retag_build(targets, plan.manifests_by_region)
         # The KSVC is the replicated source of truth and the Image is derived
-        # from it, so the pin lands first: a patch that survives a failed apply
-        # is re-composed correctly by the next write, where the reverse would
-        # leave a build nobody can reconstruct.
+        # from it, so the pin lands first: a patch surviving a failed apply is
+        # re-composed by the next write, where the reverse leaves a build
+        # nobody can reconstruct.
         stamp = commit is not None or had_commit
 
         def work(cluster: NamespacedCluster) -> RegionStatus:
@@ -981,10 +973,7 @@ class WorkloadService:
     async def clear_commit(self, name: str, group: str) -> None:
         """Remove the pinned commit from the workload, in every region.
 
-        Written as an explicit ``null`` rather than left to the KSVC apply that
-        follows: the annotation is set by a merge patch, so a server-side apply
-        that simply does not carry the key is not guaranteed to remove it. The
-        patch is metadata-only, so it cuts no Knative revision of its own.
+        See :func:`_stamp_commit` for why this is an explicit ``null``.
 
         Args:
             name: The workload name.
@@ -1000,11 +989,9 @@ class WorkloadService:
     async def apply_owned_secret(self, name: str, group: str, manifest: dict) -> None:
         """Apply one owned Secret to every region the workload runs in.
 
-        The write behind a credential rotation: no build is declared and no KSVC
-        is composed, so nothing is deployed and no revision is cut. The Secret is
-        stamped with the workload's ``ownerReference`` like every other derived
-        resource, so it still cascades on delete, and a region that does not run
-        the workload is skipped rather than given an orphan.
+        The write behind a credential rotation: no build declared and no KSVC
+        composed, so nothing deploys and no revision is cut. Owner-stamped so it
+        cascades on delete; a region without the workload is skipped.
 
         Args:
             name: The workload name, whose KSVC owns the Secret.
@@ -1222,8 +1209,8 @@ class WorkloadService:
         if host is None:
             host = route_svc.host_for(name, group, self.settings.route_domain)
         spec = await self.deployer.run_read(region_read.describe_spec, rep.cluster, rep.obj)
-        # Whatever this offering adds that needs a read of its own - a function's
-        # webhook token. Same region as the spec read, and best-effort there.
+        # What this offering adds that needs its own read (a function's webhook
+        # token). Same region as the spec read, and best-effort there.
         extras = await self.deployer.run_read(
             offering.read_response_extras, rep.cluster, name, group, self.settings
         )

@@ -1,9 +1,9 @@
 """The git-webhook payload, and what the API answers a delivery with.
 
 A push reaches the API as ``POST .../functions/{name}/build`` carrying
-``X-Gitlab-Token`` instead of a bearer (docs/FUNCTIONS.md - Git webhook). This
-module models only what that decision needs off the payload; everything else
-GitLab sends is ignored, so a payload change upstream cannot fail a delivery.
+``X-Gitlab-Token`` instead of a bearer (docs/FUNCTIONS.md - Git webhook). Only
+what the build/ignore decision needs is modelled, so a payload change upstream
+cannot fail a delivery.
 """
 
 from __future__ import annotations
@@ -13,14 +13,13 @@ import re
 from pydantic import BaseModel, ConfigDict, Field
 
 # GitLab names the event kind in a header and repeats it in the body; both are
-# checked, because a hook misconfigured to send everything is a routine mistake.
+# checked, because a hook set to send everything is a routine mistake.
 GITLAB_PUSH_EVENT = "Push Hook"
 GITLAB_PUSH_OBJECT_KIND = "push"
 
 _BRANCH_REF = "refs/heads/"
-# SHA-1 today, SHA-256 in a repository that has migrated. Both are accepted:
-# the value is written into a git revision, so its shape is git's business, but
-# it must be a hex object id and not a ref name smuggled in as one.
+# SHA-1, or SHA-256 in a migrated repository. Both accepted, but it must be a
+# hex object id - not a ref name smuggled in as one.
 _SHA = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
 
 
@@ -35,10 +34,8 @@ class GitLabProject(BaseModel):
 class GitLabPushEvent(BaseModel):
     """One GitLab push event, reduced to what decides whether to build.
 
-    Lenient by construction (``extra="ignore"``): GitLab sends commits, the
-    pusher, project metadata and more, none of which this platform reads. A
-    field it does read that is absent or malformed makes the push *ignorable*,
-    not an error - see :meth:`branch` and :meth:`sha`.
+    Lenient (``extra="ignore"``). A field this does read that is absent or
+    malformed makes the push *ignorable*, not an error - see the properties.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -47,8 +44,8 @@ class GitLabPushEvent(BaseModel):
     ref: str = ""
     before: str = ""
     after: str = ""
-    # Set on a push; the commit the build should use. `after` is the same value
-    # in the ordinary case, and is the fallback when GitLab omits this.
+    # The commit to build. `after` is the same in the ordinary case, and the
+    # fallback when GitLab omits this.
     checkout_sha: str | None = None
     project: GitLabProject = Field(default_factory=GitLabProject)
 
@@ -61,9 +58,7 @@ class GitLabPushEvent(BaseModel):
     def branch(self) -> str | None:
         """The branch this push updated, or None if the ref is not a branch.
 
-        A tag push carries ``refs/tags/...`` and anything else carries whatever
-        the provider chose; neither names a branch, so neither can match a
-        function's revision and both are ignored.
+        A tag push names no branch, so it matches no revision and is ignored.
         """
         if not self.ref.startswith(_BRANCH_REF):
             return None
@@ -73,8 +68,7 @@ class GitLabPushEvent(BaseModel):
     def is_deletion(self) -> bool:
         """Whether this push deleted the ref.
 
-        Git marks a deletion by pushing the all-zero object id, which is not a
-        commit anything can be built from.
+        Git marks a deletion with the all-zero object id, which is no commit.
         """
         return bool(self.after) and set(self.after) == {"0"}
 
@@ -91,9 +85,8 @@ class WebhookOutcome(BaseModel):
     """The answer to a delivery that started no build.
 
     A `200`, not an error: GitLab disables a hook that keeps returning `4xx`, so
-    a push this function does not care about - another branch, a tag, a deleted
-    ref - has to read as success. ``reason`` is for the delivery log a human
-    reads when a push did not do what they expected.
+    an unwanted push must read as success. ``reason`` is what a human reads in
+    the delivery log.
     """
 
     accepted: bool = False

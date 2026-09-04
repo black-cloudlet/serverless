@@ -94,20 +94,18 @@ async def build_function(
 ) -> Response | FunctionResponse:
     """Build a function again (202), no body - or take a git push that says so.
 
-    **With a bearer token**, the build inputs are the ones already stored -
-    repository, revision, path, runtime, version and the saved git token - so
-    this rebuilds the same definition against today's base image and
-    dependencies. It also returns the function to its revision's head, clearing
-    a commit a push had pinned. Nothing about the workload's spec changes and
-    the running revision keeps serving.
+    **With a bearer token**, the build inputs are the stored ones - repository,
+    revision, path, runtime, version and the saved git token - so this rebuilds
+    the same definition against today's base image and dependencies, and returns
+    the function to its revision's head by clearing any commit a push pinned.
+    The spec does not change and the running revision keeps serving.
 
-    **With `X-Gitlab-Token`**, this is the function's git webhook. The token is
-    compared against the one stored for it, and the push builds only if it
-    updated the branch the function's `revision` names, in the repository it
-    builds from. A push that does not is answered `200` with `accepted: false` -
-    not an error, because a provider disables a hook that keeps failing. What a
-    push changes is the commit built, never the revision, the tag, or anything
-    else about the workload (docs/FUNCTIONS.md - Git webhook).
+    **With `X-Gitlab-Token`**, this is the function's git webhook. The push
+    builds only if it updated the branch the function's `revision` names, in the
+    repository it builds from; anything else is `200` with `accepted: false`,
+    since a provider disables a hook that keeps failing. A push changes the
+    commit built and nothing else - not the revision, the tag, or the spec
+    (docs/FUNCTIONS.md - Git webhook).
 
     Args:
         group: The owning group (from the request path).
@@ -138,11 +136,11 @@ async def rotate_function_webhook(
     """Replace this function's webhook token and return the new one (200).
 
     Every region is written before this answers, so the old token stops working
-    at once - there is no overlap window, and a leaked token does not outlive
-    the request that replaced it. Reconfigure the hook with what comes back.
+    at once and a leaked one does not outlive the request replacing it.
+    Reconfigure the hook with what comes back.
 
-    Disabling a hook is done in the git provider, not here: a token nothing
-    calls starts no build.
+    There is no endpoint to *disable* a hook: a token nothing calls starts no
+    build, so that is done in the git provider.
 
     Args:
         group: The owning group (from the request path).

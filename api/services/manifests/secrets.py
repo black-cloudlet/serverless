@@ -1,13 +1,12 @@
 """Pure builders/decoders for the credential Secrets a workload owns.
 
 Covers the imagePullSecret built from customer registry credentials, the
-``{workload}-git`` Secret holding a function's token so a later edit can rebuild
-without it being re-sent, and the ``{workload}-webhook`` Secret holding the token
-a git webhook authenticates a push with. Customer-supplied values are never
-returned on read - only the update path reads them back, to preserve a redacted
-"keep" field. The webhook token is the exception, and it is the platform's own:
-it exists to be pasted into GitLab, so it is returned (docs/FUNCTIONS.md - Git
-webhook).
+``{workload}-git`` Secret holding a function's token so a later edit rebuilds
+without it being re-sent, and the ``{workload}-webhook`` Secret holding the
+token a push authenticates with. Customer-supplied values are never returned on
+read - only the update path reads them back, to preserve a redacted "keep"
+field. The webhook token is the exception: it is the platform's own, minted to
+be pasted into GitLab (docs/FUNCTIONS.md - Git webhook).
 """
 
 from __future__ import annotations
@@ -29,9 +28,8 @@ GIT_ANNOTATION = "kpack.io/git"
 # Data key of the ``{workload}-webhook`` Secret.
 WEBHOOK_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name, not a credential
 
-# Bytes of entropy in a generated webhook token. 32 bytes is 256 bits, which
-# `token_urlsafe` renders as 43 URL-safe characters - short enough for GitLab's
-# field, long enough that guessing is not a threat model.
+# 32 bytes is 256 bits, which `token_urlsafe` renders as 43 URL-safe
+# characters: fits GitLab's field, and guessing is not a threat model.
 WEBHOOK_TOKEN_BYTES = 32
 
 
@@ -213,12 +211,11 @@ def new_webhook_token() -> str:
 def build_webhook_secret(name: str, labels: dict[str, str], token: str) -> dict:
     """Build the Secret holding a function's webhook token.
 
-    A Secret rather than an annotation on the KSVC: this token is what lets an
-    *unauthenticated* caller start a build, and an annotation is readable by
-    anyone with ``get`` on the workload and is copied into every event and log
-    line that prints the object. It is replicated to every region like the git
-    Secret, so a push still authenticates after a switchover, when the API
-    answering is the other region's (docs/BUILDING.md - Active/Active Behaviour).
+    A Secret, not a KSVC annotation: this token lets an *unauthenticated* caller
+    start a build, and an annotation is readable by anyone with ``get`` on the
+    workload and is copied into every event that prints it. Replicated to every
+    region like the git Secret, so a push still authenticates after a switchover
+    (docs/BUILDING.md - Active/Active Behaviour).
 
     Args:
         name: The Secret name (``{workload}-webhook``).

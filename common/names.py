@@ -185,18 +185,14 @@ def validate_image_ref(image: str) -> str:
 def validate_revision(revision: str) -> str:
     """Validate a git revision - a branch, a tag, or a commit SHA.
 
-    All three are the same thing to git and to kpack: a value for
-    ``Image.spec.source.git.revision``. This checks only that it is a usable
-    ref, never which kind it is; the platform does not care, and asking would
-    mean a network round trip to the repository.
+    All three are one value to git and kpack. Only usability as a ref is
+    checked, never which kind it is - the platform does not care, and asking
+    would cost a round trip. ``/`` is allowed and kept verbatim; only the
+    derived tag cannot hold one, and :func:`image_tag` projects it separately.
 
-    ``/`` is permitted and kept verbatim as the git revision; only the derived
-    image tag cannot hold one, and :func:`image_tag` projects it separately.
-
-    Rejects what git itself rejects and what would be unsafe downstream: empty
-    or whitespace-only, whitespace or control characters anywhere, a leading
-    ``-`` (reads as a flag), the sequences git forbids in a ref, and anything
-    over 255 characters.
+    Rejects what git rejects and what is unsafe downstream: empty or padded,
+    whitespace or control characters, a leading ``-`` (reads as a flag), the
+    sequences git forbids in a ref, and anything over 255 characters.
 
     Args:
         revision: The candidate branch, tag or commit.
@@ -438,19 +434,12 @@ def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
 def image_tag(revision: str) -> str:
     """Reduce a git revision to a legal OCI tag.
 
-    A git ref may contain ``/``; an OCI tag may not, and must start with an
-    alphanumeric or ``_`` and fit in ``_TAG_MAX`` characters. The tag is
-    therefore a *projection* of the revision, not the revision itself -
-    ``feature/login`` builds from that exact ref but pushes to ``feature-login``.
-
-    Two revisions differing only in replaced characters land on one tag
-    (``feature/login`` and ``feature-login``). The revision is never rewritten,
-    so a build always compiles the ref that was asked for.
-
-    A revision can also project to *nothing*: git refs are UTF-8, so one with no
-    ASCII is legal and every character of it is replaced. The empty tag would
-    make the reference ``repo:``, so those fall back to ``b-`` plus a digest of
-    the revision, which is deterministic for a given revision.
+    A git ref may contain ``/``; an OCI tag may not, so the tag is a
+    *projection* - ``feature/login`` builds that ref but pushes to
+    ``feature-login``. Two revisions differing only in replaced characters share
+    one tag; the revision is never rewritten, so a build compiles what was
+    asked for. One that projects to *nothing* (a ref with no ASCII is legal)
+    falls back to ``b-`` plus a digest, since ``repo:`` is not a reference.
 
     Args:
         revision: The branch, tag or commit (already validated).
@@ -467,21 +456,18 @@ def image_tag(revision: str) -> str:
 def same_repository(a: str, b: str) -> bool:
     """Whether two git URLs name the same repository.
 
-    Compared as scheme, host and path, because a provider does not have to
-    spell a URL the way the caller did: a trailing ``.git`` or ``/`` is
-    optional, and the host is case-insensitive where the path is not (git
-    forges are case-sensitive about owners and repository names, and treating
-    them otherwise would let one repository's push build another's function).
-    Userinfo is dropped - a credential in the URL does not change which
-    repository is named - and so is the port, which does distinguish hosts and
-    is therefore kept as part of the netloc.
+    A provider need not spell a URL the way the caller did, so a trailing
+    ``.git`` or ``/`` is optional and the host folds to lower case. The *path*
+    does not: git forges distinguish owners by case, and folding it would let
+    one repository's push build another's function. Userinfo is dropped; the
+    port stays, since it distinguishes hosts.
 
     Args:
         a: One repository URL.
         b: The other.
 
     Returns:
-        True if both name the same repository. False if either is empty, so an
+        True if both name the same repository; False if either is empty, so an
         unknown side never matches.
     """
     if not a or not b:

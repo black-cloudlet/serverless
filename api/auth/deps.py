@@ -108,7 +108,7 @@ class WebhookCaller:
 
     Not a :class:`Principal`: nothing is authorized yet. The token is compared
     against the one stored for the function the path names, which is what makes
-    this an identity at all (docs/FUNCTIONS.md - Git webhook).
+    it an identity (docs/FUNCTIONS.md - Git webhook).
     """
 
     # repr=False: a credential must not ride along into a traceback or a log
@@ -122,16 +122,10 @@ def build_caller(
 ) -> Principal | WebhookCaller:
     """Who is asking for a build: an authenticated user, or a git provider.
 
-    A rebuild and a push are the same request - build this function - so they
-    share one endpoint and differ only in how the caller proves they may make
-    it. A valid bearer wins: it identifies a person or a service account, and
-    someone holding both credentials means the authenticated one.
-
-    Takes the bearer half through :func:`optional_auth` rather than calling
-    :func:`require_auth`, for two reasons: a missing header must fall through to
-    the webhook token instead of raising, and FastAPI resolves it by identity,
-    so a test replaces that half on its own exactly as the stream dependency
-    allows.
+    A rebuild and a push are the same request, so they share one endpoint and
+    differ only in how the caller proves they may make it; a valid bearer wins.
+    Through :func:`optional_auth`, not :func:`require_auth`, so a missing header
+    falls through to the webhook token rather than raising.
 
     Args:
         request: The incoming request, for the webhook headers.
