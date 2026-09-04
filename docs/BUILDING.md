@@ -29,7 +29,7 @@ RUNTIMES.md; the controller that publishes built digests is in BUILD-CONTROLLER.
 | Languages | `go`, `python`, `node`, on **one shared** jammy base stack |
 | Build locality | **Build where you run** - every region builds its own copy, into its own registry |
 | Build namespace | The workload's **own** namespace, `{group}{suffix}` (DEPLOYING.md: Chart Topology) |
-| Image CR writer | The **API**, on POST / PUT / `POST .../build`. A git webhook is planned, not implemented |
+| Image CR writer | The **API**, on POST / PUT / `POST .../build`, and on a git push through the same build endpoint (FUNCTIONS.md: Git webhook) |
 | Write model | **Full server-side apply** of the desired spec, never a partial patch |
 | Rebuild trigger | `POST .../build` annotates the **latest `Build`**, never the `Image` |
 | CA trust | **Kyverno mutation** injecting the OpenShift-injected CA bundle into build pods |
@@ -381,7 +381,7 @@ applies it:
 | POST | compose -> apply -> creates |
 | PUT | compose -> apply -> **creates if missing**, else updates. Keeps each region's own ksvc image (BUILD-CONTROLLER.md: Who writes the ksvc image) |
 | build | reconstruct -> apply -> **creates if missing** -> annotate the latest `Build` |
-| webhook *(planned)* | reconstruct + `revision` = pushed SHA -> apply -> **creates if missing** |
+| webhook | reconstruct + `commit` = pushed SHA -> stamp it on the ksvc -> apply -> **creates if missing**. No trigger: the changed revision is the spec change kpack builds from |
 
 The build applies *before* it triggers, which is what makes it self-healing rather than merely
 idempotent. On a region that has never built the function the apply creates the `Image`, which
@@ -421,9 +421,12 @@ definition. Duplicate builds come from nonces, not from concurrency:
 2. **No timestamps, UUIDs or counters** anywhere in the spec.
 3. **Never set `spec.build.creationTime`.** The field exists in kpack's `ImageBuild` type and
    setting it forces a rebuild on every apply.
-4. **The webhook, when it lands, must set a SHA, not a trigger annotation.** Bumping
+4. **The webhook sets a SHA, not a trigger annotation.** Bumping
    `image.kpack.io/additionalBuildNeeded` is a nonce: two instances handling one push would
-   produce two builds. `spec.source.git.revision = <pushed SHA>` is idempotent by data.
+   produce two builds. `spec.source.git.revision = <pushed SHA>` is idempotent by data, so
+   a redelivery and a concurrent replica converge on one build. The same rule is why the
+   explicit rebuild *does* send the trigger when there is no pin to clear, and does not
+   when there is: a cleared pin is itself a spec change.
 
 With these, two instances applying the same desired state produce one object and kpack creates
 **one** build. No lease and no leader election is required.
@@ -732,10 +735,12 @@ RUNTIMES.md: Why pip needs three variables of its own.
    build, so a cache repository does not accumulate tags; superseded blobs are the registry's
    to reclaim. Whether the registry's own GC settles this depends on the registry, and it is
    now per region.
-5. **Git webhook** - not implemented. `BuildRequest.revision` carries the field and the
-   convergence rule it must follow is recorded above (rule 4). Undecided: the endpoint's auth
-   model (per-function shared secret vs. provider signature) and how a push maps to a function
-   when several functions build from one monorepo.
+5. **Monorepo pushes** - a push rebuilds every function whose `revision` names the branch,
+   whatever `path` each builds from, so one commit in a monorepo can start several builds
+   that compile unchanged directories. GitLab's payload lists the files each commit touched
+   (the first 20 commits only), so filtering on `path` is possible; it is not done, because
+   a false negative - a change outside `path` that matters, a shared lockfile at the root -
+   is worse than an extra build. Revisit if build load makes it worth the risk.
 6. **Peer-registry reachability** - a function delete reclaims repositories in *every* region's
    registry from whichever API instance took the request (BUILDING.md: Registry cleanup on
    delete), so the internal network must route each region's registry host from every cluster.

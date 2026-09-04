@@ -327,6 +327,11 @@ garbage-collected with the workload through the KSVC `ownerReference`.
   A pull secret is keyed to a specific registry host, so a keep re-materializes it against
   the **current image's** registry, reading the stored token internally. Kept credentials
   follow an image moved to a different registry.
+- The platform's **own** credential, `{workload}-webhook`, holds the token a git push
+  authenticates with (FUNCTIONS.md: Git webhook). It is replicated like `gitToken` so a
+  hook still works after a switchover, and it is the one credential the API **returns** on
+  read: it was minted here, not supplied, and its only use is being pasted into the git
+  provider.
 
 **These tokens are never returned on read.** A GET redacts them: the pull secret's
 `registryUsername` is shown, its token is not, and the git token is omitted. So a client
@@ -439,10 +444,6 @@ second package without restructuring: the API talks to the build system through
   to get history and a cross-region view. Until then logs are local-region only and bounded
   by the node's rotation.
 - **Audit logging** - who deployed, changed or deleted what; likely required for compliance.
-- **Git webhook** - not implemented. A per-function webhook would pin the pushed commit SHA
-  to the build (`BuildRequest.revision` already carries the field), making a push-triggered
-  rebuild idempotent by data. Until then a build follows the branch head and
-  `POST .../functions/{name}/build` is the on-demand trigger.
 - **Build pipeline hardening** - signed function images (cosign in airgap) and per-function
   build resource tuning.
 - **Rollback / versioning** - Knative revisions enable traffic splitting and rollback;

@@ -7,6 +7,34 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added (git webhook)
+
+- **A push can build a function.** `POST .../functions/{name}/build` now accepts
+  `X-Gitlab-Token` as a second credential beside the bearer - a push and a
+  rebuild are the same request, so they share one endpoint. Each function is
+  given a webhook token at create, returned on that `202` and on every full
+  `GET` as a `webhook` object (URL, token, provider, events) and stored in a
+  replicated `{workload}-webhook` Secret; `POST .../{name}/webhook/rotate`
+  replaces it. Unlike `gitToken` the token is shown: it is the platform's own,
+  and its only use is being pasted into GitLab. Disabling a hook is done in the
+  provider - a token nothing calls starts no build - so there is no delete
+  endpoint.
+- A push builds only if it updated the branch the function's `revision` names,
+  in the repository it builds from; anything else is answered `200` with a
+  reason rather than an error, because GitLab disables a hook that keeps
+  returning `4xx`. A function whose `revision` is a tag or a commit therefore
+  ignores every push, which is what pinning to one meant.
+- What a push changes is the **commit** alone, reported read-only as `commit`:
+  the image tag still follows `revision`, so a push moves the digest that tag
+  points at rather than the tag, the kpack `Image` is never recreated, and a
+  read still reports the revision the caller chose. No trigger annotation is
+  sent with it - the changed revision is itself the spec change kpack builds
+  from, so one push produces one build however many API replicas or provider
+  retries handled it. Both human writes, `POST .../build` and `PUT`, clear the
+  pin and return the function to its revision's head.
+- New setting `SERVERLESS_PUBLIC_URL` (chart: derived from the API Route's own
+  host), the origin in the webhook URL handed to callers.
+
 ### Changed (function source)
 
 - **BREAKING: a function's `branch` is now `revision`.** The value has always been
