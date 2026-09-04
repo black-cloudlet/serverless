@@ -457,10 +457,12 @@ def same_repository(a: str, b: str) -> bool:
     """Whether two git URLs name the same repository.
 
     A provider need not spell a URL the way the caller did, so a trailing
-    ``.git`` or ``/`` is optional and the host folds to lower case. The *path*
-    does not: git forges distinguish owners by case, and folding it would let
-    one repository's push build another's function. Userinfo is dropped; the
-    port stays, since it distinguishes hosts.
+    ``.git`` or ``/`` is optional, the host folds to lower case, a default port
+    is dropped, and the *scheme* is ignored entirely - ``http`` and ``https``
+    name one repository, and comparing them would silently ignore every push
+    from a server whose ``git_http_url`` is spelled the other way. The path is
+    compared as-is: git forges distinguish owners by case, and folding it would
+    let one repository's push build another's function. Userinfo is dropped.
 
     Args:
         a: One repository URL.
@@ -473,13 +475,16 @@ def same_repository(a: str, b: str) -> bool:
     if not a or not b:
         return False
 
-    def parts(url: str) -> tuple[str, str, str]:
+    def parts(url: str) -> tuple[str, str]:
         split = urlsplit(url.strip())
         host = split.netloc.rsplit("@", 1)[-1].lower()
+        for scheme, port in (("http", ":80"), ("https", ":443")):
+            if split.scheme.lower() == scheme and host.endswith(port):
+                host = host[: -len(port)]
         path = split.path.rstrip("/")
         if path.endswith(".git"):
             path = path[: -len(".git")]
-        return split.scheme.lower(), host, path.rstrip("/")
+        return host, path.rstrip("/")
 
     return parts(a) == parts(b)
 

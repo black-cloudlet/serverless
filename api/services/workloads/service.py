@@ -330,6 +330,27 @@ def _stamp_commit(cluster: NamespacedCluster, name: str, commit: str | None) -> 
     return True
 
 
+def _assert_any_region_wrote(statuses: Sequence[RegionStatus], what: str) -> None:
+    """Fail the request when a fan-out write landed in no region at all.
+
+    ``fanout`` records a region's failure on its status instead of raising, so a
+    write whose result is discarded reports success however many regions
+    refused it. Absent is not a failure - the workload does not run there.
+
+    Args:
+        statuses: The per-region results.
+        what: What was being written, for the error.
+
+    Raises:
+        RegionTotalFailure: If every region errored.
+    """
+    if statuses and all(s.message is not None for s in statuses):
+        raise RegionTotalFailure(
+            f"Could not {what} in any region.",
+            details=[{"region": s.region, "message": s.message} for s in statuses],
+        )
+
+
 def _annotation(reads: Sequence[_RegionRead], key: str) -> str | None:
     """The first region's value for a KSVC annotation, or None if none carries it.
 
@@ -984,7 +1005,10 @@ class WorkloadService:
             found = _stamp_commit(cluster, name, None)
             return RegionStatus(region=cluster.region, status="Ready" if found else "Absent")
 
-        await self.deployer.fanout(self.targets_for(group), work)
+        statuses = await self.deployer.fanout(self.targets_for(group), work)
+        # A pin left behind is read back by the next build and reported on the
+        # next GET, so a silent failure here outlives the request.
+        _assert_any_region_wrote(statuses, f"clear the pinned commit on '{name}'")
 
     async def apply_owned_secret(self, name: str, group: str, manifest: dict) -> None:
         """Apply one owned Secret to every region the workload runs in.
@@ -1007,7 +1031,13 @@ class WorkloadService:
                 return RegionStatus(region=cluster.region, status="Absent")
             return RegionStatus(region=cluster.region, status="Ready")
 
-        await self.deployer.fanout(self.targets_for(group), work)
+        statuses = await self.deployer.fanout(self.targets_for(group), work)
+        # `fanout` turns a region's error into a status rather than raising, so
+        # a caller that drops the statuses reports success for a write that
+        # landed nowhere. For a rotation that is the worst answer available: the
+        # caller reconfigures the hook with a token no region will accept, while
+        # the one they replaced stays live.
+        _assert_any_region_wrote(statuses, f"rotate the webhook token for '{name}'")
 
     async def retag_build(
         self, targets: list[NamespacedCluster], region_resources: Mapping[str, Sequence[dict]]
@@ -1208,12 +1238,18 @@ class WorkloadService:
         host = _annotation(reads, ANNOTATION_HOST)
         if host is None:
             host = route_svc.host_for(name, group, self.settings.route_domain)
-        spec = await self.deployer.run_read(region_read.describe_spec, rep.cluster, rep.obj)
-        # What this offering adds that needs its own read (a function's webhook
-        # token). Same region as the spec read, and best-effort there.
-        extras = await self.deployer.run_read(
-            offering.read_response_extras, rep.cluster, name, group, self.settings
-        )
+
+        # The offering's own extras (a function's webhook token) ride in the
+        # same thread as the spec read: a second `run_read` would be another
+        # round trip and another pool admission, and a saturated pool there
+        # would 503 a GET that had already succeeded.
+        def read_spec(cluster: NamespacedCluster, obj: dict):
+            return (
+                region_read.describe_spec(cluster, obj),
+                offering.read_response_extras(cluster, name, group, self.settings),
+            )
+
+        spec, extras = await self.deployer.run_read(read_spec, rep.cluster, rep.obj)
         common = dict(
             name=name,
             group=group,

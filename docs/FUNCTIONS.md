@@ -528,8 +528,17 @@ POST /api/serverless/v1/groups/{group}/functions/{name}/webhook/rotate   ->   20
 ```
 
 Every region is written before it answers, so the old token stops working at once; there
-is no overlap window, because a hook is reconfigured in seconds. There is **no endpoint to
-delete a hook**: a token nothing calls starts no build, so disabling one is done in GitLab.
+is no overlap window, because a hook is reconfigured in seconds. A rotation that reached
+**no** region is a `502`, never a `200` with a token nothing would accept.
+
+This is the token's **only writer**. A `PUT` does not touch it - it could only re-apply
+what it read, or mint a replacement it has no field to return, silently breaking a hook
+that was already configured. One consequence to know: a function whose regions grow (a
+`PUT` targets every configured region) does not carry its token to the new one, so
+**rotate after widening a function's regions**.
+
+There is **no endpoint to delete a hook**: a token nothing calls starts no build, so
+disabling one is done in GitLab.
 
 ### What a push does
 
@@ -567,7 +576,12 @@ reason - **not** an error, because GitLab disables a hook that keeps returning `
 | Tag push, or a deleted branch | `200`, ignored |
 | A push from a different repository | `200`, ignored |
 | Any event other than a push | `200`, ignored - configure the hook for push events |
+| The function is temporarily unbuildable (no stored git token, a runtime retired from the ConfigMap) | `200`, ignored, with the reason |
 | A wrong or missing token, or no such function | `401` |
+
+Only an unusable **token** is ever a `4xx`. Everything else - including a function that
+cannot currently be built - is acknowledged, because a `4xx` would make GitLab disable the
+hook for every later push as well.
 
 A function whose `revision` is a **tag or a commit** therefore ignores every push. That is
 not a special case: the match is "pushed branch equals `revision`", and neither is a
@@ -607,9 +621,15 @@ jumping to whatever the branch has reached since.
 
 | Write | Effect on `commit` |
 |---|---|
-| `POST .../build` | Cleared; the revision's head is built |
+| `POST .../build` | Cleared; the revision's head is built, and a build is always asked for |
 | `PUT` | Cleared; a full replace of the spec carries no pin, whether or not the source changed |
 | A push | Set to the pushed commit |
+
+The rebuild always asks kpack for a build, even though clearing the pin usually changes the
+`Image` spec on its own. kpack decides from the **resolved** source, so clearing a pin that
+still names the revision's head resolves to the commit already built and would produce
+nothing - and a rebuild that silently does nothing (exactly the "retry a failed
+push-build" case) is worse than the extra build this can cost when the head has moved on.
 
 So a push is the only thing that ever pins one, and one call returns a function to the
 head - which is also what keeps it working when a hook is deleted in GitLab.

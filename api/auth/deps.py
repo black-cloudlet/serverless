@@ -123,12 +123,16 @@ def build_caller(
     """Who is asking for a build: an authenticated user, or a git provider.
 
     A rebuild and a push are the same request, so they share one endpoint and
-    differ only in how the caller proves they may make it; a valid bearer wins.
-    Through :func:`optional_auth`, not :func:`require_auth`, so a missing header
-    falls through to the webhook token rather than raising.
+    differ only in how the caller proves they may make it; a real bearer wins.
+
+    The *header*, not the resolved principal, decides which credential is in
+    play: with ``auth_enabled`` false the auth component hands back a dev
+    principal unconditionally, so trusting the principal would swallow every
+    push as an anonymous rebuild - building the revision's head instead of the
+    commit that was pushed, silently.
 
     Args:
-        request: The incoming request, for the webhook headers.
+        request: The incoming request, for the credential headers.
         principal: The caller the Authorization header identifies, if any
             (injected).
 
@@ -139,11 +143,13 @@ def build_caller(
         UnauthenticatedError: If neither credential is present.
         ForbiddenError: If a valid token carries no group membership.
     """
-    if principal is not None:
+    if principal is not None and request.headers.get("Authorization"):
         return principal
     token = request.headers.get(GITLAB_TOKEN_HEADER)
     if token:
         return WebhookCaller(token=token, event=request.headers.get(GITLAB_EVENT_HEADER))
+    if principal is not None:
+        return principal
     raise UnauthenticatedError("missing bearer token or webhook token")
 
 
