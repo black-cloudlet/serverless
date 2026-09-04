@@ -36,13 +36,10 @@ One part's ConfigMap name.
 
 {{/*
 A value naming this release's region, with the region put back as the tenant
-controller's region token - so the tenant template set stays byte-identical in
-every region while its OUTPUT is not, and the value is resolved against
-whichever cluster is being converged.
-
-The value is `tpl`-rendered first, so it may be written as
-`something-{{ .Values.global.region }}` in values.yaml; whatever that resolves
-to, this release's region is swapped back out for `{{region}}`.
+controller's region token, so the tenant template set stays byte-identical in
+every region and the value is resolved against whichever cluster is being
+converged. `tpl`-rendered first, so it may be written as
+`something-{{ .Values.global.region }}` in values.yaml.
 
   {{ include "serverless-api.tenantRegionalValue" (dict "root" $ "key" $key) }}
 */}}
@@ -53,11 +50,7 @@ to, this release's region is swapped back out for `{{region}}`.
 {{- replace $root.Values.global.region $token $resolved -}}
 {{- end -}}
 
-{{/*
-The same rule for a Vault path, which is what first needed it.
-
-  {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" $key) }}
-*/}}
+{{/* The same rule for a Vault path, which is what first needed it. */}}
 {{- define "serverless-api.tenantVaultKey" -}}
 {{- include "serverless-api.tenantRegionalValue" . -}}
 {{- end -}}

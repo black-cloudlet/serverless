@@ -22,11 +22,8 @@ class ResourceKind(Enum):
     EXTERNAL_SECRET = ("external-secrets.io/v1beta1", "ExternalSecret")
     KPACK_IMAGE = ("kpack.io/v1alpha2", "Image")
     KPACK_BUILD = ("kpack.io/v1alpha2", "Build")
-    # Trident Protect, which backs up what a tenant namespace holds
-    # (docs/TENANT-CONTROLLER.md - Backups). The Application names the
-    # namespace to protect; the Schedules say how often and how much to keep.
-    # Both are optional CRDs - a cluster without Trident Protect installed does
-    # not serve them, which `Cluster.serves` is there to answer.
+    # Trident Protect (docs/TENANT-CONTROLLER.md - Backups). Optional CRDs: a
+    # cluster without it installed serves neither, which `Cluster.serves` answers.
     TRIDENT_APPLICATION = ("protect.trident.netapp.io/v1", "Application")
     TRIDENT_SCHEDULE = ("protect.trident.netapp.io/v1", "Schedule")
 

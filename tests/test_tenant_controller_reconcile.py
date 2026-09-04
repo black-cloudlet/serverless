@@ -368,12 +368,9 @@ def test_prune_sweeps_kinds_the_set_dropped_entirely():
 
 
 def test_prune_skips_a_kind_the_cluster_does_not_serve():
-    # Part of the vocabulary is an optional add-on: Trident Protect's
-    # Application and Schedule exist only where it is installed. Listing an
-    # uninstalled CRD is a 404 on the resource itself, not an empty list, so a
-    # prune that asked would fail every converge on every cluster without it -
-    # including the ones that never enabled backups. The fake asserts the
-    # question is not asked; the converge finishing is the point.
+    # Listing an uninstalled CRD is a 404 on the resource itself, not an empty
+    # list, so a prune that asked would fail every converge on every cluster
+    # without the add-on installed. The fake asserts the question is not asked.
     cluster = _Cluster(
         unserved=(ResourceKind.TRIDENT_APPLICATION, ResourceKind.TRIDENT_SCHEDULE),
     )
@@ -383,15 +380,13 @@ def test_prune_skips_a_kind_the_cluster_does_not_serve():
     swept = {kind for kind, _namespace in cluster.lists}
     assert ResourceKind.TRIDENT_APPLICATION not in swept
     assert ResourceKind.TRIDENT_SCHEDULE not in swept
-    # The kinds it does serve are still swept - the skip is per kind, not a
-    # prune that gives up on the first miss.
+    # The skip is per kind, not a prune that gives up on the first miss.
     assert ResourceKind.NETWORK_POLICY in swept
 
 
 def test_prune_collects_backups_left_behind_when_the_set_drops_them():
-    # Trident Protect installed, `backup.enabled` turned off: the part leaves
-    # the set, and the Schedules it applied are the tenant controller's to
-    # collect. Nothing else would - they carry no owner reference, and the
+    # `backup.enabled` turned off: the Schedules the part applied are the tenant
+    # controller's to collect, since they carry no owner reference and the
     # namespace outlives the switch.
     leftover = _leftover("payments-serverless-central-hourly", "Schedule")
     cluster = _Cluster(objects={(ResourceKind.TRIDENT_SCHEDULE, "payments-serverless"): [leftover]})

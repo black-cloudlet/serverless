@@ -284,12 +284,9 @@ chart that cannot see the cluster. */}}
 {{- end -}}
 
 {{/* Fail fast on backup config that would render a Schedule Trident Protect
-refuses, or one that silently protects nothing.
-
-Trident Protect reports a bad Schedule on the Schedule's own status, in a
-namespace nobody is watching - the first anyone would hear of it is a restore
-that has nothing to restore from. So the shape is checked here, where it fails
-the release instead. */}}
+refuses. It reports a bad one on the Schedule's own status, in a namespace
+nobody is watching, so the first anyone would hear of it is a restore that has
+nothing to restore from. */}}
 {{- define "serverless-api.validateBackup" -}}
 {{- if .Values.backup.enabled -}}
 {{- if not .Values.backup.appVault.name -}}
@@ -298,8 +295,7 @@ the release instead. */}}
 {{- if not .Values.backup.schedules -}}
 {{- fail "serverless-api: backup.enabled with no backup.schedules would declare the application and never back it up. Set backup.enabled=false, or give it at least one schedule." -}}
 {{- end -}}
-{{/* Granularity decides which time fields the CR requires; without them the
-Schedule never fires. The names are Trident Protect's own, capitalised. */}}
+{{/* Which time fields each granularity requires; without them it never fires. */}}
 {{- $required := dict "Hourly" (list "minute") "Daily" (list "minute" "hour") "Weekly" (list "minute" "hour" "dayOfWeek") "Monthly" (list "minute" "hour" "dayOfMonth") -}}
 {{- $seen := list -}}
 {{- range .Values.backup.schedules -}}

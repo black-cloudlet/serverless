@@ -154,13 +154,9 @@ def test_the_workload_policies_render_and_mount_together():
 
 
 def test_the_backup_part_renders_and_mounts_together():
-    """`backup.enabled` governs both sides, like `networkPolicy.enabled`.
-
-    Listed without rendering, the pod mounts a ConfigMap that does not exist
-    and never starts; rendered without being listed, no tenant namespace is
-    ever backed up - and nothing about a namespace looks different until
-    someone needs a restore.
-    """
+    """`backup.enabled` governs both sides, like `networkPolicy.enabled` above -
+    and rendered without being listed, no tenant namespace is ever backed up,
+    which nothing looks different about until someone needs a restore."""
     helper = (TEMPLATES / "tenant-controller" / "_tenant.tpl").read_text()
     parts = helper.split('define "serverless-api.tenantTemplateParts" -}}')[1]
     parts = parts.split("{{- end -}}")[0]
@@ -172,14 +168,9 @@ def test_the_backup_part_renders_and_mounts_together():
 
 
 def test_the_backup_application_is_named_for_the_namespace_and_the_region():
-    """One application per namespace per region, `{namespace}-{region}`.
-
-    The same tenant namespace exists in both clusters and is backed up in both.
-    Naming the application after the namespace alone would give the two copies
-    one name wherever they are listed together - a shared AppVault, a restore -
-    and the region token is also what keeps the set region-neutral while its
-    output is not.
-    """
+    """The same namespace exists in both clusters and is backed up in both, so
+    naming the application after the namespace alone would give the two copies
+    one name wherever they are listed together - a shared AppVault, a restore."""
     configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
     assert 'printf "%s-%s" $ns $region' in configmap
     for token in ("tenantNamespaceToken", "tenantRegionToken"):
@@ -187,12 +178,9 @@ def test_the_backup_application_is_named_for_the_namespace_and_the_region():
 
 
 def test_the_default_schedules_cover_an_hour_a_day_and_a_week():
-    """The retention ladder is the feature, so it is asserted rather than read.
-
-    Each granularity carries the time fields Trident Protect requires for it -
-    a Weekly schedule with no `dayOfWeek` never fires, and nothing in the
-    cluster says so.
-    """
+    """The retention ladder is the feature, so it is asserted rather than read,
+    down to the time fields each granularity requires: a Weekly schedule with no
+    `dayOfWeek` never fires, and nothing in the cluster says so."""
     required = {
         "Hourly": {"minute"},
         "Daily": {"minute", "hour"},
@@ -210,17 +198,16 @@ def test_the_default_schedules_cover_an_hour_a_day_and_a_week():
     for name, schedule in schedules.items():
         missing = required[schedule["granularity"]] - set(schedule)
         assert not missing, f"the {name} schedule is missing {sorted(missing)}"
-        # Strings, because the CRD's fields are strings - and because Helm
-        # renders a large enough number in scientific notation (test_chart_values).
+        # Strings, because the CRD's fields are (and see test_chart_values on
+        # what Helm does to a large enough number).
         for field in required[schedule["granularity"]] | {"backupRetention"}:
             assert isinstance(schedule[field], str), f"{name}.{field} must be quoted"
 
 
 def test_backups_are_off_until_an_operator_names_an_appvault():
-    """Both halves of the same decision: the chart cannot supply either
-    prerequisite - the CRDs on the cluster and an AppVault holding the object
-    store's credentials - so a default install renders no Schedule at all,
-    rather than one that writes nowhere."""
+    """The chart can supply neither prerequisite - the CRDs and an AppVault - so
+    a default install renders no Schedule at all, rather than one writing
+    nowhere."""
     backup = _values()["backup"]
     assert backup["enabled"] is False
     assert backup["appVault"]["name"] == ""

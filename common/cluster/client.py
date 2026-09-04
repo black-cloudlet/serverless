@@ -109,16 +109,11 @@ class Cluster:
     def serves(self, kind: ResourceKind) -> bool:
         """Whether this cluster's apiserver serves ``kind`` at all.
 
-        False for a CRD that is not installed here - an optional add-on, such
-        as Trident Protect where a release does not use backups. The caller
-        that must not fail on one is the tenant controller's prune: it sweeps
-        every kind a template set *could* render, and listing a kind the
-        cluster does not have is a 404 on the resource itself, not an empty
-        list.
-
-        Discovery is cached in the dynamic client and invalidated on a miss, so
-        this is a dict lookup once the kind is known, and an add-on installed
-        later is picked up without a restart.
+        False for an optional add-on's CRD that is not installed here. Reading
+        a kind the cluster does not have is a 404 on the resource itself rather
+        than an empty list, which the tenant controller's prune must not take
+        for a failure. Discovery is cached and invalidated on a miss, so a CRD
+        installed later is picked up without a restart.
 
         Args:
             kind: The kind to look for.

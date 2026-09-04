@@ -51,10 +51,9 @@ TEMPLATE_KINDS = (
     # names - how the namespace gets the region's registry credential
     # (docs/ARCHITECTURE.md - Secrets Management).
     ResourceKind.EXTERNAL_SECRET,
-    # Trident Protect's Application and its Schedules: the namespace's backups
-    # (docs/TENANT-CONTROLLER.md - Backups). Unlike every other kind here, their
-    # CRDs need not exist on the cluster - the set carries them only when
-    # `backup.enabled`, and the prune skips a kind the cluster does not serve.
+    # The namespace's backups (docs/TENANT-CONTROLLER.md - Backups). Unlike every
+    # other kind here, their CRDs need not exist on the cluster: the prune skips
+    # a kind the cluster does not serve.
     ResourceKind.TRIDENT_APPLICATION,
     ResourceKind.TRIDENT_SCHEDULE,
 )
