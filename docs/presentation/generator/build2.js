@@ -73,11 +73,11 @@ function visual(s, v) {
       const cols = [1.3, 2.2, 2.4], rh = 0.55;
       let y = VY + 0.2;
       const xs = [VX, VX + cols[0], VX + cols[0] + cols[1]];
-      s.addShape(pres.shapes.RECTANGLE, { x: xs[2] - 0.1, y: y + 0.35, w: cols[2] + 0.1, h: rh * v.rows.length + 0.05, fill: { color: C.tealSoft }, line: { color: C.tealSoft, width: 0 } });
-      v.head.forEach((h, i) => { if (h) txt(s, h.toUpperCase(), { x: xs[i], y, w: cols[i], h: 0.3, fontFace: FM, fontSize: 9, charSpacing: 2, color: i === 2 ? C.teal : C.muted }); });
+      if (!v.plain) s.addShape(pres.shapes.RECTANGLE, { x: xs[2] - 0.1, y: y + 0.35, w: cols[2] + 0.1, h: rh * v.rows.length + 0.05, fill: { color: C.tealSoft }, line: { color: C.tealSoft, width: 0 } });
+      v.head.forEach((h, i) => { if (h) txt(s, h.toUpperCase(), { x: xs[i], y, w: cols[i], h: 0.3, fontFace: FM, fontSize: 9, charSpacing: 2, color: i === 2 && !v.plain ? C.teal : C.muted }); });
       y += 0.4;
       v.rows.forEach((r, k) => {
-        r.forEach((c, i) => txt(s, c, { x: xs[i] + (i ? 0.05 : 0), y, w: cols[i] - 0.1, h: rh, fontSize: 12.5, bold: i === 0, color: i === 1 ? C.muted : C.ink, valign: "middle" }));
+        r.forEach((c, i) => txt(s, c, { x: xs[i] + (i ? 0.05 : 0), y, w: cols[i] - 0.1, h: rh, fontSize: 12.5, bold: i === 0, color: i === 1 && !v.plain ? C.muted : C.ink, valign: "middle" }));
         if (k) s.addShape(pres.shapes.LINE, { x: VX, y, w: 5.9, h: 0, line: { color: C.hair, width: 0.5 } });
         y += rh;
       });

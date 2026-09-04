@@ -1,6 +1,6 @@
 # Team presentation: Serverless on Cloudlet
 
-Twenty-three slides explaining the platform end to end, following the 7×7 rule
+Twenty-six slides explaining the platform end to end, following the 7×7 rule
 (at most seven lines per slide, at most seven words per line). The detail lives
 in the speaker notes.
 

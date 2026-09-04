@@ -29,7 +29,7 @@ function visual(v) {
     case "glyph": return `<div class="glyph build-auto"><div class="g">${esc(v.text)}</div><div class="gs">${esc(v.sub)}</div></div>`;
     case "graph": return graphSvg(v);
     case "stack": return `<div class="stack">${v.layers.map(([t, s, tone], i) => `<div class="layer ${tone || ""} build-auto" style="--d:${i * 80}ms"><b>${esc(t)}</b><span>${esc(s)}</span></div>`).join("")}</div>`;
-    case "table": return `<table class="cmp build-auto"><thead><tr>${v.head.map((h, i) => `<th class="${i === 2 ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r) => `<tr>${r.map((c, i) => `<td class="${i === 0 ? "k" : i === 2 ? "acc" : ""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    case "table": return `<table class="cmp build-auto"><thead><tr>${v.head.map((h, i) => `<th class="${i === 2 && !v.plain ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r) => `<tr>${r.map((c, i) => `<td class="${i === 0 ? "k" : i === 2 && !v.plain ? "acc" : v.plain ? "pl" : ""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
     case "stats": return `<div class="stats">${v.items.map(([b, s], i) => `<div class="stat build-auto" style="--d:${i * 90}ms"><div class="big" data-n="${esc(b)}">${esc(b)}</div><div class="sm">${esc(s)}</div></div>`).join("")}</div>`;
     case "code": return `<pre class="code build-auto">${v.lines.map(([t, tone]) => `<span class="${tone}">${esc(t)}</span>`).join("\n")}</pre>`;
     case "lifecycle": return `<div class="life"><div class="row">${v.phases.map((p, i) => `<span class="chip ${p === "Ready" ? "ok" : ""} build-auto" style="--d:${i * 90}ms">${esc(p)}</span>${i < v.phases.length - 1 ? '<span class="arr">→</span>' : ""}`).join("")}</div><div class="row failed build-auto" style="--d:400ms"><span class="chip bad">Failed</span><span class="why">with a reason:</span></div><div class="row reasons build-auto" style="--d:480ms">${v.failed.map((r) => `<code>${esc(r)}</code>`).join("")}</div></div>`;
@@ -160,7 +160,7 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .cmp{width:100%;border-collapse:collapse;font-size:1.75cqw}
 .cmp th{font-family:var(--mono);font-weight:500;font-size:1.2cqw;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:left;padding:0 1.2cqw 1.2cqh}
 .cmp td{padding:1.4cqh 1.2cqw;border-top:1px solid var(--hair);color:var(--muted)}
-.cmp td.k{font-weight:600;color:var(--ink)}.cmp .acc{color:var(--ink);background:var(--teal-soft)}.cmp th.acc{color:var(--teal)}
+.cmp td.k{font-weight:600;color:var(--ink)}.cmp td.pl{color:var(--ink)}.cmp .acc{color:var(--ink);background:var(--teal-soft)}.cmp th.acc{color:var(--teal)}
 .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:3cqh 2cqw}
 .stat .big{font-family:var(--display);font-weight:800;font-size:6.5cqw;line-height:1;color:var(--accent);letter-spacing:-.02em}
 .stat .sm{font-family:var(--mono);font-size:1.35cqw;color:var(--muted);margin-top:.8cqh}

@@ -10,25 +10,58 @@ const slides = [
     notes: "Open with the one-sentence promise: a developer gives us code or an image and gets a running, addressable service in both regions without ever seeing Kubernetes." },
   // ---------------- 2
   { kind: "content", chapter: 0, kicker: "Today", title: "What we'll talk about",
-    lines: ["Serverless, Knative and the Operator", "The API: contract, mTLS, two regions", "Functions: buildpacks, kpack, build controller", "The portal and cloudlet-apis", "Where we go next"],
-    visual: { kind: "glyph", text: "23", sub: "slides · four topics · one platform" },
+    lines: ["What is serverless computing", "What is Knative and OpenShift Serverless Operator", "The API: active-active Knative wrapper", "Functions: buildpacks, kpack, build controller", "The portal and cloudlet-apis", "Where we go next"],
+    visual: { kind: "glyph", text: "SLIDES", sub: "slides · six topics · one platform" },
     notes: "Foundations is the vocabulary. The API is the contract. Functions and builds is where most of the engineering went. Portal and future is what the platform becomes next." },
   // ---------------- 3
   { kind: "content", chapter: 1, kicker: "Foundations", title: "What is serverless?",
     lines: ["You bring code, not servers", "Scale to zero when idle", "Scale out when traffic arrives", "Pay for requests, not hours", "Nothing to patch, nothing to plan"],
     visual: { kind: "glyph", text: "0 → N → 0", sub: "replicas follow traffic" },
     notes: "Serverless is a billing and operations model, not a technology. Scale to zero is the defining property: an idle workload costs nothing and needs nobody." },
-  // ---------------- 4
-  { kind: "content", chapter: 1, kicker: "Foundations", title: "What is Knative?",
-    lines: ["Kubernetes building blocks for serverless", "Service owns Configuration and Route", "Every change is an immutable Revision", "KPA: concurrency in, replicas out", "Activator wakes revisions from zero", "DomainMapping: your own hostname"],
+  // ---------------- 3b: pros and cons
+  { kind: "content", chapter: 1, kicker: "Foundations", title: "Serverless: the trade-offs",
+    lines: ["Cheap when idle, pricey at peak", "Zero ops, but less control", "Elastic scale, but cold starts", "Fast to ship, easy to lock in", "Fits bursty traffic, not long jobs"],
+    visual: { kind: "table", plain: true, head: ["", "Pro", "Con"], rows: [
+      ["Cost", "Pay only when it runs", "Bills spike under load"],
+      ["Ops", "No servers to patch", "Runtime is not yours"],
+      ["Scale", "Up and down by itself", "Cold start on first hit"],
+      ["Speed", "A function in minutes", "Platform lock-in"],
+      ["Fit", "Bursty, event-driven", "Long-running jobs, state"],
+    ] },
+    notes: "Be honest about the trade-offs before the architecture. Cost: nothing when idle, but a hot loop of requests is billed per request. Ops: no patching, but you cannot tune the kernel or the runtime. Scale: automatic in both directions, but the first request after idle pays a cold start. Speed: a function ships in minutes, but the deployment model is the platform's. Fit: request-driven and bursty workloads win; long-running or stateful jobs do not belong here." },
+  // ---------------- 4a: Knative from familiar objects
+  { kind: "content", chapter: 1, kicker: "Foundations", title: "Knative, from what we already run",
+    lines: ["We know Deployment, Service, Ingress, HPA", "Knative bundles them into one object", "Adds revisions, routing and scale-to-zero", "Runs on any Kubernetes, ours is OpenShift"],
+    visual: { kind: "table", head: ["Need", "Plain Kubernetes", "Knative"], rows: [
+      ["Run the code", "Deployment", "Revision"],
+      ["Reach it", "Service + Ingress", "Route"],
+      ["Scale it", "HPA, never to zero", "KPA, down to zero"],
+      ["Change it", "Rolling update", "New Revision, old kept"],
+      ["Own hostname", "Ingress rule", "DomainMapping"],
+    ] },
+    notes: "Start from the objects the team writes every day. A Deployment runs the code, a Service plus an Ingress reaches it, an HPA scales it but never below one, a rolling update replaces it. Knative Serving covers the same needs with one object and adds what plain Kubernetes lacks: immutable revisions you can route between, and scaling to zero." },
+  // ---------------- 4b: the Knative Service object
+  { kind: "content", chapter: 1, kicker: "Foundations", title: "One object: the Knative Service",
+    lines: ["The Service owns Configuration and Route", "Configuration holds the desired code", "Every change is an immutable Revision", "Route sends traffic to revisions", "DomainMapping gives it your hostname"],
     visual: { kind: "graph", nodes: [
       N("svc", 170, 10, 260, 64, "Knative Service", "the one object you write", "accent"),
-      N("cfg", 20, 140, 240, 64, "Configuration", "desired state"),
+      N("cfg", 20, 140, 240, 64, "Configuration", "desired state of the code"),
       N("rt", 340, 140, 240, 64, "Route", "traffic → revisions"),
       N("rev", 20, 270, 240, 64, "Revision N", "immutable snapshot"),
-      N("kpa", 340, 270, 240, 64, "Autoscaler (KPA)", "0 … N replicas"),
-    ], edges: [E("svc", "cfg"), E("svc", "rt"), E("cfg", "rev"), E("kpa", "rev", { dashed: true })] },
-    notes: "A Service owns a Configuration and a Route. Every change to the Configuration stamps an immutable Revision. The KPA scales revisions on concurrency, including to zero; the Activator buffers requests while a revision wakes. DomainMapping lets us give one workload the same host in both clusters." },
+      N("dm", 340, 270, 240, 64, "DomainMapping", "your own hostname"),
+    ], edges: [E("svc", "cfg"), E("svc", "rt"), E("cfg", "rev"), E("rt", "rev", { dashed: true }), E("dm", "rt", { dashed: true })] },
+    notes: "A Service owns a Configuration and a Route. Every change to the Configuration stamps a new immutable Revision; old ones stay addressable. The Route decides which revisions receive traffic and in what split. A DomainMapping attaches a hostname of your choosing, which is how we give one workload the same address in both regions." },
+  // ---------------- 4c: scale to zero
+  { kind: "content", chapter: 1, kicker: "Foundations", title: "Scaling to zero, and back",
+    lines: ["KPA watches concurrency per revision", "An idle revision scales to zero", "The Activator holds the first request", "Pods come up, the request continues", "Bursts scale out to maxScale"],
+    visual: { kind: "graph", nodes: [
+      N("req", 20, 40, 170, 64, "request", "first one after idle"),
+      N("act", 250, 40, 200, 64, "Activator", "buffers and wakes", "accent"),
+      N("pods", 250, 220, 200, 80, "Revision pods", "0 → N → 0"),
+      N("kpa", 20, 220, 170, 80, "KPA autoscaler", "concurrency → replicas"),
+      N("ready", 480, 220, 100, 80, "Ready", "traffic direct"),
+    ], edges: [E("req", "act"), E("act", "pods"), E("act", "kpa", { dashed: true }), E("kpa", "pods", { dashed: true }), E("pods", "ready")] },
+    notes: "The Knative Pod Autoscaler measures in-flight requests per revision. When nothing arrives, the revision drops to zero pods and the Activator takes its place in the data path. The next request is held by the Activator, which asks the KPA for capacity; pods start, the request is forwarded, and once the revision is healthy the Activator steps out of the path. Bursts scale out up to the maxScale the API sets." },
   // ---------------- 5
   { kind: "content", chapter: 1, kicker: "Foundations", title: "The OpenShift Serverless Operator",
     lines: ["Red Hat's supported Knative distribution", "One KnativeServing custom resource", "OLM installs it and upgrades it", "Kourier ingress, Routes created for you", "Catalog mirrors with oc-mirror"],
@@ -174,4 +207,5 @@ const slides = [
     notes: "Close on the four takeaways and open for questions." },
 ];
 
+slides[1].visual.text = String(slides.length);
 module.exports = { slides };
