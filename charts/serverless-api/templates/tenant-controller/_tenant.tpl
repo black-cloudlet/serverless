@@ -35,22 +35,21 @@ One part's ConfigMap name.
 {{- end -}}
 
 {{/*
-A value naming this release's region, with the region put back as the tenant
-controller's region token, so the tenant template set stays byte-identical in
-every region and the value is resolved against whichever cluster is being
-converged. `tpl`-rendered first, so it may be written as
-`something-{{ .Values.global.region }}` in values.yaml.
+A Vault path with this release's region put back as the tenant controller's region
+token, so the tenant template set stays byte-identical in every region and the
+path is resolved against whichever cluster is being converged.
 
-  {{ include "serverless-api.tenantRegionalValue" (dict "root" $ "key" $key) }}
+Substring replacement, so it is only safe where the value is KNOWN to name the
+region - these paths are built from `.Values.global.region` a few lines away in
+values.yaml. A value an operator writes freely takes the region token itself
+(`backup.appVault.name`), or a shared name that happened to contain the region
+word would become per-region and the two regions' sets would stop matching.
+
+  {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" $key) }}
 */}}
-{{- define "serverless-api.tenantRegionalValue" -}}
+{{- define "serverless-api.tenantVaultKey" -}}
 {{- $root := .root -}}
 {{- $resolved := tpl .key $root -}}
 {{- $token := include "serverless-api.tenantRegionToken" $root -}}
 {{- replace $root.Values.global.region $token $resolved -}}
-{{- end -}}
-
-{{/* The same rule for a Vault path, which is what first needed it. */}}
-{{- define "serverless-api.tenantVaultKey" -}}
-{{- include "serverless-api.tenantRegionalValue" . -}}
 {{- end -}}

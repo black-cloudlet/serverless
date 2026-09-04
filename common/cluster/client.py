@@ -7,7 +7,9 @@ same way (client-cert mTLS, lazy connect), configured from the shared
 
 from __future__ import annotations
 
+import math
 import threading
+import time
 from collections.abc import Iterator
 
 from kubernetes import client, utils
@@ -20,6 +22,12 @@ from common.cluster.namespaced_client import NamespacedCluster
 from common.cluster.pool import _default_connect_timeout, _keepalive_socket_options
 from common.config import CommonSettings, RegionConfig, RegistryConfig
 from common.errors import NotFoundError, ValidationError
+
+# How long a "this cluster does not serve that kind" answer is trusted before it
+# is asked again. Long, because the question is asked on every prune and the
+# answer changes only when an operator installs a CRD - but not forever, or
+# installing one would need a restart of every controller to take effect.
+UNSERVED_TTL_SECONDS = 600
 
 
 class Cluster:
@@ -58,6 +66,10 @@ class Cluster:
 
         self._api_client_obj: client.ApiClient | None = None
         self._dynamic_client_obj: DynamicClient | None = None
+        # `serves` answers, as {kind: expiry}: see its docstring for why the
+        # question must be asked at most once rather than per call.
+        self._served: dict[ResourceKind, tuple[bool, float]] = {}
+        self._discovery_lock = threading.Lock()
         # Guards the lazy builds and close(): a Cluster is shared, and its first
         # use routinely happens on several fan-out threads at once.
         self._client_lock = threading.Lock()
@@ -112,8 +124,22 @@ class Cluster:
         False for an optional add-on's CRD that is not installed here. Reading
         a kind the cluster does not have is a 404 on the resource itself rather
         than an empty list, which the tenant controller's prune must not take
-        for a failure. Discovery is cached and invalidated on a miss, so a CRD
-        installed later is picked up without a restart.
+        for a failure.
+
+        **The answer is cached, and that is the point of the method.** A miss in
+        the dynamic client's discovery does not simply return: it invalidates
+        the whole discovery cache and re-runs it (``/version``, ``/api``,
+        ``/apis`` and a cache-file rewrite) before giving up, and it throws away
+        the resolved groups every other kind is about to be applied through. Ask
+        that per kind per namespace, as an uncached prune would, and a cluster
+        without the add-on pays for it on every namespace of every pass. A
+        negative expires after ``UNSERVED_TTL_SECONDS`` so installing the CRD
+        does not need a restart; a positive is kept for the process's life.
+
+        The lookup is serialized on its own lock, because that cache
+        invalidation is not thread-safe and the converges that ask run on a
+        pool: two threads invalidating at once can leave a third indexing a
+        cache another has just blanked.
 
         Args:
             kind: The kind to look for.
@@ -121,11 +147,21 @@ class Cluster:
         Returns:
             True when discovery resolves it.
         """
-        try:
-            self._dynamic_api(kind)
-        except ResourceNotFoundError:
-            return False
-        return True
+        served, expires = self._served.get(kind, (False, 0.0))
+        if expires > time.monotonic():
+            return served
+        with self._discovery_lock:
+            # Re-read under the lock: another thread may have just paid for it.
+            served, expires = self._served.get(kind, (False, 0.0))
+            if expires > time.monotonic():
+                return served
+            try:
+                self._dynamic_api(kind)
+            except ResourceNotFoundError:
+                self._served[kind] = (False, time.monotonic() + UNSERVED_TTL_SECONDS)
+            else:
+                self._served[kind] = (True, math.inf)
+            return self._served[kind][0]
 
     def connect(self) -> None:
         """Eagerly establish the connection (API discovery).

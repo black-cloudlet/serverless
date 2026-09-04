@@ -1,6 +1,11 @@
 """Unit tests for the per-region Cluster client's resource resolution."""
 
+import threading
+
+from kubernetes.dynamic.exceptions import ResourceNotFoundError
+
 from common.cluster import Cluster, ResourceKind
+from common.cluster import client as client_module
 
 
 class _FakeResources:
@@ -28,6 +33,9 @@ def _cluster_with(dynamic):
     """A Cluster with its lazy dynamic client pre-injected (no real connection)."""
     cluster = object.__new__(Cluster)  # bypass __init__ (no TLS/config needed)
     cluster._dynamic_client_obj = dynamic
+    # Normally set in __init__, which this deliberately skips.
+    cluster._served = {}
+    cluster._discovery_lock = threading.Lock()
     return cluster
 
 
@@ -55,6 +63,94 @@ def test_dynamic_api_passes_each_kinds_gvk():
         {"api_version": "v1", "kind": "Pod"},
         {"api_version": "metrics.k8s.io/v1beta1", "kind": "PodMetrics"},
     ]
+
+
+class _MissingResources(_FakeResources):
+    """A discoverer that has no CRD for one kind - the uninstalled add-on."""
+
+    def __init__(self, missing: str):
+        super().__init__()
+        self._missing = missing
+
+    def get(self, **kwargs):
+        if kwargs["kind"] == self._missing:
+            raise ResourceNotFoundError(f"No matches found for {kwargs}")
+        return super().get(**kwargs)
+
+
+def test_serves_asks_discovery_once_per_kind():
+    """The whole reason `serves` exists as a method rather than a try/except.
+
+    A discovery miss does not just return: it invalidates the entire discovery
+    cache and re-runs it before raising, throwing away the resolved groups the
+    rest of the converge is about to apply through. The prune asks per kind per
+    namespace, so an uncached answer would pay that on every namespace of every
+    pass on every cluster without the add-on.
+    """
+    dynamic = _FakeDynamicClient()
+    dynamic.resources = _MissingResources("Schedule")
+    cluster = _cluster_with(dynamic)
+
+    for _ in range(5):
+        assert cluster.serves(ResourceKind.TRIDENT_SCHEDULE) is False
+        assert cluster.serves(ResourceKind.NETWORK_POLICY) is True
+
+    asked = [c["kind"] for c in dynamic.resources.calls]
+    assert asked.count("NetworkPolicy") == 1
+    # The miss raises before recording, so its cost is counted by the absence
+    # of a second answer rather than by a call log.
+    assert cluster._served[ResourceKind.TRIDENT_SCHEDULE][0] is False
+
+
+def test_serves_asks_again_once_a_negative_expires():
+    """Installing the CRD must not need a restart of every controller."""
+    dynamic = _FakeDynamicClient()
+    dynamic.resources = _MissingResources("Schedule")
+    cluster = _cluster_with(dynamic)
+    assert cluster.serves(ResourceKind.TRIDENT_SCHEDULE) is False
+
+    # The operator installs Trident Protect; the answer is still the cached one.
+    dynamic.resources = _FakeResources()
+    assert cluster.serves(ResourceKind.TRIDENT_SCHEDULE) is False
+
+    cluster._served[ResourceKind.TRIDENT_SCHEDULE] = (False, 0.0)  # TTL elapsed
+    assert cluster.serves(ResourceKind.TRIDENT_SCHEDULE) is True
+
+
+def test_serves_holds_a_positive_answer_for_good():
+    """A kind the cluster serves cannot stop being served under us in a way a
+    re-ask would help with: the apply that follows would fail either way."""
+    dynamic = _FakeDynamicClient()
+    cluster = _cluster_with(dynamic)
+
+    assert cluster.serves(ResourceKind.CONFIG_MAP) is True
+    assert cluster._served[ResourceKind.CONFIG_MAP][1] == float("inf")
+    assert cluster.serves(ResourceKind.CONFIG_MAP) is True
+    assert len(dynamic.resources.calls) == 1
+
+
+def test_serves_serializes_the_lookup():
+    """Discovery's invalidate-and-retry is not thread-safe, and converges run on
+    a pool: two threads invalidating at once can leave a third indexing a cache
+    another has just blanked."""
+    dynamic = _FakeDynamicClient()
+    cluster = _cluster_with(dynamic)
+    cluster._discovery_lock.acquire()
+
+    answered = threading.Event()
+    threading.Thread(
+        target=lambda: (cluster.serves(ResourceKind.SECRET), answered.set()), daemon=True
+    ).start()
+    assert not answered.wait(timeout=0.2), "the lookup ran without holding the lock"
+
+    cluster._discovery_lock.release()
+    assert answered.wait(timeout=5)
+
+
+def test_the_unserved_ttl_is_long_enough_to_be_worth_caching():
+    """Minutes, not seconds: the point is that a pass over many namespaces asks
+    once, and the answer changes only when an operator installs a CRD."""
+    assert client_module.UNSERVED_TTL_SECONDS >= 300
 
 
 class _Item:

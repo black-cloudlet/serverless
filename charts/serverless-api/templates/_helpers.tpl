@@ -292,6 +292,14 @@ nothing to restore from. */}}
 {{- if not .Values.backup.appVault.name -}}
 {{- fail "serverless-api: backup.appVault.name is required when backup.enabled - a Schedule with no AppVault has nowhere to write its copies. It names an AppVault the storage administrator declares on the cluster; this chart never creates one." -}}
 {{- end -}}
+{{/* The name reaches the tenant namespace verbatim, so the ONLY templating it
+may carry is the tenant controller's own region token. Anything else - a Helm
+expression, which values.yaml is not rendered through - would land in the
+Schedule as literal braces and be reported nowhere this release can see. */}}
+{{- $token := include "serverless-api.tenantRegionToken" . -}}
+{{- if contains "{{" (replace $token "" .Values.backup.appVault.name) -}}
+{{- fail (printf "serverless-api: backup.appVault.name %q may only carry %s, which the tenant controller resolves per cluster; values.yaml is not a template, so anything else reaches the Schedule as literal text." .Values.backup.appVault.name $token) -}}
+{{- end -}}
 {{- if not .Values.backup.schedules -}}
 {{- fail "serverless-api: backup.enabled with no backup.schedules would declare the application and never back it up. Set backup.enabled=false, or give it at least one schedule." -}}
 {{- end -}}
@@ -311,13 +319,20 @@ nothing to restore from. */}}
 {{- if not (hasKey $required $granularity) -}}
 {{- fail (printf "serverless-api: backup schedule %q has granularity %q; Trident Protect takes one of %s." $schedule.name $granularity (join ", " (keys $required | sortAlpha))) -}}
 {{- end -}}
+{{/* Set, not merely present: `minute: ""` is how NetApp's own examples write a
+field a granularity does not use, and it would render a Schedule with no time to
+fire at. `dig`'s default covers the absent case, `not` the empty one, and both
+leave a legitimate "0" or 0 alone. */}}
 {{- range $field := index $required $granularity -}}
-{{- if not (hasKey $schedule $field) -}}
-{{- fail (printf "serverless-api: backup schedule %q is %s, so it needs `%s`; without it the Schedule has no time to run at." $schedule.name $granularity $field) -}}
+{{- if not (dig $field "" $schedule | toString) -}}
+{{- fail (printf "serverless-api: backup schedule %q is %s, so it needs `%s` set; without it the Schedule has no time to run at." $schedule.name $granularity $field) -}}
 {{- end -}}
 {{- end -}}
-{{- if not (hasKey $schedule "backupRetention") -}}
+{{- if not (dig "backupRetention" "" $schedule | toString) -}}
 {{- fail (printf "serverless-api: backup schedule %q has no `backupRetention`; how many copies to keep is the one thing a schedule cannot default." $schedule.name) -}}
+{{- end -}}
+{{- if not (dig "snapshotRetention" $.Values.backup.snapshotRetention $schedule | toString) -}}
+{{- fail (printf "serverless-api: backup schedule %q resolves `snapshotRetention` to nothing; set it on the schedule, or set backup.snapshotRetention (\"0\" keeps no snapshot)." $schedule.name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

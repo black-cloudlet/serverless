@@ -68,11 +68,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   them again if backups are turned off. Off by default (`backup.enabled`),
   because it needs Trident Protect's CRDs on the cluster and an `AppVault` the
   storage administrator declares; the chart never creates one and refuses to
-  render a release that enables backups without naming it, or a schedule
-  missing the time fields its granularity requires. `backup.appVault.name` may
-  name `.Values.global.region` for a bucket per region - this release's region
-  is put back as the set's `{{region}}` placeholder, so both regions still
-  render one byte-identical set.
+  render a release that enables backups without naming it, or a schedule whose
+  granularity leaves a time field unset. `backup.appVault.name` reaches the
+  namespace verbatim and takes the set's own `{{region}}` placeholder for a
+  bucket per region, so both regions still render one byte-identical set.
 - The tenant controller's prune now **skips a kind the cluster's apiserver does
   not serve** instead of listing it. The template vocabulary now includes an
   optional add-on's CRDs, and listing an uninstalled CRD is a 404 on the

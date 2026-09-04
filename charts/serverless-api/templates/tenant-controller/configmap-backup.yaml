@@ -3,7 +3,7 @@
 {{- $ns := include "serverless-api.tenantNamespaceToken" . }}
 {{- $region := include "serverless-api.tenantRegionToken" . }}
 {{- $app := printf "%s-%s" $ns $region }}
-{{- $appVault := include "serverless-api.tenantRegionalValue" (dict "root" $ "key" .Values.backup.appVault.name) }}
+{{- $appVault := .Values.backup.appVault.name }}
 {{/*
 Part of the tenant template set: the namespace's backups, through Trident
 Protect (docs/TENANT-CONTROLLER.md - Backups).
@@ -15,9 +15,10 @@ namespaces created at runtime, that Argo cannot see.
 
 NOTHING IN THE SET MAY DEPEND ON THE REGION. Both regions render this chart from
 the same values, so both hold identical bytes and the same hash, and a provision
-converges a peer's namespace from whichever controller took the request. Both
-per-region facts here go in as the region token: the application's name, and the
-AppVault it is written to.
+converges a peer's namespace from whichever controller took the request. The
+application's name carries the region token for that reason, and an AppVault per
+region is written with the token by hand - `backup.appVault.name` goes in
+verbatim, so a name that merely happens to contain the region word stays shared.
 */}}
 apiVersion: v1
 kind: ConfigMap
@@ -45,6 +46,16 @@ data:
   # hourly copies expire without touching the weekly one. The AppVault is NOT
   # created here: it holds the object-store credentials and is declared once per
   # cluster in the `trident-protect` namespace, referenced from here by name.
+  #
+  # A time field is emitted only when it resolves to something, and `dig` rather
+  # than `default` reads the overrides: `0` and "0" are values, not unset fields,
+  # and `default` would swap both for the fallback.
+  #
+  # `spec.enabled` is deliberately never declared. It defaults to true, and
+  # Trident Protect disables an application's schedules for the duration of an
+  # in-place restore - declared here, the next converge would switch them back
+  # on underneath the restore, since the controller re-applies under its own
+  # field manager.
   85-backup-schedules.yaml: |
 {{- range $i, $schedule := .Values.backup.schedules }}
 {{- if $i }}
@@ -59,22 +70,17 @@ data:
       applicationRef: {{ $app }}
       appVaultRef: {{ $appVault }}
       granularity: {{ $schedule.granularity }}
-      backupRetention: {{ $schedule.backupRetention | quote }}
-      snapshotRetention: {{ default $.Values.backup.snapshotRetention $schedule.snapshotRetention | quote }}
-{{- with (default $.Values.backup.dataMover $schedule.dataMover) }}
-      dataMover: {{ . }}
+      backupRetention: {{ $schedule.backupRetention | toString | quote }}
+      snapshotRetention: {{ dig "snapshotRetention" $.Values.backup.snapshotRetention $schedule | toString | quote }}
+{{- $dataMover := dig "dataMover" $.Values.backup.dataMover $schedule | toString }}
+{{- if $dataMover }}
+      dataMover: {{ $dataMover }}
 {{- end }}
-{{- if hasKey $schedule "minute" }}
-      minute: {{ $schedule.minute | quote }}
+{{- range $field := list "minute" "hour" "dayOfWeek" "dayOfMonth" }}
+{{- $value := dig $field "" $schedule | toString }}
+{{- if $value }}
+      {{ $field }}: {{ $value | quote }}
 {{- end }}
-{{- if hasKey $schedule "hour" }}
-      hour: {{ $schedule.hour | quote }}
-{{- end }}
-{{- if hasKey $schedule "dayOfWeek" }}
-      dayOfWeek: {{ $schedule.dayOfWeek | quote }}
-{{- end }}
-{{- if hasKey $schedule "dayOfMonth" }}
-      dayOfMonth: {{ $schedule.dayOfMonth | quote }}
 {{- end }}
 {{- end }}
 {{- end }}

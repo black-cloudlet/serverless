@@ -268,9 +268,15 @@ granularity requires (Hourly needs `minute`, Daily adds `hour`, Weekly adds `day
 Monthly adds `dayOfMonth`), because Trident Protect reports that on the Schedule's own
 status in a namespace nobody is watching.
 
-`backup.appVault.name` may name `.Values.global.region` for a bucket per region: this
-release's region is put back as the `{{region}}` placeholder, exactly as the build part's
-Vault paths are, so both regions render one set and each cluster resolves its own AppVault.
+`backup.appVault.name` reaches the tenant namespace **verbatim**, so a shared AppVault is
+just its name. For a bucket per region, write the `{{region}}` placeholder into it
+(`serverless-{{region}}`) and the controller resolves it against whichever cluster it is
+writing to. The build part's Vault paths get the same effect by substitution, from values
+built out of `.Values.global.region` a few lines away; a name an operator writes freely
+cannot be treated that way, because a shared name that merely happened to contain the
+region word would quietly become per-region and the two regions' sets would stop matching.
+A name carrying anything else in braces fails the release - values.yaml is not rendered as
+a template, so `{{ .Values.global.region }}` would reach the Schedule as literal text.
 
 Turning backups **off** removes the part from the set, and the prune collects the
 `Application` and the `Schedule`s out of every tenant namespace on the next pass - they
@@ -330,3 +336,4 @@ read with the template-hash annotation, answers "has the new policy reached ever
 | A namespace vanished | Namespace GC collected it after the grace period | The next deploy re-provisions it; annotate `serverless.platform/keep` to hold one |
 | Every converge fails naming `Application` or `Schedule` | `backup.enabled` on a cluster with no Trident Protect CRDs - the applies have nothing to write to (the prune tolerates a missing CRD; an apply cannot) | Install Trident Protect, or set `backup.enabled: false` |
 | Namespaces converge, but no backup ever runs | The `Schedule`s were applied and Trident Protect refused them - usually an `appVaultRef` naming an AppVault that does not exist on that cluster | `kubectl get schedule -n {group}-serverless -o yaml` and read the status; check the AppVault name per region |
+| A schedule stops running after a restore | Trident Protect disables an application's schedules for an in-place restore. The set never declares `spec.enabled`, so the converge leaves that alone rather than switching them back on underneath it | Re-enable them when the restore is done |

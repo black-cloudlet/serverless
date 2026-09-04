@@ -204,6 +204,59 @@ def test_the_default_schedules_cover_an_hour_a_day_and_a_week():
             assert isinstance(schedule[field], str), f"{name}.{field} must be quoted"
 
 
+def test_the_appvault_name_reaches_the_tenant_namespace_verbatim():
+    """It is operator-written, so the chart must not guess at it.
+
+    The build part's Vault paths are region-substituted, which is safe because
+    they are built from `global.region` a few lines away in values.yaml. Doing
+    that to a free-form name would turn a SHARED AppVault whose name merely
+    contained the region word into a per-region one: the peer would reference a
+    vault that does not exist, and the two regions' sets would stop being
+    byte-identical - which is the property the provision fan-out rests on.
+    """
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert "$appVault := .Values.backup.appVault.name" in configmap
+    assert "tenantVaultKey" not in configmap, "the AppVault name must not be region-substituted"
+    # Per region is spelled with the controller's own token, which the set
+    # carries in both regions identically.
+    ci = yaml.safe_load((CHART / "ci" / "everything-values.yaml").read_text())
+    assert ci["backup"]["appVault"]["name"] == "serverless-{{region}}"
+
+
+def test_a_name_helm_would_not_render_is_refused_rather_than_shipped():
+    """values.yaml is not a template, so `{{ .Values.global.region }}` in a name
+    reaches the Schedule as literal braces - reported by Trident Protect on an
+    object in a namespace nobody watches, if at all."""
+    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    assert 'contains "{{" (replace $token "" .Values.backup.appVault.name)' in helpers
+
+
+def test_a_schedules_time_fields_must_be_set_not_merely_present():
+    """`minute: ""` is how NetApp's own examples write a field a granularity does
+    not use. Accepting it as "present" renders a Schedule with no time to fire
+    at, and `dig`'s default covers the absent case in the same expression.
+
+    The same rule reads the overrides, where `default` would have been wrong the
+    other way round: a `snapshotRetention` of 0 is a value, not an unset field.
+    """
+    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert 'dig $field "" $schedule | toString' in helpers
+    assert 'dig "backupRetention" "" $schedule' in helpers
+    assert "hasKey" not in configmap, "a present-but-empty field must not be emitted"
+    assert "default $.Values.backup" not in configmap, "`default` swallows a 0 override"
+
+
+def test_the_schedules_never_declare_whether_they_are_enabled():
+    """`spec.enabled` defaults to true, and Trident Protect switches it off for
+    the duration of an in-place restore. Declared here it would be the tenant
+    controller's field, and the next converge would turn the schedules back on
+    underneath the restore."""
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    body = configmap.split("85-backup-schedules.yaml: |")[1]
+    assert "enabled" not in body
+
+
 def test_backups_are_off_until_an_operator_names_an_appvault():
     """The chart can supply neither prerequisite - the CRDs and an AppVault - so
     a default install renders no Schedule at all, rather than one writing

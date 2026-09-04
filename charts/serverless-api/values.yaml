@@ -633,12 +633,16 @@ backup:
     # in the `trident-protect` namespace (it holds the object store's
     # credentials); this chart never creates one.
     #
-    # It may reference `.Values.global.region` for a bucket per region: this
-    # release's region is put back as the controller's `{{region}}` token, the
-    # same rule the build part's Vault paths follow, so the set stays
-    # byte-identical in both regions.
+    # It reaches the tenant namespace VERBATIM, so a shared AppVault is just its
+    # name. For a bucket per region, write the tenant controller's own region
+    # token - it resolves against whichever cluster is being converged, and the
+    # template set stays byte-identical in both regions:
     #
-    #   name: serverless-{{ .Values.global.region }}
+    #   name: serverless-{{region}}
+    #
+    # `{{ .Values.global.region }}` is NOT the way to write that: values.yaml is
+    # not rendered as a template, and the chart refuses a name carrying anything
+    # but the region token rather than let the braces reach a Schedule.
     name: ""
 
   # Restic or Kopia, Trident Protect's two backup engines; a schedule may
