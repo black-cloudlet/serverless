@@ -9,6 +9,7 @@
 - [Is it possible?](#is-it-possible)
 - [Design decisions](#design-decisions)
 - [What a push does](#what-a-push-does)
+- [How `/build` works once a function is pinned](#how-build-works-once-a-function-is-pinned)
 - [API surface](#api-surface)
 - [Storage](#storage)
 - [Implementation steps](#implementation-steps)
@@ -36,13 +37,14 @@ pushed SHA. Nothing in the engine has to change shape.
 |----------|--------|-----|
 | **Where the token lives** | A **Secret**, `{workload}-webhook` (Opaque, key `token`), replicated to every region exactly like `{workload}-git`. **Not** a KSVC annotation. | An annotation is readable by anyone with `get` on the KSVC, shows in `oc describe`, and is copied into every event and log line that prints the object. The platform already draws this line for the git token (ARCHITECTURE.md - Customer-provided credentials); the webhook token is a credential to the same degree - it is what lets an unauthenticated caller start a build. Replication is what keeps the hook working after a DNS switchover: the API answering is then the other region's. |
 | **Not a key inside `{workload}-git`** | Its own Secret. | The git Secret is server-side applied in full by every build plan (`KpackBackend.plan`); a key the plan does not carry would be dropped on the next apply, so every writer would have to know about it. A separate object has one writer. |
-| **Where the token is generated** | The API, on `POST .../functions` (synchronously, before the 202), with `secrets.token_urlsafe(32)`. | It is echoed on the create's own 202 and on every full `GET`, so the caller never has to make a second call to find it. A function created before this feature gets one on its next `PUT`, or on demand from the rotate endpoint. |
+| **Where the token is generated** | The API, on `POST .../functions` (synchronously, before the 202), with `secrets.token_urlsafe(32)`. | It is echoed on the create's own 202 and on every full `GET`, so the caller never has to make a second call to find it. Nothing is deployed yet, so every function has one from birth and there is no backfill path to write. |
 | **Returned on read** | Yes - `webhook.token` on the create 202, on `GET .../functions/{name}`, and on the rotate response. **Never** on the list. | The user's requirement, and the reason this token differs from `gitToken`: `gitToken` is the user's, and they already have it; this one is the platform's, and its only use is being pasted into GitLab. Anyone who can read the function can also `POST .../build` with their own bearer, so showing them a credential worth exactly that grants nothing new. The list stays clean because it is the one view a wide audience polls. |
 | **Endpoint** | The existing `POST .../functions/{name}/build`, authenticated **either** by `Authorization: Bearer` (today) **or** by `X-Gitlab-Token`. | The user's requirement, and honest: a webhook *is* a build request. One path, one service method, two ways to prove you may call it. |
 | **Which branch a push builds** | The pushed ref must **equal the stored `branch`**; the build pins the pushed SHA. Any other ref is acknowledged with `200` and ignored. | The alternative - "switch the function to whatever branch was pushed" - means a developer pushing `feature/x` redeploys the function from `feature/x`. That is a `PUT` in disguise, from an unauthenticated caller, and it changes desired state (the branch annotation, the image tag, the Image's own `spec.tag` which is immutable and forces a delete+recreate). The webhook stays what BUILDING.md says it is: the pushed SHA, nothing else. Switching branches remains a `PUT` with a bearer. |
 | **How the build is started** | Apply the reconstructed plan with `revision = <sha>` in every region. **No** `additionalBuildNeeded` trigger. | Rule 4. The revision change *is* the spec change kpack builds from (`CONFIG`); a trigger on top would be a nonce and a second build. A redelivery of the same push applies an identical spec and builds nothing, which is the idempotence GitLab retries need. |
 | **The pin is persisted** | On the KSVC as a metadata annotation `serverless.platform/git-revision`, patched (metadata only - no revision is cut) in every region beside the Image apply. | Without it the next `PUT` that changes nothing would re-apply `revision = main`, a spec change, and rebuild - breaking "a `PUT` rebuilds only when a build input changes". With it, every reconstruction carries the pin: the reconstruction table in BUILDING.md gains a row. |
-| **Manual `POST .../build` unpins** | With a bearer, a rebuild clears the pin and builds the branch head (the annotation is removed, the plan applies `revision = branch`, and - because that is itself a spec change - the trigger is skipped). Without a pin it behaves exactly as today. | Keeps the documented meaning of the endpoint ("the branch head, now") and gives an escape hatch: a function whose GitLab hook was deleted would otherwise stay on its last pushed SHA forever. |
+| **What `POST .../build` does to a pinned function** | **Nothing new.** It reconstructs from stored state - which now includes the pinned `revision` - applies an identical `Image` (a no-op) and annotates the latest `Build`, exactly as today. kpack runs a `TRIGGER` build of *that same commit* against today's base image and buildpacks. | That is the endpoint's stated purpose: build the same definition again against today's dependencies (FUNCTIONS.md - Building again without changing anything). Once a function is pinned, "the same definition" *is* the pinned commit, so the pin makes the endpoint more faithful, not less. Unpinning here would be writing desired state, and this is "the one function write that carries no desired state at all". |
+| **Where unpinning lives** | A `PUT` that changes `gitRepo`, `branch` or `path` drops the pin (it belongs to a repo+branch). `DELETE .../{name}/webhook` drops the token and the pin together, returning the function to branch-head tracking. | The two cases that actually mean it: the source moved, or the hook is gone. Neither is `/build`, so `/build` keeps one meaning whatever the hidden state. |
 | **A `PUT` keeps the pin only while the source is unchanged** | `gitRepo`, `branch` and `path` unchanged -> carry `revision` forward; any of them changed -> drop it (the branch head of the new source). | The pin belongs to a (repo, branch); it means nothing for another. |
 | **Response to GitLab** | `202` + the usual `FunctionResponse` when a build was scheduled; `200` + a small `WebhookOutcome` when the push was ignored; `401` on a bad or missing token; `400` on a malformed payload. | GitLab auto-disables a hook that keeps failing (`4xx` permanently, `5xx` with backoff), so "not my branch" must be a success. A bad token, on the other hand, *should* surface in the hook's delivery log. |
 | **Existence is not leaked** | A wrong token and a function that does not exist both answer `401`. | The webhook caller is unauthenticated until the token matches; the 404 is a bearer caller's answer. |
@@ -77,6 +79,28 @@ Everything from "reconstruct" on is the existing rebuild path with two differenc
 revision is the SHA, and there is no trigger. A region the function does not run in is
 skipped, as today.
 
+## How `/build` works once a function is pinned
+
+The webhook changes the Image's **revision**, never its **tag** - the tag follows the
+branch (`common/build.py - image_reference`), so a pinned build pushes to `:main` like any
+other and the build controller rolls it out unchanged. That is what leaves `POST .../build`
+alone:
+
+| Function state | What `_build_request` reconstructs | The apply | kpack | Result |
+|----------------|------------------------------------|-----------|-------|--------|
+| Never pushed (no pin) | `revision = branch` | no-op | `TRIGGER` on the latest `Build` | A build of the branch head - today's behaviour, unchanged. |
+| Pinned at `9f2c1ab` by a push | `revision = 9f2c1ab` | no-op (the Image already says so) | `TRIGGER` on the latest `Build` | A build of **`9f2c1ab`** against today's base image and buildpacks. |
+| Pinned, and the region has no `Image` (post-switchover) | `revision = 9f2c1ab` | **creates** the Image | builds on its own; nothing to trigger | The reconstruction gap closes at the pinned commit, not at the branch head. |
+
+So the endpoint keeps its one meaning - *build the current definition again, against today's
+dependencies* - and the pin only sharpens what "current definition" refers to. This is also
+the answer to the CVE case: a function that has been pushed to is patched by rebuilding the
+commit it is actually running, which is what an operator means by "rebuild it", rather than
+silently dragging it forward to whatever landed on the branch since.
+
+Two consecutive `/build` calls still produce two builds, as today: the trigger is an
+annotation on one `Build`, asserted once, not a nonce in the Image spec.
+
 ## API surface
 
 ### Create - `POST .../functions` -> `202`
@@ -110,7 +134,7 @@ Adds the same `webhook` object, plus:
 
 | Caller | Headers | Body | Behaviour |
 |--------|---------|------|-----------|
-| A user or automation | `Authorization: Bearer …` | none | As today, plus: clears a pin and builds the branch head. `202`. |
+| A user or automation | `Authorization: Bearer …` | none | Unchanged. On a pinned function it rebuilds that exact commit; on an unpinned one, the branch head. `202`. |
 | GitLab | `X-Gitlab-Token: <token>`, `X-Gitlab-Event: Push Hook` | GitLab push event | Validates the token, then: `ref` must be `refs/heads/{stored branch}`; `after` must be a commit (not the all-zero deletion marker); `project.git_http_url` must name the stored repository (trailing `.git`/`/` ignored). Match -> build pinned at `checkout_sha` (else `after`), `202`. No match -> `200 {accepted: false, reason}`. |
 | GitLab, other event kinds | `X-Gitlab-Event: Tag Push Hook`, `Merge Request Hook`, … | any | `200 {accepted: false, reason: "event not handled"}`. Configure the hook for push events only; this is the safety net. |
 | Both headers | | | The bearer wins; the GitLab header is ignored. |
@@ -122,9 +146,15 @@ return, so a client polls one place.
 ### Rotate - `POST .../functions/{name}/webhook/rotate` -> `200`
 
 Bearer only. Generates a new token, applies the Secret in every region, returns the new
-`webhook` object. Also how a function created before this feature gets its first token
-without waiting for a `PUT`. The old token stops working the moment the last region's
-apply lands; there is no overlap window (a hook is reconfigured in seconds).
+`webhook` object. The old token stops working the moment the last region's apply lands;
+there is no overlap window (a hook is reconfigured in seconds).
+
+### Disable - `DELETE .../functions/{name}/webhook` -> `204`
+
+Bearer only. Deletes the `{workload}-webhook` Secret and clears the `git-revision`
+annotation in every region the function runs in. The function goes back to following its
+branch head; `POST .../webhook/rotate` mints a new token if it is wanted again. This is the
+explicit unpin, and the reason `/build` does not have to be one.
 
 ### Errors
 
@@ -213,8 +243,10 @@ dependency order.
   `functools.partial(self.create, webhook_token=token)` as the work; echo
   `webhook=WebhookView(...)` on the 202 (through `**extra` on `accepted`).
 - `FunctionService.create`: `extra_secrets = plan.replicated + [build_webhook_secret(...)]`.
-- `FunctionService.update`: `token = existing.get("webhook_token") or new_webhook_token()`
-  (self-heals a pre-feature function); same `extra_secrets` append; `revision` carried
+- `FunctionService.update`: re-emits the Secret with the token read back
+  (`existing.get("webhook_token") or new_webhook_token()` - the fallback is defensive, not
+  a migration: an update targets *every* configured region, so a region that gains the
+  workload here must gain the token with it, exactly as it gains the git Secret); `revision` carried
   forward when `gitRepo`/`branch`/`path` are unchanged, else None (step 6 wires it into the
   KSVC).
 - `FunctionOffering.describe`/the GET path: read the webhook Secret in the same per-region
@@ -226,7 +258,7 @@ dependency order.
   (skip absent, as `apply_build_objects` does), return `WebhookView`. Not a 202: the
   write is one small Secret and the caller needs the token now.
 - Tests: `tests/test_workload_service.py` - create applies the Secret in every region;
-  update keeps it; update of a pre-feature function creates it; GET returns `webhook`;
+  update keeps it and reaches a region the create did not; GET returns `webhook`;
   list does not; rotate replaces the value in every region and answers with the new one.
   `tests/test_api.py` - the router shape and that a container has no rotate (`404`).
 
@@ -269,28 +301,33 @@ dependency order.
   mismatch / tag / deletion / repo mismatch each name their reason; a match schedules a
   build whose `BuildRequest.revision` is the SHA and whose owner label is the function's.
 
-### 6. Pin the SHA, persist it, and let the bearer path unpin
+### 6. Pin the SHA, persist it, and leave `/build` alone
 
-- `WorkloadService.apply_build(name, group, plan, *, trigger=True, revision=None)`:
-  after the per-region apply, when `revision is not None` patch the KSVC metadata
-  annotation (a merge patch of `metadata.annotations` only - `stamp_pull` is the model,
-  minus its template half, so no revision is cut); when `revision is None` and the
-  annotation is present, remove it (`null` in the merge patch). Call `builder.trigger`
-  only when `trigger` is true.
-- `FunctionService.build_pinned(...)`: `apply_build(..., trigger=False, revision=sha)`.
-- `FunctionService.build` (bearer): `revision=None` always; `trigger = existing.get("revision") is None`
-  (a pinned function's unpin is the spec change; an unpinned one needs the nonce as today).
-- `ApplyRequest.revision` + `build_ksvc(revision=...)` stamps the annotation on `PUT`;
-  `region_read.existing_state` reads it as `existing["revision"]`; `_build_request`
-  defaults `revision` to `existing.get("revision")` so a `PUT` that keeps the source also
-  keeps the pin in the plan it re-applies (no spurious rebuild).
-- Tests: `tests/test_workload_service.py` - webhook build applies `revision=sha` to every
-  region's Image and never touches a Build; annotation written, per region; redelivery
-  applies an identical Image; bearer rebuild on a pinned function drops the annotation,
-  re-applies `revision=branch` and does not trigger; bearer rebuild on an unpinned one
-  triggers as before; `PUT` without a source change re-applies the pinned revision;
-  `PUT` with a branch change drops it. `tests/test_kpack_build.py` already covers the
-  manifest.
+- `ApplyRequest.revision` + `build_ksvc(revision=...)` stamp the annotation on `PUT`;
+  `region_read.existing_state` reads it back as `existing["revision"]`;
+  `FunctionService._build_request` defaults `revision` to `existing.get("revision")`.
+  **That default is the entire bearer-`/build` change**: the reconstruction now yields the
+  pinned commit instead of the branch, so the apply is a no-op and the trigger does what it
+  has always done. No branch in `FunctionService.build`, no flag at the router.
+- `WorkloadService.apply_build(name, group, plan, *, trigger=True, revision=None)`: when
+  `revision` is not None, patch the KSVC's `metadata.annotations` in each region **before**
+  the Image apply - a merge patch of metadata only (`stamp_pull` minus its template half),
+  so no Knative revision is cut - and call `builder.trigger` only when `trigger` is true.
+  The KSVC leads and the Image follows: the annotation is the desired state and the Image is
+  derived from it, so a patch that lands beside a failed apply self-heals on the next write
+  rather than leaving a build nobody can reconstruct.
+- `FunctionService.build_pinned(...)`: `apply_build(..., trigger=False, revision=sha)`. The
+  revision change is itself the spec change kpack builds from; a trigger on top would be a
+  second build for one push (rule 4).
+- `PUT` carries the pin forward when `gitRepo`/`branch`/`path` are unchanged and drops it
+  otherwise (step 4); `DELETE .../{name}/webhook` drops it outright.
+- Tests: `tests/test_workload_service.py` - a webhook build applies `revision=sha` to every
+  region's Image and never touches a `Build`; the annotation is written per region; a
+  redelivery applies an identical Image and builds nothing; **`POST .../build` on a pinned
+  function re-applies the same SHA and annotates the latest `Build`** (one build, of that
+  commit); on an unpinned function it behaves exactly as today; a `PUT` with no source
+  change re-applies the pin and rebuilds nothing; a `PUT` that changes the branch drops it.
+  `tests/test_kpack_build.py` already covers the manifest.
 
 ### 7. Docs and changelog
 
