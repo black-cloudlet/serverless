@@ -135,7 +135,7 @@ slides.forEach((sd, i) => {
   if (sd.notes) s.addNotes(sd.notes);
   if (sd.kind === "title") {
     txt(s, sd.kicker.toUpperCase(), { x: ML, y: 2.0, w: 8, h: 0.35, fontFace: FM, fontSize: 12, color: C.accent, charSpacing: 4, bold: true });
-    txt(s, sd.title, { x: ML, y: 2.4, w: 9.5, h: 2.0, fontFace: FD, fontSize: 66, bold: true, valign: "middle", lineSpacingMultiple: 0.95 });
+    txt(s, sd.title, { x: ML, y: 2.4, w: 8.4, h: 2.0, fontFace: FD, fontSize: 66, bold: true, valign: "middle", lineSpacingMultiple: 0.95 });
     txt(s, sd.sub, { x: ML, y: 4.5, w: 8, h: 0.6, fontFace: FD, fontSize: 24, italic: true, color: C.muted });
     txt(s, sd.meta, { x: ML, y: 5.4, w: 6, h: 0.35, fontFace: FM, fontSize: 11, color: C.muted });
     [2.4, 1.7, 1.0].forEach((d, k) => s.addShape(pres.shapes.OVAL, { x: 11.0 - d / 2, y: 3.75 - d / 2, w: d, h: d, fill: { color: C.paper, transparency: 100 }, line: { color: C.accent, width: 1.5, transparency: 30 + k * 25 } }));
