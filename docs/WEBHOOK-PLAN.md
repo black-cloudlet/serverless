@@ -68,8 +68,8 @@ sequenceDiagram
     else ref == stored branch
         API-->>G: 202 FunctionResponse (statusUrl)
         API->>API: reconstruct BuildRequest, revision = sha
-        API->>K: server-side apply Image(revision = sha) + SA + git Secret, per region
         API->>API: patch KSVC metadata annotation git-revision = sha, per region
+        API->>K: server-side apply Image(revision = sha) + SA + git Secret, per region
         K->>K: CONFIG build (spec changed); no-op if already at sha
         K->>BC: Image.status.latestImage = new digest
         BC->>BC: roll the digest onto the KSVC (unchanged path)
@@ -77,8 +77,9 @@ sequenceDiagram
 ```
 
 Everything from "reconstruct" on is the existing rebuild path with two differences: the
-revision is the SHA, and there is no trigger. A region the function does not run in is
-skipped, as today.
+revision is the SHA, and there is no trigger. The annotation is patched *before* the Image
+apply, so the KSVC - the replicated source of truth - leads and the Image is derived from
+it. A region the function does not run in is skipped, as today.
 
 ## Active/active: one delivery, two builds
 
@@ -291,10 +292,14 @@ dependency order.
   Secret with `region_apply`-style owner stamping to every region the function runs in
   (skip absent, as `apply_build_objects` does), return `WebhookView`. Not a 202: the
   write is one small Secret and the caller needs the token now.
+- `FunctionService.disable_webhook(group, name, user)` + router
+  `DELETE /{name}/webhook`: the same fan-out, deleting the Secret and removing the
+  `git-revision` annotation (a `null` in the merge patch). 204.
 - Tests: `tests/test_workload_service.py` - create applies the Secret in every region;
   update keeps it and reaches a region the create did not; GET returns `webhook`;
-  list does not; rotate replaces the value in every region and answers with the new one.
-  `tests/test_api.py` - the router shape and that a container has no rotate (`404`).
+  list does not; rotate replaces the value in every region and answers with the new one;
+  disable removes the Secret and the pin in every region and is idempotent.
+  `tests/test_api.py` - the router shape and that a container has neither endpoint (`404`).
 
 ### 5. The second way into `/build`
 
@@ -372,7 +377,7 @@ dependency order.
 - BUILDING.md: `webhook` row in *Every write path is a full server-side apply* moves from
   *planned* to real; the reconstruction table gains `revision`; *What causes a new Build*
   `COMMIT` row; strike open question 5.
-- API.md: endpoint table (+ rotate), auth section (the second credential on `/build`),
+- API.md: endpoint table (+ rotate and disable), auth section (the second credential on `/build`),
   error table (`401` on the webhook path).
 - ARCHITECTURE.md: the open-questions bullet; secrets section lists `{workload}-webhook`.
 - DEPLOYING.md: `SERVERLESS_PUBLIC_URL`; note that GitLab must reach the API's Route
