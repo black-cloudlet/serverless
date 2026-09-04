@@ -1,0 +1,104 @@
+{{- if and .Values.tenantNamespaces.controller.enabled .Values.backup.enabled }}
+{{- include "serverless-api.validateBackup" . }}
+{{- $ns := include "serverless-api.tenantNamespaceToken" . }}
+{{- $region := include "serverless-api.tenantRegionToken" . }}
+{{- $app := printf "%s-%s" $ns $region }}
+{{- $appVault := include "serverless-api.tenantRegionalValue" (dict "root" $ "key" .Values.backup.appVault.name) }}
+{{/*
+Part of the tenant template set: the namespace's backups, through Trident
+Protect (docs/TENANT-CONTROLLER.md - Backups).
+
+What lands in a tenant namespace is a Knative Service, its config Secrets, the
+RoleBindings and the build prerequisites - resources nobody keeps a copy of
+anywhere else. The Application below tells Trident Protect that this namespace
+is one application; the Schedules below it say how often that application is
+backed up and how many copies are kept.
+
+Argo syncs these ConfigMaps; the controller mounts them projected into one
+directory, hashes the whole set, and applies it into each {group}{suffix}
+namespace with the tokens substituted - which is how a `helm upgrade` reaches
+namespaces created at runtime, that Argo cannot see.
+
+NOTHING IN THE SET MAY DEPEND ON THE REGION. Both regions render this chart from
+the same values, so both hold identical bytes and the same hash, and a provision
+converges a peer's namespace from whichever controller took the request. Both
+per-region facts here go in as the region token: the application's name, and the
+AppVault it is written to when `backup.appVault.name` names this release's
+region.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "serverless-api.tenantTemplatesName" (dict "root" $ "part" "backup") }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  # One application per tenant namespace per region, named `{namespace}-{region}`:
+  # the same namespace exists in both clusters and is backed up in both, so the
+  # region is in the name to keep the two apart wherever they are listed side by
+  # side (a shared AppVault bucket, a restore).
+  #
+  # An empty `labelSelector` is the whole namespace - which is the unit being
+  # protected. Selecting by label would silently drop whatever a later release
+  # adds without that label, and "everything in the namespace" is exactly the
+  # promise this is here to make.
+  #
+  # Applied before the Schedules that name it (the set renders in filename
+  # order); a Schedule whose application is not there yet retries.
+  80-backup-application.yaml: |
+    apiVersion: protect.trident.netapp.io/v1
+    kind: Application
+    metadata:
+      name: {{ $app }}
+      namespace: {{ $ns }}
+    spec:
+      includedNamespaces:
+        - namespace: {{ $ns }}
+          labelSelector: {}
+  # The schedules, from `backup.schedules`. Each is a Trident Protect Schedule
+  # naming the application above and the AppVault the copies are written to;
+  # retention is per schedule, so the hourly copies expire without touching the
+  # weekly one.
+  #
+  # The AppVault is NOT created here. It holds the object-store credentials and
+  # is the storage administrator's to declare once per cluster, in the
+  # `trident-protect` namespace - a tenant namespace references it by name.
+  #
+  # `snapshotRetention` is normally zero: a snapshot is a storage-level copy
+  # that needs a CSI driver with snapshot support under every volume in the
+  # namespace, while the backup is the copy that leaves the cluster - and the
+  # copy this exists for.
+  85-backup-schedules.yaml: |
+{{- range $i, $schedule := .Values.backup.schedules }}
+{{- if $i }}
+    ---
+{{- end }}
+    apiVersion: protect.trident.netapp.io/v1
+    kind: Schedule
+    metadata:
+      name: {{ printf "%s-%s" $app $schedule.name }}
+      namespace: {{ $ns }}
+    spec:
+      applicationRef: {{ $app }}
+      appVaultRef: {{ $appVault }}
+      granularity: {{ $schedule.granularity }}
+      backupRetention: {{ $schedule.backupRetention | quote }}
+      snapshotRetention: {{ default $.Values.backup.snapshotRetention $schedule.snapshotRetention | quote }}
+{{- with (default $.Values.backup.dataMover $schedule.dataMover) }}
+      dataMover: {{ . }}
+{{- end }}
+{{- if hasKey $schedule "minute" }}
+      minute: {{ $schedule.minute | quote }}
+{{- end }}
+{{- if hasKey $schedule "hour" }}
+      hour: {{ $schedule.hour | quote }}
+{{- end }}
+{{- if hasKey $schedule "dayOfWeek" }}
+      dayOfWeek: {{ $schedule.dayOfWeek | quote }}
+{{- end }}
+{{- if hasKey $schedule "dayOfMonth" }}
+      dayOfMonth: {{ $schedule.dayOfMonth | quote }}
+{{- end }}
+{{- end }}
+{{- end }}

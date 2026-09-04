@@ -153,6 +153,81 @@ def test_the_workload_policies_render_and_mount_together():
     assert configmap.rstrip().endswith("{{- end }}")
 
 
+def test_the_backup_part_renders_and_mounts_together():
+    """`backup.enabled` governs both sides, like `networkPolicy.enabled`.
+
+    Listed without rendering, the pod mounts a ConfigMap that does not exist
+    and never starts; rendered without being listed, no tenant namespace is
+    ever backed up - and nothing about a namespace looks different until
+    someone needs a restore.
+    """
+    helper = (TEMPLATES / "tenant-controller" / "_tenant.tpl").read_text()
+    parts = helper.split('define "serverless-api.tenantTemplateParts" -}}')[1]
+    parts = parts.split("{{- end -}}")[0]
+    listing = next(line for line in parts.splitlines() if "backup" in line)
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert "backup.enabled" in listing, listing
+    assert "backup.enabled" in configmap.splitlines()[0], configmap.splitlines()[0]
+    assert configmap.rstrip().endswith("{{- end }}")
+
+
+def test_the_backup_application_is_named_for_the_namespace_and_the_region():
+    """One application per namespace per region, `{namespace}-{region}`.
+
+    The same tenant namespace exists in both clusters and is backed up in both.
+    Naming the application after the namespace alone would give the two copies
+    one name wherever they are listed together - a shared AppVault, a restore -
+    and the region token is also what keeps the set region-neutral while its
+    output is not.
+    """
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert 'printf "%s-%s" $ns $region' in configmap
+    for token in ("tenantNamespaceToken", "tenantRegionToken"):
+        assert token in configmap, f"the backup part never resolves {token}"
+
+
+def test_the_default_schedules_cover_an_hour_a_day_and_a_week():
+    """The retention ladder is the feature, so it is asserted rather than read.
+
+    Each granularity carries the time fields Trident Protect requires for it -
+    a Weekly schedule with no `dayOfWeek` never fires, and nothing in the
+    cluster says so.
+    """
+    required = {
+        "Hourly": {"minute"},
+        "Daily": {"minute", "hour"},
+        "Weekly": {"minute", "hour", "dayOfWeek"},
+        "Monthly": {"minute", "hour", "dayOfMonth"},
+    }
+    schedules = {s["name"]: s for s in _values()["backup"]["schedules"]}
+    assert set(schedules) == {"hourly", "daily", "weekly"}
+    assert schedules["hourly"]["granularity"] == "Hourly"
+    assert schedules["daily"]["granularity"] == "Daily"
+    assert schedules["weekly"]["granularity"] == "Weekly"
+    assert schedules["hourly"]["backupRetention"] == "2"
+    assert schedules["daily"]["backupRetention"] == "2"
+    assert schedules["weekly"]["backupRetention"] == "1"
+    for name, schedule in schedules.items():
+        missing = required[schedule["granularity"]] - set(schedule)
+        assert not missing, f"the {name} schedule is missing {sorted(missing)}"
+        # Strings, because the CRD's fields are strings - and because Helm
+        # renders a large enough number in scientific notation (test_chart_values).
+        for field in required[schedule["granularity"]] | {"backupRetention"}:
+            assert isinstance(schedule[field], str), f"{name}.{field} must be quoted"
+
+
+def test_backups_are_off_until_an_operator_names_an_appvault():
+    """Both halves of the same decision: the chart cannot supply either
+    prerequisite - the CRDs on the cluster and an AppVault holding the object
+    store's credentials - so a default install renders no Schedule at all,
+    rather than one that writes nowhere."""
+    backup = _values()["backup"]
+    assert backup["enabled"] is False
+    assert backup["appVault"]["name"] == ""
+    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    assert "backup.appVault.name is required" in helpers
+
+
 def test_nothing_of_the_template_set_renders_without_the_controller():
     """The set exists only to be mounted by the controller's pod.
 

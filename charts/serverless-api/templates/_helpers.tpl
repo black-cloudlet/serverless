@@ -283,6 +283,50 @@ chart that cannot see the cluster. */}}
 {{- end -}}
 {{- end -}}
 
+{{/* Fail fast on backup config that would render a Schedule Trident Protect
+refuses, or one that silently protects nothing.
+
+Trident Protect reports a bad Schedule on the Schedule's own status, in a
+namespace nobody is watching - the first anyone would hear of it is a restore
+that has nothing to restore from. So the shape is checked here, where it fails
+the release instead. */}}
+{{- define "serverless-api.validateBackup" -}}
+{{- if .Values.backup.enabled -}}
+{{- if not .Values.backup.appVault.name -}}
+{{- fail "serverless-api: backup.appVault.name is required when backup.enabled - a Schedule with no AppVault has nowhere to write its copies. It names an AppVault the storage administrator declares on the cluster; this chart never creates one." -}}
+{{- end -}}
+{{- if not .Values.backup.schedules -}}
+{{- fail "serverless-api: backup.enabled with no backup.schedules would declare the application and never back it up. Set backup.enabled=false, or give it at least one schedule." -}}
+{{- end -}}
+{{/* Granularity decides which time fields the CR requires; without them the
+Schedule never fires. The names are Trident Protect's own, capitalised. */}}
+{{- $required := dict "Hourly" (list "minute") "Daily" (list "minute" "hour") "Weekly" (list "minute" "hour" "dayOfWeek") "Monthly" (list "minute" "hour" "dayOfMonth") -}}
+{{- $seen := list -}}
+{{- range .Values.backup.schedules -}}
+{{- $schedule := . -}}
+{{- if not $schedule.name -}}
+{{- fail "serverless-api: every backup.schedules entry needs a `name`; it is the suffix of the Schedule object's own name." -}}
+{{- end -}}
+{{- if has $schedule.name $seen -}}
+{{- fail (printf "serverless-api: two backup.schedules entries are named %q; they would render one Schedule, and the second would overwrite the first." $schedule.name) -}}
+{{- end -}}
+{{- $seen = append $seen $schedule.name -}}
+{{- $granularity := $schedule.granularity | toString -}}
+{{- if not (hasKey $required $granularity) -}}
+{{- fail (printf "serverless-api: backup schedule %q has granularity %q; Trident Protect takes one of %s." $schedule.name $granularity (join ", " (keys $required | sortAlpha))) -}}
+{{- end -}}
+{{- range $field := index $required $granularity -}}
+{{- if not (hasKey $schedule $field) -}}
+{{- fail (printf "serverless-api: backup schedule %q is %s, so it needs `%s`; without it the Schedule has no time to run at." $schedule.name $granularity $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (hasKey $schedule "backupRetention") -}}
+{{- fail (printf "serverless-api: backup schedule %q has no `backupRetention`; how many copies to keep is the one thing a schedule cannot default." $schedule.name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 The tenant controller's object name and selector labels, on the same reasoning as the
 build controller's: a distinct ``app.kubernetes.io/name`` keeps the API's

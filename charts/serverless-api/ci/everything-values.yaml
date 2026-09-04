@@ -25,3 +25,10 @@ networkPolicy:
       - internal-registry
     egressCIDRs:
       - 10.9.0.0/24
+backup:
+  # CI renders the backup part of the tenant template set, and renders it with an
+  # AppVault named per region - which is what puts the region token through the
+  # digest comparison the region-neutrality check makes across both regions.
+  enabled: true
+  appVault:
+    name: serverless-{{ .Values.global.region }}

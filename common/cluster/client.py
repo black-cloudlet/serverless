@@ -12,6 +12,7 @@ from collections.abc import Iterator
 
 from kubernetes import client, utils
 from kubernetes.dynamic import DynamicClient
+from kubernetes.dynamic.exceptions import ResourceNotFoundError
 
 from common.cluster.follow import LogFollow
 from common.cluster.kinds import ResourceKind
@@ -104,6 +105,32 @@ class Cluster:
     def _dynamic_api(self, kind: ResourceKind):
         """Resolve the dynamic resource API for a ResourceKind (apiVersion + kind)."""
         return self._dynamic_client.resources.get(api_version=kind.api_version, kind=kind.kind)
+
+    def serves(self, kind: ResourceKind) -> bool:
+        """Whether this cluster's apiserver serves ``kind`` at all.
+
+        False for a CRD that is not installed here - an optional add-on, such
+        as Trident Protect where a release does not use backups. The caller
+        that must not fail on one is the tenant controller's prune: it sweeps
+        every kind a template set *could* render, and listing a kind the
+        cluster does not have is a 404 on the resource itself, not an empty
+        list.
+
+        Discovery is cached in the dynamic client and invalidated on a miss, so
+        this is a dict lookup once the kind is known, and an add-on installed
+        later is picked up without a restart.
+
+        Args:
+            kind: The kind to look for.
+
+        Returns:
+            True when discovery resolves it.
+        """
+        try:
+            self._dynamic_api(kind)
+        except ResourceNotFoundError:
+            return False
+        return True
 
     def connect(self) -> None:
         """Eagerly establish the connection (API discovery).

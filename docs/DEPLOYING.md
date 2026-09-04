@@ -80,6 +80,7 @@ This repo's chart **consumes** cluster capabilities that are installed and manag
 | **External Secrets Operator** + `ClusterSecretStore` | projects Vault secrets into the cluster (ARCHITECTURE.md: Secrets Management) | OLM (mirrored) |
 | **RHBK** | OIDC identity provider (API.md: Authentication & Authorization) | platform-managed |
 | **kpack** + its cluster build content | the build engine, plus the `ClusterStack` and `ClusterStore` the `ClusterBuilder`s here reference by name | the kpack chart (`clusterBuild.stacks` / `clusterBuild.stores`), in the platform chart |
+| **Trident Protect** + an `AppVault` | backs up each tenant namespace, when `backup.enabled` (TENANT-CONTROLLER.md: Backups). The chart writes the `Application` and its `Schedule`s; the CRDs and the `AppVault` holding the object store's credentials are the storage administrator's | NetApp Trident Protect, plus one `AppVault` per cluster |
 
 On OpenShift you must use the **OpenShift Serverless Operator** - not an upstream/community
 or Helm-based Knative install. The chart assumes the operator's conventions (kourier in
@@ -110,6 +111,7 @@ serverless-api chart                            one release per cluster/region
 ├── SCC + ClusterRole       ...... build pods' CNB uid/gid, off by default (DEPLOYING.md: OpenShift SCC for builds)  [cluster-scoped]
 ├── build-controller Deploy ...... Image watch -> ksvc digest (BUILD-CONTROLLER.md: Digest propagation)
 ├── tenant-controller       ...... Deploy + the template set for each {group}{suffix} namespace (TENANT-CONTROLLER.md: Tenant Namespaces)
+│   └── Trident Protect     ...... Application + hourly/daily/weekly Schedules per namespace, off by default (TENANT-CONTROLLER.md: Backups)
 └── (existing: API Deployment + Service + Route, namespaces, CA bundle,
     regions/runtimes ConfigMaps, Certificate, RBAC, tenant NetworkPolicies)
 ```
@@ -212,7 +214,7 @@ the API must not be able to do. Neither can do the other's damage:
 | Identity | May | May not |
 |----------|-----|---------|
 | `serverless-api.clients.{domain}` | write workloads inside a tenant namespace; read Knative and kpack objects cluster-wide | create, change or delete a namespace; write a NetworkPolicy |
-| `serverless-tenant-controller.clients.{domain}` | create tenant namespaces and write the resources the template set renders; read Knative Services (for the GC) | touch a workload |
+| `serverless-tenant-controller.clients.{domain}` | create tenant namespaces and write the resources the template set renders - including the namespace's Trident Protect `Application` and `Schedule`s; read Knative Services (for the GC) | touch a workload |
 
 ### Network policy for build pods
 

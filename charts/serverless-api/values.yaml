@@ -618,6 +618,77 @@ build:
             - { id: paketo-buildpacks/environment-variables, optional: true }
             - { id: paketo-buildpacks/image-labels, optional: true }
 
+# Backups of what a tenant namespace holds, through Trident Protect
+# (docs/TENANT-CONTROLLER.md - Backups).
+#
+# A tenant namespace is the only copy of a group's Knative Services, their
+# config Secrets, RoleBindings and build prerequisites - a namespace deleted by
+# the GC, or by hand, takes all of it with it. This declares each namespace as
+# one Trident Protect application and puts it on a schedule; the parts ride the
+# tenant template set, so an existing namespace picks them up on the next
+# reconcile pass, exactly as it picks up a policy change.
+#
+# OFF by default, because it needs two things this chart cannot provide: the
+# Trident Protect CRDs installed on the cluster, and an AppVault declared on it
+# holding the object store's credentials. With neither, a release enabling this
+# renders Schedules nothing serves. Where Trident Protect IS installed, turn it
+# on and name the AppVault.
+backup:
+  enabled: false
+
+  appVault:
+    # The AppVault the copies are written to, by name - the storage
+    # administrator declares it once per cluster, in the `trident-protect`
+    # namespace; this chart never creates one (it holds the object store's
+    # credentials, and every namespace references it by name).
+    #
+    # The name may reference `.Values.global.region`, for a bucket per region:
+    # this release's own region is put back as the tenant controller's
+    # `{{region}}` token, so the template set stays byte-identical in both
+    # regions and each cluster resolves its own AppVault. That is the same rule
+    # the build part's Vault paths follow.
+    #
+    #   name: serverless-{{ .Values.global.region }}
+    name: ""
+
+  # Restic or Kopia, Trident Protect's two backup engines. Kopia is its default
+  # and the one to leave alone without a reason; a schedule may override it.
+  dataMover: Kopia
+
+  # Snapshots kept behind each backup, unless a schedule overrides it. Zero, and
+  # deliberately: a snapshot is a storage-level copy that needs a CSI driver with
+  # snapshot support under every volume in the namespace, while the backup is the
+  # copy that leaves the cluster - and the copy this exists for.
+  snapshotRetention: "0"
+
+  # One Schedule per entry, named `{namespace}-{region}-{name}`. Retention is
+  # per schedule, so the hourly copies expire without touching the weekly one,
+  # and the three together are the usual shape: an hour of granularity for the
+  # mistake noticed immediately, a day for the one noticed the next morning, a
+  # week for the one noticed late.
+  #
+  # `granularity` decides which time fields the entry must carry - Hourly needs
+  # `minute`, Daily adds `hour`, Weekly adds `dayOfWeek` (0 is Sunday), Monthly
+  # adds `dayOfMonth`. The chart refuses to render an entry missing one, or one
+  # with no `backupRetention`. Times are the cluster's own; retentions are
+  # quoted because the CRD's fields are strings.
+  schedules:
+    - name: hourly
+      granularity: Hourly
+      minute: "0"
+      backupRetention: "2"
+    - name: daily
+      granularity: Daily
+      hour: "0"
+      minute: "0"
+      backupRetention: "2"
+    - name: weekly
+      granularity: Weekly
+      dayOfWeek: "0"
+      hour: "0"
+      minute: "0"
+      backupRetention: "1"
+
 # A region is one deployment location; its cluster's API server is DERIVED as
 # https://api.{cluster}.{global.baseDomain}:6443, so there is no endpoint to set.
 # Identical in every cluster - an instance composes the peer's manifests from it,

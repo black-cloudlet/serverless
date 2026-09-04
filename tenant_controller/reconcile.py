@@ -292,12 +292,27 @@ def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None
     namespace and read at prune time, so it covers objects another writer
     created earlier in the pass (docs/DEPLOYING.md - RBAC).
 
+    A kind the cluster does not serve is skipped rather than listed. Some of
+    the vocabulary is an optional add-on - Trident Protect's Application and
+    Schedule, which only a release with `backup.enabled` has any use for - and
+    listing an uninstalled CRD is a 404 on the resource itself, which would
+    fail every converge on every cluster that does not run the add-on. Nothing
+    of that kind can exist there, so there is nothing to collect.
+
     Args:
         cluster: The cluster to prune in.
         namespace: The tenant namespace.
         keep: The (kind, name) pairs the current render produced.
     """
     for kind in PRUNABLE_KINDS:
+        if not cluster.serves(kind):
+            logger.debug(
+                "%s is not served by %s; nothing of that kind to prune from '%s'",
+                kind.kind,
+                cluster.region,
+                namespace,
+            )
+            continue
         existing = cluster.get(kind, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=namespace)
         for obj in existing:
             name = (obj.get("metadata") or {}).get("name", "")
