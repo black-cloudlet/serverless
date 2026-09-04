@@ -89,10 +89,10 @@ class FunctionUpdate(BaseModel):
 class WebhookView(BaseModel):
     """Everything needed to configure a git webhook for this function.
 
-    Returned whole so a caller configures the hook by copying two fields rather
-    than assembling a URL. Unlike ``gitToken``, ``token`` is *shown*: it is the
-    platform's own credential, minted here, and its only use is being pasted
-    into the provider (docs/FUNCTIONS.md - Git webhook).
+    Returned whole so a caller copies two fields rather than assembling a URL.
+    Unlike ``gitToken``, ``token`` is *shown*: it is the platform's own
+    credential, minted here to be pasted into the provider (docs/FUNCTIONS.md -
+    Git webhook).
     """
 
     url: str
@@ -118,8 +118,8 @@ class FunctionResponse(WorkloadResponse):
     gitRepo: str | None = None
     revision: str | None = None
     # The commit a git push pinned, or None while the build follows `revision`.
-    # Read-only: it is set by the webhook and cleared by POST .../build and PUT,
-    # never sent by a client (docs/FUNCTIONS.md - Git webhook).
+    # Read-only: set by the webhook, cleared by POST .../build and PUT, never
+    # sent by a client (docs/FUNCTIONS.md - Git webhook).
     commit: str | None = None
     # How to configure a push to build this function. None on a response that
     # did not read one (a rebuild's 202 carries no secret read).

@@ -33,10 +33,10 @@ def api_base(settings: Settings) -> str:
 def webhook_url(settings: Settings, group: str, name: str) -> str:
     """The URL a git provider is configured to POST a push to.
 
-    The build endpoint, absolute where ``public_url`` is configured: a provider
-    is given a URL, not a path, so this is the one place the API states its own
-    origin. With none configured it degrades to the path, which is what a local
-    run wants and what a caller can still resolve against the host they reached.
+    The build endpoint, absolute where ``public_url`` is set: a provider is
+    given a URL, not a path, so this is the one place the API states its own
+    origin. Unset, it degrades to the path, which a local run wants and a caller
+    can still resolve against the host they reached.
 
     Args:
         settings: The settings carrying the origin and the base path.

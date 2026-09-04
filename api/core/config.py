@@ -112,7 +112,7 @@ class Settings(CommonSettings):
     base_path: str = ""
 
     # The API's own externally reachable origin, e.g. https://serverless.example.com.
-    # Only the git webhook needs it: a provider is configured with an absolute
+    # Only the git webhook needs it - a provider is configured with an absolute
     # URL, and nothing else this API returns is absolute. Empty (the default)
     # falls back to the path alone, which is what local dev wants.
     # env: SERVERLESS_PUBLIC_URL.

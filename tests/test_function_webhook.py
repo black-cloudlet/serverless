@@ -1,12 +1,11 @@
 """The git webhook: the token, what a push builds, and what it must not touch.
 
 A push is an *unauthenticated* caller reaching the build endpoint, so most of
-what these cover is the shape of "no": which deliveries are refused outright
-(401), which are acknowledged and ignored (200), and - for the one that does
-build - what the platform refuses to let a push change. The invariant behind
-almost every case: a push moves the **commit**, never the revision the caller
-chose, the image tag derived from it, or anything else about the workload
-(docs/FUNCTIONS.md - Git webhook).
+these cover the shape of "no": which deliveries are refused (401), which are
+acknowledged and ignored (200), and what the one that builds may not change.
+The invariant behind nearly every case: a push moves the **commit**, never the
+revision, the tag derived from it, or the workload (docs/FUNCTIONS.md - Git
+webhook).
 """
 
 from __future__ import annotations
@@ -39,8 +38,8 @@ def _push(ref="refs/heads/main", after=SHA, url=GIT_URL, kind="push", checkout=N
         after=after,
         checkout_sha=checkout,
         project={"git_http_url": url},
-        # Payload fields the platform does not read; present because GitLab
-        # sends them and a delivery must not fail on one it does not know.
+        # Fields the platform does not read, present because GitLab sends them
+        # and a delivery must not fail on one it does not know.
         commits=[{"id": after, "message": "x"}],
         user_username="dev",
     )
@@ -106,11 +105,8 @@ async def test_a_function_with_no_stored_token_refuses_every_push():
 
 
 async def test_a_function_that_does_not_exist_answers_the_same_as_a_wrong_token():
-    """A 401, not a 404: the caller has proved nothing, so it learns nothing.
-
-    A 404 here would turn the endpoint into an oracle for which functions a
-    group has, answerable by anyone who can reach the API.
-    """
+    """A 401, not a 404: a 404 would make the endpoint an oracle for which
+    functions a group has, answerable by anyone who can reach the API."""
     svc = _service({"region-a": _cluster()})
 
     with pytest.raises(UnauthenticatedError):
@@ -147,9 +143,9 @@ async def test_a_delivery_that_is_not_this_functions_is_acknowledged_not_failed(
 ):
     """Ignored deliveries answer 200, because a 4xx disables the hook.
 
-    GitLab disables a webhook that keeps failing, so "this push is not mine" -
-    the ordinary case in a repository several functions build from - has to
-    read as success or the hook stops working for the pushes that *are* mine.
+    "This push is not mine" is the ordinary case where several functions build
+    from one repository, so it must read as success or the hook stops working
+    for the pushes that *are* mine.
     """
     cluster = _cluster()
     svc = _service({"region-a": cluster})
@@ -165,10 +161,10 @@ async def test_a_delivery_that_is_not_this_functions_is_acknowledged_not_failed(
 
 
 async def test_a_function_pinned_to_a_tag_or_a_commit_ignores_every_branch_push():
-    """Asking for a tag or a SHA means "stay here", and a push cannot move it.
+    """Asking for a tag or a SHA means "stay here", and no push moves it.
 
-    Falls out of the revision rename rather than being special-cased: the match
-    is `pushed branch == revision`, and a tag or a SHA is not a branch name.
+    Not special-cased: the match is `pushed branch == revision`, and neither a
+    tag nor a SHA is a branch name.
     """
     for revision in ("v1.2.0", SHA):
         cluster = _cluster(revision=revision)
@@ -183,8 +179,8 @@ async def test_a_repository_url_spelled_differently_still_matches():
     assert same_repository(GIT_URL, "https://git.internal/payments/hello")
     assert same_repository(GIT_URL, "https://GIT.INTERNAL/payments/hello.git/")
     assert same_repository("https://u:p@git.internal/payments/hello.git", GIT_URL)
-    # ...but the path is case-sensitive: git forges distinguish these, and
-    # treating them as one would let one repository build another's function.
+    # ...but the path is case-sensitive: folding it would let one repository's
+    # push build another's function.
     assert not same_repository(GIT_URL, "https://git.internal/Payments/hello.git")
     assert not same_repository(GIT_URL, "https://git.internal:8443/payments/hello.git")
     assert not same_repository(GIT_URL, "")
@@ -227,9 +223,8 @@ async def test_checkout_sha_wins_over_after():
 async def test_a_push_never_triggers_a_build_on_top_of_the_one_it_asked_for():
     """The changed revision *is* the spec change kpack builds from.
 
-    A trigger annotation as well would be a second build for one push - and,
-    being a nonce, would produce one per API replica that handled the delivery
-    (docs/BUILDING.md - Convergence rules).
+    A trigger too would be a second build - and, being a nonce, one per replica
+    that handled the delivery (docs/BUILDING.md - Convergence rules).
     """
     from tests.test_kpack_build import _TriggeringBuilder
 
@@ -252,8 +247,8 @@ async def test_the_commit_is_stamped_on_the_workload_in_every_region():
 async def test_the_pin_is_metadata_only_so_no_knative_revision_is_cut():
     """A pin says which source to compile next, not which image to run.
 
-    Writing it into `spec.template` would spawn a revision of the code already
-    running, minutes before the real one arrives from the build controller.
+    In `spec.template` it would spawn a revision of the code already running,
+    minutes before the real one arrives from the build controller.
     """
     cluster = _cluster()
 
@@ -283,10 +278,10 @@ async def test_the_build_is_owned_by_the_function_not_by_a_synthetic_user():
 
 
 async def test_a_redelivery_of_the_same_push_is_idempotent():
-    """A provider retries, and two API replicas may both take one push.
+    """A provider retries, and two replicas may both take one push.
 
-    Both apply the same commit, which converges by data rather than by a lease:
-    kpack sees an unchanged spec the second time and builds nothing.
+    Both apply the same commit, so it converges by data rather than a lease:
+    kpack sees an unchanged spec and builds nothing.
     """
     from tests.test_kpack_build import _TriggeringBuilder
 
@@ -395,10 +390,10 @@ async def test_the_old_token_stops_working_once_rotated():
 
 
 async def test_a_create_returns_the_token_and_writes_it_to_every_region():
-    """Minted before the 202, so the caller configures the hook from that response.
+    """Minted before the 202, so the caller configures the hook from it.
 
     The Secret written in the background must be the token they were handed, or
-    the hook they configured from the create would never authenticate.
+    the hook they configured would never authenticate.
     """
     from tests.factories import _ApplyCluster
     from tests.test_kpack_build import _create_spec, _function_service, _RecordingBuilder
@@ -446,10 +441,10 @@ def test_the_token_never_appears_in_a_repr():
 
 
 async def test_an_update_carries_the_token_to_a_region_the_create_did_not_reach():
-    """An update targets every configured region, so the token has to travel too.
+    """An update targets every region, so the token travels with it.
 
-    A function created into one region and later updated must authenticate a
-    push wherever it now runs - otherwise a switchover silently breaks its hook.
+    Otherwise a function updated into a new region cannot authenticate a push
+    there, and a switchover silently breaks its hook.
     """
     from tests.factories import _ApplyCluster
     from tests.test_kpack_build import _function_service, _RecordingBuilder

@@ -135,9 +135,8 @@ class Offering(Protocol):
     ) -> dict:
         """Offering-specific response fields that need a cluster read of their own.
 
-        The read-path counterpart to :meth:`read_extra_state`: merged into the
-        ``common`` fields of a fetched response. Runs off the event loop, on a
-        region that has the workload.
+        The read-path counterpart to :meth:`read_extra_state`, merged into a
+        fetched response's ``common`` fields. Runs off the event loop.
 
         Args:
             cluster: The region to read from.
@@ -231,12 +230,11 @@ class FunctionOffering:
         return set()
 
     def read_extra_state(self, cluster: NamespacedCluster, name: str) -> dict:
-        """The stored git and webhook tokens, and the commit a push pinned.
+        """The stored git and webhook tokens.
 
-        The git token so a build-input change can rebuild without one; the
-        webhook token so a push can be authenticated and a read can show the
-        caller what to paste into GitLab; the commit so the write paths know
-        whether there is a pin to clear (docs/FUNCTIONS.md - Git webhook).
+        The git token so a build-input change rebuilds without one being
+        re-sent; the webhook token so a push can be authenticated
+        (docs/FUNCTIONS.md - Git webhook).
         """
         git = region_read.secret_text(cluster, secret_svc.git_secret_name(name))
         hook = region_read.secret_text(cluster, secret_svc.webhook_secret_name(name))
@@ -250,14 +248,10 @@ class FunctionOffering:
     ) -> dict:
         """How to configure a push to build this function, for the full GET.
 
-        The token is shown, unlike every other credential this platform stores:
-        it is the platform's own, and its only use is being pasted into the git
-        provider. A caller who can read this function can already start a build
-        with their own bearer, so showing it grants them nothing they did not
-        have (docs/FUNCTIONS.md - Git webhook).
-
-        Best-effort by construction: an absent or unreadable Secret leaves
-        ``webhook`` null rather than failing the read of the whole function.
+        The token is shown, unlike every other stored credential: it is the
+        platform's own, and a caller who can read this function can already
+        build it with their bearer (docs/FUNCTIONS.md - Git webhook).
+        Best-effort - an unreadable Secret leaves ``webhook`` null.
 
         Args:
             cluster: The region to read the Secret from.

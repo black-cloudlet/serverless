@@ -149,9 +149,8 @@ class FunctionService(OfferingService):
             A Pending response with a ``statusUrl`` to poll.
         """
         self._assert_runtime(spec.runtime, spec.version)
-        # Minted here rather than in the background work, so the 202 can carry it:
-        # a caller configures the git hook from the create response and never has
-        # to come back for it (docs/FUNCTIONS.md - Git webhook).
+        # Minted here, not in the background work, so the 202 carries it: the
+        # caller configures the hook from the create response.
         token = secret_svc.new_webhook_token()
         # No name check beyond the engine's shared one: the kpack Image is the
         # workload's own name verbatim, so the 63-character label
@@ -178,17 +177,16 @@ class FunctionService(OfferingService):
     def _webhook_secret(
         self, group: str, name: str, user: Principal, token: str | None = None
     ) -> dict:
-        """The Secret holding this function's webhook token, for every region.
+        """The Secret holding this function's webhook token.
 
-        Travels with the git Secret through ``extra_secrets``, so it is applied
-        wherever the workload runs and is never in the managed prune set - a
-        write that does not carry it keeps the stored copy.
+        Travels with the git Secret through ``extra_secrets``: applied wherever
+        the workload runs, and never pruned, so a write that omits it keeps it.
 
         Args:
             group: The owning group.
             name: The workload name.
             user: The caller, for the ownership labels.
-            token: The token to store; None mints a fresh one.
+            token: The token to store; None mints one.
 
         Returns:
             The Secret manifest.
@@ -250,13 +248,11 @@ class FunctionService(OfferingService):
             group: The owning group.
             existing: The state loaded by ``load_existing``.
             user: The authenticated caller, stamped as the build's owner. None
-                for a build no caller authenticated - a webhook push - which
-                takes the function's own owner off its ownership label instead.
-            commit: The commit a push delivered, built instead of the revision's
-                head. None follows the revision, which is what create, update
-                and the explicit rebuild do; a stored pin is deliberately *not*
-                carried in here, so a rebuild returns to the head
-                (docs/FUNCTIONS.md - Git webhook).
+                for a push, which takes the function's own owner instead.
+            commit: The commit a push delivered, built instead of the revision.
+                A stored pin is deliberately *not* read here, which is what
+                makes a rebuild return to the head (docs/FUNCTIONS.md - Git
+                webhook).
 
         Returns:
             The build request.
@@ -350,18 +346,15 @@ class FunctionService(OfferingService):
     async def build(self, group: str, name: str, user: Principal, existing: dict) -> None:
         """Build a function's current source again (runs in the background).
 
-        The image is rebuilt from the same repository, revision and runtime it
-        already has, so this is what picks up a base-image or dependency change,
-        retries a failed build, or gets a new commit built now rather than when
-        kpack next polls. The running revision keeps serving until the new digest
-        is rolled out (docs/BUILDING.md - Ownership: API vs Build Service).
+        Same repository, revision and runtime, so this picks up a base-image or
+        dependency change, retries a failed build, or builds a new commit now
+        rather than at kpack's next poll. The running revision keeps serving
+        until the digest rolls out (docs/BUILDING.md - Ownership).
 
-        It also **returns the function to its revision's head**: a commit a push
-        pinned is cleared, so what is built is what the caller asked for rather
-        than wherever the last push left it. That clearing is itself the spec
-        change kpack builds from, which is why the trigger is only sent when
-        there was no pin - with one, a trigger would produce a second build
-        (docs/FUNCTIONS.md - Git webhook).
+        It also clears a commit a push pinned, returning the function to its
+        revision's head. That clearing is itself the spec change kpack builds
+        from, so the trigger is sent only when there was no pin - with one it
+        would make a second build (docs/FUNCTIONS.md - Git webhook).
 
         Args:
             group: The owning group (from the request path).
@@ -390,19 +383,17 @@ class FunctionService(OfferingService):
     # ------------------------------------------------------------------ webhook
 
     def _webhook_principal(self, group: str) -> Principal:
-        """The identity a push acts as: this group, no admin, no user.
+        """The identity a push acts as: this group, non-admin.
 
-        A push is authenticated by a token, not by SSO, so there is no caller to
-        authorize. Naming a principal anyway is what keeps the tenancy check on
-        the one path that has no bearer: the load goes through the same
-        ``load_existing`` every other read uses, and a function in another group
-        is invisible to it.
+        A push carries a token, not SSO, so there is no caller to authorize.
+        Naming a principal anyway keeps the tenancy check on the one path with
+        no bearer, through the same ``load_existing`` every read uses.
 
         Args:
             group: The group whose function the delivery names.
 
         Returns:
-            A non-admin principal scoped to that group alone.
+            A non-admin principal scoped to that group.
         """
         return Principal(subject=f"webhook:{group}", username="webhook", groups=[group])
 
@@ -410,9 +401,8 @@ class FunctionService(OfferingService):
     def _ignored(event: GitLabPushEvent | None, kind: str | None, existing: dict) -> str | None:
         """Why this delivery starts no build, or None if it should.
 
-        Every answer here is a ``200``: GitLab disables a hook that keeps
-        returning ``4xx``, so a push this function does not care about must read
-        as success (docs/FUNCTIONS.md - Git webhook).
+        Every answer becomes a ``200``: GitLab disables a hook that keeps
+        returning ``4xx`` (docs/FUNCTIONS.md - Git webhook).
 
         Args:
             event: The parsed push payload, or None if the body was empty.
@@ -433,9 +423,8 @@ class FunctionService(OfferingService):
             return f"ref '{event.ref}' is not a branch"
         revision = existing.get("revision")
         if branch != revision:
-            # Not an error, and the common case in a repository several
-            # functions build from. A function whose revision is a tag or a
-            # commit lands here for every push, which is what pinning meant.
+            # A function whose revision is a tag or a commit lands here for
+            # every push, which is what pinning to one meant.
             return f"pushed branch '{branch}' is not this function's revision '{revision}'"
         if not same_repository(event.project.git_http_url, existing.get("gitUrl") or ""):
             return "the push is from a different repository"
@@ -455,8 +444,8 @@ class FunctionService(OfferingService):
         """Authenticate a git push and, if it is this function's, build its commit.
 
         The unauthenticated half of ``POST .../build``. Everything before the
-        token matches answers ``401``, including a function that does not exist:
-        the caller has proved nothing yet, so it must not learn what is here.
+        token matches answers ``401``, a missing function included: the caller
+        has proved nothing, so it must not learn what is here.
 
         Args:
             group: The owning group (from the request path).
@@ -479,8 +468,7 @@ class FunctionService(OfferingService):
         try:
             existing = await self._engine.load_existing(name, FUNCTION, principal, group)
         except NotFoundError as exc:
-            # Absent and not-yours are the same answer here, and neither is a
-            # 404: the caller is unauthenticated until the token matches.
+            # Absent and not-yours give the same answer, and neither is a 404.
             raise UnauthenticatedError("invalid webhook token") from exc
 
         stored = existing.get("webhook_token")
@@ -494,8 +482,8 @@ class FunctionService(OfferingService):
 
         commit = event.sha
         req = self._build_request(name, group, existing, commit=commit)
-        # A runtime removed from the ConfigMap since the function was built is a
-        # 400 here, before the 202, exactly as on the bearer path.
+        # A runtime dropped from the ConfigMap since is a 400 before the 202,
+        # as on the bearer path.
         self._assert_runtime(req.runtime, req.version)
         logger.info("webhook: %s/%s: building commit %s", group, name, commit)
         background.add_task(run_background, self.build_at_commit, group, name, existing, req)
@@ -508,8 +496,8 @@ class FunctionService(OfferingService):
             runtime=req.runtime,
             version=req.version,
             gitRepo=req.git_url,
-            # What the caller chose, not what was pushed: a push moves the commit
-            # under the revision, never the revision itself.
+            # What the caller chose, not what was pushed: a push moves the
+            # commit under the revision, never the revision.
             revision=req.revision,
             commit=commit,
             path=req.path,
@@ -520,20 +508,17 @@ class FunctionService(OfferingService):
     ) -> None:
         """Build one pushed commit, in every region (runs in the background).
 
-        The commit is written into the ``Image``'s git revision and stamped on
-        the workload, and the image *tag* is left alone - it follows the
-        function's revision, so a push moves the digest that tag points at
-        rather than the tag itself, and the Image is never recreated.
-
-        No trigger: the changed revision is itself the spec change kpack builds
-        from, so one push produces one build however many API replicas or
-        provider retries handled it (docs/BUILDING.md - Convergence rules).
+        The commit goes into the ``Image``'s git revision; the tag still follows
+        the function's revision, so a push moves the digest it points at and the
+        Image (``spec.tag`` is immutable) is never recreated. No trigger - the
+        changed revision is itself the spec change kpack builds from, so one
+        push makes one build (docs/BUILDING.md - Convergence rules).
 
         Args:
             group: The owning group.
             name: The workload name.
             existing: The state loaded and authorized by :meth:`accept_webhook`.
-            req: The build request, already carrying the pushed commit.
+            req: The build request, carrying the pushed commit.
 
         Raises:
             ServiceUnavailableError: If the build pipeline is unavailable.
@@ -552,10 +537,8 @@ class FunctionService(OfferingService):
     ) -> BuildPlan:
         """The build plan, labelled with the function's own owner.
 
-        The bearer paths label a build with the caller who asked for it. A push
-        has no caller, so the labels come off the workload instead - what
-        ``existing`` read from its ownership label - and the build objects stay
-        selectable exactly as every other copy of them is.
+        A push has no caller to attribute, so the owner comes off the workload's
+        own label and the build objects stay selectable like every other copy.
 
         Args:
             req: The build request.
@@ -571,11 +554,9 @@ class FunctionService(OfferingService):
     async def rotate_webhook(self, group: str, name: str, user: Principal) -> WebhookView:
         """Replace this function's webhook token, in every region it runs in.
 
-        Not a 202: one small Secret is written and the caller needs the new
-        token in the response to reconfigure the hook with. The old token stops
-        working as each region's write lands; there is no overlap window,
-        because a hook is reconfigured in seconds and a leaked token should not
-        outlive the request that replaced it.
+        Not a 202: one Secret is written and the caller needs the token back. No
+        overlap window - a leaked token should not outlive the request that
+        replaced it.
 
         Args:
             group: The owning group (from the request path).
@@ -609,10 +590,9 @@ class FunctionService(OfferingService):
             group: The owning group (from the request path).
             spec: The function create request.
             user: The authenticated caller.
-            webhook_token: The token minted by :meth:`accept` and already
-                returned to the caller, so the Secret written here is the one
-                they were told to configure. None mints a fresh one, which is
-                only reachable if this is called outside the accept path.
+            webhook_token: The token :meth:`accept` already returned, so the
+                Secret written here is the one the caller was told to
+                configure. None mints one, reachable only outside that path.
 
         Returns:
             The response body and HTTP status code.
@@ -666,9 +646,9 @@ class FunctionService(OfferingService):
                 git_url=spec.gitRepo,
                 revision=spec.revision,
                 path=spec.path,
-                # The git and webhook credentials go to every region so any of
-                # them can rebuild and authenticate a push; each region gets its
-                # own Image (docs/BUILDING.md - Active/Active Behaviour).
+                # Both credentials go to every region, so any of them can
+                # rebuild and authenticate a push (docs/BUILDING.md -
+                # Active/Active Behaviour).
                 extra_secrets=[
                     *plan.replicated,
                     self._webhook_secret(group, spec.name, user, webhook_token),
@@ -795,12 +775,10 @@ class FunctionService(OfferingService):
         # now is a revision of the code already running. Kept per region, since
         # each region runs what its own build pushed.
 
-        # A PUT is a full replace of the desired spec, and a pinned commit is no
-        # part of any spec a caller sent - it is a fact a push left behind. So an
-        # update returns the function to its revision's head, like the explicit
-        # rebuild does, which leaves a push the only thing that ever pins one
-        # (docs/FUNCTIONS.md - Git webhook). Cleared before the apply, so the
-        # KSVC leads and the Image that follows is composed from it.
+        # A PUT replaces the desired spec, and a pin is no part of one - it is a
+        # fact a push left behind. So an update returns to the revision's head
+        # like the rebuild does, leaving a push the only writer of a pin
+        # (docs/FUNCTIONS.md - Git webhook). Before the apply, so the KSVC leads.
         if existing.get("commit") is not None:
             await self._engine.clear_commit(name, group)
 
@@ -842,11 +820,8 @@ class FunctionService(OfferingService):
                 prev_host=existing.get("host"),
                 kept_env=existing.get("env_values"),
                 kept_files=existing.get("files_values"),
-                # Re-emitted on every update, like the git Secret: an update
-                # targets every configured region, so a region that gains the
-                # workload here has to gain the token with it. The stored value
-                # is reused; minting is only reachable for a function that
-                # somehow has none.
+                # Re-emitted like the git Secret: an update targets every
+                # region, so one gaining the workload gains the token with it.
                 extra_secrets=[
                     *(plan.replicated if plan else []),
                     self._webhook_secret(group, name, user, existing.get("webhook_token")),

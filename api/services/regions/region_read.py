@@ -72,9 +72,8 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, na
         "version": ann.get(ANNOTATION_RUNTIME_VERSION),
         "gitUrl": ann.get(ANNOTATION_GIT_URL),
         "revision": ann.get(ANNOTATION_GIT_REVISION),
-        # The commit a git push pinned, if any. Read so the write paths know
-        # there is a pin to clear; never carried into a new build request - a
-        # push is the only thing that sets one.
+        # Read so the write paths know there is a pin to clear; never carried
+        # into a build request, since only a push sets one.
         "commit": ann.get(ANNOTATION_GIT_COMMIT),
         "path": ann.get(ANNOTATION_GIT_PATH),
         "host": ann.get(ANNOTATION_HOST),
@@ -95,14 +94,12 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, na
             state["registry_token"] = secret_svc.registry_token(ps)
         except Exception:  # noqa: BLE001, S110 - best-effort; keep degrades to carry-forward
             pass
-    # The creating user, off the ownership label: a build a webhook starts has no
-    # authenticated caller to attribute, so the build objects are stamped with the
-    # function's own owner rather than a synthetic name.
+    # The creating user, off the ownership label: a build a push starts has no
+    # caller to attribute, so it is stamped with the function's own owner.
     labels = (obj.get("metadata", {}) or {}).get("labels", {}) or {}
     state["owner"] = labels.get(LABEL_OWNER, "")
     # Whatever else this offering carries forward - a function's stored git and
-    # webhook tokens, so a build-input change can rebuild without the client
-    # re-supplying one and a push can be authenticated.
+    # webhook tokens.
     state.update(offering.read_extra_state(cluster, name))
     return state
 

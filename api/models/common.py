@@ -63,9 +63,8 @@ ANNOTATION_RUNTIME = "serverless.platform/runtime"
 ANNOTATION_RUNTIME_VERSION = "serverless.platform/runtime-version"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
 ANNOTATION_GIT_REVISION = "serverless.platform/git-revision"
-# The exact commit a git push delivered, pinned by the webhook and cleared by
-# every human write (POST .../build and PUT). Absent means the build follows
-# ANNOTATION_GIT_REVISION - its head, when that names a branch.
+# The commit a git push pinned, cleared by every human write (POST .../build
+# and PUT). Absent means the build follows ANNOTATION_GIT_REVISION.
 ANNOTATION_GIT_COMMIT = "serverless.platform/git-commit"
 ANNOTATION_GIT_PATH = "serverless.platform/git-path"
 # Names of the injected CA-trust env vars, so read-back can hide them: they

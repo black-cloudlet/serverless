@@ -159,8 +159,8 @@ def build_ksvc(
         git_url: Function source repo annotation, if any.
         revision: Function source revision annotation - branch, tag or
             commit - if any.
-        commit: The commit a git push pinned, if any. Composed in so a re-applied
-            spec does not drop a pin, and left out so a human write clears one
+        commit: The commit a git push pinned, if any. Composed in so a
+            re-applied spec keeps a pin, omitted so a human write clears one
             (docs/FUNCTIONS.md - Git webhook).
         path: Function source sub-directory annotation, if any.
         ca_config_map: Trusted-CA ConfigMap to mount, if configured.
