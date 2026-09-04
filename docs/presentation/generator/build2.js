@@ -31,46 +31,57 @@ function title(s, t, o) { txt(s, t, Object.assign({ x: ML, y: 0.9, w: 11.5, h: 1
 const VX = 6.75, VY = 2.2, K = 5.9 / 600;
 const vx = (u) => VX + u * K, vy = (u) => VY + u * K, vs = (u) => u * K;
 
-function node(s, n) {
+function mkNm(ctx) {
+  let auto = 0;
+  return (k, eff) => {
+    if (!ctx || !ctx.reveal || ctx.reveal === "auto") return { objectName: `auto:${auto++}:${eff}` };
+    const n = ctx.nLines;
+    const st = ctx.reveal === "paired" ? k + 1 : ctx.reveal === "rows" ? n + k + 1 : n + 1;
+    return { objectName: `step:${st}:${eff}` };
+  };
+}
+function node(s, n, nm, k) {
   const acc = n.tone === "accent";
-  s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: vx(n.x), y: vy(n.y), w: vs(n.w), h: vs(n.h), fill: { color: C.paper }, line: { color: acc ? C.accent : C.teal, width: acc ? 1.75 : 1.25 }, rectRadius: 0.08 });
+  s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: vx(n.x), y: vy(n.y), w: vs(n.w), h: vs(n.h), fill: { color: C.paper }, line: { color: acc ? C.accent : C.teal, width: acc ? 1.75 : 1.25 }, rectRadius: 0.08 }, nm(k, "wipeD")));
   const runs = [{ text: n.label, options: { fontSize: 12, bold: true, color: C.ink, breakLine: !!n.sub } }];
   if (n.sub) runs.push({ text: n.sub, options: { fontSize: 8.5, color: C.muted, fontFace: FM } });
-  s.addText(runs, { x: vx(n.x), y: vy(n.y), w: vs(n.w), h: vs(n.h), fontFace: FB, align: "center", valign: "middle", margin: 0.04, isTextBox: true });
+  s.addText(runs, Object.assign({ x: vx(n.x), y: vy(n.y), w: vs(n.w), h: vs(n.h), fontFace: FB, align: "center", valign: "middle", margin: 0.04, isTextBox: true }, nm(k, "wipeD")));
 }
-function edge(s, a, b, dashed) {
+function edge(s, a, b, dashed, nm, k) {
   const p = anchors(a, b);
   const x1 = vx(p.x1), y1 = vy(p.y1), x2 = vx(p.x2), y2 = vy(p.y2);
   const o = { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1), line: { color: C.edge, width: 1.25, endArrowType: "triangle", dashType: dashed ? "dash" : "solid" } };
   if (x2 < x1) o.flipH = true;
   if (y2 < y1) o.flipV = true;
-  s.addShape(pres.shapes.LINE, o);
+  s.addShape(pres.shapes.LINE, Object.assign(o, nm(k, "wipeL")));
 }
-function visual(s, v) {
+function visual(s, v, ctx) {
   if (!v) return;
+  const nm = mkNm(ctx);
+  const wide = !!(ctx && ctx.wide);
   switch (v.kind) {
     case "glyph":
-      txt(s, v.text, { x: VX, y: VY + 0.9, w: 5.9, h: 1.4, fontFace: FD, fontSize: 54, bold: true, color: C.teal, align: "center", valign: "middle" });
-      txt(s, v.sub, { x: VX, y: VY + 2.3, w: 5.9, h: 0.4, fontFace: FM, fontSize: 11, color: C.muted, align: "center" });
+      txt(s, v.text, Object.assign({ x: VX, y: VY + 0.9, w: 5.9, h: 1.4, fontFace: FD, fontSize: 44, bold: true, color: C.teal, align: "center", valign: "middle" }, nm(0, "zoom")));
+      txt(s, v.sub, Object.assign({ x: VX, y: VY + 2.3, w: 5.9, h: 0.4, fontFace: FM, fontSize: 11, color: C.muted, align: "center" }, nm(0, "fade")));
       break;
     case "graph": {
       const byId = Object.fromEntries(v.nodes.map((n) => [n.id, n]));
-      v.edges.forEach((e) => edge(s, byId[e.from], byId[e.to], e.dashed));
-      v.nodes.forEach((n) => node(s, n));
+      const idx = Object.fromEntries(v.nodes.map((n, i) => [n.id, i]));
+      v.edges.forEach((e) => edge(s, byId[e.from], byId[e.to], e.dashed, nm, Math.max(idx[e.from], idx[e.to])));
+      v.nodes.forEach((n, i) => node(s, n, nm, i));
       break;
     }
     case "stack": {
       const n = v.layers.length, gap = 0.12, h = Math.min(0.78, (4.33 - gap * (n - 1)) / n);
       v.layers.forEach(([t, sub, tone], i) => {
         const y = VY + i * (h + gap), acc = tone === "accent";
-        s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: VX, y, w: 5.9, h, fill: { color: C.paper }, line: { color: acc ? C.accent : C.teal, width: acc ? 1.75 : 1.25 }, rectRadius: 0.08 });
-        txt(s, t, { x: VX + 0.2, y, w: 2.6, h, fontSize: 14, bold: true, valign: "middle" });
-        txt(s, sub, { x: VX + 2.6, y, w: 3.1, h, fontFace: FM, fontSize: 9.5, color: C.muted, align: "right", valign: "middle" });
+        s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: VX, y, w: 5.9, h, fill: { color: C.paper }, line: { color: acc ? C.accent : C.teal, width: acc ? 1.75 : 1.25 }, rectRadius: 0.08 }, nm(i, "wipeD")));
+        txt(s, t, Object.assign({ x: VX + 0.2, y, w: 2.6, h, fontSize: 14, bold: true, valign: "middle" }, nm(i, "wipeD")));
+        txt(s, sub, Object.assign({ x: VX + 2.6, y, w: 3.1, h, fontFace: FM, fontSize: 9.5, color: C.muted, align: "right", valign: "middle" }, nm(i, "wipeD")));
       });
       break;
     }
     case "table": {
-      const wide = !!v.wide;
       const cols = wide ? [2.6, 4.6, 4.7] : [1.3, 2.2, 2.4], rh = wide ? Math.min(0.78, 4.0 / v.rows.length) : 0.55;
       const X0 = wide ? ML : VX, TW = wide ? 11.9 : 5.9, FS = wide ? 17 : 12.5;
       let y = wide ? 2.3 : VY + 0.2;
@@ -79,8 +90,8 @@ function visual(s, v) {
       v.head.forEach((h, i) => { if (h) txt(s, h.toUpperCase(), { x: xs[i], y, w: cols[i], h: 0.3, fontFace: FM, fontSize: wide ? 11 : 9, charSpacing: 2, color: i === 2 && !v.plain ? C.teal : C.muted }); });
       y += wide ? 0.55 : 0.4;
       v.rows.forEach((r, k) => {
-        r.forEach((c, i) => txt(s, c, { x: xs[i] + (i ? 0.05 : 0), y, w: cols[i] - 0.1, h: rh, fontSize: FS, bold: i === 0, color: i === 1 && !v.plain ? C.muted : C.ink, valign: "middle" }));
-        if (k) s.addShape(pres.shapes.LINE, { x: X0, y, w: TW, h: 0, line: { color: C.hair, width: 0.5 } });
+        r.forEach((c, i) => txt(s, c, Object.assign({ x: xs[i] + (i ? 0.05 : 0), y, w: cols[i] - 0.1, h: rh, fontSize: FS, bold: i === 0, color: i === 1 && !v.plain ? C.muted : C.ink, valign: "middle" }, nm(k, "wipeL"))));
+        if (k) s.addShape(pres.shapes.LINE, Object.assign({ x: X0, y, w: TW, h: 0, line: { color: C.hair, width: 0.5 } }, nm(k, "wipeL")));
         y += rh;
       });
       break;
@@ -88,52 +99,61 @@ function visual(s, v) {
     case "stats": {
       v.items.forEach(([b, t], i) => {
         const x = VX + (i % 2) * 3.0, y = VY + 0.2 + Math.floor(i / 2) * 2.0;
-        txt(s, b, { x, y, w: 2.8, h: 1.1, fontFace: FD, fontSize: 54, bold: true, color: C.accent, valign: "bottom" });
-        txt(s, t, { x, y: y + 1.12, w: 2.8, h: 0.35, fontFace: FM, fontSize: 10.5, color: C.muted });
+        txt(s, b, Object.assign({ x, y, w: 2.8, h: 1.1, fontFace: FD, fontSize: 54, bold: true, color: C.accent, valign: "bottom" }, nm(i, "zoom")));
+        txt(s, t, Object.assign({ x, y: y + 1.12, w: 2.8, h: 0.35, fontFace: FM, fontSize: 10.5, color: C.muted }, nm(i, "fade")));
       });
       break;
     }
     case "code": {
-      s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: VX, y: VY + 0.2, w: 5.9, h: 3.6, fill: { color: C.panel }, line: { color: C.panel, width: 0 }, rectRadius: 0.1 });
-      const runs = v.lines.map(([t, tone], i) => ({ text: t, options: { color: tone === "accent" ? C.accent : tone === "ink" ? C.ink : C.muted, bold: tone === "accent", breakLine: i < v.lines.length - 1 } }));
-      s.addText(runs, { x: VX + 0.25, y: VY + 0.4, w: 5.5, h: 3.2, fontFace: FM, fontSize: 11.5, margin: 0, valign: "top", isTextBox: true, lineSpacingMultiple: 1.35 });
+      const X0 = wide ? ML : VX, W2 = wide ? 11.9 : 5.9, FS = wide ? 12 : 11.5;
+      const Y0 = wide ? 2.25 : VY + 0.2, H2 = wide ? 4.55 : 3.6;
+      s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: X0, y: Y0, w: W2, h: H2, fill: { color: C.panel }, line: { color: C.panel, width: 0 }, rectRadius: 0.1 }, nm(0, "fade")));
+      const runs = v.lines.map(([t, tone], i) => ({ text: t || " ", options: { color: tone === "accent" ? C.accent : tone === "ink" ? C.ink : C.muted, bold: tone === "accent", breakLine: i < v.lines.length - 1 } }));
+      s.addText(runs, Object.assign({ x: X0 + 0.25, y: Y0 + 0.2, w: W2 - 0.5, h: H2 - 0.4, fontFace: FM, fontSize: FS, margin: 0, valign: "top", isTextBox: true, lineSpacingMultiple: wide ? 1.22 : 1.35 }, nm(0, "fade")));
       break;
     }
     case "lifecycle": {
-      let x = VX; const y = VY + 0.3;
+      let x = VX; const y = VY + 0.3, nP = v.phases.length;
       v.phases.forEach((p, i) => {
         const ok = p === "Ready", w = 1.15;
-        s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x, y, w, h: 0.42, fill: { color: ok ? C.ok : C.paper }, line: { color: ok ? C.ok : C.teal, width: 1.25 }, rectRadius: 0.06 });
-        txt(s, p, { x, y, w, h: 0.42, fontSize: 12, bold: true, color: ok ? "FFFFFF" : C.teal, align: "center", valign: "middle" });
-        if (i < 3) s.addShape(pres.shapes.LINE, { x: x + w, y: y + 0.21, w: 0.28, h: 0, line: { color: C.edge, width: 1.25, endArrowType: "triangle" } });
+        s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x, y, w, h: 0.42, fill: { color: ok ? C.ok : C.paper }, line: { color: ok ? C.ok : C.teal, width: 1.25 }, rectRadius: 0.06 }, nm(i, "wipeL")));
+        txt(s, p, Object.assign({ x, y, w, h: 0.42, fontSize: 12, bold: true, color: ok ? "FFFFFF" : C.teal, align: "center", valign: "middle" }, nm(i, "wipeL")));
+        if (i < nP - 1) s.addShape(pres.shapes.LINE, Object.assign({ x: x + w, y: y + 0.21, w: 0.28, h: 0, line: { color: C.edge, width: 1.25, endArrowType: "triangle" } }, nm(i + 1, "wipeL")));
         x += w + 0.28;
       });
-      s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: VX, y: y + 0.85, w: 1.15, h: 0.42, fill: { color: C.paper }, line: { color: C.bad, width: 1.25 }, rectRadius: 0.06 });
-      txt(s, "Failed", { x: VX, y: y + 0.85, w: 1.15, h: 0.42, fontSize: 12, bold: true, color: C.bad, align: "center", valign: "middle" });
-      txt(s, "with a reason:", { x: VX + 1.3, y: y + 0.85, w: 3, h: 0.42, fontSize: 12, color: C.muted, valign: "middle" });
+      s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: VX, y: y + 0.85, w: 1.15, h: 0.42, fill: { color: C.paper }, line: { color: C.bad, width: 1.25 }, rectRadius: 0.06 }, nm(nP, "wipeL")));
+      txt(s, "Failed", Object.assign({ x: VX, y: y + 0.85, w: 1.15, h: 0.42, fontSize: 12, bold: true, color: C.bad, align: "center", valign: "middle" }, nm(nP, "wipeL")));
+      txt(s, "with a reason:", Object.assign({ x: VX + 1.3, y: y + 0.85, w: 3, h: 0.42, fontSize: 12, color: C.muted, valign: "middle" }, nm(nP, "wipeL")));
       let rx = VX, ry = y + 1.5;
-      v.failed.forEach((r) => { const w = 0.2 + r.length * 0.082; if (rx + w > VX + 5.9) { rx = VX; ry += 0.44; } s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: rx, y: ry, w, h: 0.34, fill: { color: C.paper }, line: { color: C.hair, width: 0.75 }, rectRadius: 0.05 }); txt(s, r, { x: rx, y: ry, w, h: 0.34, fontFace: FM, fontSize: 9.5, color: C.bad, align: "center", valign: "middle" }); rx += w + 0.12; });
+      v.failed.forEach((r) => {
+        const w = 0.2 + r.length * 0.082;
+        if (rx + w > VX + 5.9) { rx = VX; ry += 0.44; }
+        s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: rx, y: ry, w, h: 0.34, fill: { color: C.paper }, line: { color: C.hair, width: 0.75 }, rectRadius: 0.05 }, nm(nP + 1, "fade")));
+        txt(s, r, Object.assign({ x: rx, y: ry, w, h: 0.34, fontFace: FM, fontSize: 9.5, color: C.bad, align: "center", valign: "middle" }, nm(nP + 1, "fade")));
+        rx += w + 0.12;
+      });
       break;
     }
     case "phases": {
       const cols = 4, gw = 1.36, gh = 0.95, g = 0.15;
       v.items.forEach(([t, sub], i) => {
-        const x = VX + (i % cols) * (gw + g), y = VY + 0.3 + Math.floor(i / cols) * (gh + g), ok = i === 6;
-        s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x, y, w: gw, h: gh, fill: { color: C.paper }, line: { color: ok ? C.ok : C.teal, width: 1.25 }, rectRadius: 0.08 });
-        txt(s, String(i + 1), { x: x + gw - 0.4, y: y + 0.08, w: 0.3, h: 0.25, fontFace: FM, fontSize: 8.5, color: C.muted, align: "right" });
-        txt(s, t, { x: x + 0.12, y: y + 0.18, w: gw - 0.24, h: 0.35, fontFace: FM, fontSize: 12, bold: true });
-        txt(s, sub, { x: x + 0.12, y: y + 0.52, w: gw - 0.24, h: 0.35, fontSize: 9.5, color: C.muted });
+        const x = VX + (i % cols) * (gw + g), y = VY + 0.3 + Math.floor(i / cols) * (gh + g), ok = i === v.items.length - 1;
+        s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x, y, w: gw, h: gh, fill: { color: C.paper }, line: { color: ok ? C.ok : C.teal, width: 1.25 }, rectRadius: 0.08 }, nm(i, "wipeD")));
+        txt(s, String(i + 1), Object.assign({ x: x + gw - 0.4, y: y + 0.08, w: 0.3, h: 0.25, fontFace: FM, fontSize: 8.5, color: C.muted, align: "right" }, nm(i, "wipeD")));
+        txt(s, t, Object.assign({ x: x + 0.12, y: y + 0.18, w: gw - 0.24, h: 0.35, fontFace: FM, fontSize: 12, bold: true }, nm(i, "wipeD")));
+        txt(s, sub, Object.assign({ x: x + 0.12, y: y + 0.52, w: gw - 0.24, h: 0.4, fontSize: 9, color: C.muted }, nm(i, "wipeD")));
       });
       break;
     }
     case "tiles": {
       const cols = 4, gw = 1.38, gh = 0.72, g = 0.12;
+      const nx = Array.isArray(v.next) ? v.next : [v.next];
       v.items.forEach((t, i) => {
         const x = VX + (i % cols) * (gw + g), y = VY + 0.3 + Math.floor(i / cols) * (gh + g);
-        const live = t === v.live, next = t === v.next;
-        s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x, y, w: gw, h: gh, fill: { color: live ? C.accent : next ? C.paper : C.panel }, line: { color: live || next ? C.accent : C.hair, width: 1 }, rectRadius: 0.08 });
-        txt(s, t, { x: x + 0.12, y, w: gw - 0.24, h: gh, fontSize: 10.5, bold: true, color: live ? "FFFFFF" : next ? C.ink : C.muted, valign: "middle" });
-        if (live || next) txt(s, live ? "LIVE" : "NEXT", { x: x + gw - 0.6, y: y + 0.06, w: 0.5, h: 0.2, fontFace: FM, fontSize: 7.5, bold: true, color: live ? "FFFFFF" : C.accent, align: "right" });
+        const live = t === v.live, next = nx.includes(t);
+        s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x, y, w: gw, h: gh, fill: { color: live ? C.accent : next ? C.paper : C.panel }, line: { color: live || next ? C.accent : C.hair, width: 1 }, rectRadius: 0.08 }, nm(i, "wipeD")));
+        txt(s, t, Object.assign({ x: x + 0.12, y, w: gw - 0.24, h: gh, fontSize: 10.5, bold: true, color: live ? "FFFFFF" : next ? C.ink : C.muted, valign: "middle" }, nm(i, "wipeD")));
+        if (live || next) txt(s, live ? "LIVE" : "NEXT", Object.assign({ x: x + gw - 0.6, y: y + 0.06, w: 0.5, h: 0.2, fontFace: FM, fontSize: 7.5, bold: true, color: live ? "FFFFFF" : C.accent, align: "right" }, nm(i, "wipeD")));
       });
       break;
     }
@@ -180,13 +200,12 @@ slides.forEach((sd, i) => {
   }
   kicker(s, sd.kicker); title(s, sd.title);
   const n = sd.lines.length, lh = n ? Math.min(0.72, 4.3 / n) : 0;
-  if (!n) sd.visual.wide = true;
   sd.lines.forEach((l, k) => {
     const y = 2.3 + k * lh;
     s.addShape(pres.shapes.RECTANGLE, Object.assign({ x: ML, y: y + lh / 2 - 0.07, w: 0.13, h: 0.13, fill: { color: C.accent }, line: { color: C.accent, width: 0 } }, step(k + 1)));
     txt(s, l, Object.assign({ x: ML + 0.35, y, w: 5.45, h: lh, fontSize: n > 5 ? 17 : 19, valign: "middle", bold: false }, step(k + 1)));
   });
-  autoWrap(s, () => visual(s, sd.visual));
+  visual(s, sd.visual, { reveal: sd.reveal || "auto", nLines: n, wide: !!(sd.wide || !n) });
   foot(s, i);
 });
 

@@ -5,17 +5,28 @@ const { anchors } = require("./geom");
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const TOTAL = slides.length;
 
-function graphSvg(v) {
+function A(ctx, k, d) {
+  if (!ctx || !ctx.reveal || ctx.reveal === "auto") return { c: "build-auto", a: `style="--d:${d}ms"` };
+  const n = ctx.nLines;
+  const step = ctx.reveal === "paired" ? k + 1 : ctx.reveal === "rows" ? n + k + 1 : n + 1;
+  return { c: "build", a: `data-step="${step}"` };
+}
+function graphSvg(v, ctx) {
   const byId = Object.fromEntries(v.nodes.map((n) => [n.id, n]));
+  const idx = Object.fromEntries(v.nodes.map((n, i) => [n.id, i]));
   let out = `<svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
   <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs>`;
   v.edges.forEach((e, i) => {
     const p = anchors(byId[e.from], byId[e.to]);
-    out += `<line class="edge build-auto${e.dashed ? "" : " draw"}" style="--d:${(i + v.nodes.length) * 70}ms" x1="${p.x1}" y1="${p.y1}" x2="${p.x2}" y2="${p.y2}" ${e.dashed ? 'stroke-dasharray="6 6"' : 'pathLength="1"'} marker-end="url(#ah)"/>`;
+    const a = A(ctx, Math.max(idx[e.from], idx[e.to]), (i + v.nodes.length) * 70);
+    out += `<line class="edge ${a.c}${e.dashed ? "" : " draw"}" ${a.a} x1="${p.x1}" y1="${p.y1}" x2="${p.x2}" y2="${p.y2}" ${e.dashed ? 'stroke-dasharray="6 6"' : 'pathLength="1"'} marker-end="url(#ah)"/>`;
   });
   v.nodes.forEach((n, i) => {
     const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
-    out += `<g class="node ${n.tone} build-auto" style="--d:${i * 70}ms">
+    const a = A(ctx, i, i * 70);
+    const tap = n.yaml && ctx && ctx.clickYaml;
+    const dy = tap ? ` data-yaml="${esc(n.yaml).replace(/\n/g, "&#10;")}" tabindex="0" role="button" aria-label="Show YAML for ${esc(n.label)}"` : "";
+    out += `<g class="node ${n.tone} ${a.c}${tap ? " tap" : ""}" ${a.a}${dy}>
       <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="8"/>
       <text x="${cx}" y="${n.sub ? cy - 4 : cy + 5}" class="nl">${esc(n.label)}</text>
       ${n.sub ? `<text x="${cx}" y="${cy + 15}" class="ns">${esc(n.sub)}</text>` : ""}
@@ -23,18 +34,26 @@ function graphSvg(v) {
   });
   return out + "</svg>";
 }
-function visual(v) {
+function visual(v, ctx) {
   if (!v) return "";
   switch (v.kind) {
-    case "glyph": return `<div class="glyph build-auto"><div class="g">${esc(v.text)}</div><div class="gs">${esc(v.sub)}</div></div>`;
-    case "graph": return graphSvg(v);
-    case "stack": return `<div class="stack">${v.layers.map(([t, s, tone], i) => `<div class="layer ${tone || ""} build-auto" style="--d:${i * 80}ms"><b>${esc(t)}</b><span>${esc(s)}</span></div>`).join("")}</div>`;
-    case "table": return `<table class="cmp build-auto"><thead><tr>${v.head.map((h, i) => `<th class="${i === 2 && !v.plain ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r) => `<tr>${r.map((c, i) => `<td class="${i === 0 ? "k" : i === 2 && !v.plain ? "acc" : v.plain ? "pl" : ""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
-    case "stats": return `<div class="stats">${v.items.map(([b, s], i) => `<div class="stat build-auto" style="--d:${i * 90}ms"><div class="big" data-n="${esc(b)}">${esc(b)}</div><div class="sm">${esc(s)}</div></div>`).join("")}</div>`;
-    case "code": return `<pre class="code build-auto">${v.lines.map(([t, tone]) => `<span class="${tone}">${esc(t)}</span>`).join("\n")}</pre>`;
-    case "lifecycle": return `<div class="life"><div class="row">${v.phases.map((p, i) => `<span class="chip ${p === "Ready" ? "ok" : ""} build-auto" style="--d:${i * 90}ms">${esc(p)}</span>${i < v.phases.length - 1 ? '<span class="arr">→</span>' : ""}`).join("")}</div><div class="row failed build-auto" style="--d:400ms"><span class="chip bad">Failed</span><span class="why">with a reason:</span></div><div class="row reasons build-auto" style="--d:480ms">${v.failed.map((r) => `<code>${esc(r)}</code>`).join("")}</div></div>`;
-    case "phases": return `<ol class="phases">${v.items.map(([t, s], i) => `<li class="build-auto ${i === 6 ? "ok" : ""}" style="--d:${i * 70}ms"><code>${esc(t)}</code><span>${esc(s)}</span></li>`).join("")}</ol>`;
-    case "tiles": return `<div class="tiles">${v.items.map((t, i) => `<div class="tile ${t === v.live ? "live" : t === v.next ? "next" : ""} build-auto" style="--d:${i * 40}ms"><span>${esc(t)}</span>${t === v.live ? "<em>live</em>" : t === v.next ? "<em>next</em>" : ""}</div>`).join("")}</div>`;
+    case "glyph": { const a = A(ctx, 0, 0); return `<div class="glyph ${a.c}" ${a.a}><div class="g">${esc(v.text)}</div><div class="gs">${esc(v.sub)}</div></div>`; }
+    case "graph": return graphSvg(v, ctx);
+    case "stack": return `<div class="stack">${v.layers.map(([t, s, tone], i) => { const a = A(ctx, i, i * 80); return `<div class="layer ${tone || ""} ${a.c}" ${a.a}><b>${esc(t)}</b><span>${esc(s)}</span></div>`; }).join("")}</div>`;
+    case "table": return `<table class="cmp"><thead><tr>${v.head.map((h, i) => `<th class="${i === 2 && !v.plain ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r, i) => { const a = A(ctx, i, i * 70); return `<tr class="${a.c}" ${a.a}>${r.map((c, j) => `<td class="${j === 0 ? "k" : j === 2 && !v.plain ? "acc" : v.plain ? "pl" : ""}">${esc(c)}</td>`).join("")}</tr>`; }).join("")}</tbody></table>`;
+    case "stats": return `<div class="stats">${v.items.map(([b, s], i) => { const a = A(ctx, i, i * 90); return `<div class="stat ${a.c}" ${a.a}><div class="big" data-n="${esc(b)}">${esc(b)}</div><div class="sm">${esc(s)}</div></div>`; }).join("")}</div>`;
+    case "code": { const a = A(ctx, 0, 0); return `<pre class="code ${a.c}" ${a.a}>${v.lines.map(([t, tone]) => `<span class="${tone}">${esc(t)}</span>`).join("\n")}</pre>`; }
+    case "lifecycle": {
+      const ap = (k, d) => A(ctx, k, d);
+      const nP = v.phases.length;
+      return `<div class="life"><div class="row">${v.phases.map((p, i) => { const a = ap(i, i * 90); return `<span class="chip ${p === "Ready" ? "ok" : ""} ${a.c}" ${a.a}>${esc(p)}</span>${i < nP - 1 ? '<span class="arr">→</span>' : ""}`; }).join("")}</div>` +
+        `<div class="row failed ${ap(nP, 400).c}" ${ap(nP, 400).a}><span class="chip bad">Failed</span><span class="why">with a reason:</span></div>` +
+        `<div class="row reasons ${ap(nP + 1, 480).c}" ${ap(nP + 1, 480).a}>${v.failed.map((r) => `<code>${esc(r)}</code>`).join("")}</div></div>`;
+    }
+    case "phases": return `<ol class="phases">${v.items.map(([t, s], i) => { const a = A(ctx, i, i * 70); return `<li class="${a.c} ${i === v.items.length - 1 ? "ok" : ""}" ${a.a}><code>${esc(t)}</code><span>${esc(s)}</span></li>`; }).join("")}</ol>`;
+    case "tiles": { const nx = Array.isArray(v.next) ? v.next : [v.next];
+      return `<div class="tiles">${v.items.map((t, i) => { const a = A(ctx, i, i * 40); const live = t === v.live, next = nx.includes(t);
+        return `<div class="tile ${live ? "live" : next ? "next" : ""} ${a.c}" ${a.a}><span>${esc(t)}</span>${live ? "<em>live</em>" : next ? "<em>next</em>" : ""}</div>`; }).join("")}</div>`; }
     default: return "";
   }
 }
@@ -65,12 +84,13 @@ function slideHtml(s, i) {
       <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
   }
   const wide = s.wide || !s.lines.length;
+  const ctx = { reveal: s.reveal || "auto", nLines: s.lines.length, clickYaml: !!s.clickYaml };
   return `<section class="slide content${wide ? " wide" : ""}" data-i="${i}">
     <div class="kicker">${esc(s.kicker)}</div>
     <h1>${esc(s.title)}</h1>
     <div class="body">
       ${wide ? "" : `<ul class="lines">${s.lines.map((l, k) => `<li class="build" data-step="${k + 1}">${esc(l)}</li>`).join("")}</ul>`}
-      <div class="visual">${visual(s.visual)}</div>
+      <div class="visual">${visual(s.visual, ctx)}</div>
     </div>
     <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
 }
@@ -107,6 +127,15 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .lines li{font-size:2.05cqw;line-height:1.3;font-weight:500;padding-left:2.2cqw;position:relative;text-wrap:pretty}
 .lines li::before{content:"";position:absolute;left:0;top:.5em;width:.8cqw;height:.8cqw;background:var(--accent);border-radius:2px}
 .visual{align-self:center;width:100%}
+.graph .build{opacity:0;transform:scale(.92);transform-box:fill-box;transform-origin:center;transition:opacity .4s ease,transform .45s cubic-bezier(.2,.9,.25,1.25)}
+.graph .build.on{opacity:1;transform:none}
+tr.build{opacity:0;transform:translateX(-1cqw);transition:opacity .4s ease,transform .5s cubic-bezier(.2,.9,.25,1.15)}
+tr.build.on{opacity:1;transform:none}
+.node.tap{cursor:pointer}
+.node.tap:hover rect,.node.tap:focus-visible rect{stroke-width:3.2}
+.content.wide .code{font-size:1.5cqw;line-height:1.62}
+.yamlpop{position:absolute;right:5cqw;bottom:5cqh;max-width:44cqw;background:var(--code-bg);border:1px solid var(--hair);border-radius:.7cqw;padding:1.6cqh 1.6cqw;font-family:var(--mono);font-size:1.2cqw;line-height:1.6;white-space:pre;overflow:auto;max-height:56cqh;z-index:6;box-shadow:0 1cqh 3cqh rgba(0,0,0,.18)}
+.yamlpop b{display:block;font-family:var(--sans);font-size:1.15cqw;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:.9cqh}
 .content.wide .body{grid-template-columns:1fr}
 .content.wide .cmp{font-size:2.2cqw}
 .content.wide .cmp th{font-size:1.5cqw;padding-bottom:2cqh}
@@ -214,6 +243,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
   var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function maxStep(i){var m=0;slides[i].querySelectorAll('.build').forEach(function(b){m=Math.max(m,+b.dataset.step||0)});return m;}
   function paint(){
+    closePop();
     slides.forEach(function(s,i){
       s.classList.toggle('on',i===cur);
       if(i===cur){s.querySelectorAll('.build').forEach(function(b){b.classList.toggle('on',(+b.dataset.step||0)<=step)});}
@@ -247,6 +277,19 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
       case 'f':case 'F':if(document.fullscreenElement){document.exitFullscreen();}else if(stage.requestFullscreen){stage.requestFullscreen();}break;
     }
   });
+  var pop=null;
+  function closePop(){ if(pop&&pop.parentNode){pop.parentNode.removeChild(pop);} pop=null; }
+  stage.addEventListener('click',function(e){
+    var t=e.target&&e.target.closest?e.target.closest('.node.tap'):null;
+    if(t&&t.getAttribute('data-yaml')){
+      e.stopPropagation(); e.preventDefault(); closePop();
+      pop=document.createElement('div'); pop.className='yamlpop';
+      var b=document.createElement('b'); var nl=t.querySelector('.nl');
+      b.textContent=nl?nl.textContent:'YAML'; pop.appendChild(b);
+      var body=document.createElement('div'); body.textContent=t.getAttribute('data-yaml'); pop.appendChild(body);
+      slides[cur].appendChild(pop);
+    }
+  },true);
   stage.addEventListener('click',function(e){ if(e.clientX<window.innerWidth*0.2){prev();}else{next();} });
   var tx=null;stage.addEventListener('touchstart',function(e){tx=e.touches[0].clientX},{passive:true});
   stage.addEventListener('touchend',function(e){ if(tx===null)return; var dx=e.changedTouches[0].clientX-tx; if(dx<-40)next(); else if(dx>40)prev(); tx=null; });
