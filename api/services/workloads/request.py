@@ -63,6 +63,9 @@ class ApplyRequest:
         git_url: Function source repo, stamped as an annotation.
         revision: Function source revision - branch, tag or commit - stamped
             as an annotation.
+        commit: The commit a git push pinned, stamped as an annotation. None on
+            every human write, which is what returns the function to its
+            revision's head (docs/FUNCTIONS.md - Git webhook).
         path: Function source sub-directory, stamped as an annotation.
         pull_stamp: The workload's current pull stamp, carried forward so a
             re-composed spec does not drop it and cut a revision.
@@ -93,6 +96,7 @@ class ApplyRequest:
     version: str | None = None
     git_url: str | None = None
     revision: str | None = None
+    commit: str | None = None
     path: str | None = None
     pull_stamp: str | None = None
 

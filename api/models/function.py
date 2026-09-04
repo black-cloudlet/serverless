@@ -85,6 +85,23 @@ class FunctionUpdate(BaseModel):
     port: int = Field(default=DEFAULT_PORT, ge=PORT_MIN, le=PORT_MAX)
 
 
+class WebhookView(BaseModel):
+    """Everything needed to configure a git webhook for this function.
+
+    Returned whole so a caller configures the hook by copying two fields rather
+    than assembling a URL. Unlike ``gitToken``, ``token`` is *shown*: it is the
+    platform's own credential, minted here, and its only use is being pasted
+    into the provider (docs/FUNCTIONS.md - Git webhook).
+    """
+
+    url: str
+    # repr=False, as gitToken is: a credential must not ride along into log
+    # lines or tracebacks that print the response.
+    token: str = Field(repr=False)
+    provider: str = "gitlab"
+    events: list[str] = Field(default_factory=lambda: ["push"])
+
+
 class FunctionResponse(WorkloadResponse):
     """A function, shaped like FunctionCreate (gitToken redacted) + live status.
 
@@ -103,6 +120,9 @@ class FunctionResponse(WorkloadResponse):
     # Read-only: it is set by the webhook and cleared by POST .../build and PUT,
     # never sent by a client (docs/FUNCTIONS.md - Git webhook).
     commit: str | None = None
+    # How to configure a push to build this function. None on a response that
+    # did not read one (a rebuild's 202 carries no secret read).
+    webhook: WebhookView | None = None
     path: str | None = None
     # Present once the function has an Image on the local region; None on a region
     # that has never built it (e.g. straight after a switchover).

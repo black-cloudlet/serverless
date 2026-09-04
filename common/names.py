@@ -464,6 +464,40 @@ def image_tag(revision: str) -> str:
     return tag
 
 
+def same_repository(a: str, b: str) -> bool:
+    """Whether two git URLs name the same repository.
+
+    Compared as scheme, host and path, because a provider does not have to
+    spell a URL the way the caller did: a trailing ``.git`` or ``/`` is
+    optional, and the host is case-insensitive where the path is not (git
+    forges are case-sensitive about owners and repository names, and treating
+    them otherwise would let one repository's push build another's function).
+    Userinfo is dropped - a credential in the URL does not change which
+    repository is named - and so is the port, which does distinguish hosts and
+    is therefore kept as part of the netloc.
+
+    Args:
+        a: One repository URL.
+        b: The other.
+
+    Returns:
+        True if both name the same repository. False if either is empty, so an
+        unknown side never matches.
+    """
+    if not a or not b:
+        return False
+
+    def parts(url: str) -> tuple[str, str, str]:
+        split = urlsplit(url.strip())
+        host = split.netloc.rsplit("@", 1)[-1].lower()
+        path = split.path.rstrip("/")
+        if path.endswith(".git"):
+            path = path[: -len(".git")]
+        return split.scheme.lower(), host, path.rstrip("/")
+
+    return parts(a) == parts(b)
+
+
 def repository_of(image: str) -> str:
     """The repository half of an image reference - everything but tag and digest.
 

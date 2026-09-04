@@ -4,7 +4,7 @@ import pytest
 from cloudlet_apis.auth import Principal
 from fastapi.testclient import TestClient
 
-from api.auth.deps import require_auth
+from api.auth.deps import optional_auth, require_auth
 from api.dependencies import get_container_service, get_function_service
 from api.main import create_app
 from api.models.common import (
@@ -76,6 +76,26 @@ class FakeFunctions:
     async def accept_build(self, group, name, user, background):
         return _accepted("function", name, group, runtime="python", revision="main")
 
+    async def accept_webhook(self, group, name, token, event, event_kind, background):
+        from api.models.webhook import WebhookOutcome
+
+        self.webhook_calls = getattr(self, "webhook_calls", [])
+        self.webhook_calls.append((token, event, event_kind))
+        if token != "good-token":
+            from cloudlet_apis.errors import UnauthenticatedError
+
+            raise UnauthenticatedError("invalid webhook token")
+        if event is None or event.branch != "main":
+            return WebhookOutcome(accepted=False, reason="not this function's revision")
+        return _accepted(
+            "function", name, group, runtime="python", revision="main", commit=event.sha
+        )
+
+    async def rotate_webhook(self, group, name, user):
+        from api.models.function import WebhookView
+
+        return WebhookView(url=f"https://api.example/v1/{group}/{name}/build", token="rotated")
+
     async def get(self, name, group, user):
         return _ready(
             "function", name, runtime="python", gitRepo="https://git/x.git", revision="main"
@@ -142,6 +162,11 @@ class FakeContainers:
 def client():
     app = create_app()
     app.dependency_overrides[require_auth] = lambda: Principal(
+        subject="u", username="alice", groups=["team"], is_admin=False
+    )
+    # The build endpoint takes the header through `optional_auth`, so a bearer
+    # can fall through to the webhook token; that is the half to replace here.
+    app.dependency_overrides[optional_auth] = lambda: Principal(
         subject="u", username="alice", groups=["team"], is_admin=False
     )
     app.dependency_overrides[get_function_service] = lambda: FakeFunctions()
@@ -262,6 +287,99 @@ def test_build_function_accepted_without_a_body(client):
     assert body["statusUrl"] == "/v1/groups/team/functions/orders"
     # the build inputs it will use, echoed back from what is stored
     assert body["runtime"] == "python" and body["revision"] == "main"
+
+
+SHA = "9f2c1ab2b3c4d5e6f708192a3b4c5d6e7f809012"
+
+
+def _push_body(ref="refs/heads/main"):
+    return {
+        "object_kind": "push",
+        "ref": ref,
+        "after": SHA,
+        "project": {"git_http_url": "https://git/x.git"},
+    }
+
+
+def _unauthenticated(app):
+    """Drop the bearer overrides, leaving the webhook header as the only credential."""
+    from api.auth.deps import optional_auth, require_auth
+
+    app.dependency_overrides[optional_auth] = lambda: None
+    app.dependency_overrides.pop(require_auth, None)
+
+
+def test_a_push_with_a_webhook_token_reaches_the_webhook_path(client):
+    """One endpoint, two credentials: no bearer, so the GitLab header decides."""
+    _unauthenticated(client.app)
+
+    r = client.post(
+        "/v1/groups/team/functions/orders/build",
+        json=_push_body(),
+        headers={"X-Gitlab-Token": "good-token", "X-Gitlab-Event": "Push Hook"},
+    )
+
+    assert r.status_code == 202
+    body = r.json()
+    assert body["commit"] == SHA
+    # the caller's revision is what comes back, never the pushed commit
+    assert body["revision"] == "main"
+
+
+def test_a_push_that_is_not_this_functions_is_a_200_not_an_error(client):
+    """A 4xx would make GitLab disable the hook for the pushes that do match."""
+    _unauthenticated(client.app)
+
+    r = client.post(
+        "/v1/groups/team/functions/orders/build",
+        json=_push_body(ref="refs/heads/develop"),
+        headers={"X-Gitlab-Token": "good-token", "X-Gitlab-Event": "Push Hook"},
+    )
+
+    assert r.status_code == 200
+    assert r.json()["accepted"] is False
+
+
+def test_a_bad_webhook_token_is_401(client):
+    _unauthenticated(client.app)
+
+    r = client.post(
+        "/v1/groups/team/functions/orders/build",
+        json=_push_body(),
+        headers={"X-Gitlab-Token": "wrong", "X-Gitlab-Event": "Push Hook"},
+    )
+
+    assert r.status_code == 401
+
+
+def test_a_build_with_neither_credential_is_401(client):
+    _unauthenticated(client.app)
+
+    assert client.post("/v1/groups/team/functions/orders/build").status_code == 401
+
+
+def test_a_bearer_wins_over_a_webhook_header(client):
+    """Someone holding both means the authenticated one; the rebuild path runs."""
+    r = client.post(
+        "/v1/groups/team/functions/orders/build",
+        json=_push_body(),
+        headers={"X-Gitlab-Token": "good-token", "X-Gitlab-Event": "Push Hook"},
+    )
+
+    assert r.status_code == 202
+    # accept_build's body, which carries no commit - the webhook path's does
+    assert r.json()["commit"] is None
+
+
+def test_the_webhook_token_can_be_rotated(client):
+    r = client.post("/v1/groups/team/functions/orders/webhook/rotate")
+
+    assert r.status_code == 200
+    assert r.json()["token"] == "rotated"
+
+
+def test_a_container_has_no_webhook_to_rotate(client):
+    assert client.post("/v1/groups/team/containers/orders/webhook/rotate").status_code == 404
 
 
 def test_only_functions_can_be_built(client):

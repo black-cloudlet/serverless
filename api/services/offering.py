@@ -21,14 +21,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from api.core.paths import webhook_url
 from api.models.common import (
+    ANNOTATION_GIT_COMMIT,
     ANNOTATION_RUNTIME,
     ANNOTATION_RUNTIME_VERSION,
     BuildStatusView,
     WorkloadResponse,
 )
 from api.models.container import ContainerResponse
-from api.models.function import FunctionResponse
+from api.models.function import FunctionResponse, WebhookView
 from api.services.builder import registry as registry_svc
 from api.services.manifests import secrets as secret_svc
 from api.services.regions import region_apply, region_read
@@ -128,6 +130,27 @@ class Offering(Protocol):
         """
         ...
 
+    def read_response_extras(
+        self, cluster: NamespacedCluster, name: str, group: str, settings
+    ) -> dict:
+        """Offering-specific response fields that need a cluster read of their own.
+
+        The read-path counterpart to :meth:`read_extra_state`: merged into the
+        ``common`` fields of a fetched response. Runs off the event loop, on a
+        region that has the workload.
+
+        Args:
+            cluster: The region to read from.
+            name: The workload name.
+            group: The owning group.
+            settings: The API settings, for anything that has to name the API
+                itself (a function's webhook URL).
+
+        Returns:
+            The extra response fields, empty for an offering with none.
+        """
+        ...
+
     def after_delete(self, ctx: DeleteContext) -> None:
         """Clean up what the KSVC's ownerReferences do not cascade to.
 
@@ -192,6 +215,7 @@ class FunctionOffering:
             version=annotations.get(ANNOTATION_RUNTIME_VERSION),
             gitRepo=spec.gitRepo,
             revision=spec.revision,
+            commit=annotations.get(ANNOTATION_GIT_COMMIT),
             path=spec.path,
             port=spec.port,
             build=build,
@@ -207,9 +231,51 @@ class FunctionOffering:
         return set()
 
     def read_extra_state(self, cluster: NamespacedCluster, name: str) -> dict:
-        """The stored git token, so a build-input change can rebuild without one."""
+        """The stored git and webhook tokens, and the commit a push pinned.
+
+        The git token so a build-input change can rebuild without one; the
+        webhook token so a push can be authenticated and a read can show the
+        caller what to paste into GitLab; the commit so the write paths know
+        whether there is a pin to clear (docs/FUNCTIONS.md - Git webhook).
+        """
         git = region_read.secret_text(cluster, secret_svc.git_secret_name(name))
-        return {"git_token": git.get(secret_svc.GIT_TOKEN_KEY)}
+        hook = region_read.secret_text(cluster, secret_svc.webhook_secret_name(name))
+        return {
+            "git_token": git.get(secret_svc.GIT_TOKEN_KEY),
+            "webhook_token": hook.get(secret_svc.WEBHOOK_TOKEN_KEY),
+        }
+
+    def read_response_extras(
+        self, cluster: NamespacedCluster, name: str, group: str, settings
+    ) -> dict:
+        """How to configure a push to build this function, for the full GET.
+
+        The token is shown, unlike every other credential this platform stores:
+        it is the platform's own, and its only use is being pasted into the git
+        provider. A caller who can read this function can already start a build
+        with their own bearer, so showing it grants them nothing they did not
+        have (docs/FUNCTIONS.md - Git webhook).
+
+        Best-effort by construction: an absent or unreadable Secret leaves
+        ``webhook`` null rather than failing the read of the whole function.
+
+        Args:
+            cluster: The region to read the Secret from.
+            name: The workload name.
+            group: The owning group, for the URL.
+            settings: The API settings, for the absolute webhook URL.
+
+        Returns:
+            ``{"webhook": WebhookView}``, or ``{}`` when there is no token.
+        """
+        try:
+            hook = region_read.secret_text(cluster, secret_svc.webhook_secret_name(name))
+        except Exception:  # noqa: BLE001 - a read of the function must not fail on this
+            return {}
+        token = hook.get(secret_svc.WEBHOOK_TOKEN_KEY)
+        if not token:
+            return {}
+        return {"webhook": WebhookView(url=webhook_url(settings, group, name), token=token)}
 
     def after_delete(self, ctx: DeleteContext) -> None:
         """Remove one region's build objects, then the repositories it pushed to.
@@ -284,6 +350,12 @@ class ContainerOffering:
 
     def read_extra_state(self, cluster: NamespacedCluster, name: str) -> dict:
         """None. The registry credential is read by the shared state loader."""
+        return {}
+
+    def read_response_extras(
+        self, cluster: NamespacedCluster, name: str, group: str, settings
+    ) -> dict:
+        """None. A container is deployed from an image, so no push can build it."""
         return {}
 
     def after_delete(self, ctx: DeleteContext) -> None:
