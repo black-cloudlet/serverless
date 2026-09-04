@@ -7,6 +7,57 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added (git webhook)
+
+- **A push can build a function.** `POST .../functions/{name}/build` now accepts
+  `X-Gitlab-Token` as a second credential beside the bearer - a push and a
+  rebuild are the same request, so they share one endpoint. Each function is
+  given a webhook token at create, returned on that `202` and on every full
+  `GET` as a `webhook` object (URL, token, provider, events) and stored in a
+  replicated `{workload}-webhook` Secret; `POST .../{name}/webhook/rotate`
+  replaces it. Unlike `gitToken` the token is shown: it is the platform's own,
+  and its only use is being pasted into GitLab. Disabling a hook is done in the
+  provider - a token nothing calls starts no build - so there is no delete
+  endpoint.
+- A push builds only if it updated the branch the function's `revision` names,
+  in the repository it builds from; anything else is answered `200` with a
+  reason rather than an error, because GitLab disables a hook that keeps
+  returning `4xx`. A function whose `revision` is a tag or a commit therefore
+  ignores every push, which is what pinning to one meant.
+- What a push changes is the **commit** alone, reported read-only as `commit`:
+  the image tag still follows `revision`, so a push moves the digest that tag
+  points at rather than the tag, the kpack `Image` is never recreated, and a
+  read still reports the revision the caller chose. No trigger annotation is
+  sent with it - the changed revision is itself the spec change kpack builds
+  from, so one push produces one build however many API replicas or provider
+  retries handled it. Both human writes, `POST .../build` and `PUT`, clear the
+  pin and return the function to its revision's head.
+- The token has exactly one writer, `POST .../{name}/webhook/rotate`. A `PUT`
+  does not carry it: it could only re-apply what it read, or mint a replacement
+  it has no field to return, silently breaking a configured hook. Rotate after
+  widening a function's regions, since the new one has no token until then.
+- Only an unusable token makes a delivery a `4xx`. A function that cannot
+  currently be built - no stored git token, a runtime retired from the
+  ConfigMap - is an acknowledged, ignored delivery, because a `4xx` would make
+  GitLab disable the hook for every later push too.
+- New setting `SERVERLESS_PUBLIC_URL` (chart: derived from the API Route's own
+  host), the origin in the webhook URL handed to callers.
+
+### Changed (function source)
+
+- **BREAKING: a function's `branch` is now `revision`.** The value has always been
+  written verbatim into the kpack `Image`'s `spec.source.git.revision`, which git
+  resolves as *any* ref - a branch, a tag, or a commit SHA - so the old name
+  described one of the three things it accepted. Nothing about the mechanics
+  changes: the same string reaches kpack and the image tag is still projected from
+  it (`feature/login` builds that ref and pushes to `:feature-login`). Renamed with
+  it: the `serverless.platform/git-branch` annotation is now
+  `serverless.platform/git-revision`, `common.names.Branch`/`validate_branch` are
+  `Revision`/`validate_revision`, and `BuildRequest.branch` is
+  `BuildRequest.revision` (its old `revision` field - the exact commit to build -
+  is now `commit`, which is what the git webhook pins). Pre-GA, so there is no
+  compatibility shim: clients send `revision`.
+
 ### Changed (tenant namespaces)
 
 - **BREAKING: workloads now deploy into one namespace per SSO group**

@@ -49,6 +49,11 @@ spec:
               value: {{ tpl .Values.routeDomain . | quote }}
             - name: SERVERLESS_BASE_PATH
               value: {{ .Values.basePath | quote }}
+            # The API's own origin, for the absolute webhook URL a git provider
+            # is configured with. Built from the same host the Route serves on,
+            # so the two cannot disagree (docs/FUNCTIONS.md - Git webhook).
+            - name: SERVERLESS_PUBLIC_URL
+              value: {{ printf "https://%s" (tpl (.Values.api.route.host | default (printf "serverless.%s" .Values.global.baseDomain)) .) | quote }}
             # Where a group's workloads live, and how to reach the component
             # that creates those namespaces. The suffix is read by both ends;
             # an empty URL skips the provision call, which is the dev posture.

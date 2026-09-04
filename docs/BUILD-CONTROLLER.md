@@ -133,12 +133,12 @@ BUILDING.md: Ownership: API vs Build Service.
 
 | Path | ksvc image |
 |------|-----------|
-| POST | **written once, per region**: `{that region's registry}/{organization}/{builderRepository}/{group}/{name}:{branch}` |
+| POST | **written once, per region**: `{that region's registry}/{organization}/{builderRepository}/{group}/{name}:{revision}` |
 | PUT | **kept, per region** - whatever each region is running, read back off its own KSVC. One value fanned out would point a peer at this region's registry |
 | `POST .../build` | **not written** - no ksvc is applied at all |
 | build controller | **the only writer after the create**, and only ever the digest |
 
-A create has nothing to keep, so it deploys at the branch tag and reads `Building` until a
+A create has nothing to keep, so it deploys at the revision tag and reads `Building` until a
 build pushes something there. After that the tag is never written again: it resolves to the
 digest already running, so writing it cuts a revision of *the same code*, and the real
 rollout arrives minutes later from the controller anyway. Two revisions where one belongs.
@@ -155,13 +155,13 @@ without inventing a spec change (FUNCTIONS.md: Building again without changing a
 
 ## Registry tag GC
 
-kpack pushes every successful build **twice**: the branch tag moves to the new digest, and a
-unique `b{n}.{date}.{time}` tag is added beside it. The branch tag overwrites; the build
+kpack pushes every successful build **twice**: the revision tag moves to the new digest, and a
+unique `b{n}.{date}.{time}` tag is added beside it. The revision tag overwrites; the build
 tags accumulate, one per build, for the life of the function - and `STACK`/`BUILDPACK` CVE
 rebuilds and `POST .../build` create builds without a user touching anything, so they grow
 even for functions nobody edits. They count against registry quota, and nothing else
-reclaims them short of deleting the function. A branch change leaks the same way: the old
-branch's projected tag stays behind permanently.
+reclaims them short of deleting the function. A revision change leaks the same way: the old
+revision's projected tag stays behind permanently.
 
 The build controller prunes them (`build_controller/gc.py`), because the problem is shaped
 like the controller:
@@ -191,13 +191,13 @@ Per function repository, a sweep **keeps**:
 
 | Kept | Why |
 |---|---|
-| The current **branch tag** (the tag half of `Image.spec.tag`) | A create deploys at it; a switchover region rebuilds into it |
+| The current **revision tag** (the tag half of `Image.spec.tag`) | A create deploys at it; a switchover region rebuilds into it |
 | Every tag on the **digest of `status.latestImage`** | Deleting the last tag on a manifest lets Quay collect it, and the digest-pinned KSVC could no longer pull on a node change |
 | The newest **`buildController.gc.keepBuilds`** build tags **beyond all of those** | Default **3**, mirroring `build.history.success`. Protected tags never consume a slot, so the retained history is exactly what the knob says |
 | Any tag the listing reports **without a digest** | It cannot be proven safe |
 | Everything, for an `Image` recording **no successful build** | A fresh Image - created, re-created, or post-switchover - can sit over a repository still holding a previous incarnation's tags; with nothing digest-protected, pruning would be a guess |
 
-Everything else - older build tags, stale branch tags - is deleted. A tag whose host is not
+Everything else - older build tags, stale revision tags - is deleted. A tag whose host is not
 this region's registry is skipped with a warning. The cache repository is never addressed:
 it reuses one `latest` tag and does not accumulate (BUILDING.md: Open Questions).
 

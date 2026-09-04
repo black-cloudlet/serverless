@@ -1,15 +1,19 @@
 """Pure builders/decoders for the credential Secrets a workload owns.
 
-Covers the imagePullSecret built from customer registry credentials and the
-``{workload}-git`` Secret holding a function's token so a later edit can rebuild
-without it being re-sent. Values are never returned on read - only the update
-path reads them back, to preserve a redacted "keep" field.
+Covers the imagePullSecret built from customer registry credentials, the
+``{workload}-git`` Secret holding a function's token so a later edit rebuilds
+without it being re-sent, and the ``{workload}-webhook`` Secret holding the
+token a push authenticates with. Customer-supplied values are never returned on
+read - only the update path reads them back, to preserve a redacted "keep"
+field. The webhook token is the exception: it is the platform's own, minted to
+be pasted into GitLab (docs/FUNCTIONS.md - Git webhook).
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import secrets
 from urllib.parse import urlsplit
 
 from api.services.manifests import resources as res
@@ -20,6 +24,13 @@ GIT_TOKEN_KEY = "password"  # noqa: S105 - a Secret data key name, not a credent
 
 # kpack matches a credential to a repository through this annotation.
 GIT_ANNOTATION = "kpack.io/git"
+
+# Data key of the ``{workload}-webhook`` Secret.
+WEBHOOK_TOKEN_KEY = "token"  # noqa: S105 - a Secret data key name, not a credential
+
+# 32 bytes is 256 bits, which `token_urlsafe` renders as 43 URL-safe
+# characters: fits GitLab's field, and guessing is not a threat model.
+WEBHOOK_TOKEN_BYTES = 32
 
 
 def registry_of(image: str) -> str:
@@ -181,3 +192,37 @@ def git_credential_host(git_url: str) -> str:
     if not parts.scheme or not parts.netloc:
         return git_url
     return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
+
+
+def webhook_secret_name(workload: str) -> str:
+    """The name of a function's webhook-token Secret: ``{workload}-webhook``."""
+    return f"{workload}-webhook"
+
+
+def new_webhook_token() -> str:
+    """Mint a webhook token.
+
+    Returns:
+        A fresh URL-safe token of :data:`WEBHOOK_TOKEN_BYTES` bytes of entropy.
+    """
+    return secrets.token_urlsafe(WEBHOOK_TOKEN_BYTES)
+
+
+def build_webhook_secret(name: str, labels: dict[str, str], token: str) -> dict:
+    """Build the Secret holding a function's webhook token.
+
+    A Secret, not a KSVC annotation: this token lets an *unauthenticated* caller
+    start a build, and an annotation is readable by anyone with ``get`` on the
+    workload and is copied into every event that prints it. Replicated to every
+    region like the git Secret, so a push still authenticates after a switchover
+    (docs/BUILDING.md - Active/Active Behaviour).
+
+    Args:
+        name: The Secret name (``{workload}-webhook``).
+        labels: Labels to stamp on it.
+        token: The webhook token to store.
+
+    Returns:
+        The Secret manifest dict.
+    """
+    return res.build_secret(name, labels, {WEBHOOK_TOKEN_KEY: token})
