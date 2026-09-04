@@ -111,6 +111,13 @@ class Settings(CommonSettings):
     # env: SERVERLESS_BASE_PATH.
     base_path: str = ""
 
+    # The API's own externally reachable origin, e.g. https://serverless.example.com.
+    # Only the git webhook needs it: a provider is configured with an absolute
+    # URL, and nothing else this API returns is absolute. Empty (the default)
+    # falls back to the path alone, which is what local dev wants.
+    # env: SERVERLESS_PUBLIC_URL.
+    public_url: str = ""
+
     # Browser origins allowed to call the API (e.g. the ServiceNow portal).
     # Empty disables CORS. env: SERVERLESS_CORS_ALLOW_ORIGINS (JSON list).
     cors_allow_origins: list[str] = Field(default_factory=list)
@@ -135,6 +142,27 @@ class Settings(CommonSettings):
     # header - depends on this (docs/STREAMING.md - Browsers cannot send an
     # `Authorization` header).
     stream_ticket_key: str = ""
+
+    @field_validator("public_url")
+    @classmethod
+    def _normalize_public_url(cls, value: str) -> str:
+        """Accept the public URL as an origin, without a trailing slash.
+
+        Args:
+            value: The configured public URL.
+
+        Returns:
+            Either empty, or an ``http(s)`` origin with no trailing slash.
+
+        Raises:
+            ValueError: If a non-empty value is not an http(s) URL.
+        """
+        value = value.rstrip("/")
+        if not value:
+            return ""
+        if not value.startswith(("http://", "https://")):
+            raise ValueError(f"public_url must start with http:// or https:// (got {value!r})")
+        return value
 
     @field_validator("base_path")
     @classmethod

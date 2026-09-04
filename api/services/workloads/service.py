@@ -32,6 +32,7 @@ from cloudlet_apis.logging import get_logger
 from api.core.config import Settings
 from api.core.paths import api_base
 from api.models.common import (
+    ANNOTATION_GIT_COMMIT,
     ANNOTATION_HOST,
     ANNOTATION_PULL_STAMP,
     ANNOTATION_SIZE,
@@ -302,6 +303,36 @@ def _split(
         else:
             statuses.append(result)
     return statuses, reads
+
+
+def _stamp_commit(cluster: NamespacedCluster, name: str, commit: str | None) -> bool:
+    """Record - or clear - the commit a git push pinned, on one region's KSVC.
+
+    A merge patch of ``metadata.annotations`` only. Deliberately not the
+    template's: a pin says which *source* the next build compiles, not which
+    image the workload runs, so nothing here should cut a Knative revision. The
+    running revision keeps serving until the build controller rolls the new
+    digest out, exactly as for any other build.
+
+    Clearing writes an explicit ``null`` rather than relying on a later apply to
+    omit the key: the annotation is written by a merge patch, so a server-side
+    apply that simply does not set it is not guaranteed to remove it.
+
+    Args:
+        cluster: The region to write to.
+        name: The workload name.
+        commit: The commit to pin, or None to clear the pin.
+
+    Returns:
+        True if the workload is here and was stamped; False if it does not run
+        in this region, which is not a failure - the build apply skips it too.
+    """
+    patch = {"metadata": {"annotations": {ANNOTATION_GIT_COMMIT: commit}}}
+    try:
+        cluster.patch(ResourceKind.KNATIVE_SERVICE, name, patch)
+    except NotFoundError:
+        return False
+    return True
 
 
 def _annotation(reads: Sequence[_RegionRead], key: str) -> str | None:
@@ -815,6 +846,7 @@ class WorkloadService:
                 version=req.version,
                 git_url=req.git_url,
                 revision=req.revision,
+                commit=req.commit,
                 path=req.path,
                 ca_config_map=self.settings.ca_bundle.config_map,
                 ca_mount_path=self.settings.ca_bundle.mount_path,
@@ -877,7 +909,16 @@ class WorkloadService:
         """
         return {c.region: c.registry for c in self.deployer.clusters(requested)}
 
-    async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
+    async def apply_build(
+        self,
+        name: str,
+        group: str,
+        plan: BuildPlan,
+        *,
+        trigger: bool = True,
+        commit: str | None = None,
+        had_commit: bool = False,
+    ) -> bool:
         """Re-declare a workload's build in every region that runs it, then ask for one.
 
         The rebuild path, and the one write in the engine that leaves the KSVC
@@ -895,6 +936,18 @@ class WorkloadService:
             group: The owning group.
             plan: The build plan to apply (its git Secret included, so the region
                 that builds can always clone).
+            trigger: Ask kpack for one more build of an unchanged spec. False
+                where the applied spec is itself the change kpack builds from -
+                a webhook pinning a new commit, or a rebuild clearing one - since
+                a trigger on top would produce a second build (docs/BUILDING.md -
+                Convergence rules).
+            commit: The commit a push pinned, stamped on the workload so every
+                later reconstruction carries it. None *clears* any stored pin,
+                returning the function to its revision's head.
+            had_commit: Whether a pin was stored before this call. Decides
+                nothing here; it is the caller's record of why ``trigger`` is
+                what it is, and is accepted so the annotation write can be
+                skipped when there is neither a pin to set nor one to clear.
 
         Returns:
             True if an existing build was triggered in any region; False if
@@ -902,20 +955,71 @@ class WorkloadService:
         """
         targets = self.targets_for(group)
         await self.retag_build(targets, plan.manifests_by_region)
+        # The KSVC is the replicated source of truth and the Image is derived
+        # from it, so the pin lands first: a patch that survives a failed apply
+        # is re-composed correctly by the next write, where the reverse would
+        # leave a build nobody can reconstruct.
+        stamp = commit is not None or had_commit
 
         def work(cluster: NamespacedCluster) -> RegionStatus:
             manifests = list(plan.replicated) + plan.manifests_for(cluster.region)
+            if stamp and not _stamp_commit(cluster, name, commit):
+                return RegionStatus(region=cluster.region, status="Absent")
             # Skips a region the workload does not run in, which is also every
             # region the plan does not cover.
             if not region_apply.apply_build_objects(cluster, manifests, name=name):
                 return RegionStatus(region=cluster.region, status="Absent")
-            triggered = self.builder.trigger(cluster, name, group)
+            triggered = trigger and self.builder.trigger(cluster, name, group)
             return RegionStatus(
                 region=cluster.region, status="Building" if triggered else "Pending"
             )
 
         statuses = await self.deployer.fanout(targets, work)
         return any(s.status == "Building" for s in statuses)
+
+    async def clear_commit(self, name: str, group: str) -> None:
+        """Remove the pinned commit from the workload, in every region.
+
+        Written as an explicit ``null`` rather than left to the KSVC apply that
+        follows: the annotation is set by a merge patch, so a server-side apply
+        that simply does not carry the key is not guaranteed to remove it. The
+        patch is metadata-only, so it cuts no Knative revision of its own.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+        """
+
+        def work(cluster: NamespacedCluster) -> RegionStatus:
+            found = _stamp_commit(cluster, name, None)
+            return RegionStatus(region=cluster.region, status="Ready" if found else "Absent")
+
+        await self.deployer.fanout(self.targets_for(group), work)
+
+    async def apply_owned_secret(self, name: str, group: str, manifest: dict) -> None:
+        """Apply one owned Secret to every region the workload runs in.
+
+        The write behind a credential rotation: no build is declared and no KSVC
+        is composed, so nothing is deployed and no revision is cut. The Secret is
+        stamped with the workload's ``ownerReference`` like every other derived
+        resource, so it still cascades on delete, and a region that does not run
+        the workload is skipped rather than given an orphan.
+
+        Args:
+            name: The workload name, whose KSVC owns the Secret.
+            group: The owning group.
+            manifest: The Secret to apply.
+
+        Raises:
+            RegionTotalFailure: If no region could be written.
+        """
+
+        def work(cluster: NamespacedCluster) -> RegionStatus:
+            if not region_apply.apply_build_objects(cluster, [manifest], name=name):
+                return RegionStatus(region=cluster.region, status="Absent")
+            return RegionStatus(region=cluster.region, status="Ready")
+
+        await self.deployer.fanout(self.targets_for(group), work)
 
     async def retag_build(
         self, targets: list[NamespacedCluster], region_resources: Mapping[str, Sequence[dict]]
@@ -1117,6 +1221,11 @@ class WorkloadService:
         if host is None:
             host = route_svc.host_for(name, group, self.settings.route_domain)
         spec = await self.deployer.run_read(region_read.describe_spec, rep.cluster, rep.obj)
+        # Whatever this offering adds that needs a read of its own - a function's
+        # webhook token. Same region as the spec read, and best-effort there.
+        extras = await self.deployer.run_read(
+            offering.read_response_extras, rep.cluster, name, group, self.settings
+        )
         common = dict(
             name=name,
             group=group,
@@ -1130,6 +1239,7 @@ class WorkloadService:
             scaling=spec.scaling,
             env=spec.env,
             files=spec.files,
+            **extras,
         )
         return offering.fetched_response(common, rep.obj, spec, rollup.build)
 
