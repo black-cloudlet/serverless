@@ -33,7 +33,6 @@ from common.labels import (  # noqa: F401
 from common.names import (  # noqa: F401
     DNS1123,
     HOSTNAME,
-    Branch,
     EnvVarName,
     GitUrl,
     Group,
@@ -42,9 +41,9 @@ from common.names import (  # noqa: F401
     MountPath,
     Name,
     PodName,
+    Revision,
     SourcePath,
     normalize_group,
-    validate_branch,
     validate_env_var_name,
     validate_git_url,
     validate_group,
@@ -53,6 +52,7 @@ from common.names import (  # noqa: F401
     validate_mount_path,
     validate_name,
     validate_pod_name,
+    validate_revision,
     validate_source_path,
 )
 
@@ -62,7 +62,11 @@ ANNOTATION_RUNTIME = "serverless.platform/runtime"
 # The version the caller asked for; absent when they took the platform default.
 ANNOTATION_RUNTIME_VERSION = "serverless.platform/runtime-version"
 ANNOTATION_GIT_URL = "serverless.platform/git-url"
-ANNOTATION_GIT_BRANCH = "serverless.platform/git-branch"
+ANNOTATION_GIT_REVISION = "serverless.platform/git-revision"
+# The exact commit a git push delivered, pinned by the webhook and cleared by
+# every human write (POST .../build and PUT). Absent means the build follows
+# ANNOTATION_GIT_REVISION - its head, when that names a branch.
+ANNOTATION_GIT_COMMIT = "serverless.platform/git-commit"
 ANNOTATION_GIT_PATH = "serverless.platform/git-path"
 # Names of the injected CA-trust env vars, so read-back can hide them: they
 # are platform defaults, not part of the user's spec.
@@ -733,6 +737,6 @@ class WorkloadSpec(BaseModel):
     registryUsername: str | None = None
     # Function source: what the build was run from. The git token is never stored.
     gitRepo: str | None = None
-    branch: str | None = None
+    revision: str | None = None
     # Sub-directory inside the repository; None (or absent) means the root.
     path: str | None = None

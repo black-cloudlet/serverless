@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from api.models.common import (
-    ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_PATH,
+    ANNOTATION_GIT_REVISION,
     ANNOTATION_GIT_URL,
     ANNOTATION_HOST,
     ANNOTATION_PULL_STAMP,
@@ -69,7 +69,7 @@ def existing_state(obj: dict, cluster: NamespacedCluster, offering: Offering, na
         "runtime": ann.get(ANNOTATION_RUNTIME),
         "version": ann.get(ANNOTATION_RUNTIME_VERSION),
         "gitUrl": ann.get(ANNOTATION_GIT_URL),
-        "branch": ann.get(ANNOTATION_GIT_BRANCH),
+        "revision": ann.get(ANNOTATION_GIT_REVISION),
         "path": ann.get(ANNOTATION_GIT_PATH),
         "host": ann.get(ANNOTATION_HOST),
         "pull_stamp": ann.get(ANNOTATION_PULL_STAMP),

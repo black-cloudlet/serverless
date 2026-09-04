@@ -151,8 +151,8 @@ Because each phase is a named container, `Cluster.pod_logs(pod, container=...)` 
 
 | Reason | Trigger | In this platform |
 |--------|---------|------------------|
-| `CONFIG` | `spec` changed | PUT that changes runtime, version, branch, path or env |
-| `COMMIT` | resolved source SHA changed | kpack's `SourceResolver` re-resolving the branch. *Planned:* a per-function webhook pinning the pushed SHA, so a push builds at once rather than at the next poll |
+| `CONFIG` | `spec` changed | PUT that changes runtime, version, revision, path or env |
+| `COMMIT` | resolved source SHA changed | kpack's `SourceResolver` re-resolving the revision, when it names a branch. Also the per-function webhook, which pins the pushed SHA so a push builds at once rather than at the next poll (FUNCTIONS.md: Git webhook) |
 | `TRIGGER` | the latest `Build` carries `image.kpack.io/additionalBuildNeeded` | `POST .../functions/{name}/build` |
 | `BUILDPACK` | a Store buildpackage was updated | ops bumps buildpack content |
 | `STACK` | the Stack run image was updated | **CVE patch**, often a fast *rebase* |
@@ -403,7 +403,8 @@ deleted - can still compose it, because the inputs are on the workload itself:
 |-------|--------|
 | runtime | ksvc annotation `ANNOTATION_RUNTIME` |
 | git url | ksvc annotation `ANNOTATION_GIT_URL` |
-| branch | ksvc annotation `ANNOTATION_GIT_BRANCH` |
+| revision | ksvc annotation `ANNOTATION_GIT_REVISION` |
+| commit | ksvc annotation `ANNOTATION_GIT_COMMIT`; absent = build the revision's head |
 | builder, version env, build env | runtimes ConfigMap (RUNTIMES.md: Where it lives) |
 | git token | the persisted git secret |
 | registry credential | the ESO-managed secret (BUILDING.md: Registry & Git Credentials) |
@@ -567,7 +568,7 @@ metadata:
     serverless.platform/managed-by: serverless-api
     serverless.platform/workload: hello
 spec:
-  # {base}/{group}/{name}:{branch projected to a legal OCI tag} (RUNTIMES.md: Registry layout)
+  # {base}/{group}/{name}:{revision projected to a legal OCI tag} (RUNTIMES.md: Registry layout)
   tag: registry.internal/<org>/<repo>/payments/hello:main
   builder:                             # cluster-scoped, so no namespace to name
     kind: ClusterBuilder
@@ -576,7 +577,7 @@ spec:
   source:
     git:
       url: https://git.internal/payments/hello.git
-      revision: main                   # the branch; a pinned SHA awaits the webhook
+      revision: main                   # the revision, or the commit a push pinned
   cache:                               # registry, not a PVC (RUNTIMES.md: Build cache)
     registry:
       tag: registry.internal/<org>/<repo>/payments/hello_cache:latest

@@ -114,7 +114,7 @@ class FunctionService(OfferingService):
             runtime=spec.runtime,
             version=spec.version,
             gitRepo=spec.gitRepo,
-            branch=spec.branch,
+            revision=spec.revision,
             path=spec.path,
             port=spec.port,
         )
@@ -201,11 +201,11 @@ class FunctionService(OfferingService):
                 token, or missing build metadata.
         """
         git_url = existing.get("gitUrl")
-        branch = existing.get("branch")
+        revision = existing.get("revision")
         runtime = existing.get("runtime")
         missing = [
             field
-            for field, value in (("gitRepo", git_url), ("branch", branch), ("runtime", runtime))
+            for field, value in (("gitRepo", git_url), ("revision", revision), ("runtime", runtime))
             if not value
         ]
         if missing:
@@ -226,7 +226,7 @@ class FunctionService(OfferingService):
                 name=name,
                 group=group,
                 git_url=git_url,
-                branch=branch,
+                revision=revision,
                 path=existing.get("path") or "",
                 git_token=token,
                 runtime=runtime,
@@ -277,14 +277,14 @@ class FunctionService(OfferingService):
             runtime=req.runtime,
             version=req.version,
             gitRepo=req.git_url,
-            branch=req.branch,
+            revision=req.revision,
             path=req.path,
         )
 
     async def build(self, group: str, name: str, user: Principal, existing: dict) -> None:
         """Build a function's current source again (runs in the background).
 
-        The image is rebuilt from the same repository, branch and runtime it
+        The image is rebuilt from the same repository, revision and runtime it
         already has, so this is what picks up a base-image or dependency change,
         retries a failed build, or gets a pushed commit built now rather than
         when kpack next polls. Nothing about the workload changes, so the KSVC is
@@ -331,7 +331,7 @@ class FunctionService(OfferingService):
                 name=spec.name,
                 group=group,
                 git_url=spec.gitRepo,
-                branch=spec.branch,
+                revision=spec.revision,
                 path=spec.path,
                 git_token=spec.gitToken,
                 runtime=spec.runtime,
@@ -366,7 +366,7 @@ class FunctionService(OfferingService):
                 runtime=spec.runtime,
                 version=spec.version,
                 git_url=spec.gitRepo,
-                branch=spec.branch,
+                revision=spec.revision,
                 path=spec.path,
                 # The git credential goes to every region so any of them can
                 # rebuild; each region gets its own Image (docs/BUILDING.md -
@@ -384,7 +384,7 @@ class FunctionService(OfferingService):
 
         This only refuses an untokenised rebuild; what rebuilds is kpack's own
         diff of the Image spec. ``version`` counts as a build input like
-        ``branch`` and ``runtime``: it is replaced, not kept, so omitting it
+        ``revision`` and ``runtime``: it is replaced, not kept, so omitting it
         returns the function to the platform default and that is a change
         (docs/API.md - Request semantics).
 
@@ -399,7 +399,7 @@ class FunctionService(OfferingService):
         """
         changed = (
             spec.gitRepo != existing.get("gitUrl")
-            or spec.branch != existing.get("branch")
+            or spec.revision != existing.get("revision")
             or spec.path != (existing.get("path") or "")
             or spec.runtime != existing.get("runtime")
             or spec.version != existing.get("version")
@@ -440,7 +440,7 @@ class FunctionService(OfferingService):
                 name=name,
                 group=group,
                 git_url=spec.gitRepo,
-                branch=spec.branch,
+                revision=spec.revision,
                 path=spec.path,
                 git_token=token,
                 runtime=spec.runtime,
@@ -525,7 +525,7 @@ class FunctionService(OfferingService):
                 runtime=spec.runtime,
                 version=spec.version,
                 git_url=spec.gitRepo,
-                branch=spec.branch,
+                revision=spec.revision,
                 path=spec.path,
                 prev_host=existing.get("host"),
                 kept_env=existing.get("env_values"),

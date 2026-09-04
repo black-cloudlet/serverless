@@ -10,13 +10,13 @@ from api.models.common import (
     DEFAULT_PORT,
     PORT_MAX,
     PORT_MIN,
-    Branch,
     BuildStatusView,
     EnvVar,
     FileMount,
     GitUrl,
     Hostname,
     Name,
+    Revision,
     Scaling,
     SourcePath,
     WorkloadResponse,
@@ -34,7 +34,7 @@ class FunctionCreate(BaseModel):
 
     name: Name
     gitRepo: GitUrl
-    branch: Branch = "main"
+    revision: Revision = "main"
     path: SourcePath = ""
     # repr=False: a credential must not ride along into log lines, tracebacks
     # or validation errors that print the spec.
@@ -66,7 +66,7 @@ class FunctionUpdate(BaseModel):
     """
 
     gitRepo: GitUrl
-    branch: Branch = "main"
+    revision: Revision = "main"
     path: SourcePath = ""
     # keep-on-omit: reuses the stored token. repr=False as on create.
     gitToken: str | None = Field(default=None, repr=False)
@@ -89,7 +89,7 @@ class FunctionResponse(WorkloadResponse):
     """A function, shaped like FunctionCreate (gitToken redacted) + live status.
 
     The built image is not part of the response; a function is described by its
-    source (``gitRepo``/``branch``/``path``) and its build state.
+    source (``gitRepo``/``revision``/``path``) and its build state.
     """
 
     type: Literal["function", "container"] = "function"
@@ -98,7 +98,11 @@ class FunctionResponse(WorkloadResponse):
     # default itself is published on GET /api/serverless/v1/functions/info.
     version: str | None = None
     gitRepo: str | None = None
-    branch: str | None = None
+    revision: str | None = None
+    # The commit a git push pinned, or None while the build follows `revision`.
+    # Read-only: it is set by the webhook and cleared by POST .../build and PUT,
+    # never sent by a client (docs/FUNCTIONS.md - Git webhook).
+    commit: str | None = None
     path: str | None = None
     # Present once the function has an Image on the local region; None on a region
     # that has never built it (e.g. straight after a switchover).

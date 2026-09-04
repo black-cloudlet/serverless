@@ -48,7 +48,8 @@ Customers need to run workloads without operating Kubernetes/OpenShift themselve
 They consume the platform in one of two ways:
 
 - **FaaS** - "give us your source, we build and run it." The client supplies a Git
-  repository URL, a branch and an access token. Supported runtimes are configurable;
+  repository URL, a revision - branch, tag or commit - and an access token. Supported
+  runtimes are configurable;
   the chart ships **Python, Go, Node** (FUNCTIONS.md: Overview) and the live list is on
   `GET /api/serverless/v1/functions/info`.
 - **CaaS** - "give us your image, we run it." The client supplies an image reference
@@ -139,7 +140,7 @@ both clusters).
 
 ## How a create request flows
 
-`POST /api/serverless/v1/groups/{group}/functions` with a Git repo, branch, token and
+`POST /api/serverless/v1/groups/{group}/functions` with a Git repo, revision, token and
 runtime. A container create is the same flow with the build steps removed.
 
 | # | Component | Step |
@@ -309,7 +310,7 @@ garbage-collected with the workload through the KSVC `ownerReference`.
 
 - `gitToken` → a `kubernetes.io/basic-auth` **`{workload}-git`** Secret, annotated
   `kpack.io/git` so kpack clones with it. The API reads it back so a later edit can rebuild
-  on a `gitRepo`/`branch`/`runtime` change without the client re-supplying it. Sending
+  on a `gitRepo`/`revision`/`runtime` change without the client re-supplying it. Sending
   `gitToken` again rotates it. One Secret serves both readers (BUILDING.md: Registry & Git
   Credentials).
 - `registryToken` → the labeled **`{workload}-pull`** `imagePullSecret` referenced by the

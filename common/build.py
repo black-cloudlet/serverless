@@ -19,10 +19,10 @@ from pydantic.dataclasses import dataclass as validated_dataclass
 
 from common.config import RegistryConfig
 from common.names import (
-    Branch,
     GitUrl,
     Group,
     Name,
+    Revision,
     SourcePath,
     cache_repository,
     image_repository,
@@ -45,7 +45,9 @@ class BuildRequest:
         name: Workload name (DNS-1123 label).
         group: Owning group (DNS-1123 label, normalised).
         git_url: Source repository URL.
-        branch: Branch to build.
+        revision: What to build: a branch, a tag, or a commit SHA. Written
+            verbatim into the Image's git revision, and projected separately
+            into the image tag.
         path: Directory inside the repository holding the application; ""
             builds from the repository root.
         git_token: The caller's git token, stored for kpack to clone with.
@@ -55,15 +57,18 @@ class BuildRequest:
             still written explicitly into the build env, never left to the
             buildpack.
         owner: Creating username, stamped on the build objects' labels.
-        revision: Exact commit to build. None builds the branch head, which is
-            what create and update do; a pinned SHA builds exactly that commit,
-            whatever the branch has moved to.
+        commit: The exact commit a git push delivered. None builds
+            ``revision`` - its head, when it names a branch - which is what
+            create, update and the explicit rebuild do. Set only by the webhook,
+            and it wins over ``revision`` for what is built; the image *tag*
+            still follows ``revision``, so a push moves the digest that tag
+            points at rather than the tag itself.
     """
 
     name: Name
     group: Group
     git_url: GitUrl
-    branch: Branch
+    revision: Revision
     # repr=False: a credential must not ride along into log lines, tracebacks
     # or validation errors that print the request.
     git_token: str = field(repr=False)
@@ -71,12 +76,12 @@ class BuildRequest:
     version: str | None = None
     path: SourcePath = ""
     owner: str = ""
-    revision: str | None = None
+    commit: str | None = None
 
     @property
     def build_revision(self) -> str:
-        """The git revision to build: the pinned commit, else the branch."""
-        return self.revision or self.branch
+        """What kpack builds: the pushed commit if there is one, else the revision."""
+        return self.commit or self.revision
 
 
 @dataclass
@@ -247,10 +252,13 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
 
     Shared so the API and the build backend agree on where a build's image lands.
 
-    The tag is the branch projected into what an OCI tag allows - a branch may
-    contain ``/`` and a tag may not, so ``feature/login`` pushes to
-    ``feature-login``. Only the tag is rewritten; the build still compiles that
-    exact ref (see ``BuildRequest.build_revision``).
+    The tag is the *revision* projected into what an OCI tag allows - a git ref
+    may contain ``/`` and a tag may not, so ``feature/login`` pushes to
+    ``feature-login``. It is never derived from ``commit``: a pushed commit
+    moves the digest this tag points at, not the tag, so the tag stays the one
+    the caller's revision names and the Image is never recreated for a push
+    (``spec.tag`` is immutable). Only the tag is rewritten; the build still
+    compiles the exact ref or commit (see ``BuildRequest.build_revision``).
 
     Args:
         registry_base: Registry host, plus organization when the registry has
@@ -261,7 +269,7 @@ def image_reference(registry_base: str, req: BuildRequest) -> str:
         The fully-qualified image reference.
     """
     base = registry_base.rstrip("/")
-    return f"{base}/{image_repository(req.group, req.name)}:{image_tag(req.branch)}"
+    return f"{base}/{image_repository(req.group, req.name)}:{image_tag(req.revision)}"
 
 
 def cache_reference(registry_base: str, req: BuildRequest) -> str:

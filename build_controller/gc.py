@@ -1,8 +1,8 @@
 """Tag GC: prune the per-build registry tags a function accumulates here.
 
-kpack pushes every successful build twice: the branch tag moves to the new
+kpack pushes every successful build twice: the revision tag moves to the new
 digest, and a unique ``b{build}.{date}.{time}`` tag is added beside it. The
-branch tag overwrites; the build tags accumulate, one per build, for the life
+revision tag overwrites; the build tags accumulate, one per build, for the life
 of the function - and CVE rebuilds and ``POST .../build`` create builds without
 any user action, so they grow even for functions nobody touches. Nothing else
 reclaims them short of deleting the function
@@ -18,7 +18,7 @@ it.
 
 What survives a sweep (:func:`garbage`):
 
-- the function's **current branch tag** (the tag half of ``Image.spec.tag``);
+- the function's **current revision tag** (the tag half of ``Image.spec.tag``);
 - every tag still pointing at the **digest of** ``status.latestImage``, since
   deleting the last tag on a manifest lets the registry collect the manifest
   and the KSVC pinned to that digest could no longer pull on a node change;
@@ -255,7 +255,7 @@ class TagGC(PeriodicSweep):
         # per-function verdict.
         deleted = sum(1 for tag in doomed if client.delete_tag(repo, tag.name))
         logger.info(
-            "tag GC: '%s': pruned %d of %d tag(s) in '%s' (kept the branch tag, "
+            "tag GC: '%s': pruned %d of %d tag(s) in '%s' (kept the revision tag, "
             "the digest still serving, and the %d newest build tag(s))",
             workload,
             deleted,

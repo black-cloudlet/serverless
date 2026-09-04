@@ -25,7 +25,7 @@ def test_function_update_is_full_replace():
     with pytest.raises(ValidationError):
         FunctionUpdate(gitRepo="https://git/x.git")  # missing runtime
     # branch resets to its default when omitted
-    assert FunctionUpdate(**base).branch == "main"
+    assert FunctionUpdate(**base).revision == "main"
     # the token is the one keep-on-omit: build inputs can change without re-sending it
     FunctionUpdate(**base)  # no token -> reuse the stored one, fine
     FunctionUpdate(**base, gitToken="t")  # rotate
@@ -87,7 +87,7 @@ def test_both_offerings_agree_on_the_port_field():
 
 def test_valid_function():
     fn = FunctionCreate(name="my-fn", gitRepo="https://git/x.git", gitToken="t", runtime="python")
-    assert fn.branch == "main"
+    assert fn.revision == "main"
     assert fn.scaling.minScale == 0
 
 
@@ -379,7 +379,7 @@ def test_the_platform_builds_function_tags_the_image_validator_accepts():
             name="image-resizer",
             group="payments",
             git_url="https://git.internal/o/r.git",
-            branch=branch,
+            revision=branch,
             git_token="t",
             runtime="python",
         )

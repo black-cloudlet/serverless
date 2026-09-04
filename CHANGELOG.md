@@ -22,6 +22,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `target_registries`) is gone with it; `Deployer.resolve_targets` keeps its
   own `requested` argument.
 
+### Changed (function source)
+
+- **BREAKING: a function's `branch` is now `revision`.** The value has always been
+  written verbatim into the kpack `Image`'s `spec.source.git.revision`, which git
+  resolves as *any* ref - a branch, a tag, or a commit SHA - so the old name
+  described one of the three things it accepted. Nothing about the mechanics
+  changes: the same string reaches kpack and the image tag is still projected from
+  it (`feature/login` builds that ref and pushes to `:feature-login`). Renamed with
+  it: the `serverless.platform/git-branch` annotation is now
+  `serverless.platform/git-revision`, `common.names.Branch`/`validate_branch` are
+  `Revision`/`validate_revision`, and `BuildRequest.branch` is
+  `BuildRequest.revision` (its old `revision` field - the exact commit to build -
+  is now `commit`, which is what the git webhook pins). Pre-GA, so there is no
+  compatibility shim: clients send `revision`.
+
 ### Changed (tenant namespaces)
 
 - **BREAKING: workloads now deploy into one namespace per SSO group**
