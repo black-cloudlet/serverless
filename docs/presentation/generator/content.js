@@ -19,8 +19,8 @@ const slides = [
     visual: { kind: "glyph", text: "0 → N → 0", sub: "replicas follow traffic" },
     notes: "Serverless is a billing and operations model, not a technology. Scale to zero is the defining property: an idle workload costs nothing and needs nobody." },
   // ---------------- 3b: pros and cons
-  { kind: "content", chapter: 1, kicker: "Foundations", title: "Serverless: the trade-offs",
-    lines: ["Cheap when idle, pricey at peak", "Zero ops, but less control", "Elastic scale, but cold starts", "Fast to ship, easy to lock in", "Fits bursty traffic, not long jobs"],
+  { kind: "content", chapter: 1, kicker: "Foundations", title: "Serverless: the trade-offs", wide: true,
+    lines: [],
     visual: { kind: "table", plain: true, head: ["", "Pro", "Con"], rows: [
       ["Cost", "Pay only when it runs", "Bills spike under load"],
       ["Ops", "No servers to patch", "Runtime is not yours"],

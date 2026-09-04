@@ -30,6 +30,10 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .lines li{font-size:2.05cqw;line-height:1.3;font-weight:500;padding-left:2.2cqw;position:relative;text-wrap:pretty}
 .lines li::before{content:"";position:absolute;left:0;top:.5em;width:.8cqw;height:.8cqw;background:var(--accent);border-radius:2px}
 .visual{align-self:center;width:100%}
+.content.wide .body{grid-template-columns:1fr}
+.content.wide .cmp{font-size:2.2cqw}
+.content.wide .cmp th{font-size:1.5cqw;padding-bottom:2cqh}
+.content.wide .cmp td{padding:2.2cqh 1.6cqw}
 .foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
 .mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
 /* builds */
@@ -139,11 +143,11 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
       <div class="visual"><div class="glyph build-auto"><div class="g">0 → N → 0</div><div class="gs">replicas follow traffic</div></div></div>
     </div>
     <div class="foot"><span class="mono">03 / 26</span></div><div class="notes" hidden>Serverless is a billing and operations model, not a technology. Scale to zero is the defining property: an idle workload costs nothing and needs nobody.</div></section>
-<section class="slide content" data-i="3">
+<section class="slide content wide" data-i="3">
     <div class="kicker">Foundations</div>
     <h1>Serverless: the trade-offs</h1>
     <div class="body">
-      <ul class="lines"><li class="build" data-step="1">Cheap when idle, pricey at peak</li><li class="build" data-step="2">Zero ops, but less control</li><li class="build" data-step="3">Elastic scale, but cold starts</li><li class="build" data-step="4">Fast to ship, easy to lock in</li><li class="build" data-step="5">Fits bursty traffic, not long jobs</li></ul>
+      
       <div class="visual"><table class="cmp build-auto"><thead><tr><th class=""></th><th class="">Pro</th><th class="">Con</th></tr></thead><tbody><tr><td class="k">Cost</td><td class="pl">Pay only when it runs</td><td class="pl">Bills spike under load</td></tr><tr><td class="k">Ops</td><td class="pl">No servers to patch</td><td class="pl">Runtime is not yours</td></tr><tr><td class="k">Scale</td><td class="pl">Up and down by itself</td><td class="pl">Cold start on first hit</td></tr><tr><td class="k">Speed</td><td class="pl">A function in minutes</td><td class="pl">Platform lock-in</td></tr><tr><td class="k">Fit</td><td class="pl">Bursty, event-driven</td><td class="pl">Long-running jobs, state</td></tr></tbody></table></div>
     </div>
     <div class="foot"><span class="mono">04 / 26</span></div><div class="notes" hidden>Be honest about the trade-offs before the architecture. Cost: nothing when idle, but a hot loop of requests is billed per request. Ops: no patching, but you cannot tune the kernel or the runtime. Scale: automatic in both directions, but the first request after idle pays a cold start. Speed: a function ships in minutes, but the deployment model is the platform's. Fit: request-driven and bursty workloads win; long-running or stateful jobs do not belong here.</div></section>

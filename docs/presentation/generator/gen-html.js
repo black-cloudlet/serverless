@@ -64,11 +64,12 @@ function slideHtml(s, i) {
       <p class="thanks build" data-step="${s.stats.length + s.lines.length + 1}">Thank you. Questions?</p>
       <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
   }
-  return `<section class="slide content" data-i="${i}">
+  const wide = s.wide || !s.lines.length;
+  return `<section class="slide content${wide ? " wide" : ""}" data-i="${i}">
     <div class="kicker">${esc(s.kicker)}</div>
     <h1>${esc(s.title)}</h1>
     <div class="body">
-      <ul class="lines">${s.lines.map((l, k) => `<li class="build" data-step="${k + 1}">${esc(l)}</li>`).join("")}</ul>
+      ${wide ? "" : `<ul class="lines">${s.lines.map((l, k) => `<li class="build" data-step="${k + 1}">${esc(l)}</li>`).join("")}</ul>`}
       <div class="visual">${visual(s.visual)}</div>
     </div>
     <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
@@ -106,6 +107,10 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .lines li{font-size:2.05cqw;line-height:1.3;font-weight:500;padding-left:2.2cqw;position:relative;text-wrap:pretty}
 .lines li::before{content:"";position:absolute;left:0;top:.5em;width:.8cqw;height:.8cqw;background:var(--accent);border-radius:2px}
 .visual{align-self:center;width:100%}
+.content.wide .body{grid-template-columns:1fr}
+.content.wide .cmp{font-size:2.2cqw}
+.content.wide .cmp th{font-size:1.5cqw;padding-bottom:2cqh}
+.content.wide .cmp td{padding:2.2cqh 1.6cqw}
 .foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
 .mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
 /* builds */
