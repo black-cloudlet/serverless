@@ -142,9 +142,9 @@ slides.forEach((sd, i) => {
     return;
   }
   if (sd.kind === "section") {
-    txt(s, sd.num, { x: ML, y: 1.0, w: 6, h: 2.6, fontFace: FD, fontSize: 150, bold: true, color: "FFFFFF", valign: "middle" });
-    txt(s, sd.title, { x: ML, y: 3.7, w: 11, h: 1.0, fontFace: FD, fontSize: 48, bold: true, color: "FFFFFF" });
-    txt(s, sd.sub, { x: ML, y: 4.75, w: 10, h: 0.6, fontFace: FD, fontSize: 22, italic: true, color: "FFFFFF" });
+    if (sd.num) txt(s, sd.num, { x: ML, y: 1.0, w: 6, h: 2.6, fontFace: FD, fontSize: 150, bold: true, color: "FFFFFF", valign: "middle" });
+    txt(s, sd.title, { x: ML, y: sd.num ? 3.7 : 2.4, w: 11.5, h: sd.num ? 1.0 : 1.6, fontFace: FD, fontSize: sd.num ? 48 : 64, bold: true, color: "FFFFFF", valign: "middle" });
+    txt(s, sd.sub, { x: ML, y: sd.num ? 4.75 : 4.1, w: 10, h: 0.6, fontFace: FD, fontSize: 22, italic: true, color: "FFFFFF" });
     txt(s, `${String(i + 1).padStart(2, "0")} / ${TOTAL}`, { x: ML, y: H - 0.65, w: 2, h: 0.3, fontFace: FM, fontSize: 10, color: "FFFFFF" });
     return;
   }

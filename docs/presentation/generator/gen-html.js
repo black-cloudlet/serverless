@@ -51,7 +51,7 @@ function slideHtml(s, i) {
   }
   if (s.kind === "section") {
     return `<section class="slide section" data-i="${i}">
-      <div class="num build" data-step="0">${esc(s.num)}</div>
+      ${s.num ? `<div class="num build" data-step="0">${esc(s.num)}</div>` : ""}
       <h1 class="build" data-step="0">${esc(s.title)}</h1>
       <p class="sub build" data-step="0">${esc(s.sub)}</p>${notes}</section>`;
   }
@@ -127,7 +127,7 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 /* section */
 .section{background:var(--accent);color:var(--accent-ink);justify-content:center}
 .section .num{font-family:var(--display);font-weight:800;font-size:22cqw;line-height:.9;letter-spacing:-.04em;opacity:.95}
-.section h1{font-size:7cqw;margin-top:2cqh;max-width:90%}
+.section h1{font-size:9cqw;margin-top:2cqh;max-width:90%}
 .section .sub{font-family:var(--display);font-style:italic;font-weight:600;font-size:2.8cqw;margin:2cqh 0 0;opacity:.9}
 /* closing */
 .closing h1{font-size:6.4cqw}

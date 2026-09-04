@@ -51,7 +51,7 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 /* section */
 .section{background:var(--accent);color:var(--accent-ink);justify-content:center}
 .section .num{font-family:var(--display);font-weight:800;font-size:22cqw;line-height:.9;letter-spacing:-.04em;opacity:.95}
-.section h1{font-size:7cqw;margin-top:2cqh;max-width:90%}
+.section h1{font-size:9cqw;margin-top:2cqh;max-width:90%}
 .section .sub{font-family:var(--display);font-style:italic;font-weight:600;font-size:2.8cqw;margin:2cqh 0 0;opacity:.9}
 /* closing */
 .closing h1{font-size:6.4cqw}
@@ -110,21 +110,21 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
 <div class="deck">
   <div class="stage" id="stage" tabindex="0" aria-label="Slideshow. Use arrow keys to navigate.">
     <section class="slide title" data-i="0">
-      <div class="kicker build" data-step="0">Serverless on Cloudlet</div>
+      <div class="kicker build" data-step="0">Cloudlet's Serverless</div>
       <h1 class="build" data-step="0">From Knative to the Portal</h1>
       <p class="sub build" data-step="0">What we built, and why.</p>
       <p class="meta build" data-step="0">Team review · September 2026</p>
       <div class="pulse" aria-hidden="true"><span></span><span></span><span></span></div><div class="notes" hidden>Open with the one-sentence promise: a developer gives us code or an image and gets a running, addressable service in both regions without ever seeing Kubernetes.</div></section>
 <section class="slide content" data-i="1">
-    <div class="kicker">Agenda</div>
-    <h1>Four chapters</h1>
+    <div class="kicker">Today</div>
+    <h1>What we'll talk about</h1>
     <div class="body">
-      <ul class="lines"><li class="build" data-step="1">01  Foundations: serverless, Knative, the Operator</li><li class="build" data-step="2">02  The API: contract, mTLS, two regions</li><li class="build" data-step="3">03  Functions: buildpacks, kpack, build controller</li><li class="build" data-step="4">04  Portal and cloudlet-apis: what comes next</li></ul>
-      <div class="visual"><div class="glyph build-auto"><div class="g">01 → 04</div><div class="gs">fourteen questions, one platform</div></div></div>
+      <ul class="lines"><li class="build" data-step="1">Serverless, Knative and the Operator</li><li class="build" data-step="2">The API: contract, mTLS, two regions</li><li class="build" data-step="3">Functions: buildpacks, kpack, build controller</li><li class="build" data-step="4">The portal and cloudlet-apis</li><li class="build" data-step="5">Where we go next</li></ul>
+      <div class="visual"><div class="glyph build-auto"><div class="g">23</div><div class="gs">slides · four topics · one platform</div></div></div>
     </div>
     <div class="foot"><span class="mono">02 / 23</span></div><div class="notes" hidden>Foundations is the vocabulary. The API is the contract. Functions and builds is where most of the engineering went. Portal and future is what the platform becomes next.</div></section>
 <section class="slide content" data-i="2">
-    <div class="kicker">Chapter 01 · Foundations</div>
+    <div class="kicker">Foundations</div>
     <h1>What is serverless?</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">You bring code, not servers</li><li class="build" data-step="2">Scale to zero when idle</li><li class="build" data-step="3">Scale out when traffic arrives</li><li class="build" data-step="4">Pay for requests, not hours</li><li class="build" data-step="5">Nothing to patch, nothing to plan</li></ul>
@@ -132,7 +132,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">03 / 23</span></div><div class="notes" hidden>Serverless is a billing and operations model, not a technology. Scale to zero is the defining property: an idle workload costs nothing and needs nobody.</div></section>
 <section class="slide content" data-i="3">
-    <div class="kicker">Chapter 01 · Foundations</div>
+    <div class="kicker">Foundations</div>
     <h1>What is Knative?</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Kubernetes building blocks for serverless</li><li class="build" data-step="2">Service owns Configuration and Route</li><li class="build" data-step="3">Every change is an immutable Revision</li><li class="build" data-step="4">KPA: concurrency in, replicas out</li><li class="build" data-step="5">Activator wakes revisions from zero</li><li class="build" data-step="6">DomainMapping: your own hostname</li></ul>
@@ -161,7 +161,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">04 / 23</span></div><div class="notes" hidden>A Service owns a Configuration and a Route. Every change to the Configuration stamps an immutable Revision. The KPA scales revisions on concurrency, including to zero; the Activator buffers requests while a revision wakes. DomainMapping lets us give one workload the same host in both clusters.</div></section>
 <section class="slide content" data-i="4">
-    <div class="kicker">Chapter 01 · Foundations</div>
+    <div class="kicker">Foundations</div>
     <h1>The OpenShift Serverless Operator</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Red Hat's supported Knative distribution</li><li class="build" data-step="2">One KnativeServing custom resource</li><li class="build" data-step="3">OLM installs it and upgrades it</li><li class="build" data-step="4">Kourier ingress, Routes created for you</li><li class="build" data-step="5">Catalog mirrors with oc-mirror</li></ul>
@@ -169,7 +169,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">05 / 23</span></div><div class="notes" hidden>The operator is Red Hat's packaging of Knative. One KnativeServing CR, reconciled by the operator, upgraded through OLM. Kourier is the ingress; Routes are created for us. The catalog mirrors with oc-mirror, which is what makes it viable in an airgap.</div></section>
 <section class="slide content" data-i="5">
-    <div class="kicker">Chapter 01 · Foundations</div>
+    <div class="kicker">Foundations</div>
     <h1>Why the Operator</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Every alternative made us own more</li><li class="build" data-step="2">We never create a Route ourselves</li><li class="build" data-step="3">Airgap needs one supported mirror path</li></ul>
@@ -177,11 +177,11 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">06 / 23</span></div><div class="notes" hidden>The decision is about ownership. Upstream would mean maintaining the install, the ingress, the Routes and the mirror ourselves, with community support. The chart assumes the operator's conventions and the API holds no routes RBAC. Recorded in docs/DEPLOYING.md and the locked decisions in docs/ARCHITECTURE.md.</div></section>
 <section class="slide section" data-i="6">
-      <div class="num build" data-step="0">02</div>
+      
       <h1 class="build" data-step="0">The API</h1>
       <p class="sub build" data-step="0">One HTTP call, a workload on every cluster.</p></section>
 <section class="slide content" data-i="7">
-    <div class="kicker">Chapter 02 · The API</div>
+    <div class="kicker">The API</div>
     <h1>One call, every cluster</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Functions from git, containers from images</li><li class="build" data-step="2">Validate now, answer 202, poll status</li><li class="build" data-step="3">Closed status vocabulary, published on /info</li><li class="build" data-step="4">FastAPI, Pydantic, cloudlet-apis</li><li class="build" data-step="5">One Helm chart, rendered per region</li></ul>
@@ -189,7 +189,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">08 / 23</span></div><div class="notes" hidden>The API is a FastAPI control plane. Every write validates synchronously then returns 202 with a statusUrl; the status vocabulary is closed and published on /info so no client hardcodes it. One Helm chart, rendered by ArgoCD once per region.</div></section>
 <section class="slide content" data-i="8">
-    <div class="kicker">Chapter 02 · The API</div>
+    <div class="kicker">The API</div>
     <h1>The endpoint structure</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">23 endpoints under one base path</li><li class="build" data-step="2">The group is in the path</li><li class="build" data-step="3">OIDC token or admin key</li><li class="build" data-step="4">Streams use short-lived tickets</li></ul>
@@ -203,7 +203,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">09 / 23</span></div><div class="notes" hidden>Base path /api/serverless/v1. The SSO group is a path segment, so authorization is a path check against the groups claim. Ten endpoints per offering, two public info endpoints, one ticket mint. The Authorization header carries either a Keycloak JWT or the static admin key. EventSource cannot send headers, hence the 60-second HMAC ticket.</div></section>
 <section class="slide content" data-i="9">
-    <div class="kicker">Chapter 02 · The API</div>
+    <div class="kicker">The API</div>
     <h1>Anatomy of a workload</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Identity: name, hostname, regions</li><li class="build" data-step="2">Source: git repo or image</li><li class="build" data-step="3">Runtime: env, files, port, size</li><li class="build" data-step="4">Scaling: min, max, metric, target</li><li class="build" data-step="5">Response: same shape, secrets redacted</li></ul>
@@ -211,7 +211,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">10 / 23</span></div><div class="notes" hidden>Sizes map to CPU request-only and memory request equals limit. Concurrency and rps use the KPA and can scale to zero; cpu and memory switch to HPA. Failed always carries a machine-readable reason. PUT is a full replace but keeps redacted secrets when omitted.</div></section>
 <section class="slide content" data-i="10">
-    <div class="kicker">Chapter 02 · The API</div>
+    <div class="kicker">The API</div>
     <h1>Talking to the cluster</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Client certificate mTLS, always</li><li class="build" data-step="2">No kubeconfig, no service-account token</li><li class="build" data-step="3">The certificate's CN is the user</li><li class="build" data-step="4">Address derived from the region name</li><li class="build" data-step="5">Every write is server-side apply</li></ul>
@@ -240,7 +240,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">11 / 23</span></div><div class="notes" hidden>No kubeconfig and no service-account path. cert-manager issues an ACME client certificate; its CN is a DNS name because ACME only issues to DNS identities, and that CN is the Kubernetes user RBAC binds. The API server address is derived from the region's cluster name. Every write is a server-side apply with force, so retries heal partial state.</div></section>
 <section class="slide content" data-i="11">
-    <div class="kicker">Chapter 02 · The API</div>
+    <div class="kicker">The API</div>
     <h1>Active/active, two regions</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">The API runs in both regions</li><li class="build" data-step="2">One deploy fans out to both</li><li class="build" data-step="3">No leader election, deterministic specs</li><li class="build" data-step="4">A region builds what it runs</li><li class="build" data-step="5">State lives in the Knative Service</li></ul>
@@ -265,7 +265,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">12 / 23</span></div><div class="notes" hidden>Two OpenShift clusters trusting the same CA. The API runs in both; DNS fronts the active one. A deploy fans out to both concurrently and rolls up per-region results. No leader election: specs contain no timestamps, UUIDs or counters, so two writers converge. Each region builds into its own registry. The Knative Service and its annotations are the replicated truth.</div></section>
 <section class="slide content" data-i="12">
-    <div class="kicker">Chapter 02 · The API</div>
+    <div class="kicker">The API</div>
     <h1>The tenant controller</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">A namespace per SSO group</li><li class="build" data-step="2">Separate process, separate certificate</li><li class="build" data-step="3">The API never creates namespaces</li><li class="build" data-step="4">Provision before every deploy, fail closed</li><li class="build" data-step="5">Reconcile the local cluster only</li><li class="build" data-step="6">Garbage-collect empty namespaces, opt-in</li></ul>
@@ -294,11 +294,11 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">13 / 23</span></div><div class="notes" hidden>Privilege separation is the reason: namespace and RBAC creation is cluster-scoped power the internet-facing API must not hold. Namespace per SSO group, identical in both clusters, rendered from region-neutral templates. Provision is called before every deploy and fails closed. Reconcile is local-cluster only so the regions never fight. The stamp protocol makes a converge crash-safe.</div></section>
 <section class="slide section" data-i="13">
-      <div class="num build" data-step="0">03</div>
+      
       <h1 class="build" data-step="0">Functions &amp; builds</h1>
       <p class="sub build" data-step="0">'Here is my repo' hides a build.</p></section>
 <section class="slide content" data-i="14">
-    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <div class="kicker">Functions &amp; builds</div>
     <h1>Why functions are different</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Container: run this image</li><li class="build" data-step="2">Function: here is my repository</li><li class="build" data-step="3">A build takes minutes, not milliseconds</li><li class="build" data-step="4">A build is retried and logged</li><li class="build" data-step="5">Rebuilds fire on CVE patches, unasked</li></ul>
@@ -331,7 +331,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">15 / 23</span></div><div class="notes" hidden>A container is run this image. A function is here is my repo, which means a build: asynchronous, retried, observable per phase, and fired automatically when a stack or buildpack is patched. That last property is why kpack was chosen over Tekton or func.</div></section>
 <section class="slide content" data-i="15">
-    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <div class="kicker">Functions &amp; builds</div>
     <h1>Buildpacks and kpack</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">No Dockerfile, buildpacks detect the language</li><li class="build" data-step="2">Rebase: patch the base without rebuilding</li><li class="build" data-step="3">kpack: Image, Build, Pod</li><li class="build" data-step="4">Our kpack repo is a Helm chart</li><li class="build" data-step="5">Airgap mirror scripts included</li><li class="build" data-step="6">ClusterBuilders: go, python, node</li></ul>
@@ -364,7 +364,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">16 / 23</span></div><div class="notes" hidden>No Dockerfile: Paketo buildpacks detect the language from the repo. Rebase swaps the run image without a rebuild. Our kpack repo is not a fork; it is a Helm chart packaging upstream 0.18 with the airgap pieces. The serverless chart composes the three ClusterBuilders because composing is a push.</div></section>
 <section class="slide content" data-i="16">
-    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <div class="kicker">Functions &amp; builds</div>
     <h1>A build, step by step</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Image → SourceResolver → Build → Pod</li><li class="build" data-step="2">Each phase is its own container</li><li class="build" data-step="3">Each phase has its own log</li><li class="build" data-step="4">Pushed to this region's registry</li><li class="build" data-step="5">Five triggers; two need nobody</li></ul>
@@ -372,7 +372,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">17 / 23</span></div><div class="notes" hidden>Image to SourceResolver to Build to Pod. The CNB lifecycle runs as named init containers, so every phase has its own log. Five build reasons; BUILDPACK and STACK fire with no user action. Images go to the region registry; the layer cache is a registry tag. A Kyverno policy injects the CA into initContainers.</div></section>
 <section class="slide content" data-i="17">
-    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <div class="kicker">Functions &amp; builds</div>
     <h1>The build controller</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Watches Image.status.latestImage</li><li class="build" data-step="2">Applies the digest onto the Service</li><li class="build" data-step="3">Both ends stay in one region</li><li class="build" data-step="4">Only ever writes digests</li><li class="build" data-step="5">Ships with no web stack</li></ul>
@@ -401,11 +401,11 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">18 / 23</span></div><div class="notes" hidden>The API declares a build and walks away. The build controller watches kpack Images in its own region and, when latestImage changes, server-side applies the live Knative Service with the digest. Exactly one writer per phase, and the controller only ever writes digests. It ships without a web stack, and CI proves it.</div></section>
 <section class="slide section" data-i="18">
-      <div class="num build" data-step="0">04</div>
+      
       <h1 class="build" data-step="0">Portal &amp; the future</h1>
       <p class="sub build" data-step="0">A console, and a library for the next API.</p></section>
 <section class="slide content" data-i="19">
-    <div class="kicker">Chapter 04 · Portal &amp; the future</div>
+    <div class="kicker">Portal &amp; the future</div>
     <h1>How the portal wires it</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Next.js 16, server components</li><li class="build" data-step="2">Keycloak token stays server-side</li><li class="build" data-step="3">The SSO group is the project</li><li class="build" data-step="4">Forms are built from /info</li><li class="build" data-step="5">Live logs over SSE tickets</li><li class="build" data-step="6">Airgap-native: no CDN, no fonts</li></ul>
@@ -434,7 +434,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">20 / 23</span></div><div class="notes" hidden>Next.js 16 with server components and server actions in front of the API. The user's Keycloak token stays in the encrypted session and is forwarded server-side. The SSO group is the project. Forms are built from /info; the create flow turns 202 into a tracker toast. Live logs and stats stream over SSE using re-minted tickets.</div></section>
 <section class="slide content" data-i="20">
-    <div class="kicker">Chapter 04 · Portal &amp; the future</div>
+    <div class="kicker">Portal &amp; the future</div>
     <h1>A console, not a Serverless UI</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Serverless is live, Storage is next</li><li class="build" data-step="2">An offering is data, not code</li><li class="build" data-step="3">The shell is already generic</li><li class="build" data-step="4">Next: shared layer, generated client</li></ul>
@@ -442,7 +442,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     </div>
     <div class="foot"><span class="mono">21 / 23</span></div><div class="notes" hidden>The catalog already names ten future offerings; Serverless is live and Object Storage has its env hook. Adding an offering is data, not code. The shell is generic; the serverless tree is the only product-specific part. Next: a shared resource layer and a generated TypeScript client so the contract stops being copied by hand.</div></section>
 <section class="slide content" data-i="21">
-    <div class="kicker">Chapter 04 · Portal &amp; the future</div>
+    <div class="kicker">Portal &amp; the future</div>
     <h1>cloudlet-apis: start at step five</h1>
     <div class="body">
       <ul class="lines"><li class="build" data-step="1">Extracted from the Serverless API</li><li class="build" data-step="2">core, web and auth extras</li><li class="build" data-step="3">Layering enforced by tests</li><li class="build" data-step="4">A new API wires in five steps</li><li class="build" data-step="5">Same group rules everywhere</li></ul>
