@@ -105,7 +105,5 @@ values are projected from Vault via the External Secrets Operator
 (docs/ARCHITECTURE.md - Secrets Management).
 
 **Status:** implemented end to end - endpoints, auth, multi-region deployer, manifest
-builders, kpack builds and the build controller that rolls each finished digest out -
-with unit/API tests. Not yet implemented: the per-function git webhook that would pin
-a pushed commit SHA to a build; until then a build follows the branch head, and
-`POST .../functions/{name}/build` is the on-demand trigger.
+builders, kpack builds, the per-function git webhook that builds a pushed commit, and
+the build controller that rolls each finished digest out - with unit/API tests.

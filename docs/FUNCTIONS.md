@@ -8,6 +8,7 @@ what functions share with containers is ARCHITECTURE.md.
 - [Overview](#overview)
 - [API - create & update](#api---create--update)
 - [Building again without changing anything](#building-again-without-changing-anything)
+- [Git webhook](#git-webhook)
 - [Function Status Resolution](#function-status-resolution)
 
 ## Overview
@@ -463,7 +464,9 @@ Use it to:
 - pick up a **base-image or buildpack** change on a function nobody is editing (kpack does
   this on its own for `STACK`/`BUILDPACK` updates; this is the on-demand version);
 - **retry a failed build** without inventing a spec change to force one;
-- build a **pushed commit now** rather than when kpack next re-resolves the branch.
+- build a **pushed commit now** rather than when kpack next re-resolves the revision;
+- **return a function to its revision's head** after a push pinned a commit to it
+  (Git webhook, below).
 
 The response is the same `Pending` 202 as create and update, with the same `statusUrl`, so
 a client polls one place: `GET .../functions/{name}` reports `build.state` as `Building`
@@ -474,13 +477,142 @@ What it deliberately does **not** do:
 | | |
 |---|---|
 | Touch the workload | Nothing about the desired state changes, so no KSVC is applied and no revision is spawned. The running revision keeps serving its current digest until the new one is rolled out (BUILDING.md: Ownership: API vs Build Service) - as for any build kpack starts on its own. |
-| Take a commit SHA | A rebuild builds the branch head, which is what create and update do. Pinning an exact commit is the job of the git webhook, which is **not implemented yet** (`BuildRequest.revision` already carries the field for it - BUILD-CONTROLLER.md: Who writes the ksvc image). |
+| Take a commit SHA | A rebuild builds the function's `revision` - its head, where that names a branch. Pinning an exact commit is the git webhook's job, and a rebuild is what *un*pins: it is how a function comes back to its revision after a push, and how it keeps working when the hook is removed. To build one commit deliberately, send it as `revision` on a `PUT`. |
 | Change the spec | Send a `PUT` for that. A rebuild is the one function write that carries no desired state at all. |
 
 **Errors.** `404` if there is no such function (including a *container* of the same name -
 `{name}-{group}` is shared by both offerings). `400` if there is nothing to build with: no
 stored git token (send one with a `PUT`), or a `runtime` that has since been removed from
 the runtimes ConfigMap. Both are decided synchronously, before the `202`.
+
+## Git webhook
+
+A push can build the function itself. It is the **same endpoint** as the rebuild above -
+a push and a rebuild are both "build this function", and differ only in how the caller
+proves they may ask:
+
+```
+POST /api/serverless/v1/groups/{group}/functions/{name}/build
+X-Gitlab-Token: <the function's webhook token>
+X-Gitlab-Event: Push Hook
+```
+
+### The token
+
+Every function is given one at create, and it comes back on the create's own `202` and on
+every full `GET`:
+
+```json
+"webhook": {
+  "url": "https://serverless.example.com/api/serverless/v1/groups/payments/functions/hello/build",
+  "token": "k3Xz...",
+  "provider": "gitlab",
+  "events": ["push"]
+}
+```
+
+Unlike `gitToken`, it is **shown**. It is not the caller's credential but the platform's,
+minted here, and its only use is being pasted into the provider - and anyone who can read
+the function can already start a build with their own bearer, so showing it grants them
+nothing they did not have. It is stored in a `{workload}-webhook` Secret replicated to
+every region, so a push still authenticates after a switchover, and it never appears on
+the *list* endpoint.
+
+In GitLab: **Settings → Webhooks**, URL and *Secret token* from the two fields above,
+**Push events** only, SSL verification on.
+
+To replace a token - a leak, or a routine rotation:
+
+```
+POST /api/serverless/v1/groups/{group}/functions/{name}/webhook/rotate   ->   200
+```
+
+Every region is written before it answers, so the old token stops working at once; there
+is no overlap window, because a hook is reconfigured in seconds. There is **no endpoint to
+delete a hook**: a token nothing calls starts no build, so disabling one is done in GitLab.
+
+### What a push does
+
+Exactly one thing: **build the commit that was pushed**.
+
+```mermaid
+sequenceDiagram
+    participant G as GitLab
+    participant API as API (active region)
+    participant K as kpack (each region)
+    participant BC as build controller
+
+    G->>API: POST .../build (X-Gitlab-Token)
+    API->>API: compare the token, in constant time
+    alt not this function's push
+        API-->>G: 200 {accepted: false, reason}
+    else
+        API-->>G: 202 (revision: "main", commit: "9f2c1ab")
+        API->>API: stamp the commit on the workload, per region
+        API->>K: apply Image(git.revision = 9f2c1ab, tag = ...:main)
+        K->>BC: a new digest at that tag
+        BC->>BC: roll it onto the workload (unchanged path)
+    end
+```
+
+The push must have updated the branch this function's **`revision`** names, in the
+repository it builds from. Everything else is answered `200` with `accepted: false` and a
+reason - **not** an error, because GitLab disables a hook that keeps returning `4xx`, and
+"this push is not mine" is the ordinary case in a repository several functions build from:
+
+| Delivery | Answer |
+|---|---|
+| Push to the function's `revision` | `202`, and the commit is built |
+| Push to another branch | `200`, ignored |
+| Tag push, or a deleted branch | `200`, ignored |
+| A push from a different repository | `200`, ignored |
+| Any event other than a push | `200`, ignored - configure the hook for push events |
+| A wrong or missing token, or no such function | `401` |
+
+A function whose `revision` is a **tag or a commit** therefore ignores every push. That is
+not a special case: the match is "pushed branch equals `revision`", and neither is a
+branch name. Pinning to a tag or a SHA means *stay here*, and no push moves it.
+
+### What a push cannot change
+
+The token is held by a git provider, so a push is an unauthenticated caller. It may move
+the **commit** and nothing else:
+
+| | |
+|---|---|
+| The `revision` | Untouched. A read reports what you asked for, whatever has been pushed since. Changing what a function tracks is a `PUT`, with a bearer. |
+| The image tag | Untouched - it is projected from `revision`, so a push moves the *digest* that tag points at, not the tag. That is also why the kpack `Image` is never recreated for a push (its `spec.tag` is immutable). |
+| The spec | Untouched. No env, no scaling, no hostname, no KSVC written at all; the running revision keeps serving until the build controller rolls the new digest out. |
+| The repository | Checked against the stored one, so a token cannot be pointed at other source. |
+
+A redelivery, or two API replicas taking one push, apply the same commit and kpack builds
+once: the pin is idempotent **by data**, which is why no trigger annotation is sent with
+it (BUILDING.md: Convergence rules).
+
+### The commit, and getting back to the head
+
+The pushed commit is stored on the function and reported read-only:
+
+```json
+"revision": "main",
+"commit": "9f2c1ab2b3c4d5e6f708192a3b4c5d6e7f809012"
+```
+
+`commit` is `null` while the function follows its revision. It is stored so that later
+builds - a rebuild in a region that has never built this function, a reconstruction after
+a switchover - compile the commit the function is actually on, rather than silently
+jumping to whatever the branch has reached since.
+
+**Both human writes clear it**, returning the function to its revision's head:
+
+| Write | Effect on `commit` |
+|---|---|
+| `POST .../build` | Cleared; the revision's head is built |
+| `PUT` | Cleared; a full replace of the spec carries no pin, whether or not the source changed |
+| A push | Set to the pushed commit |
+
+So a push is the only thing that ever pins one, and one call returns a function to the
+head - which is also what keeps it working when a hook is deleted in GitLab.
 
 ## Function Status Resolution
 

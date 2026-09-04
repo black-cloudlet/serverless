@@ -34,12 +34,6 @@ walkthrough.
 | [BUILDING.md](./BUILDING.md) | How a function's source becomes an image: kpack, buildpacks, credentials, and the build flow. |
 | [RUNTIMES.md](./RUNTIMES.md) | Reference: runtime versions, dependency mirroring, the registry layout, and the airgap mirror inventory. |
 
-## In progress
-
-| Document | Subject |
-|----------|---------|
-| [WEBHOOK-PLAN.md](./WEBHOOK-PLAN.md) | Design and implementation plan for the per-function git webhook: renaming `branch` to `revision`, the token, the second way into `POST .../build`, and pinning the pushed commit. A plan, not a description of shipped behaviour; it folds into the documents above once implemented. |
-
 ## Reading order
 
 Read ARCHITECTURE.md, then the offering document for the workload type you care

@@ -63,7 +63,8 @@ rendered in **Israel local time** (IDT `+03:00` / IST `+02:00`, daylight-saving 
 | `GET` | `/api/serverless/v1/groups/{group}/functions` | List the group's functions: general info per workload, status rolled up across regions. `?sort=name\|createdAt` (default `name`). |
 | `GET` | `/api/serverless/v1/groups/{group}/functions/{name}` | One function: spec + per-region status. |
 | `PUT` | `/api/serverless/v1/groups/{group}/functions/{name}` | Replace the mutable spec; a build-input change rebuilds from source. `202`. |
-| `POST` | `/api/serverless/v1/groups/{group}/functions/{name}/build` | Build the current source again, no body (FUNCTIONS.md: Building again without changing anything). `202`. |
+| `POST` | `/api/serverless/v1/groups/{group}/functions/{name}/build` | Build the current source again, no body (FUNCTIONS.md: Building again without changing anything). `202`. Also the function's **git webhook**: with `X-Gitlab-Token` instead of a bearer, a push builds its commit; a delivery this function does not want is `200` with `accepted: false` (FUNCTIONS.md: Git webhook). |
+| `POST` | `/api/serverless/v1/groups/{group}/functions/{name}/webhook/rotate` | Replace the function's webhook token and return the new one. `200`. |
 | `DELETE` | `/api/serverless/v1/groups/{group}/functions/{name}` | Delete the function in every region. |
 | `POST` | `/api/serverless/v1/groups/{group}/containers` | Create a container from an image. `202`; poll `statusUrl`. |
 | `GET` | `/api/serverless/v1/groups/{group}/containers` | List the group's containers; same shape and `?sort` as the function list. |
@@ -544,6 +545,16 @@ fails the login with `invalid_redirect_uri` after the user has already authentic
 This keeps the **client secret** server-side. The user's own tokens still reach the browser,
 since Swagger UI calls the API with them; it is not a BFF holding tokens in a session.
 
+#### The git webhook's token (per function, non-OIDC)
+
+One endpoint takes a third credential. `POST .../functions/{name}/build` accepts
+`X-Gitlab-Token` in place of `Authorization`, compared in constant time against the token
+stored for the function the path names (FUNCTIONS.md: Git webhook). It is *not* a way into
+the rest of the API: it authorizes one build of one function, the group check still runs
+against that function's own labels, and a valid bearer takes precedence where both are
+sent. Every failure before the token matches - a wrong token, or no such function - is a
+`401`, so the endpoint cannot be used to discover what a group has.
+
 #### Static API keys (admin/operator automation, non-OIDC)
 
 For admin automation that cannot do OIDC, the API also accepts a **static admin API key** in
@@ -688,6 +699,7 @@ off the `APIError` subclasses in code, so it cannot go stale the way this can.
 | HTTP | Code | When |
 |------|------|------|
 | `400` | `VALIDATION_ERROR` | Bad/missing fields, unsupported runtime, a rebuild with no stored token. |
+| `401` | `UNAUTHENTICATED` | No credential, an invalid one - or, on the webhook path, a wrong token or a function that does not exist (deliberately indistinguishable). |
 | `401` | `UNAUTHENTICATED` | Missing/invalid JWT, or an unrecognized bearer token. |
 | `403` | `FORBIDDEN` | Caller not in a required/owning group, or a valid token carrying no groups. |
 | `404` | `NOT_FOUND` | Workload not found in caller's group scope. A workload the caller may not see, or one of the *other* offering, is hidden as a 404 rather than a 403. |

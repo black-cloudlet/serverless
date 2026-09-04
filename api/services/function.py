@@ -793,13 +793,16 @@ class FunctionService(OfferingService):
         # the build this update declares has not pushed yet, so anything written
         # now is a revision of the code already running. Kept per region, since
         # each region runs what its own build pushed.
+
         # A PUT is a full replace of the desired spec, and a pinned commit is no
         # part of any spec a caller sent - it is a fact a push left behind. So an
         # update returns the function to its revision's head, like the explicit
-        # rebuild, leaving a push the only thing that pins (docs/FUNCTIONS.md -
-        # Git webhook). Cleared before the apply, so the KSVC leads.
+        # rebuild does, which leaves a push the only thing that ever pins one
+        # (docs/FUNCTIONS.md - Git webhook). Cleared before the apply, so the
+        # KSVC leads and the Image that follows is composed from it.
         if existing.get("commit") is not None:
             await self._engine.clear_commit(name, group)
+
         images = dict(existing.get("images") or {})
         registries = self._engine.target_registries()
         plan = None
