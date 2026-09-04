@@ -3,7 +3,7 @@
 The platform-wide part - what a name and a group may be, and how a group is
 normalized - lives in :mod:`cloudlet_apis.names` and is re-exported below, so
 every API agrees on it. What stays here is what this platform derives on its own:
-object names, image and cache repositories, the OCI tag projected from a branch,
+object names, image and cache repositories, the OCI tag projected from a revision,
 and the git/image/path validators.
 
 ``api.models.common`` re-exports the ``Annotated`` types, so request models and
@@ -182,8 +182,13 @@ def validate_image_ref(image: str) -> str:
     return cleaned
 
 
-def validate_branch(branch: str) -> str:
-    """Validate a git branch name.
+def validate_revision(revision: str) -> str:
+    """Validate a git revision - a branch, a tag, or a commit SHA.
+
+    All three are the same thing to git and to kpack: a value for
+    ``Image.spec.source.git.revision``. This checks only that it is a usable
+    ref, never which kind it is; the platform does not care, and asking would
+    mean a network round trip to the repository.
 
     ``/`` is permitted and kept verbatim as the git revision; only the derived
     image tag cannot hold one, and :func:`image_tag` projects it separately.
@@ -194,25 +199,25 @@ def validate_branch(branch: str) -> str:
     over 255 characters.
 
     Args:
-        branch: The candidate branch name.
+        revision: The candidate branch, tag or commit.
 
     Returns:
-        The branch unchanged.
+        The revision unchanged.
 
     Raises:
         ValueError: If it isn't a usable git ref.
     """
-    if not branch or branch.strip() != branch:
-        raise ValueError("branch must not be empty or padded with whitespace")
-    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in branch):
-        raise ValueError("branch must not contain whitespace or control characters")
-    if branch.startswith("-") or branch.endswith("/") or branch.endswith(".lock"):
-        raise ValueError("branch must not start with '-' or end with '/' or '.lock'")
-    if ".." in branch or "//" in branch or any(c in branch for c in "~^:?*[\\"):
-        raise ValueError("branch contains a sequence git does not allow in a ref")
-    if len(branch) > 255:
-        raise ValueError("branch must be at most 255 characters")
-    return branch
+    if not revision or revision.strip() != revision:
+        raise ValueError("revision must not be empty or padded with whitespace")
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in revision):
+        raise ValueError("revision must not contain whitespace or control characters")
+    if revision.startswith("-") or revision.endswith("/") or revision.endswith(".lock"):
+        raise ValueError("revision must not start with '-' or end with '/' or '.lock'")
+    if ".." in revision or "//" in revision or any(c in revision for c in "~^:?*[\\"):
+        raise ValueError("revision contains a sequence git does not allow in a ref")
+    if len(revision) > 255:
+        raise ValueError("revision must be at most 255 characters")
+    return revision
 
 
 def validate_pod_name(pod: str) -> str:
@@ -430,32 +435,32 @@ def namespace_for_group(group: str, suffix: str = NAMESPACE_SUFFIX) -> str:
     return namespace
 
 
-def image_tag(branch: str) -> str:
-    """Reduce a branch name to a legal OCI tag.
+def image_tag(revision: str) -> str:
+    """Reduce a git revision to a legal OCI tag.
 
-    A git branch may contain ``/``; an OCI tag may not, and must start with an
+    A git ref may contain ``/``; an OCI tag may not, and must start with an
     alphanumeric or ``_`` and fit in ``_TAG_MAX`` characters. The tag is
-    therefore a *projection* of the branch, not the branch itself -
+    therefore a *projection* of the revision, not the revision itself -
     ``feature/login`` builds from that exact ref but pushes to ``feature-login``.
 
-    Two branches differing only in replaced characters land on one tag
+    Two revisions differing only in replaced characters land on one tag
     (``feature/login`` and ``feature-login``). The revision is never rewritten,
-    so a build always compiles the branch that was asked for.
+    so a build always compiles the ref that was asked for.
 
-    A branch can also project to *nothing*: git refs are UTF-8, so one with no ASCII
-    is legal and every character of it is replaced. The empty tag would make the
-    reference ``repo:``, so those fall back to ``b-`` plus a digest of the
-    branch, which is deterministic for a given branch.
+    A revision can also project to *nothing*: git refs are UTF-8, so one with no
+    ASCII is legal and every character of it is replaced. The empty tag would
+    make the reference ``repo:``, so those fall back to ``b-`` plus a digest of
+    the revision, which is deterministic for a given revision.
 
     Args:
-        branch: The branch name (already validated).
+        revision: The branch, tag or commit (already validated).
 
     Returns:
         The tag to push to, never empty.
     """
-    tag = _TAG_UNSAFE.sub("-", branch).lstrip(".-")[:_TAG_MAX]
+    tag = _TAG_UNSAFE.sub("-", revision).lstrip(".-")[:_TAG_MAX]
     if not tag:
-        return "b-" + hashlib.sha256(branch.encode()).hexdigest()[:12]
+        return "b-" + hashlib.sha256(revision.encode()).hexdigest()[:12]
     return tag
 
 
@@ -586,10 +591,10 @@ Hostname = Annotated[
         maxLength=253,
     ),
 ]
-Branch = Annotated[
+Revision = Annotated[
     str,
-    AfterValidator(validate_branch),
-    _schema("Git branch or ref to build.", "main", maxLength=255),
+    AfterValidator(validate_revision),
+    _schema("Branch, tag or commit to build.", "main", maxLength=255),
 ]
 GitUrl = Annotated[
     str,

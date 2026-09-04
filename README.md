@@ -4,7 +4,7 @@ A self-service **FaaS** (Function as a Service) and **CaaS** (Container as a Ser
 platform that wraps the open-source [Knative](https://knative.dev/) project on OpenShift,
 exposed through a Python / FastAPI REST API.
 
-- **FaaS** - clients provide a Git repo (URL, branch, token); the source is built
+- **FaaS** - clients provide a Git repo (URL, revision, token); the source is built
   in-cluster by kpack with Cloud Native Buildpacks. Runtimes are configurable
   (the chart ships Python, Go, Node; listed on `GET /api/serverless/v1/functions/info`).
 - **CaaS** - clients provide a container image plus registry credentials.

@@ -64,7 +64,7 @@ def _request(**over):
         name="hello",
         group="payments",
         git_url="https://git.internal/payments/hello.git",
-        branch="main",
+        revision="main",
         git_token="ghp_tok",
         runtime="python",
         owner="alice",
@@ -279,7 +279,7 @@ def test_build_cache_defaults_to_the_registry_not_a_volume():
 
 
 def test_cache_repository_can_never_collide_with_a_function_image():
-    tag, manifests = _manifests(branch="cache")
+    tag, manifests = _manifests(revision="cache")
     cache = _by_kind(manifests, "Image")["spec"]["cache"]["registry"]["tag"]
     # a branch named "cache" projects to the tag "cache", so a reserved tag in
     # the function's own repository would collide; the extra segment rules it out
@@ -292,8 +292,8 @@ def test_cache_repository_does_not_move_with_the_branch():
     # one Image per function, so one cache: keying it by branch would start cold
     # on every branch change
     reg = _settings().registry
-    assert builder.cache_ref(_request(branch="main"), reg) == builder.cache_ref(
-        _request(branch="feature/login"), reg
+    assert builder.cache_ref(_request(revision="main"), reg) == builder.cache_ref(
+        _request(revision="feature/login"), reg
     )
 
 
@@ -309,12 +309,30 @@ def test_manifests_reject_a_runtime_with_no_builder():
         _manifests(runtime="broken")
 
 
-def test_manifests_use_a_pinned_revision_over_the_branch():
-    _, manifests = _manifests(revision="9f2c1ab")
+def test_a_pushed_commit_wins_over_the_revision_but_never_moves_the_tag():
+    """What the webhook writes: build this commit, push to the revision's tag.
+
+    The tag is derived from `revision` alone, so a push moves the digest
+    `:main` points at rather than the tag - which is what keeps `spec.tag`
+    (immutable in kpack) from forcing a delete-and-recreate on every push.
+    """
+    _, manifests = _manifests(commit="9f2c1ab")
     image = _by_kind(manifests, "Image")
     assert image["spec"]["source"]["git"]["revision"] == "9f2c1ab"
-    # the tag still follows the branch, so a rebuild replaces the same tag
     assert image["spec"]["tag"].endswith(":main")
+
+
+def test_a_revision_that_is_a_tag_or_a_commit_builds_and_tags_itself():
+    """`revision` is any git ref, so a tag or a SHA is a first-class choice.
+
+    Unlike a pushed `commit`, it is the caller's desired state: it decides the
+    image tag too, so a function pinned to `v1.2.0` pushes to `:v1.2.0`.
+    """
+    for revision in ("v1.2.0", "9f2c1ab2b3c4d5e6f708192a3b4c5d6e7f809012"):
+        _, manifests = _manifests(revision=revision)
+        image = _by_kind(manifests, "Image")
+        assert image["spec"]["source"]["git"]["revision"] == revision
+        assert image["spec"]["tag"].endswith(f":{revision}")
 
 
 def test_manifests_are_convergent_across_repeated_calls():
@@ -596,7 +614,7 @@ def test_building_is_a_non_terminal_poll_state():
 DEPLOYED = "reg/acme/payments/hello@sha256:" + "c" * 64
 
 
-def _ksvc(image=DEPLOYED, branch="main", path="", version=None, port=None):
+def _ksvc(image=DEPLOYED, revision="main", path="", version=None, port=None):
     from api.models.common import Scaling
     from api.services.manifests.ksvc import build_ksvc
 
@@ -613,7 +631,7 @@ def _ksvc(image=DEPLOYED, branch="main", path="", version=None, port=None):
         size="small",
         runtime="python",
         git_url="https://git.internal/payments/hello.git",
-        branch=branch,
+        revision=revision,
         path=path,
         version=version,
         port=port,
@@ -959,7 +977,7 @@ async def test_a_branch_change_rebuilds_without_disturbing_the_running_image():
         FunctionUpdate(
             gitRepo="https://git.internal/payments/hello.git",
             runtime="python",
-            branch="release",
+            revision="release",
             gitToken="ghp_new",
         ),
         _principal(),
@@ -998,12 +1016,12 @@ def test_build_request_rejects_unusable_branches(bad):
     import pydantic
 
     with pytest.raises(pydantic.ValidationError):
-        _request(branch=bad)
+        _request(revision=bad)
 
 
 def test_a_slashed_branch_builds_that_ref_but_pushes_a_legal_tag():
     """`feature/login` is an everyday branch; `/` is illegal in an OCI tag."""
-    plan = _plan(branch="feature/login")
+    plan = _plan(revision="feature/login")
     assert plan.tag_for("region-a") == "registry.internal/acme/payments/hello:feature-login"
     # the git revision keeps the real ref - only the tag is a projection
     image = _by_kind(plan.manifests_for("region-a"), "Image")
@@ -1044,7 +1062,7 @@ def test_a_branch_with_no_ascii_still_projects_to_a_usable_tag():
     # a branch only partly non-ASCII keeps its readable part, no fallback needed
     assert image_tag("功能-login") == "login"
 
-    req = _request(branch="功能")
+    req = _request(revision="功能")
     assert not image_reference("reg.internal", req).endswith(":")
 
 
@@ -1586,7 +1604,7 @@ def _deployed_ksvc(**over):
 def _build_cluster(**over):
     stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
     kwargs = dict(
-        existing={"hello": _deployed_ksvc(branch="release", path="services/api", version="3.11")},
+        existing={"hello": _deployed_ksvc(revision="release", path="services/api", version="3.11")},
         secrets={"hello-git": stored},
         builds=[_build_obj(1)],
     )
@@ -1649,7 +1667,7 @@ async def test_build_builds_the_source_the_function_already_has():
     assert builder.calls == 1
     req = builder.reqs[0]
     assert req.git_url == "https://git.internal/payments/hello.git"
-    assert (req.branch, req.path, req.runtime, req.version) == (
+    assert (req.revision, req.path, req.runtime, req.version) == (
         "release",
         "services/api",
         "python",
@@ -1657,8 +1675,8 @@ async def test_build_builds_the_source_the_function_already_has():
     )
     # never re-supplied by the caller: a rebuild takes no body at all
     assert req.git_token == "ghp_stored"
-    # the branch head, not a pinned commit - pinning one is the webhook's job
-    assert req.revision is None and req.build_revision == "release"
+    # the revision's head, not a pinned commit - pinning one is the webhook's job
+    assert req.commit is None and req.build_revision == "release"
 
 
 async def test_build_applies_the_build_and_then_triggers_it():
@@ -1767,7 +1785,7 @@ async def test_build_is_accepted_as_pending_with_a_status_url():
     assert body.status == "Pending"
     assert body.statusUrl == "/v1/groups/payments/functions/hello"
     # the inputs it will build, echoed back - the request sent none of its own
-    assert (body.runtime, body.branch, body.path, body.version) == (
+    assert (body.runtime, body.revision, body.path, body.version) == (
         "python",
         "release",
         "services/api",
@@ -1836,7 +1854,7 @@ async def test_build_of_a_workload_with_no_stored_source_is_rejected():
     svc = _build_service({"region-a": cluster}, _TriggeringBuilder())
     background = BackgroundTasks()
 
-    with pytest.raises(ValidationError, match="gitRepo, branch, runtime"):
+    with pytest.raises(ValidationError, match="gitRepo, revision, runtime"):
         await svc.accept_build("payments", "hello", _principal(), background)
     assert background.tasks == []
 
@@ -1950,7 +1968,7 @@ async def test_no_api_path_writes_the_image_after_the_create():
     for spec in (
         FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
         FunctionUpdate(
-            gitRepo="https://git.internal/payments/hello.git", runtime="python", branch="release"
+            gitRepo="https://git.internal/payments/hello.git", runtime="python", revision="release"
         ),
         FunctionUpdate(
             gitRepo="https://git.internal/payments/hello.git",

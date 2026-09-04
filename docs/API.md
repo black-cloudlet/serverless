@@ -136,10 +136,10 @@ The body is the complete desired state:
 - Non-secret fields are **required on update exactly as on create**: `image` for a container,
   `gitRepo` and `runtime` for a function.
 - An omitted optional field returns to its default rather than keeping what is deployed:
-  `port` to 8080, `branch` to `main`, `version` to the platform default.
+  `port` to 8080, `revision` to `main`, `version` to the platform default.
 - **Only redacted secret material is keep-on-omit**, because only it cannot be read back: the
   git/registry token and secret `env`/`files` values.
-- Function build inputs are part of `PUT`: changing `gitRepo`/`branch`/`path`/`runtime`/
+- Function build inputs are part of `PUT`: changing `gitRepo`/`revision`/`path`/`runtime`/
   `version` rebuilds from source using the stored `gitToken`. To rebuild the *same* definition,
   use `POST .../functions/{name}/build`.
 
@@ -316,7 +316,7 @@ The host and object-name conventions are in ARCHITECTURE.md: Networking & Exposu
 
 - Platform-wide name and group rules live in `cloudlet_apis.names`; `common.names` re-exports
   them and adds what this platform derives - object names, image and cache repositories, the
-  OCI tag projected from a branch, the validators. `DNS1123` is imported, not redeclared.
+  OCI tag projected from a revision, the validators. `DNS1123` is imported, not redeclared.
 - Label values are sanitized with an ASCII test rather than the Unicode-aware `isalnum()`,
   since a label value is ASCII `[A-Za-z0-9._-]` (`common.labels._sanitize`). ConfigMap and
   Secret keys go through the same rule (`manifests.files._key`), and colliding keys are

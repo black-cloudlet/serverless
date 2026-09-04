@@ -127,7 +127,7 @@ everything the platform builds sits under, and the rest derives from those three
 {region registry url}/{registry.organization}/{build.builderRepository}/...   <- the "registry base"
 
   base/{name}                                       ClusterBuilder tags
-  base/{group}/{name}:{branch}                      function images (the API)
+  base/{group}/{name}:{revision}                      function images (the API)
   base/{group}/{name}_cache:latest                  build layer cache (RUNTIMES.md: Build cache)
 ```
 
@@ -152,7 +152,7 @@ everything the platform builds sits under, and the rest derives from those three
 Two placement rules follow from per-region registries:
 
 - **The KSVC image is composed inside the per-cluster fan-out.** A function's image is
-  `{region registry base}/{group}/{name}:{branch}` - a different string per region. That is
+  `{region registry base}/{group}/{name}:{revision}` - a different string per region. That is
   the create path only; afterwards the field belongs to each region's build controller
   (BUILD-CONTROLLER.md: Who writes the ksvc image). A container is unaffected: its image is
   the caller's, one value everywhere.
@@ -208,7 +208,7 @@ a push credential for it (BUILDING.md: Registry & Git Credentials).
 The cache is a sibling repository of the function image:
 
 ```
-base/{group}/{name}:{branch}                      function images
+base/{group}/{name}:{revision}                      function images
 base/{group}/{name}_cache:latest                  that function's layer cache
 ```
 
@@ -217,9 +217,9 @@ function can ever be named `{name}_cache` and the two repositories can never be 
 one. The suffix also needs no `FEATURE_EXTENDED_REPOSITORY_NAMES`, and keeps the cache in
 whatever namespace the function image already lives in.
 
-The cache is per `Image` - per function, not per branch. There is one `Image` per function
-and its `spec.tag` follows the branch, so keying the cache by branch would strand the old
-cache and start cold on every branch change.
+The cache is per `Image` - per function, not per revision. There is one `Image` per
+function and its `spec.tag` follows the revision, so keying the cache by revision would
+strand the old cache and start cold on every revision change.
 
 `build.cache: inherit` writes **no** `spec.cache` at all. That is the escape hatch for an
 install that wants kpack's own behaviour. It is not a way to disable caching: a stock kpack

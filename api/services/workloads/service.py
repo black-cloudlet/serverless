@@ -814,7 +814,7 @@ class WorkloadService:
                 runtime=req.runtime,
                 version=req.version,
                 git_url=req.git_url,
-                branch=req.branch,
+                revision=req.revision,
                 path=req.path,
                 ca_config_map=self.settings.ca_bundle.config_map,
                 ca_mount_path=self.settings.ca_bundle.mount_path,

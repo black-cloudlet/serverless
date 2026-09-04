@@ -82,7 +82,7 @@ async def build_function(
 ) -> FunctionResponse:
     """Rebuild a function from its current source (202), no body.
 
-    The build inputs are the ones already stored - repository, branch, path,
+    The build inputs are the ones already stored - repository, revision, path,
     runtime, version and the saved git token - so this rebuilds the same
     definition against today's base image and dependencies. Nothing about the
     workload's spec changes and the running revision keeps serving.

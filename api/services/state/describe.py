@@ -12,8 +12,8 @@ from __future__ import annotations
 import base64
 
 from api.models.common import (
-    ANNOTATION_GIT_BRANCH,
     ANNOTATION_GIT_PATH,
+    ANNOTATION_GIT_REVISION,
     ANNOTATION_GIT_URL,
     ANNOTATION_INJECTED_ENV,
     CA_BUNDLE_VOLUME,
@@ -268,6 +268,6 @@ def parse_spec(
         port=container_port(ksvc) or DEFAULT_PORT,
         registryUsername=registry_username,
         gitRepo=meta.get(ANNOTATION_GIT_URL),
-        branch=meta.get(ANNOTATION_GIT_BRANCH),
+        revision=meta.get(ANNOTATION_GIT_REVISION),
         path=meta.get(ANNOTATION_GIT_PATH),
     )

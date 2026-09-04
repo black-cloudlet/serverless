@@ -167,7 +167,7 @@ class FunctionOffering:
             runtime=req.runtime,
             version=req.version,
             gitRepo=req.git_url,
-            branch=req.branch,
+            revision=req.revision,
             path=req.path,
             port=req.port,
         )
@@ -182,7 +182,7 @@ class FunctionOffering:
         :func:`~api.services.state.ksvc_state.regions_with_build_status`); this
         reports the rolled-up state on ``build``.
 
-        No image is exposed; a client reads ``gitRepo``/``branch`` instead. The
+        No image is exposed; a client reads ``gitRepo``/``revision`` instead. The
         runtime and version come from the KSVC's annotations, not the spec.
         """
         annotations = (obj.get("metadata", {}) or {}).get("annotations", {}) or {}
@@ -191,7 +191,7 @@ class FunctionOffering:
             runtime=annotations.get(ANNOTATION_RUNTIME),
             version=annotations.get(ANNOTATION_RUNTIME_VERSION),
             gitRepo=spec.gitRepo,
-            branch=spec.branch,
+            revision=spec.revision,
             path=spec.path,
             port=spec.port,
             build=build,

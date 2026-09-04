@@ -17,11 +17,11 @@ what functions share with containers is ARCHITECTURE.md.
 | Field | Required | Notes |
 |-------|----------|-------|
 | `gitRepo` | yes | HTTPS Git repository URL (internal Git, airgapped). `http://` is accepted for an internal host, but sends the token in the clear. SSH/scp-style refs (`git@host:org/repo.git`) are rejected: the clone authenticates with a basic-auth Secret, which only applies over http(s). Credentials embedded in the URL are rejected rather than stripped - it is written verbatim to the kpack `Image`, which is readable far more widely than the Secret; send the token as `gitToken`. |
-| `branch` | no | Branch / ref to build. Defaults to **`main`**, and is *replaced* on `PUT` - omitting it returns the function to `main` and rebuilds. |
+| `revision` | no | What to build: a **branch**, a **tag**, or a **commit SHA** - git resolves all three the same way and the platform does not distinguish them. Defaults to **`main`**, and is *replaced* on `PUT` - omitting it returns the function to `main` and rebuilds. A revision naming a branch follows that branch's head; a tag or a commit is fixed, and no push moves it (Git webhook, below). |
 | `path` | no | Directory inside the repository holding the application, for a monorepo (e.g. `services/api`). Defaults to the repository root. Surrounding `/` are stripped; `..` is rejected. Changing it rebuilds. |
 | `gitToken` | yes on create | Repo access token; used to clone and **stored** in the `{workload}-git` Secret so a later edit can rebuild without re-sending it. Never returned on read (see ARCHITECTURE.md: Secrets Management). The one keep-on-omit field on `PUT`: omitting it reuses the stored token, sending it rotates it (and rebuilds). |
 | `runtime` | yes | One of the platform's configured runtimes (the chart ships `python`, `go`, `node`). The set is **data**: a ConfigMap mounted as a YAML file (`api/services/builder/runtimes.py`), validated against the live registry in the service layer and advertised on `GET /api/serverless/v1/functions/info`. Adding a runtime is a ConfigMap edit, not a code change. |
-| `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `branch`, and changing it rebuilds. |
+| `version` | no | Language version, which must be one of that runtime's advertised `versions`. Omitted takes the platform `defaultVersion` for the runtime - never the buildpack's own default, which drifts with the buildpackage. A runtime offering no choice (empty `versions`, or no `versionEnv`) **rejects** a supplied version rather than ignoring it. Replaced on `PUT` like `revision`, and changing it rebuilds. |
 | `name` | yes | Logical workload name (DNS-1123). `{name}-{group}` must fit in 63 characters together - see `naming` on `GET /api/serverless/v1/functions/info`. |
 | `regions` | no | Which regions to deploy to; defaults to all of them (HA). Each of them **builds its own copy**, into its own registry - a region builds what it runs (BUILDING.md: Ownership: API vs Build Service). |
 | `port` | no | Container port the workload listens on. Defaults to **8080** - what Knative injects as `$PORT`, and what most images serve on - and is stamped explicitly on the KSVC so a read reports it rather than leaving it to convention. Send it only when the image serves elsewhere: nothing can detect that, so a mismatch shows up as a revision that never becomes ready (the cause lands on the per-region `message`), not as a rejected request. Replaced on `PUT`, so omitting it returns the workload to 8080. Bounds and the default are advertised on `GET /api/serverless/v1/functions/info`. | Identical to a container's: an app either serves on 8080 or it does not, and which offering built it changes nothing. It is **not** a build input, so changing it costs a revision, not a rebuild.
@@ -36,10 +36,10 @@ is the shape:
 2. In the background it applies, to the **local** region only, the function's kpack `Image`
    plus the per-function build `ServiceAccount`; the `{workload}-git` Secret holding
    `gitToken` goes to **every target region**, so each can build and rebuild on its own.
-3. **kpack** does the rest on its own: clone `gitRepo@branch`, run the runtime's `Builder`
+3. **kpack** does the rest on its own: clone `gitRepo@revision`, run the runtime's `Builder`
    (the mirrored Paketo stack and buildpackages - ARCHITECTURE.md: Airgapped Considerations),
    and push to **that region's** registry at
-   `{region registry base}/{group}/{name}:{branch}` (RUNTIMES.md: Registry layout).
+   `{region registry base}/{group}/{name}:{revision}` (RUNTIMES.md: Registry layout).
 4. In the same pass as step 2, the API applies the **KSVC** to every target region, pointing
    at that **tag**. Until a build lands there is no image to pull, which is why a new
    function reads `Building` rather than `Failed` (see *Function Status Resolution*).
@@ -48,7 +48,7 @@ is the shape:
    **there** (BUILD-CONTROLLER.md: Digest propagation). After the create, it is the only thing that
    writes that field.
 
-> The tag is a projection of the branch, not the commit: an OCI tag may not contain `/`,
+> The tag is a projection of the revision, not the commit: an OCI tag may not contain `/`,
 > so `feature/login` pushes to `feature-login` while the build still compiles that exact
 > ref. Each region builds and pulls within itself, so nothing crosses a region boundary to run
 > a function - at the cost of the two regions holding different digests of the same commit.
@@ -84,7 +84,7 @@ Request:
 {
   "name": "image-resizer",
   "gitRepo": "https://git.internal/team/image-resizer.git",
-  "branch": "main",
+  "revision": "main",
   "gitToken": "<repo-access-token>",
   "runtime": "python",
   "env": [ { "name": "MAX_PX", "value": "2048" } ],
@@ -122,7 +122,7 @@ body (secrets redacted) with the live status alongside:
   "createdAt": "2026-06-21T15:00:00+03:00",
   "runtime": "python",
   "gitRepo": "https://git.example.com/team/image-resizer.git",
-  "branch": "main",
+  "revision": "main",
   "scaling": { "minScale": 0, "maxScale": 3, "metric": "concurrency", "target": 100 },
   "env": [
     { "name": "LOG_LEVEL", "value": "debug", "secret": false },
@@ -141,7 +141,7 @@ body (secrets redacted) with the live status alongside:
 ```
 
 A **`ContainerResponse`** is the same idea mirroring `ContainerCreate`: instead of
-`gitRepo`/`branch`/`runtime` it carries `image` and `registryUsername`. (Functions
+`gitRepo`/`revision`/`runtime` it carries `image` and `registryUsername`. (Functions
 expose **no image** - the built image is an internal artifact; the client deals in
 source, not images.)
 
@@ -384,7 +384,7 @@ re-keyed to the new image's registry):
 { "image": "docker.io/library/nginx:1.27" }
 ```
 
-**Rebuild a function from a new branch - no token needed** (the stored git token is reused).
+**Rebuild a function from a new revision - no token needed** (the stored git token is reused).
 `gitRepo` and `runtime` are required on every function `PUT`, as on create - the body is
 the full desired state, so they are re-sent unchanged rather than carried forward:
 
@@ -392,19 +392,19 @@ the full desired state, so they are re-sent unchanged rather than carried forwar
 {
   "gitRepo": "https://git.internal/team/image-resizer.git",
   "runtime": "python",
-  "branch": "release",
+  "revision": "release",
   "scaling": { "minScale": 0, "maxScale": 3 }
 }
 ```
 
-**Rotate the git token** (sending it also triggers a rebuild). Note that omitting `branch`
-here would reset it to `main`, so send the branch you are on:
+**Rotate the git token** (sending it also triggers a rebuild). Note that omitting `revision`
+here would reset it to `main`, so send the revision you are on:
 
 ```json
 {
   "gitRepo": "https://git.internal/team/image-resizer.git",
   "runtime": "python",
-  "branch": "release",
+  "revision": "release",
   "gitToken": "ghp_new-token"
 }
 ```
@@ -448,7 +448,7 @@ dependencies. That is a `POST`, and it takes **no body**:
 POST /api/serverless/v1/groups/{group}/functions/{name}/build   ->   202 Accepted
 ```
 
-Every input comes back off the workload itself - `gitRepo`, `branch`, `path`, `runtime`
+Every input comes back off the workload itself - `gitRepo`, `revision`, `path`, `runtime`
 and `version` from the KSVC's annotations, the token from the `{workload}-git` Secret -
 which is the same reconstruction a region that has never built the function does after a
 switchover (BUILDING.md: Reconstruction after a gap). Nothing is accepted from the

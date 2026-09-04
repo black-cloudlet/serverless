@@ -74,11 +74,11 @@ class FakeFunctions:
         return _accepted("function", name, group)
 
     async def accept_build(self, group, name, user, background):
-        return _accepted("function", name, group, runtime="python", branch="main")
+        return _accepted("function", name, group, runtime="python", revision="main")
 
     async def get(self, name, group, user):
         return _ready(
-            "function", name, runtime="python", gitRepo="https://git/x.git", branch="main"
+            "function", name, runtime="python", gitRepo="https://git/x.git", revision="main"
         )
 
     async def stats(self, name, group, user):
@@ -261,7 +261,7 @@ def test_build_function_accepted_without_a_body(client):
     # the same poll target as create/update, so a client needs no second flow
     assert body["statusUrl"] == "/v1/groups/team/functions/orders"
     # the build inputs it will use, echoed back from what is stored
-    assert body["runtime"] == "python" and body["branch"] == "main"
+    assert body["runtime"] == "python" and body["revision"] == "main"
 
 
 def test_only_functions_can_be_built(client):
@@ -578,7 +578,7 @@ def test_update_function_build_change_accepted_without_token(client):
         json={
             "gitRepo": "https://git/x.git",
             "runtime": "python",
-            "branch": "release",  # gitToken omitted -> reuse stored token
+            "revision": "release",  # gitToken omitted -> reuse stored token
         },
     )
     assert r.status_code == 202

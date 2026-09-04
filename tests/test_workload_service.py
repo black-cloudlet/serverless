@@ -641,7 +641,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
         runtime="python",
         version="3.13",
         git_url="https://git.example.com/team/monorepo.git",
-        branch="main",
+        revision="main",
         path="services/api",
     )
     ksvc["status"] = {
@@ -668,7 +668,7 @@ async def test_get_function_returns_build_inputs_and_build_state():
 
     assert body.runtime == "python"
     assert body.gitRepo == "https://git.example.com/team/monorepo.git"
-    assert body.branch == "main"
+    assert body.revision == "main"
     # The sub-directory a monorepo function builds from, round-tripped through
     # the annotation and WorkloadSpec rather than dropped on the floor.
     assert body.path == "services/api"
@@ -702,7 +702,7 @@ async def test_get_function_building_image_reports_building():
         size="small",
         runtime="python",
         git_url="https://git.example.com/team/fn.git",
-        branch="main",
+        revision="main",
     )
     # KSVC can't pull an image that does not exist yet -> Ready=False
     ksvc["status"] = {
@@ -1136,7 +1136,7 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         size="small",
         runtime="python",
         git_url="https://git/old.git",
-        branch="main",
+        revision="main",
     )
     cluster = _ApplyCluster("region-a", {"fn": existing})
     builder = _StubBuilder()
@@ -1149,12 +1149,12 @@ async def test_function_update_rebuilds_without_touching_the_running_image():
         "team",
         "fn",
         FunctionUpdate(
-            gitRepo="https://git/old.git", runtime="python", branch="release", gitToken="tok"
+            gitRepo="https://git/old.git", runtime="python", revision="release", gitToken="tok"
         ),
         user,
     )
     assert builder.calls == 1
-    assert builder.req.branch == "release"
+    assert builder.req.revision == "release"
     assert builder.req.git_url == "https://git/old.git"
     assert builder.req.runtime == "python"
     ksvc = _applied_kind(cluster, "Service")[0]
@@ -1193,7 +1193,7 @@ async def test_function_update_without_token_keeps_image():
         size="small",
         runtime="python",
         git_url="https://git/old.git",
-        branch="main",
+        revision="main",
     )
     cluster = _ApplyCluster("region-a", {"fn": existing})
     builder = _StubBuilder()
@@ -1285,7 +1285,7 @@ async def test_function_update_reuses_stored_git_token():
         size="small",
         runtime="python",
         git_url="https://git/old.git",
-        branch="main",
+        revision="main",
     )
     stored = build_git_secret(git_secret_name("fn"), {}, "ghp_stored")
     cluster = _ApplyCluster("region-a", {"fn": existing}, secrets={"fn-git": stored})
@@ -1298,11 +1298,11 @@ async def test_function_update_reuses_stored_git_token():
     await fsvc.update(
         "team",
         "fn",
-        FunctionUpdate(gitRepo="https://git/old.git", runtime="python", branch="release"),
+        FunctionUpdate(gitRepo="https://git/old.git", runtime="python", revision="release"),
         user,
     )
     assert builder.calls == 1
-    assert builder.req.branch == "release"
+    assert builder.req.revision == "release"
     assert builder.req.git_token == "ghp_stored"  # reused, not re-supplied
 
 
