@@ -27,8 +27,9 @@ const slides = [
       ["Scale", "Up and down by itself", "Cold start on first hit"],
       ["Speed", "A function in minutes", "Platform lock-in"],
       ["Fit", "Bursty, event-driven", "Long-running jobs, state"],
+      ["Deploy", "Easy, few clicks", "Less control and customization"],
     ] },
-    notes: "Be honest about the trade-offs before the architecture. Cost: nothing when idle, but a hot loop of requests is billed per request. Ops: no patching, but you cannot tune the kernel or the runtime. Scale: automatic in both directions, but the first request after idle pays a cold start. Speed: a function ships in minutes, but the deployment model is the platform's. Fit: request-driven and bursty workloads win; long-running or stateful jobs do not belong here." },
+    notes: "Be honest about the trade-offs before the architecture. Cost: nothing when idle, but a hot loop of requests is billed per request. Ops: no patching, but you cannot tune the kernel or the runtime. Scale: automatic in both directions, but the first request after idle pays a cold start. Speed: a function ships in minutes, but the deployment model is the platform's. Fit: request-driven and bursty workloads win; long-running or stateful jobs do not belong here. Deploy: a few clicks to ship, at the cost of control over how it is built and run." },
   // ---------------- 4a: Knative from familiar objects
   { kind: "content", chapter: 1, kicker: "Foundations", title: "Knative, from what we already run",
     lines: ["We know Deployment, Service, Ingress, HPA", "Knative bundles them into one object", "Adds revisions, routing and scale-to-zero", "Runs on any Kubernetes, ours is OpenShift"],
@@ -79,15 +80,15 @@ const slides = [
     ] },
     notes: "The decision is about ownership. Upstream would mean maintaining the install, the ingress, the Routes and the mirror ourselves, with community support. The chart assumes the operator's conventions and the API holds no routes RBAC. Recorded in docs/DEPLOYING.md and the locked decisions in docs/ARCHITECTURE.md." },
   // ---------------- 7
-  { kind: "section", chapter: 2, title: "The API", sub: "One HTTP call, a workload on every cluster." },
+  { kind: "section", chapter: 2, title: "The API", sub: "One HTTP call, a serverless application." },
   // ---------------- 8
   { kind: "content", chapter: 2, kicker: "The API", title: "One call, every cluster",
-    lines: ["Functions from git, containers from images", "Validate now, answer 202, poll status", "Closed status vocabulary, published on /info", "FastAPI, Pydantic, cloudlet-apis", "One Helm chart, rendered per region"],
+    lines: ["Functions from git, containers from images", "Validate now, answer 202, poll status", "Closed status vocabulary, published on /info", "FastAPI, Pydantic, Kubernetes-client, cloudlet-apis", "One Helm chart, rendered per region"],
     visual: { kind: "stats", items: [["2", "offerings"], ["202", "every write"], ["0", "kubectl for users"], ["2", "regions per deploy"]] },
     notes: "The API is a FastAPI control plane. Every write validates synchronously then returns 202 with a statusUrl; the status vocabulary is closed and published on /info so no client hardcodes it. One Helm chart, rendered by ArgoCD once per region." },
   // ---------------- 9
   { kind: "content", chapter: 2, kicker: "The API", title: "The endpoint structure",
-    lines: ["23 endpoints under one base path", "The group is in the path", "OIDC token or admin key", "Streams use short-lived tickets"],
+    lines: ["23 endpoints under one base path", "The group is in the path", "OIDC token or admin key", "Allow live streaming with short-lived tickets"],
     visual: { kind: "code", lines: [
       ["/api/serverless/v1", "accent"],
       ["  /groups/{group}/functions", "ink"],

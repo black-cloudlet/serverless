@@ -110,7 +110,7 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .content.wide .body{grid-template-columns:1fr}
 .content.wide .cmp{font-size:2.2cqw}
 .content.wide .cmp th{font-size:1.5cqw;padding-bottom:2cqh}
-.content.wide .cmp td{padding:2.2cqh 1.6cqw}
+.content.wide .cmp td{padding:1.7cqh 1.6cqw}
 .foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
 .mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
 /* builds */

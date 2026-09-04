@@ -33,7 +33,7 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .content.wide .body{grid-template-columns:1fr}
 .content.wide .cmp{font-size:2.2cqw}
 .content.wide .cmp th{font-size:1.5cqw;padding-bottom:2cqh}
-.content.wide .cmp td{padding:2.2cqh 1.6cqw}
+.content.wide .cmp td{padding:1.7cqh 1.6cqw}
 .foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
 .mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
 /* builds */
@@ -148,9 +148,9 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <h1>Serverless: the trade-offs</h1>
     <div class="body">
       
-      <div class="visual"><table class="cmp build-auto"><thead><tr><th class=""></th><th class="">Pro</th><th class="">Con</th></tr></thead><tbody><tr><td class="k">Cost</td><td class="pl">Pay only when it runs</td><td class="pl">Bills spike under load</td></tr><tr><td class="k">Ops</td><td class="pl">No servers to patch</td><td class="pl">Runtime is not yours</td></tr><tr><td class="k">Scale</td><td class="pl">Up and down by itself</td><td class="pl">Cold start on first hit</td></tr><tr><td class="k">Speed</td><td class="pl">A function in minutes</td><td class="pl">Platform lock-in</td></tr><tr><td class="k">Fit</td><td class="pl">Bursty, event-driven</td><td class="pl">Long-running jobs, state</td></tr></tbody></table></div>
+      <div class="visual"><table class="cmp build-auto"><thead><tr><th class=""></th><th class="">Pro</th><th class="">Con</th></tr></thead><tbody><tr><td class="k">Cost</td><td class="pl">Pay only when it runs</td><td class="pl">Bills spike under load</td></tr><tr><td class="k">Ops</td><td class="pl">No servers to patch</td><td class="pl">Runtime is not yours</td></tr><tr><td class="k">Scale</td><td class="pl">Up and down by itself</td><td class="pl">Cold start on first hit</td></tr><tr><td class="k">Speed</td><td class="pl">A function in minutes</td><td class="pl">Platform lock-in</td></tr><tr><td class="k">Fit</td><td class="pl">Bursty, event-driven</td><td class="pl">Long-running jobs, state</td></tr><tr><td class="k">Deploy</td><td class="pl">Easy, few clicks</td><td class="pl">Less control and customization</td></tr></tbody></table></div>
     </div>
-    <div class="foot"><span class="mono">04 / 26</span></div><div class="notes" hidden>Be honest about the trade-offs before the architecture. Cost: nothing when idle, but a hot loop of requests is billed per request. Ops: no patching, but you cannot tune the kernel or the runtime. Scale: automatic in both directions, but the first request after idle pays a cold start. Speed: a function ships in minutes, but the deployment model is the platform's. Fit: request-driven and bursty workloads win; long-running or stateful jobs do not belong here.</div></section>
+    <div class="foot"><span class="mono">04 / 26</span></div><div class="notes" hidden>Be honest about the trade-offs before the architecture. Cost: nothing when idle, but a hot loop of requests is billed per request. Ops: no patching, but you cannot tune the kernel or the runtime. Scale: automatic in both directions, but the first request after idle pays a cold start. Speed: a function ships in minutes, but the deployment model is the platform's. Fit: request-driven and bursty workloads win; long-running or stateful jobs do not belong here. Deploy: a few clicks to ship, at the cost of control over how it is built and run.</div></section>
 <section class="slide content" data-i="4">
     <div class="kicker">Foundations</div>
     <h1>Knative, from what we already run</h1>
@@ -236,12 +236,12 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
 <section class="slide section" data-i="9">
       
       <h1 class="build" data-step="0">The API</h1>
-      <p class="sub build" data-step="0">One HTTP call, a workload on every cluster.</p></section>
+      <p class="sub build" data-step="0">One HTTP call, a serverless application.</p></section>
 <section class="slide content" data-i="10">
     <div class="kicker">The API</div>
     <h1>One call, every cluster</h1>
     <div class="body">
-      <ul class="lines"><li class="build" data-step="1">Functions from git, containers from images</li><li class="build" data-step="2">Validate now, answer 202, poll status</li><li class="build" data-step="3">Closed status vocabulary, published on /info</li><li class="build" data-step="4">FastAPI, Pydantic, cloudlet-apis</li><li class="build" data-step="5">One Helm chart, rendered per region</li></ul>
+      <ul class="lines"><li class="build" data-step="1">Functions from git, containers from images</li><li class="build" data-step="2">Validate now, answer 202, poll status</li><li class="build" data-step="3">Closed status vocabulary, published on /info</li><li class="build" data-step="4">FastAPI, Pydantic, Kubernetes-client, cloudlet-apis</li><li class="build" data-step="5">One Helm chart, rendered per region</li></ul>
       <div class="visual"><div class="stats"><div class="stat build-auto" style="--d:0ms"><div class="big" data-n="2">2</div><div class="sm">offerings</div></div><div class="stat build-auto" style="--d:90ms"><div class="big" data-n="202">202</div><div class="sm">every write</div></div><div class="stat build-auto" style="--d:180ms"><div class="big" data-n="0">0</div><div class="sm">kubectl for users</div></div><div class="stat build-auto" style="--d:270ms"><div class="big" data-n="2">2</div><div class="sm">regions per deploy</div></div></div></div>
     </div>
     <div class="foot"><span class="mono">11 / 26</span></div><div class="notes" hidden>The API is a FastAPI control plane. Every write validates synchronously then returns 202 with a statusUrl; the status vocabulary is closed and published on /info so no client hardcodes it. One Helm chart, rendered by ArgoCD once per region.</div></section>
@@ -249,7 +249,7 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
     <div class="kicker">The API</div>
     <h1>The endpoint structure</h1>
     <div class="body">
-      <ul class="lines"><li class="build" data-step="1">23 endpoints under one base path</li><li class="build" data-step="2">The group is in the path</li><li class="build" data-step="3">OIDC token or admin key</li><li class="build" data-step="4">Streams use short-lived tickets</li></ul>
+      <ul class="lines"><li class="build" data-step="1">23 endpoints under one base path</li><li class="build" data-step="2">The group is in the path</li><li class="build" data-step="3">OIDC token or admin key</li><li class="build" data-step="4">Allow live streaming with short-lived tickets</li></ul>
       <div class="visual"><pre class="code build-auto"><span class="accent">/api/serverless/v1</span>
 <span class="ink">  /groups/{group}/functions</span>
 <span class="muted">    POST · GET · PUT · DELETE</span>

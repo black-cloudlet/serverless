@@ -71,7 +71,7 @@ function visual(s, v) {
     }
     case "table": {
       const wide = !!v.wide;
-      const cols = wide ? [2.6, 4.6, 4.7] : [1.3, 2.2, 2.4], rh = wide ? 0.78 : 0.55;
+      const cols = wide ? [2.6, 4.6, 4.7] : [1.3, 2.2, 2.4], rh = wide ? Math.min(0.78, 4.0 / v.rows.length) : 0.55;
       const X0 = wide ? ML : VX, TW = wide ? 11.9 : 5.9, FS = wide ? 17 : 12.5;
       let y = wide ? 2.3 : VY + 0.2;
       const xs = [X0, X0 + cols[0], X0 + cols[0] + cols[1]];
