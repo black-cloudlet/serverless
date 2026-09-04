@@ -38,7 +38,7 @@ walkthrough.
 
 | Document | Subject |
 |----------|---------|
-| [WEBHOOK-PLAN.md](./WEBHOOK-PLAN.md) | Design and implementation plan for the per-function git webhook: the token, the second way into `POST .../build`, and pinning the pushed commit. A plan, not a description of shipped behaviour; it folds into the documents above once implemented. |
+| [WEBHOOK-PLAN.md](./WEBHOOK-PLAN.md) | Design and implementation plan for the per-function git webhook: renaming `branch` to `revision`, the token, the second way into `POST .../build`, and pinning the pushed commit. A plan, not a description of shipped behaviour; it folds into the documents above once implemented. |
 
 ## Reading order
 
