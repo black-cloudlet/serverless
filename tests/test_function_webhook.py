@@ -317,13 +317,20 @@ async def test_a_rebuild_returns_a_pinned_function_to_its_revisions_head():
     assert patch["metadata"]["annotations"][ANNOTATION_GIT_COMMIT] is None
 
 
-async def test_clearing_a_pin_is_the_spec_change_so_no_trigger_is_sent():
+async def test_a_rebuild_of_a_pinned_function_still_triggers():
+    """kpack decides from the *resolved* source, not from the spec text.
+
+    Clearing a pin that still names the revision's head resolves to the commit
+    already built, so the apply alone can produce nothing - and a rebuild that
+    silently does nothing (the "retry a failed push-build" case) is worse than
+    the second build a spec change plus a trigger can cost.
+    """
     from tests.test_kpack_build import _run_build, _TriggeringBuilder
 
     builder = _TriggeringBuilder()
     await _run_build(_service({"region-a": _cluster(commit=SHA)}, builder))
 
-    assert builder.triggered == []
+    assert [region for region, *_ in builder.triggered] == ["region-a"]
 
 
 async def test_a_rebuild_of_an_unpinned_function_still_triggers_as_it_always_did():
@@ -440,18 +447,17 @@ def test_the_token_never_appears_in_a_repr():
     assert "s3cret" not in repr(caller)
 
 
-async def test_an_update_carries_the_token_to_a_region_the_create_did_not_reach():
-    """An update targets every region, so the token travels with it.
+async def test_an_update_never_writes_the_webhook_secret():
+    """Rotate is the token's only writer.
 
-    Otherwise a function updated into a new region cannot authenticate a push
-    there, and a switchover silently breaks its hook.
+    A PUT that touched it could only either re-apply what it read - pointless -
+    or mint a replacement it has no field to hand back, silently breaking a hook
+    the caller had already configured.
     """
-    from tests.factories import _ApplyCluster
     from tests.test_kpack_build import _function_service, _RecordingBuilder
 
-    a = _cluster(region="region-a")
-    b = _ApplyCluster("region-b", {"hello": a._inner._existing["hello"]})
-    svc = _function_service({"region-a": a, "region-b": b}, _RecordingBuilder())
+    cluster = _cluster()
+    svc = _function_service({"region-a": cluster}, _RecordingBuilder())
 
     await svc.update(
         "payments",
@@ -460,13 +466,24 @@ async def test_an_update_carries_the_token_to_a_region_the_create_did_not_reach(
         Principal(subject="u", username="alice", groups=["payments"]),
     )
 
-    for cluster in (a, b):
-        secret = next(
-            m
-            for m in cluster.applied
-            if m["kind"] == "Secret" and m["metadata"]["name"] == "hello-webhook"
-        )
-        assert base64.b64decode(secret["data"][secret_svc.WEBHOOK_TOKEN_KEY]).decode() == TOKEN
+    assert [m for m in cluster.applied if m["metadata"]["name"] == "hello-webhook"] == []
+
+
+async def test_an_update_of_a_function_with_no_token_still_writes_none():
+    """The dangerous half: no token stored must not mean "mint one quietly"."""
+    from tests.test_kpack_build import _function_service, _RecordingBuilder
+
+    cluster = _cluster(token=None)
+    svc = _function_service({"region-a": cluster}, _RecordingBuilder())
+
+    await svc.update(
+        "payments",
+        "hello",
+        _update_spec(),
+        Principal(subject="u", username="alice", groups=["payments"]),
+    )
+
+    assert [m for m in cluster.applied if m["metadata"]["name"] == "hello-webhook"] == []
 
 
 async def test_an_update_returns_a_pinned_function_to_its_revisions_head():
@@ -520,3 +537,88 @@ def _update_spec(**over):
     )
     base.update(over)
     return FunctionUpdate(**base)
+
+
+# ------------------------------------------------- the failures reviews found
+
+
+async def test_the_minted_token_never_reaches_a_log_line():
+    """`run_background` logs the callable and its string args on failure.
+
+    A `functools.partial` renders bound arguments in its `repr`, and a plain
+    positional would be logged as one of those strings - either way the
+    credential lands in the log of any failed create.
+    """
+    from api.services.function import _with_webhook_token
+
+    work = _with_webhook_token(lambda *a, **k: None, "s3cret-token")
+
+    assert "s3cret" not in repr(work)
+    assert "s3cret" not in getattr(work, "__name__", "")
+    assert "s3cret" not in repr(getattr(work, "__name__", work))
+
+
+async def test_a_non_ascii_token_is_a_401_not_a_500():
+    """`hmac.compare_digest` raises on a non-ASCII `str`, and the header is
+    caller-controlled: Starlette decodes it latin-1, so any byte >= 0x80 would
+    turn a junk token into a server error."""
+    svc = _service({"region-a": _cluster()})
+
+    with pytest.raises(UnauthenticatedError):
+        await _deliver(svc, _push(), token="tokén-with-non-ascii")
+
+
+async def test_a_rotation_that_reached_no_region_is_not_reported_as_success():
+    """The worst possible answer: the caller reconfigures the hook with a token
+    no region will accept, while the one they replaced stays live."""
+    from common.errors import RegionTotalFailure
+
+    class _Broken:
+        """A region that reads fine but refuses every write."""
+
+        def __init__(self):
+            self._inner = _cluster()
+            self.region = self.name = "region-a"
+
+        def __getattr__(self, item):
+            return getattr(self._inner, item)
+
+        def apply(self, manifest, namespace=None):
+            raise RuntimeError("region down")
+
+    svc = _service({"region-a": _Broken()})
+
+    with pytest.raises(RegionTotalFailure):
+        await svc.rotate_webhook(
+            "payments", "hello", Principal(subject="u", username="alice", groups=["payments"])
+        )
+
+
+async def test_an_unbuildable_function_ignores_a_push_instead_of_failing_it():
+    """A 4xx would make GitLab disable the hook for every later push too.
+
+    A runtime retired from the ConfigMap is the realistic trigger: the function
+    is temporarily unbuildable, but that must not cost it its webhook.
+    """
+    from api.services.builder.runtimes import RuntimeRegistry
+    from tests.test_kpack_build import _build_service, _TriggeringBuilder
+
+    cluster = _cluster()
+    # a registry that no longer offers the runtime the function was built with
+    svc = _build_service({"region-a": cluster}, _TriggeringBuilder(), runtimes=RuntimeRegistry([]))
+
+    outcome = await _deliver(svc, _push())
+
+    assert outcome.accepted is False
+    assert "runtime" in outcome.reason
+    assert cluster.applied == []
+
+
+def test_a_repository_reached_over_http_and_https_is_one_repository():
+    """GitLab's `git_http_url` need not use the scheme the caller registered;
+    comparing schemes would silently ignore every push from such a server."""
+    assert same_repository("http://git.internal/payments/hello.git", GIT_URL)
+    assert same_repository("https://git.internal:443/payments/hello.git", GIT_URL)
+    assert same_repository("http://git.internal:80/payments/hello", GIT_URL)
+    # a non-default port still distinguishes a host
+    assert not same_repository("https://git.internal:8443/payments/hello.git", GIT_URL)

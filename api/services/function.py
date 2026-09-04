@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import hmac
 from collections.abc import Mapping
 
@@ -33,6 +32,28 @@ from common.labels import OFFERING_FUNCTION, workload_labels
 from common.names import same_repository
 
 logger = get_logger(__name__)
+
+
+def _with_webhook_token(create, token: str):
+    """Bind a minted webhook token to a create, without it reaching a log line.
+
+    ``run_background`` logs the callable and its string arguments on failure. A
+    ``functools.partial`` renders its bound arguments in ``repr``, and a plain
+    positional would be logged as one of those strings - either way the
+    credential lands in the log. A closure carries it where neither can reach.
+
+    Args:
+        create: The bound ``FunctionService.create``.
+        token: The token to write with the workload.
+
+    Returns:
+        The three-argument work callable ``accept_create`` schedules.
+    """
+
+    async def create_function(group, spec, user):
+        return await create(group, spec, user, webhook_token=token)
+
+    return create_function
 
 
 class FunctionService(OfferingService):
@@ -162,7 +183,7 @@ class FunctionService(OfferingService):
             spec=spec,
             user=user,
             background=background,
-            work=functools.partial(self.create, webhook_token=token),
+            work=_with_webhook_token(self.create, token),
             webhook=self._webhook_view(group, spec.name, token),
             **self._echo(spec),
         )
@@ -352,9 +373,11 @@ class FunctionService(OfferingService):
         until the digest rolls out (docs/BUILDING.md - Ownership).
 
         It also clears a commit a push pinned, returning the function to its
-        revision's head. That clearing is itself the spec change kpack builds
-        from, so the trigger is sent only when there was no pin - with one it
-        would make a second build (docs/FUNCTIONS.md - Git webhook).
+        revision's head. The trigger is sent either way: kpack decides from the
+        *resolved* source, so clearing a pin that still names the revision's
+        head resolves to what was built already and would produce nothing - and
+        a rebuild that silently does nothing is worse than the second build a
+        spec change plus a trigger can cost.
 
         Args:
             group: The owning group (from the request path).
@@ -370,14 +393,12 @@ class FunctionService(OfferingService):
         req = self._build_request(name, group, existing, user)
         # Every configured region; apply_build skips the ones not running it.
         registries = self._engine.target_registries(None)
-        had_commit = existing.get("commit") is not None
         await self._engine.apply_build(
             name,
             group,
             self._plan(req, user, registries),
             commit=None,
-            had_commit=had_commit,
-            trigger=not had_commit,
+            had_commit=existing.get("commit") is not None,
         )
 
     # ------------------------------------------------------------------ webhook
@@ -472,7 +493,10 @@ class FunctionService(OfferingService):
             raise UnauthenticatedError("invalid webhook token") from exc
 
         stored = existing.get("webhook_token")
-        if not stored or not hmac.compare_digest(stored, token):
+        # Compared as bytes: `compare_digest` raises on a non-ASCII str, and the
+        # header is caller-controlled, so a str compare turns a junk token into
+        # a 500 instead of the 401 it is.
+        if not stored or not hmac.compare_digest(stored.encode(), token.encode()):
             raise UnauthenticatedError("invalid webhook token")
 
         reason = self._ignored(event, event_kind, existing)
@@ -481,10 +505,16 @@ class FunctionService(OfferingService):
             return WebhookOutcome(accepted=False, reason=reason)
 
         commit = event.sha
-        req = self._build_request(name, group, existing, commit=commit)
-        # A runtime dropped from the ConfigMap since is a 400 before the 202,
-        # as on the bearer path.
-        self._assert_runtime(req.runtime, req.version)
+        # Anything unbuildable about the stored state - no git token, a runtime
+        # since dropped from the ConfigMap - is an ignored delivery, never a
+        # 4xx: GitLab disables a hook that keeps failing, which would take the
+        # webhook down for every later push too.
+        try:
+            req = self._build_request(name, group, existing, commit=commit)
+            self._assert_runtime(req.runtime, req.version)
+        except ValidationError as exc:
+            logger.warning("webhook: %s/%s: cannot build: %s", group, name, exc)
+            return WebhookOutcome(accepted=False, reason=str(exc))
         logger.info("webhook: %s/%s: building commit %s", group, name, commit)
         background.add_task(run_background, self.build_at_commit, group, name, existing, req)
         host = existing.get("host") or self._engine.host_for(name, None, group)
@@ -820,12 +850,12 @@ class FunctionService(OfferingService):
                 prev_host=existing.get("host"),
                 kept_env=existing.get("env_values"),
                 kept_files=existing.get("files_values"),
-                # Re-emitted like the git Secret: an update targets every
-                # region, so one gaining the workload gains the token with it.
-                extra_secrets=[
-                    *(plan.replicated if plan else []),
-                    self._webhook_secret(group, name, user, existing.get("webhook_token")),
-                ],
+                # No webhook Secret here. The token has exactly one writer -
+                # POST .../webhook/rotate - so nothing else can replace one a
+                # hook is already configured with, and an update cannot mint a
+                # token it has no way to hand back (docs/FUNCTIONS.md - Git
+                # webhook).
+                extra_secrets=plan.replicated if plan else [],
                 region_resources=plan.manifests_by_region if plan else {},
             ),
             FUNCTION,

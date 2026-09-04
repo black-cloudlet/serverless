@@ -358,12 +358,21 @@ def test_a_build_with_neither_credential_is_401(client):
     assert client.post("/v1/groups/team/functions/orders/build").status_code == 401
 
 
-def test_a_bearer_wins_over_a_webhook_header(client):
-    """Someone holding both means the authenticated one; the rebuild path runs."""
+def test_a_real_bearer_wins_over_a_webhook_header(client):
+    """Someone holding both means the authenticated one; the rebuild path runs.
+
+    Decided on the header, not the resolved principal: with auth disabled the
+    auth component returns a dev principal unconditionally, and trusting that
+    would swallow every push as an anonymous rebuild.
+    """
     r = client.post(
         "/v1/groups/team/functions/orders/build",
         json=_push_body(),
-        headers={"X-Gitlab-Token": "good-token", "X-Gitlab-Event": "Push Hook"},
+        headers={
+            "Authorization": "Bearer real-token",
+            "X-Gitlab-Token": "good-token",
+            "X-Gitlab-Event": "Push Hook",
+        },
     )
 
     assert r.status_code == 202
@@ -802,3 +811,27 @@ def test_info_publishes_the_internal_code_the_catch_all_can_return():
         for c in TestClient(create_app()).get("/v1/containers/info").json()["errorCodes"]
     )
     assert codes["INTERNAL"] == 500
+
+
+def test_a_push_is_not_swallowed_as_a_rebuild_when_auth_is_disabled(client):
+    """With `auth_enabled` false the auth component returns a dev principal for
+    every request, so deciding on the principal rather than the header would
+    turn every push into an anonymous rebuild - building the revision's head
+    instead of the commit that was pushed, silently."""
+    from cloudlet_apis.auth import Principal
+
+    from api.auth.deps import optional_auth
+
+    # what the disabled auth component does: a principal with no header sent
+    client.app.dependency_overrides[optional_auth] = lambda: Principal(
+        subject="dev", username="dev", groups=["team"], is_admin=True
+    )
+
+    r = client.post(
+        "/v1/groups/team/functions/orders/build",
+        json=_push_body(),
+        headers={"X-Gitlab-Token": "good-token", "X-Gitlab-Event": "Push Hook"},
+    )
+
+    assert r.status_code == 202
+    assert r.json()["commit"] == SHA  # the webhook path ran, not the rebuild

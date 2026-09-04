@@ -32,6 +32,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   from, so one push produces one build however many API replicas or provider
   retries handled it. Both human writes, `POST .../build` and `PUT`, clear the
   pin and return the function to its revision's head.
+- The token has exactly one writer, `POST .../{name}/webhook/rotate`. A `PUT`
+  does not carry it: it could only re-apply what it read, or mint a replacement
+  it has no field to return, silently breaking a configured hook. Rotate after
+  widening a function's regions, since the new one has no token until then.
+- Only an unusable token makes a delivery a `4xx`. A function that cannot
+  currently be built - no stored git token, a runtime retired from the
+  ConfigMap - is an acknowledged, ignored delivery, because a `4xx` would make
+  GitLab disable the hook for every later push too.
 - New setting `SERVERLESS_PUBLIC_URL` (chart: derived from the API Route's own
   host), the origin in the webhook URL handed to callers.
 
