@@ -1,0 +1,505 @@
+<title>From Knative to the Portal</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#FFFFFF; --ink:#1B1F2A; --muted:#667085; --hair:#E4E7EC; --panel:#F4F5F7;
+  --accent:#E4572E; --accent-ink:#FFFFFF; --teal:#0B7A75; --teal-soft:#E3F1F0; --ok:#1B8A5A; --bad:#C0392B;
+  --edge:#98A2B3; --node-fill:#FFFFFF; --code-bg:#F4F5F7;
+  --display:"Fraunces",Georgia,"Times New Roman",serif; --sans:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif; --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --paper:#111318; --ink:#F3F4F6; --muted:#9AA3B2; --hair:#262B36; --panel:#181C24;
+  --accent:#FF7A52; --accent-ink:#111318; --teal:#4FB3AE; --teal-soft:#152826; --ok:#4CC38A; --bad:#F26D5B;
+  --edge:#5B6472; --node-fill:#181C24; --code-bg:#181C24; } }
+:root[data-theme="dark"]{
+  --paper:#111318; --ink:#F3F4F6; --muted:#9AA3B2; --hair:#262B36; --panel:#181C24;
+  --accent:#FF7A52; --accent-ink:#111318; --teal:#4FB3AE; --teal-soft:#152826; --ok:#4CC38A; --bad:#F26D5B;
+  --edge:#5B6472; --node-fill:#181C24; --code-bg:#181C24; }
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:fixed;inset:0;display:grid;place-items:center;background:var(--paper)}
+.stage{position:relative;width:min(100vw,177.78vh);aspect-ratio:16/9;container-type:size;overflow:hidden;background:var(--paper)}
+.slide{position:absolute;inset:0;padding:6cqh 6cqw;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(1.2cqh);transition:opacity .45s ease,transform .45s ease,visibility 0s .45s}
+.slide.on{opacity:1;visibility:visible;transform:none;transition:opacity .45s ease,transform .45s ease,visibility 0s}
+.slide.leaving{opacity:0;transform:translateY(-1.2cqh)}
+.kicker{font-family:var(--mono);font-size:1.7cqw;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:500}
+h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;font-size:5.6cqw;line-height:1.05;margin:1.2cqh 0 0;letter-spacing:-.01em;text-wrap:balance;max-width:80%}
+.content .body{display:grid;grid-template-columns:52fr 48fr;gap:4cqw;align-items:start;margin-top:4cqh;flex:1;min-height:0;overflow:hidden}
+.lines{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1.6cqh}
+.lines li{font-size:2.05cqw;line-height:1.3;font-weight:500;padding-left:2.2cqw;position:relative;text-wrap:pretty}
+.lines li::before{content:"";position:absolute;left:0;top:.5em;width:.8cqw;height:.8cqw;background:var(--accent);border-radius:2px}
+.visual{align-self:center;width:100%}
+.foot{position:absolute;left:6cqw;bottom:4cqh;display:flex;gap:2cqw;align-items:center}
+.mono{font-family:var(--mono);font-size:1.4cqw;color:var(--muted)}
+/* builds */
+.build{opacity:0;transform:translateY(1cqh);transition:opacity .4s ease,transform .4s ease}
+.build.on{opacity:1;transform:none}
+.slide.on .build-auto{animation:rise .5s ease both;animation-delay:calc(var(--d,0ms) + .2s)}
+@keyframes rise{from{opacity:0;transform:translateY(1cqh)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){.build,.slide{transition:none}.slide.on .build-auto{animation:none}}
+/* title */
+.title{justify-content:center}
+.title h1{font-size:9.2cqw;max-width:75%}
+.title .sub{font-size:2.6cqw;color:var(--muted);margin:3cqh 0 0;font-family:var(--display);font-weight:600;font-style:italic}
+.title .meta{font-family:var(--mono);font-size:1.5cqw;color:var(--muted);margin-top:4cqh}
+.pulse{position:absolute;right:8cqw;top:50%;transform:translateY(-50%);width:22cqw;height:22cqw}
+.pulse span{position:absolute;inset:0;border-radius:50%;border:.25cqw solid var(--accent);opacity:0;animation:ring 3.2s ease-out infinite}
+.pulse span:nth-child(2){animation-delay:1.05s}.pulse span:nth-child(3){animation-delay:2.1s}
+@keyframes ring{0%{transform:scale(.2);opacity:.9}100%{transform:scale(1);opacity:0}}
+@media (prefers-reduced-motion: reduce){.pulse span{animation:none;opacity:.35;transform:scale(.6)}}
+/* section */
+.section{background:var(--accent);color:var(--accent-ink);justify-content:center}
+.section .num{font-family:var(--display);font-weight:800;font-size:22cqw;line-height:.9;letter-spacing:-.04em;opacity:.95}
+.section h1{font-size:7cqw;margin-top:2cqh;max-width:90%}
+.section .sub{font-family:var(--display);font-style:italic;font-weight:600;font-size:2.8cqw;margin:2cqh 0 0;opacity:.9}
+/* closing */
+.closing h1{font-size:6.4cqw}
+.closing .stats.wide{display:grid;grid-template-columns:repeat(6,1fr);gap:2cqw;margin-top:5cqh}
+.closing .lines{margin-top:5cqh;max-width:70%}
+.closing .lines li{font-size:2.1cqw}
+.thanks{font-family:var(--display);font-weight:800;font-size:3.4cqw;margin:auto 0 0;text-align:right}
+/* visuals */
+.glyph{text-align:center;padding:4cqh 0}
+.glyph .g{font-family:var(--display);font-weight:800;font-size:9cqw;letter-spacing:-.02em;color:var(--teal)}
+.glyph .gs{font-family:var(--mono);font-size:1.6cqw;color:var(--muted);margin-top:1cqh}
+.graph{width:100%;height:auto;overflow:visible}
+.graph .node rect{fill:var(--node-fill);stroke:var(--teal);stroke-width:1.6}
+.graph .node.accent rect{stroke:var(--accent);stroke-width:2.2}
+.graph .nl{font-family:var(--sans);font-weight:600;font-size:15px;fill:var(--ink);text-anchor:middle}
+.graph .ns{font-family:var(--mono);font-size:10.5px;fill:var(--muted);text-anchor:middle}
+.graph .edge{stroke:var(--edge);stroke-width:1.6;fill:none}
+.stack{display:flex;flex-direction:column;gap:1.2cqh}
+.layer{display:flex;justify-content:space-between;align-items:baseline;gap:2cqw;border:1.5px solid var(--teal);border-radius:.6cqw;padding:1.4cqh 1.6cqw;background:var(--node-fill)}
+.layer.accent{border-color:var(--accent);border-width:2px}
+.layer b{font-size:1.9cqw;font-weight:600}.layer span{font-family:var(--mono);font-size:1.25cqw;color:var(--muted);text-align:right}
+.cmp{width:100%;border-collapse:collapse;font-size:1.75cqw}
+.cmp th{font-family:var(--mono);font-weight:500;font-size:1.2cqw;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:left;padding:0 1.2cqw 1.2cqh}
+.cmp td{padding:1.4cqh 1.2cqw;border-top:1px solid var(--hair);color:var(--muted)}
+.cmp td.k{font-weight:600;color:var(--ink)}.cmp .acc{color:var(--ink);background:var(--teal-soft)}.cmp th.acc{color:var(--teal)}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:3cqh 2cqw}
+.stat .big{font-family:var(--display);font-weight:800;font-size:6.5cqw;line-height:1;color:var(--accent);letter-spacing:-.02em}
+.stat .sm{font-family:var(--mono);font-size:1.35cqw;color:var(--muted);margin-top:.8cqh}
+.closing .stat .big{font-size:5.5cqw}
+.code{font-family:var(--mono);font-size:1.55cqw;line-height:1.75;background:var(--code-bg);border-radius:.8cqw;padding:2.5cqh 2cqw;margin:0;white-space:pre;overflow-x:auto}
+.code .accent{color:var(--accent);font-weight:500}.code .ink{color:var(--ink)}.code .muted{color:var(--muted)}
+.life .row{display:flex;align-items:center;gap:1cqw;flex-wrap:wrap;margin-bottom:2.5cqh}
+.chip{font-weight:600;font-size:1.7cqw;padding:.9cqh 1.4cqw;border-radius:.5cqw;border:1.5px solid var(--teal);color:var(--teal)}
+.chip.ok{background:var(--ok);border-color:var(--ok);color:#fff}.chip.bad{border-color:var(--bad);color:var(--bad)}
+.arr{color:var(--edge);font-size:1.8cqw}.why{color:var(--muted);font-size:1.7cqw}
+.reasons code{font-family:var(--mono);font-size:1.2cqw;border:1px solid var(--hair);border-radius:.4cqw;padding:.5cqh .8cqw;color:var(--bad)}
+.phases{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(4,1fr);gap:1.2cqw}
+.phases li{counter-increment:ph;border:1.5px solid var(--teal);border-radius:.6cqw;padding:1.4cqh 1.2cqw;background:var(--node-fill);position:relative}
+.phases li::before{content:counter(ph);position:absolute;top:.8cqh;right:1cqw;font-family:var(--mono);font-size:1.1cqw;color:var(--muted)}
+.phases li.ok{border-color:var(--ok)}
+.phases code{display:block;font-family:var(--mono);font-weight:500;font-size:1.45cqw;padding-right:1.6cqw}
+.phases span{display:block;font-size:1.25cqw;color:var(--muted);margin-top:.5cqh}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:1cqw}
+.tile{border:1px solid var(--hair);border-radius:.6cqw;padding:2cqh 1.2cqw;font-size:1.45cqw;font-weight:600;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:.5cqw;background:var(--panel)}
+.tile.live{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.tile.next{border-color:var(--accent);color:var(--ink);background:var(--node-fill)}
+.tile em{font-style:normal;font-family:var(--mono);font-size:1cqw;letter-spacing:.08em;text-transform:uppercase}
+/* chrome */
+.progress{position:absolute;left:0;top:0;height:.5cqh;background:var(--accent);width:0;transition:width .35s ease;z-index:5}
+.section ~ .progress{background:var(--accent-ink)}
+.help{position:fixed;right:1rem;bottom:.8rem;font-family:var(--mono);font-size:.72rem;color:var(--muted);opacity:.7}
+.notespanel{position:fixed;left:0;right:0;bottom:0;max-height:34vh;overflow:auto;background:var(--panel);color:var(--ink);border-top:1px solid var(--hair);padding:1rem 1.5rem;font-size:1rem;line-height:1.5;z-index:10}
+.notespanel b{font-family:var(--mono);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);display:block;margin-bottom:.4rem}
+button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+<div class="deck">
+  <div class="stage" id="stage" tabindex="0" aria-label="Slideshow. Use arrow keys to navigate.">
+    <section class="slide title" data-i="0">
+      <div class="kicker build" data-step="0">Serverless on Cloudlet</div>
+      <h1 class="build" data-step="0">From Knative to the Portal</h1>
+      <p class="sub build" data-step="0">What we built, and why.</p>
+      <p class="meta build" data-step="0">Team review · September 2026</p>
+      <div class="pulse" aria-hidden="true"><span></span><span></span><span></span></div><div class="notes" hidden>Open with the one-sentence promise: a developer gives us code or an image and gets a running, addressable service in both regions without ever seeing Kubernetes.</div></section>
+<section class="slide content" data-i="1">
+    <div class="kicker">Agenda</div>
+    <h1>Four chapters</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">01  Foundations: serverless, Knative, the Operator</li><li class="build" data-step="2">02  The API: contract, mTLS, two regions</li><li class="build" data-step="3">03  Functions: buildpacks, kpack, build controller</li><li class="build" data-step="4">04  Portal and cloudlet-apis: what comes next</li></ul>
+      <div class="visual"><div class="glyph build-auto"><div class="g">01 → 04</div><div class="gs">fourteen questions, one platform</div></div></div>
+    </div>
+    <div class="foot"><span class="mono">02 / 23</span></div><div class="notes" hidden>Foundations is the vocabulary. The API is the contract. Functions and builds is where most of the engineering went. Portal and future is what the platform becomes next.</div></section>
+<section class="slide content" data-i="2">
+    <div class="kicker">Chapter 01 · Foundations</div>
+    <h1>What is serverless?</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">You bring code, not servers</li><li class="build" data-step="2">Scale to zero when idle</li><li class="build" data-step="3">Scale out when traffic arrives</li><li class="build" data-step="4">Pay for requests, not hours</li><li class="build" data-step="5">Nothing to patch, nothing to plan</li></ul>
+      <div class="visual"><div class="glyph build-auto"><div class="g">0 → N → 0</div><div class="gs">replicas follow traffic</div></div></div>
+    </div>
+    <div class="foot"><span class="mono">03 / 23</span></div><div class="notes" hidden>Serverless is a billing and operations model, not a technology. Scale to zero is the defining property: an idle workload costs nothing and needs nobody.</div></section>
+<section class="slide content" data-i="3">
+    <div class="kicker">Chapter 01 · Foundations</div>
+    <h1>What is Knative?</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Kubernetes building blocks for serverless</li><li class="build" data-step="2">Service owns Configuration and Route</li><li class="build" data-step="3">Every change is an immutable Revision</li><li class="build" data-step="4">KPA: concurrency in, replicas out</li><li class="build" data-step="5">Activator wakes revisions from zero</li><li class="build" data-step="6">DomainMapping: your own hostname</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="300" y1="74" x2="140" y2="140"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="300" y1="74" x2="460" y2="140"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="140" y1="204" x2="140" y2="270"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="340" y1="302" x2="260" y2="302" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node accent build-auto" style="--d:0ms">
+      <rect x="170" y="10" width="260" height="64" rx="8"/>
+      <text x="300" y="38" class="nl">Knative Service</text>
+      <text x="300" y="57" class="ns">the one object you write</text>
+    </g><g class="node teal build-auto" style="--d:70ms">
+      <rect x="20" y="140" width="240" height="64" rx="8"/>
+      <text x="140" y="168" class="nl">Configuration</text>
+      <text x="140" y="187" class="ns">desired state</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="340" y="140" width="240" height="64" rx="8"/>
+      <text x="460" y="168" class="nl">Route</text>
+      <text x="460" y="187" class="ns">traffic → revisions</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="20" y="270" width="240" height="64" rx="8"/>
+      <text x="140" y="298" class="nl">Revision N</text>
+      <text x="140" y="317" class="ns">immutable snapshot</text>
+    </g><g class="node teal build-auto" style="--d:280ms">
+      <rect x="340" y="270" width="240" height="64" rx="8"/>
+      <text x="460" y="298" class="nl">Autoscaler (KPA)</text>
+      <text x="460" y="317" class="ns">0 … N replicas</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">04 / 23</span></div><div class="notes" hidden>A Service owns a Configuration and a Route. Every change to the Configuration stamps an immutable Revision. The KPA scales revisions on concurrency, including to zero; the Activator buffers requests while a revision wakes. DomainMapping lets us give one workload the same host in both clusters.</div></section>
+<section class="slide content" data-i="4">
+    <div class="kicker">Chapter 01 · Foundations</div>
+    <h1>The OpenShift Serverless Operator</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Red Hat's supported Knative distribution</li><li class="build" data-step="2">One KnativeServing custom resource</li><li class="build" data-step="3">OLM installs it and upgrades it</li><li class="build" data-step="4">Kourier ingress, Routes created for you</li><li class="build" data-step="5">Catalog mirrors with oc-mirror</li></ul>
+      <div class="visual"><div class="stack"><div class="layer accent build-auto" style="--d:0ms"><b>Knative Serving</b><span>Service · Revision · Route · DomainMapping</span></div><div class="layer  build-auto" style="--d:80ms"><b>KnativeServing CR</b><span>one document</span></div><div class="layer  build-auto" style="--d:160ms"><b>Serverless Operator</b><span>reconciles, upgrades</span></div><div class="layer  build-auto" style="--d:240ms"><b>Operator Lifecycle Manager</b><span>Subscription → catalog</span></div><div class="layer  build-auto" style="--d:320ms"><b>OpenShift</b><span>one cluster per region</span></div></div></div>
+    </div>
+    <div class="foot"><span class="mono">05 / 23</span></div><div class="notes" hidden>The operator is Red Hat's packaging of Knative. One KnativeServing CR, reconciled by the operator, upgraded through OLM. Kourier is the ingress; Routes are created for us. The catalog mirrors with oc-mirror, which is what makes it viable in an airgap.</div></section>
+<section class="slide content" data-i="5">
+    <div class="kicker">Chapter 01 · Foundations</div>
+    <h1>Why the Operator</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Every alternative made us own more</li><li class="build" data-step="2">We never create a Route ourselves</li><li class="build" data-step="3">Airgap needs one supported mirror path</li></ul>
+      <div class="visual"><table class="cmp build-auto"><thead><tr><th class=""></th><th class="">Upstream Knative</th><th class="acc">Serverless Operator</th></tr></thead><tbody><tr><td class="k">Upgrades</td><td class="">YAML we maintain</td><td class="acc">OLM, from the catalog</td></tr><tr><td class="k">Ingress</td><td class="">Run it ourselves</td><td class="acc">Kourier, managed</td></tr><tr><td class="k">Routes, TLS</td><td class="">Hand-made, RBAC</td><td class="acc">Created for us</td></tr><tr><td class="k">Airgap</td><td class="">Image by image</td><td class="acc">oc-mirror, once</td></tr><tr><td class="k">Support</td><td class="">Community</td><td class="acc">Red Hat</td></tr></tbody></table></div>
+    </div>
+    <div class="foot"><span class="mono">06 / 23</span></div><div class="notes" hidden>The decision is about ownership. Upstream would mean maintaining the install, the ingress, the Routes and the mirror ourselves, with community support. The chart assumes the operator's conventions and the API holds no routes RBAC. Recorded in docs/DEPLOYING.md and the locked decisions in docs/ARCHITECTURE.md.</div></section>
+<section class="slide section" data-i="6">
+      <div class="num build" data-step="0">02</div>
+      <h1 class="build" data-step="0">The API</h1>
+      <p class="sub build" data-step="0">One HTTP call, a workload on every cluster.</p></section>
+<section class="slide content" data-i="7">
+    <div class="kicker">Chapter 02 · The API</div>
+    <h1>One call, every cluster</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Functions from git, containers from images</li><li class="build" data-step="2">Validate now, answer 202, poll status</li><li class="build" data-step="3">Closed status vocabulary, published on /info</li><li class="build" data-step="4">FastAPI, Pydantic, cloudlet-apis</li><li class="build" data-step="5">One Helm chart, rendered per region</li></ul>
+      <div class="visual"><div class="stats"><div class="stat build-auto" style="--d:0ms"><div class="big">2</div><div class="sm">offerings</div></div><div class="stat build-auto" style="--d:90ms"><div class="big">202</div><div class="sm">every write</div></div><div class="stat build-auto" style="--d:180ms"><div class="big">0</div><div class="sm">kubectl for users</div></div><div class="stat build-auto" style="--d:270ms"><div class="big">2</div><div class="sm">regions per deploy</div></div></div></div>
+    </div>
+    <div class="foot"><span class="mono">08 / 23</span></div><div class="notes" hidden>The API is a FastAPI control plane. Every write validates synchronously then returns 202 with a statusUrl; the status vocabulary is closed and published on /info so no client hardcodes it. One Helm chart, rendered by ArgoCD once per region.</div></section>
+<section class="slide content" data-i="8">
+    <div class="kicker">Chapter 02 · The API</div>
+    <h1>The endpoint structure</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">23 endpoints under one base path</li><li class="build" data-step="2">The group is in the path</li><li class="build" data-step="3">OIDC token or admin key</li><li class="build" data-step="4">Streams use short-lived tickets</li></ul>
+      <div class="visual"><pre class="code build-auto"><span class="accent">/api/serverless/v1</span>
+<span class="ink">  /groups/{group}/functions</span>
+<span class="muted">    POST · GET · PUT · DELETE</span>
+<span class="muted">    /{name}/build · /stats · /pods · /logs</span>
+<span class="ink">  /groups/{group}/containers  →  /pull</span>
+<span class="ink">  /functions/info · /containers/info</span>
+<span class="ink">  /stream-tickets</span></pre></div>
+    </div>
+    <div class="foot"><span class="mono">09 / 23</span></div><div class="notes" hidden>Base path /api/serverless/v1. The SSO group is a path segment, so authorization is a path check against the groups claim. Ten endpoints per offering, two public info endpoints, one ticket mint. The Authorization header carries either a Keycloak JWT or the static admin key. EventSource cannot send headers, hence the 60-second HMAC ticket.</div></section>
+<section class="slide content" data-i="9">
+    <div class="kicker">Chapter 02 · The API</div>
+    <h1>Anatomy of a workload</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Identity: name, hostname, regions</li><li class="build" data-step="2">Source: git repo or image</li><li class="build" data-step="3">Runtime: env, files, port, size</li><li class="build" data-step="4">Scaling: min, max, metric, target</li><li class="build" data-step="5">Response: same shape, secrets redacted</li></ul>
+      <div class="visual"><div class="life"><div class="row"><span class="chip  build-auto" style="--d:0ms">Pending</span><span class="arr">→</span><span class="chip  build-auto" style="--d:90ms">Building</span><span class="arr">→</span><span class="chip  build-auto" style="--d:180ms">Deploying</span><span class="arr">→</span><span class="chip ok build-auto" style="--d:270ms">Ready</span></div><div class="row failed build-auto" style="--d:400ms"><span class="chip bad">Failed</span><span class="why">with a reason:</span></div><div class="row reasons build-auto" style="--d:480ms"><code>BuildFailed</code><code>ImagePullFailed</code><code>CrashLooping</code><code>ConfigError</code><code>ProgressDeadlineExceeded</code></div></div></div>
+    </div>
+    <div class="foot"><span class="mono">10 / 23</span></div><div class="notes" hidden>Sizes map to CPU request-only and memory request equals limit. Concurrency and rps use the KPA and can scale to zero; cpu and memory switch to HPA. Failed always carries a machine-readable reason. PUT is a full replace but keeps redacted secrets when omitted.</div></section>
+<section class="slide content" data-i="10">
+    <div class="kicker">Chapter 02 · The API</div>
+    <h1>Talking to the cluster</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Client certificate mTLS, always</li><li class="build" data-step="2">No kubeconfig, no service-account token</li><li class="build" data-step="3">The certificate's CN is the user</li><li class="build" data-step="4">Address derived from the region name</li><li class="build" data-step="5">Every write is server-side apply</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="270" y1="75" x2="330" y2="75"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="455" y1="110" x2="455" y2="200"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="330" y1="235" x2="270" y2="235"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="300" y1="330" x2="145" y2="270" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+      <rect x="20" y="40" width="250" height="70" rx="8"/>
+      <text x="145" y="71" class="nl">cert-manager</text>
+      <text x="145" y="90" class="ns">ACME, internal CA</text>
+    </g><g class="node teal build-auto" style="--d:70ms">
+      <rect x="330" y="40" width="250" height="70" rx="8"/>
+      <text x="455" y="71" class="nl">API pod</text>
+      <text x="455" y="90" class="ns">tls.crt + tls.key</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="330" y="200" width="250" height="70" rx="8"/>
+      <text x="455" y="231" class="nl">API server</text>
+      <text x="455" y="250" class="ns">api.{cluster}.{domain}:6443</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="20" y="200" width="250" height="70" rx="8"/>
+      <text x="145" y="231" class="nl">RBAC</text>
+      <text x="145" y="250" class="ns">per tenant namespace</text>
+    </g><g class="node accent build-auto" style="--d:280ms">
+      <rect x="60" y="330" width="480" height="56" rx="8"/>
+      <text x="300" y="354" class="nl">CN = serverless-api.clients.{domain}</text>
+      <text x="300" y="373" class="ns">the Kubernetes user</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">11 / 23</span></div><div class="notes" hidden>No kubeconfig and no service-account path. cert-manager issues an ACME client certificate; its CN is a DNS name because ACME only issues to DNS identities, and that CN is the Kubernetes user RBAC binds. The API server address is derived from the region's cluster name. Every write is a server-side apply with force, so retries heal partial state.</div></section>
+<section class="slide content" data-i="11">
+    <div class="kicker">Chapter 02 · The API</div>
+    <h1>Active/active, two regions</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">The API runs in both regions</li><li class="build" data-step="2">One deploy fans out to both</li><li class="build" data-step="3">No leader election, deterministic specs</li><li class="build" data-step="4">A region builds what it runs</li><li class="build" data-step="5">State lives in the Knative Service</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:280ms" x1="300" y1="70" x2="150" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:350ms" x1="300" y1="70" x2="450" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="280" y1="210" x2="320" y2="210" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="150" y1="270" x2="300" y2="340" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="450" y1="270" x2="300" y2="340" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node accent build-auto" style="--d:0ms">
+      <rect x="150" y="10" width="300" height="60" rx="8"/>
+      <text x="300" y="36" class="nl">DNS</text>
+      <text x="300" y="55" class="ns">*.serverless.{domain} → active region</text>
+    </g><g class="node teal build-auto" style="--d:70ms">
+      <rect x="20" y="150" width="260" height="120" rx="8"/>
+      <text x="150" y="206" class="nl">central</text>
+      <text x="150" y="225" class="ns">API · controllers · registry · workloads</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="320" y="150" width="260" height="120" rx="8"/>
+      <text x="450" y="206" class="nl">south</text>
+      <text x="450" y="225" class="ns">API · controllers · registry · workloads</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="120" y="340" width="360" height="56" rx="8"/>
+      <text x="300" y="364" class="nl">Knative Service = the truth</text>
+      <text x="300" y="383" class="ns">no database, no replication</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">12 / 23</span></div><div class="notes" hidden>Two OpenShift clusters trusting the same CA. The API runs in both; DNS fronts the active one. A deploy fans out to both concurrently and rolls up per-region results. No leader election: specs contain no timestamps, UUIDs or counters, so two writers converge. Each region builds into its own registry. The Knative Service and its annotations are the replicated truth.</div></section>
+<section class="slide content" data-i="12">
+    <div class="kicker">Chapter 02 · The API</div>
+    <h1>The tenant controller</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">A namespace per SSO group</li><li class="build" data-step="2">Separate process, separate certificate</li><li class="build" data-step="3">The API never creates namespaces</li><li class="build" data-step="4">Provision before every deploy, fail closed</li><li class="build" data-step="5">Reconcile the local cluster only</li><li class="build" data-step="6">Garbage-collect empty namespaces, opt-in</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="240" y1="63" x2="340" y2="63"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="460" y1="96" x2="150" y2="200"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="460" y1="96" x2="450" y2="200"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="300" y1="340" x2="460" y2="96" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+      <rect x="20" y="30" width="220" height="66" rx="8"/>
+      <text x="130" y="59" class="nl">API</text>
+      <text x="130" y="78" class="ns">writes workloads only</text>
+    </g><g class="node accent build-auto" style="--d:70ms">
+      <rect x="340" y="30" width="240" height="66" rx="8"/>
+      <text x="460" y="59" class="nl">tenant controller</text>
+      <text x="460" y="78" class="ns">namespaces, RBAC, policies</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="20" y="200" width="260" height="90" rx="8"/>
+      <text x="150" y="241" class="nl">central</text>
+      <text x="150" y="260" class="ns">{group}-serverless</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="320" y="200" width="260" height="90" rx="8"/>
+      <text x="450" y="241" class="nl">south</text>
+      <text x="450" y="260" class="ns">{group}-serverless</text>
+    </g><g class="node teal build-auto" style="--d:280ms">
+      <rect x="100" y="340" width="400" height="56" rx="8"/>
+      <text x="300" y="364" class="nl">template set</text>
+      <text x="300" y="383" class="ns">{{namespace}} {{group}} {{region}} {{registry}}</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">13 / 23</span></div><div class="notes" hidden>Privilege separation is the reason: namespace and RBAC creation is cluster-scoped power the internet-facing API must not hold. Namespace per SSO group, identical in both clusters, rendered from region-neutral templates. Provision is called before every deploy and fails closed. Reconcile is local-cluster only so the regions never fight. The stamp protocol makes a converge crash-safe.</div></section>
+<section class="slide section" data-i="13">
+      <div class="num build" data-step="0">03</div>
+      <h1 class="build" data-step="0">Functions &amp; builds</h1>
+      <p class="sub build" data-step="0">'Here is my repo' hides a build.</p></section>
+<section class="slide content" data-i="14">
+    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <h1>Why functions are different</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Container: run this image</li><li class="build" data-step="2">Function: here is my repository</li><li class="build" data-step="3">A build takes minutes, not milliseconds</li><li class="build" data-step="4">A build is retried and logged</li><li class="build" data-step="5">Rebuilds fire on CVE patches, unasked</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:420ms" x1="190" y1="60" x2="400" y2="60"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="190" y1="220" x2="215" y2="220"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="385" y1="220" x2="400" y2="220"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="300" y1="330" x2="300" y2="250" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+      <rect x="20" y="30" width="170" height="60" rx="8"/>
+      <text x="105" y="56" class="nl">image</text>
+      <text x="105" y="75" class="ns">container</text>
+    </g><g class="node teal build-auto" style="--d:70ms">
+      <rect x="400" y="30" width="180" height="60" rx="8"/>
+      <text x="490" y="56" class="nl">Knative Service</text>
+      <text x="490" y="75" class="ns">ready</text>
+    </g><g class="node accent build-auto" style="--d:140ms">
+      <rect x="20" y="190" width="170" height="60" rx="8"/>
+      <text x="105" y="216" class="nl">git repo</text>
+      <text x="105" y="235" class="ns">function</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="215" y="190" width="170" height="60" rx="8"/>
+      <text x="300" y="216" class="nl">kpack build</text>
+      <text x="300" y="235" class="ns">minutes</text>
+    </g><g class="node teal build-auto" style="--d:280ms">
+      <rect x="400" y="190" width="180" height="60" rx="8"/>
+      <text x="490" y="216" class="nl">Knative Service</text>
+      <text x="490" y="235" class="ns">digest rolled in</text>
+    </g><g class="node accent build-auto" style="--d:350ms">
+      <rect x="215" y="330" width="170" height="60" rx="8"/>
+      <text x="300" y="356" class="nl">CVE patch</text>
+      <text x="300" y="375" class="ns">rebuilds everything</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">15 / 23</span></div><div class="notes" hidden>A container is run this image. A function is here is my repo, which means a build: asynchronous, retried, observable per phase, and fired automatically when a stack or buildpack is patched. That last property is why kpack was chosen over Tekton or func.</div></section>
+<section class="slide content" data-i="15">
+    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <h1>Buildpacks and kpack</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">No Dockerfile, buildpacks detect the language</li><li class="build" data-step="2">Rebase: patch the base without rebuilding</li><li class="build" data-step="3">kpack: Image, Build, Pod</li><li class="build" data-step="4">Our kpack repo is a Helm chart</li><li class="build" data-step="5">Airgap mirror scripts included</li><li class="build" data-step="6">ClusterBuilders: go, python, node</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:420ms" x1="190" y1="50" x2="250" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="190" y1="150" x2="250" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="190" y1="250" x2="250" y2="150"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="345" y1="180" x2="345" y2="300"  marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+      <rect x="20" y="20" width="170" height="60" rx="8"/>
+      <text x="105" y="46" class="nl">ClusterStack</text>
+      <text x="105" y="65" class="ns">base images</text>
+    </g><g class="node teal build-auto" style="--d:70ms">
+      <rect x="20" y="120" width="170" height="60" rx="8"/>
+      <text x="105" y="146" class="nl">ClusterStore</text>
+      <text x="105" y="165" class="ns">buildpackages</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="20" y="220" width="170" height="60" rx="8"/>
+      <text x="105" y="246" class="nl">order</text>
+      <text x="105" y="265" class="ns">component list</text>
+    </g><g class="node accent build-auto" style="--d:210ms">
+      <rect x="250" y="120" width="190" height="60" rx="8"/>
+      <text x="345" y="146" class="nl">ClusterBuilder</text>
+      <text x="345" y="165" class="ns">go · python · node</text>
+    </g><g class="node teal build-auto" style="--d:280ms">
+      <rect x="250" y="300" width="190" height="60" rx="8"/>
+      <text x="345" y="326" class="nl">Image</text>
+      <text x="345" y="345" class="ns">declared by the API</text>
+    </g><g class="node teal build-auto" style="--d:350ms">
+      <rect x="470" y="20" width="110" height="260" rx="8"/>
+      <text x="525" y="146" class="nl">kpack chart</text>
+      <text x="525" y="165" class="ns">mirror-once content</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">16 / 23</span></div><div class="notes" hidden>No Dockerfile: Paketo buildpacks detect the language from the repo. Rebase swaps the run image without a rebuild. Our kpack repo is not a fork; it is a Helm chart packaging upstream 0.18 with the airgap pieces. The serverless chart composes the three ClusterBuilders because composing is a push.</div></section>
+<section class="slide content" data-i="16">
+    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <h1>A build, step by step</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Image → SourceResolver → Build → Pod</li><li class="build" data-step="2">Each phase is its own container</li><li class="build" data-step="3">Each phase has its own log</li><li class="build" data-step="4">Pushed to this region's registry</li><li class="build" data-step="5">Five triggers; two need nobody</li></ul>
+      <div class="visual"><ol class="phases"><li class="build-auto " style="--d:0ms"><code>prepare</code><span>git clone</span></li><li class="build-auto " style="--d:70ms"><code>analyze</code><span>previous image</span></li><li class="build-auto " style="--d:140ms"><code>detect</code><span>pick buildpacks</span></li><li class="build-auto " style="--d:210ms"><code>restore</code><span>cached layers</span></li><li class="build-auto " style="--d:280ms"><code>build</code><span>pip · npm · go</span></li><li class="build-auto " style="--d:350ms"><code>export</code><span>push image</span></li><li class="build-auto ok" style="--d:420ms"><code>completion</code><span>done</span></li></ol></div>
+    </div>
+    <div class="foot"><span class="mono">17 / 23</span></div><div class="notes" hidden>Image to SourceResolver to Build to Pod. The CNB lifecycle runs as named init containers, so every phase has its own log. Five build reasons; BUILDPACK and STACK fire with no user action. Images go to the region registry; the layer cache is a registry tag. A Kyverno policy injects the CA into initContainers.</div></section>
+<section class="slide content" data-i="17">
+    <div class="kicker">Chapter 03 · Functions &amp; builds</div>
+    <h1>The build controller</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Watches Image.status.latestImage</li><li class="build" data-step="2">Applies the digest onto the Service</li><li class="build" data-step="3">Both ends stay in one region</li><li class="build" data-step="4">Only ever writes digests</li><li class="build" data-step="5">Ships with no web stack</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="180" y1="95" x2="220" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="380" y1="95" x2="420" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="500" y1="130" x2="500" y2="240"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="100" y1="240" x2="100" y2="130" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+      <rect x="20" y="60" width="160" height="70" rx="8"/>
+      <text x="100" y="91" class="nl">kpack Image</text>
+      <text x="100" y="110" class="ns">latestImage changes</text>
+    </g><g class="node accent build-auto" style="--d:70ms">
+      <rect x="220" y="60" width="160" height="70" rx="8"/>
+      <text x="300" y="91" class="nl">build controller</text>
+      <text x="300" y="110" class="ns">watch</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="420" y="60" width="160" height="70" rx="8"/>
+      <text x="500" y="91" class="nl">Knative Service</text>
+      <text x="500" y="110" class="ns">image @sha256</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="420" y="240" width="160" height="70" rx="8"/>
+      <text x="500" y="271" class="nl">new Revision</text>
+      <text x="500" y="290" class="ns">Knative rolls it out</text>
+    </g><g class="node teal build-auto" style="--d:280ms">
+      <rect x="20" y="240" width="160" height="70" rx="8"/>
+      <text x="100" y="271" class="nl">region registry</text>
+      <text x="100" y="290" class="ns">the digest lives here</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">18 / 23</span></div><div class="notes" hidden>The API declares a build and walks away. The build controller watches kpack Images in its own region and, when latestImage changes, server-side applies the live Knative Service with the digest. Exactly one writer per phase, and the controller only ever writes digests. It ships without a web stack, and CI proves it.</div></section>
+<section class="slide section" data-i="18">
+      <div class="num build" data-step="0">04</div>
+      <h1 class="build" data-step="0">Portal &amp; the future</h1>
+      <p class="sub build" data-step="0">A console, and a library for the next API.</p></section>
+<section class="slide content" data-i="19">
+    <div class="kicker">Chapter 04 · Portal &amp; the future</div>
+    <h1>How the portal wires it</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Next.js 16, server components</li><li class="build" data-step="2">Keycloak token stays server-side</li><li class="build" data-step="3">The SSO group is the project</li><li class="build" data-step="4">Forms are built from /info</li><li class="build" data-step="5">Live logs over SSE tickets</li><li class="build" data-step="6">Airgap-native: no CDN, no fonts</li></ul>
+      <div class="visual"><svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs><line class="edge build-auto" style="--d:350ms" x1="170" y1="95" x2="225" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:420ms" x1="375" y1="95" x2="430" y2="95"  marker-end="url(#ah)"/><line class="edge build-auto" style="--d:490ms" x1="300" y1="130" x2="300" y2="230" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:560ms" x1="170" y1="265" x2="430" y2="95" stroke-dasharray="6 6" marker-end="url(#ah)"/><line class="edge build-auto" style="--d:630ms" x1="95" y1="130" x2="95" y2="230" stroke-dasharray="6 6" marker-end="url(#ah)"/><g class="node teal build-auto" style="--d:0ms">
+      <rect x="20" y="60" width="150" height="70" rx="8"/>
+      <text x="95" y="91" class="nl">Browser</text>
+      <text x="95" y="110" class="ns">React 19</text>
+    </g><g class="node accent build-auto" style="--d:70ms">
+      <rect x="225" y="60" width="150" height="70" rx="8"/>
+      <text x="300" y="91" class="nl">Portal</text>
+      <text x="300" y="110" class="ns">server actions</text>
+    </g><g class="node teal build-auto" style="--d:140ms">
+      <rect x="430" y="60" width="150" height="70" rx="8"/>
+      <text x="505" y="91" class="nl">Serverless API</text>
+      <text x="505" y="110" class="ns">/api/serverless/v1</text>
+    </g><g class="node teal build-auto" style="--d:210ms">
+      <rect x="225" y="230" width="150" height="70" rx="8"/>
+      <text x="300" y="261" class="nl">Keycloak</text>
+      <text x="300" y="280" class="ns">OIDC, groups claim</text>
+    </g><g class="node teal build-auto" style="--d:280ms">
+      <rect x="20" y="230" width="150" height="70" rx="8"/>
+      <text x="95" y="261" class="nl">?ticket=</text>
+      <text x="95" y="280" class="ns">60 s, one path</text>
+    </g></svg></div>
+    </div>
+    <div class="foot"><span class="mono">20 / 23</span></div><div class="notes" hidden>Next.js 16 with server components and server actions in front of the API. The user's Keycloak token stays in the encrypted session and is forwarded server-side. The SSO group is the project. Forms are built from /info; the create flow turns 202 into a tracker toast. Live logs and stats stream over SSE using re-minted tickets.</div></section>
+<section class="slide content" data-i="20">
+    <div class="kicker">Chapter 04 · Portal &amp; the future</div>
+    <h1>A console, not a Serverless UI</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Serverless is live, Storage is next</li><li class="build" data-step="2">An offering is data, not code</li><li class="build" data-step="3">The shell is already generic</li><li class="build" data-step="4">Next: shared layer, generated client</li></ul>
+      <div class="visual"><div class="tiles"><div class="tile  build-auto" style="--d:0ms"><span>Compute</span></div><div class="tile live build-auto" style="--d:40ms"><span>Serverless</span><em>live</em></div><div class="tile  build-auto" style="--d:80ms"><span>Databases</span></div><div class="tile  build-auto" style="--d:120ms"><span>Networking</span></div><div class="tile next build-auto" style="--d:160ms"><span>Object Storage</span><em>next</em></div><div class="tile  build-auto" style="--d:200ms"><span>Observability</span></div><div class="tile  build-auto" style="--d:240ms"><span>Data Integration</span></div><div class="tile  build-auto" style="--d:280ms"><span>Data Analytics</span></div><div class="tile  build-auto" style="--d:320ms"><span>Dev Tools</span></div><div class="tile  build-auto" style="--d:360ms"><span>Machine Learning</span></div><div class="tile  build-auto" style="--d:400ms"><span>Security</span></div><div class="tile  build-auto" style="--d:440ms"><span>…as data</span></div></div></div>
+    </div>
+    <div class="foot"><span class="mono">21 / 23</span></div><div class="notes" hidden>The catalog already names ten future offerings; Serverless is live and Object Storage has its env hook. Adding an offering is data, not code. The shell is generic; the serverless tree is the only product-specific part. Next: a shared resource layer and a generated TypeScript client so the contract stops being copied by hand.</div></section>
+<section class="slide content" data-i="21">
+    <div class="kicker">Chapter 04 · Portal &amp; the future</div>
+    <h1>cloudlet-apis: start at step five</h1>
+    <div class="body">
+      <ul class="lines"><li class="build" data-step="1">Extracted from the Serverless API</li><li class="build" data-step="2">core, web and auth extras</li><li class="build" data-step="3">Layering enforced by tests</li><li class="build" data-step="4">A new API wires in five steps</li><li class="build" data-step="5">Same group rules everywhere</li></ul>
+      <div class="visual"><div class="stack"><div class="layer accent build-auto" style="--d:0ms"><b>[auth]</b><span>OIDC · admin key · token proxy · tickets</span></div><div class="layer  build-auto" style="--d:80ms"><b>[web]</b><span>health · error envelope · offline docs</span></div><div class="layer  build-auto" style="--d:160ms"><b>core</b><span>errors · names · logging · request id</span></div></div></div>
+    </div>
+    <div class="foot"><span class="mono">22 / 23</span></div><div class="notes" hidden>cloudlet-apis is the shared Python library extracted from the Serverless API: core, web and auth as install extras, with layering enforced by tests. A new API wires it in five steps and inherits the security review. Two APIs normalizing groups differently is an authorization bug. Next extraction candidates: the mTLS multi-cluster client and the region fan-out.</div></section>
+<section class="slide closing" data-i="22">
+      <div class="kicker">What we built</div>
+      <h1>Code in, a running service out.</h1>
+      <div class="stats wide"><div class="stat build" data-step="1"><div class="big">4</div><div class="sm">repositories</div></div><div class="stat build" data-step="2"><div class="big">3</div><div class="sm">services</div></div><div class="stat build" data-step="3"><div class="big">23</div><div class="sm">endpoints</div></div><div class="stat build" data-step="4"><div class="big">2</div><div class="sm">regions</div></div><div class="stat build" data-step="5"><div class="big">3</div><div class="sm">runtimes</div></div><div class="stat build" data-step="6"><div class="big">0</div><div class="sm">kubectl</div></div></div>
+      <ul class="lines"><li class="build" data-step="7">Operator owns Knative; we own the contract</li><li class="build" data-step="8">Deterministic specs, so no leader</li><li class="build" data-step="9">Builds declared, watched, rolled in</li><li class="build" data-step="10">The second product is cheaper</li></ul>
+      <p class="thanks build" data-step="11">Thank you. Questions?</p>
+      <div class="foot"><span class="mono">23 / 23</span></div><div class="notes" hidden>Close on the four takeaways and open for questions.</div></section>
+    <div class="progress" id="progress"></div>
+  </div>
+</div>
+<div class="help">← → navigate · N notes · Home/End</div>
+<div class="notespanel" id="notes" hidden><b>Speaker notes</b><div id="notesText"></div></div>
+<script>
+(function(){
+  var stage=document.getElementById('stage');
+  var slides=Array.prototype.slice.call(stage.querySelectorAll('.slide'));
+  var progress=document.getElementById('progress');
+  var notesPanel=document.getElementById('notes'), notesText=document.getElementById('notesText');
+  var cur=0, step=0, showNotes=false;
+  function maxStep(i){var m=0;slides[i].querySelectorAll('.build').forEach(function(b){m=Math.max(m,+b.dataset.step||0)});return m;}
+  function paint(){
+    slides.forEach(function(s,i){
+      s.classList.toggle('on',i===cur);
+      if(i===cur){s.querySelectorAll('.build').forEach(function(b){b.classList.toggle('on',(+b.dataset.step||0)<=step)});}
+      else{s.querySelectorAll('.build').forEach(function(b){b.classList.remove('on')});}
+    });
+    progress.style.width=((cur+1)/slides.length*100)+'%';
+    var n=slides[cur].querySelector('.notes');
+    notesText.textContent=n?n.textContent:'(no notes)';
+    notesPanel.hidden=!showNotes;
+    try{history.replaceState(null,'','#'+(cur+1)+(step?'.'+step:''));}catch(e){}
+  }
+  function next(){ if(step<maxStep(cur)){step++;} else if(cur<slides.length-1){cur++;step=0;} paint(); }
+  function prev(){ if(step>0){step--;} else if(cur>0){cur--;step=maxStep(cur);} paint(); }
+  function go(i,s){cur=Math.max(0,Math.min(slides.length-1,i));step=Math.min(s||0,maxStep(cur));paint();}
+  document.addEventListener('keydown',function(e){
+    if(e.metaKey||e.ctrlKey||e.altKey)return;
+    switch(e.key){
+      case 'ArrowRight':case 'ArrowDown':case ' ':case 'PageDown':case 'Enter':e.preventDefault();next();break;
+      case 'ArrowLeft':case 'ArrowUp':case 'PageUp':case 'Backspace':e.preventDefault();prev();break;
+      case 'Home':e.preventDefault();go(0,0);break;
+      case 'End':e.preventDefault();go(slides.length-1,999);break;
+      case 'n':case 'N':showNotes=!showNotes;paint();break;
+      case 'f':case 'F':if(document.fullscreenElement){document.exitFullscreen();}else if(stage.requestFullscreen){stage.requestFullscreen();}break;
+    }
+  });
+  stage.addEventListener('click',function(e){ if(e.clientX<window.innerWidth*0.2){prev();}else{next();} });
+  var tx=null;stage.addEventListener('touchstart',function(e){tx=e.touches[0].clientX},{passive:true});
+  stage.addEventListener('touchend',function(e){ if(tx===null)return; var dx=e.changedTouches[0].clientX-tx; if(dx<-40)next(); else if(dx>40)prev(); tx=null; });
+  function fromHash(){ var m=/^#(\d+)(?:\.(\d+))?/.exec(location.hash||''); if(m){go(+m[1]-1,+(m[2]||0));} else {paint();} }
+  window.addEventListener('hashchange',fromHash); fromHash();
+  stage.focus();
+})();
+</script>

@@ -1,25 +1,29 @@
 # Team presentation: Serverless on Cloudlet
 
-`serverless-platform.pptx` is a 23-slide deck explaining the platform end to end:
-what serverless and Knative are, why the OpenShift Serverless Operator was chosen,
-the API and its structure, mTLS to the clusters, the active/active topology, the
-tenant controller, why functions differ from containers, buildpacks and kpack, the
-build controller, the portal, and how `cloudlet-apis` shortens the next API.
+Twenty-three slides explaining the platform end to end, following the 7×7 rule
+(at most seven lines per slide, at most seven words per line). The detail lives
+in the speaker notes.
 
-Every content slide carries speaker notes. Facts on the slides are taken from
-`docs/ARCHITECTURE.md`, `docs/BUILDING.md`, `docs/DEPLOYING.md`, and the
-`kpack`, `portal` and `cloudlet-apis` repositories as of September 2026.
+| File | What it is |
+|---|---|
+| `serverless-platform.html` | Animated web deck. Open in any browser; arrows navigate, each line builds on a keypress, `N` toggles notes, `F` goes fullscreen. |
+| `serverless-platform.pptx` | The same deck for PowerPoint, with click-to-reveal fade animations and fade transitions. |
+| `serverless-platform.pdf` | Static rendering, for sharing or importing into Canva. |
+
+Facts are taken from `docs/ARCHITECTURE.md`, `docs/BUILDING.md`, `docs/DEPLOYING.md`
+and the `kpack`, `portal` and `cloudlet-apis` repositories as of September 2026.
 
 ## Regenerating
 
-The deck is produced by a `pptxgenjs` script in `generator/`:
+Both outputs are rendered from one content model, `generator/content.js`.
 
 ```bash
 cd docs/presentation/generator
 npm install
-npm run build          # writes serverless-platform.pptx next to build.js
+npm run build      # deck.html, deck-raw.pptx, serverless-platform.pptx
 ```
 
-Edit slide content in `build.js`; palette, fonts and layout helpers live at the
-top of that file. Move the resulting `.pptx` up one directory to replace the
-committed copy.
+`gen-html.js` renders the web deck, `build2.js` renders the PowerPoint, and
+`animate.js` injects the animations into the PowerPoint XML (every shape named
+`step:N` fades in on the Nth click). Edit the palette and type at the top of
+`gen-html.js` and `build2.js`.

@@ -1,13 +1,11 @@
 {
   "name": "serverless-platform-deck",
   "private": true,
-  "description": "Generates docs/presentation/serverless-platform.pptx",
-  "scripts": { "build": "node build.js" },
-  "dependencies": {
-    "pptxgenjs": "^4.0.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-icons": "^5.0.0",
-    "sharp": "^0.34.0"
-  }
+  "description": "Generates the team presentation as an animated web deck and a PowerPoint file",
+  "scripts": {
+    "html": "node gen-html.js",
+    "pptx": "node build2.js && node animate.js \"$PWD/deck-raw.pptx\" \"$PWD/serverless-platform.pptx\"",
+    "build": "npm run html && npm run pptx"
+  },
+  "dependencies": { "pptxgenjs": "^4.0.0" }
 }
