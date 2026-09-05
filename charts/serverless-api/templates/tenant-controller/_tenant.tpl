@@ -22,6 +22,7 @@ projects nothing the chart does not render.
 namespace ca-bundle rbac
 {{- if .Values.networkPolicy.enabled }} network-policies{{ end }}
 {{- if .Values.build.enabled }} build{{ end }}
+{{- if .Values.backup.enabled }} backup{{ end }}
 {{- end -}}
 
 {{/*
@@ -37,6 +38,12 @@ One part's ConfigMap name.
 A Vault path with this release's region put back as the tenant controller's region
 token, so the tenant template set stays byte-identical in every region and the
 path is resolved against whichever cluster is being converged.
+
+Substring replacement, so it is only safe where the value is KNOWN to name the
+region - these paths are built from `.Values.global.region` a few lines away in
+values.yaml. A value an operator writes freely takes the region token itself
+(`backup.appVault.name`), or a shared name that happened to contain the region
+word would become per-region and the two regions' sets would stop matching.
 
   {{ include "serverless-api.tenantVaultKey" (dict "root" $ "key" $key) }}
 */}}

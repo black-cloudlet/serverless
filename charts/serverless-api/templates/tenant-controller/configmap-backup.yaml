@@ -1,0 +1,86 @@
+{{- if and .Values.tenantNamespaces.controller.enabled .Values.backup.enabled }}
+{{- include "serverless-api.validateBackup" . }}
+{{- $ns := include "serverless-api.tenantNamespaceToken" . }}
+{{- $region := include "serverless-api.tenantRegionToken" . }}
+{{- $app := printf "%s-%s" $ns $region }}
+{{- $appVault := .Values.backup.appVault.name }}
+{{/*
+Part of the tenant template set: the namespace's backups, through Trident
+Protect (docs/TENANT-CONTROLLER.md - Backups).
+
+Argo syncs these ConfigMaps; the controller mounts them projected into one
+directory, hashes the whole set, and applies it into each {group}{suffix}
+namespace with the tokens substituted - which is how a `helm upgrade` reaches
+namespaces created at runtime, that Argo cannot see.
+
+NOTHING IN THE SET MAY DEPEND ON THE REGION. Both regions render this chart from
+the same values, so both hold identical bytes and the same hash, and a provision
+converges a peer's namespace from whichever controller took the request. The
+application's name carries the region token for that reason, and an AppVault per
+region is written with the token by hand - `backup.appVault.name` goes in
+verbatim, so a name that merely happens to contain the region word stays shared.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "serverless-api.tenantTemplatesName" (dict "root" $ "part" "backup") }}
+  namespace: {{ .Values.namespaces.api }}
+  labels:
+    {{- include "serverless-api.labels" . | nindent 4 }}
+data:
+  # The namespace is the application: an empty `labelSelector` protects
+  # everything in it, where selecting by label would silently drop whatever a
+  # later release adds without that label. The region is in the name because
+  # the same namespace exists in both clusters and is backed up in both.
+  80-backup-application.yaml: |
+    apiVersion: protect.trident.netapp.io/v1
+    kind: Application
+    metadata:
+      name: {{ $app }}
+      namespace: {{ $ns }}
+    spec:
+      includedNamespaces:
+        - namespace: {{ $ns }}
+          labelSelector: {}
+  # One Schedule per `backup.schedules` entry, retention per schedule so the
+  # hourly copies expire without touching the weekly one. The AppVault is NOT
+  # created here: it holds the object-store credentials and is declared once per
+  # cluster in the `trident-protect` namespace, referenced from here by name.
+  #
+  # A time field is emitted only when it resolves to something, and `dig` rather
+  # than `default` reads the overrides: `0` and "0" are values, not unset fields,
+  # and `default` would swap both for the fallback.
+  #
+  # `spec.enabled` is deliberately never declared. It defaults to true, and
+  # Trident Protect disables an application's schedules for the duration of an
+  # in-place restore - declared here, the next converge would switch them back
+  # on underneath the restore, since the controller re-applies under its own
+  # field manager.
+  85-backup-schedules.yaml: |
+{{- range $i, $schedule := .Values.backup.schedules }}
+{{- if $i }}
+    ---
+{{- end }}
+    apiVersion: protect.trident.netapp.io/v1
+    kind: Schedule
+    metadata:
+      name: {{ printf "%s-%s" $app $schedule.name }}
+      namespace: {{ $ns }}
+    spec:
+      applicationRef: {{ $app }}
+      appVaultRef: {{ $appVault }}
+      granularity: {{ $schedule.granularity }}
+      backupRetention: {{ $schedule.backupRetention | toString | quote }}
+      snapshotRetention: {{ dig "snapshotRetention" $.Values.backup.snapshotRetention $schedule | toString | quote }}
+{{- $dataMover := dig "dataMover" $.Values.backup.dataMover $schedule | toString }}
+{{- if $dataMover }}
+      dataMover: {{ $dataMover }}
+{{- end }}
+{{- range $field := list "minute" "hour" "dayOfWeek" "dayOfMonth" }}
+{{- $value := dig $field "" $schedule | toString }}
+{{- if $value }}
+      {{ $field }}: {{ $value | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

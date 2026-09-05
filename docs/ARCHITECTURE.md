@@ -104,7 +104,7 @@ deployed to **both** clusters.
 |---------|-----------------|------|--------|
 | **API** (`api/`) | request/response | The REST surface, authentication and authorization, validation, the pre-flight checks, and the fan-out that applies every workload manifest to both regions. It also serves the live log and stats streams. | API.md, STREAMING.md |
 | **Build controller** (`build_controller/`) | control loop | Watches kpack `Image.status.latestImage` in its **local** cluster. When a build produces a new digest it applies that digest onto the KSVC in **every** region. It also garbage-collects registry tags. | BUILD-CONTROLLER.md, BUILDING.md |
-| **Tenant controller** (`tenant_controller/`) | control loop + one internal endpoint | Creates and converges the per-group namespaces and everything the chart puts in them: CA bundle, default-deny NetworkPolicies, the API's RoleBinding, the build prerequisites. Serves `PUT /groups/{group}/namespace`, which the API calls before every accepted deploy. | TENANT-CONTROLLER.md |
+| **Tenant controller** (`tenant_controller/`) | control loop + one internal endpoint | Creates and converges the per-group namespaces and everything the chart puts in them: CA bundle, default-deny NetworkPolicies, the API's RoleBinding, the build prerequisites, and the Trident Protect Application and Schedules that back the namespace up. Serves `PUT /groups/{group}/namespace`, which the API calls before every accepted deploy. | TENANT-CONTROLLER.md |
 
 The split is privilege separation, not packaging. Creating namespaces and writing RBAC is
 cluster-scoped power the internet-facing API must not hold: the API cannot create a

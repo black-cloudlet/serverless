@@ -292,12 +292,18 @@ def _prune(cluster: Cluster, namespace: str, keep: set[tuple[str, str]]) -> None
     namespace and read at prune time, so it covers objects another writer
     created earlier in the pass (docs/DEPLOYING.md - RBAC).
 
+    A kind the cluster does not serve is skipped rather than listed: part of the
+    vocabulary is an optional add-on, and nothing of an uninstalled kind can
+    exist to collect.
+
     Args:
         cluster: The cluster to prune in.
         namespace: The tenant namespace.
         keep: The (kind, name) pairs the current render produced.
     """
     for kind in PRUNABLE_KINDS:
+        if not cluster.serves(kind):
+            continue
         existing = cluster.get(kind, label_selector=TENANT_CONTROLLER_SELECTOR, namespace=namespace)
         for obj in existing:
             name = (obj.get("metadata") or {}).get("name", "")

@@ -34,6 +34,12 @@ rules:
   - apiGroups: ["external-secrets.io"]
     resources: ["externalsecrets"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # The tenant namespace's backups. Granted whether or not `backup.enabled`,
+  # because turning backups off is the pass that has to prune them - and on a
+  # cluster without Trident Protect the rules name resources nothing serves.
+  - apiGroups: ["protect.trident.netapp.io"]
+    resources: ["applications", "schedules"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   # Granting a RoleBinding to a ClusterRole requires holding those rights, or
   # being allowed to escalate. Binding the API's ClusterRole into each tenant
   # namespace is the whole job, so the narrow permission is the right one - not

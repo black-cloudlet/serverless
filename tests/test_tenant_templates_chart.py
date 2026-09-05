@@ -153,6 +153,121 @@ def test_the_workload_policies_render_and_mount_together():
     assert configmap.rstrip().endswith("{{- end }}")
 
 
+def test_the_backup_part_renders_and_mounts_together():
+    """`backup.enabled` governs both sides, like `networkPolicy.enabled` above -
+    and rendered without being listed, no tenant namespace is ever backed up,
+    which nothing looks different about until someone needs a restore."""
+    helper = (TEMPLATES / "tenant-controller" / "_tenant.tpl").read_text()
+    parts = helper.split('define "serverless-api.tenantTemplateParts" -}}')[1]
+    parts = parts.split("{{- end -}}")[0]
+    listing = next(line for line in parts.splitlines() if "backup" in line)
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert "backup.enabled" in listing, listing
+    assert "backup.enabled" in configmap.splitlines()[0], configmap.splitlines()[0]
+    assert configmap.rstrip().endswith("{{- end }}")
+
+
+def test_the_backup_application_is_named_for_the_namespace_and_the_region():
+    """The same namespace exists in both clusters and is backed up in both, so
+    naming the application after the namespace alone would give the two copies
+    one name wherever they are listed together - a shared AppVault, a restore."""
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert 'printf "%s-%s" $ns $region' in configmap
+    for token in ("tenantNamespaceToken", "tenantRegionToken"):
+        assert token in configmap, f"the backup part never resolves {token}"
+
+
+def test_the_default_schedules_cover_an_hour_a_day_and_a_week():
+    """The retention ladder is the feature, so it is asserted rather than read,
+    down to the time fields each granularity requires: a Weekly schedule with no
+    `dayOfWeek` never fires, and nothing in the cluster says so."""
+    required = {
+        "Hourly": {"minute"},
+        "Daily": {"minute", "hour"},
+        "Weekly": {"minute", "hour", "dayOfWeek"},
+        "Monthly": {"minute", "hour", "dayOfMonth"},
+    }
+    schedules = {s["name"]: s for s in _values()["backup"]["schedules"]}
+    assert set(schedules) == {"hourly", "daily", "weekly"}
+    assert schedules["hourly"]["granularity"] == "Hourly"
+    assert schedules["daily"]["granularity"] == "Daily"
+    assert schedules["weekly"]["granularity"] == "Weekly"
+    assert schedules["hourly"]["backupRetention"] == "2"
+    assert schedules["daily"]["backupRetention"] == "2"
+    assert schedules["weekly"]["backupRetention"] == "1"
+    for name, schedule in schedules.items():
+        missing = required[schedule["granularity"]] - set(schedule)
+        assert not missing, f"the {name} schedule is missing {sorted(missing)}"
+        # Strings, because the CRD's fields are (and see test_chart_values on
+        # what Helm does to a large enough number).
+        for field in required[schedule["granularity"]] | {"backupRetention"}:
+            assert isinstance(schedule[field], str), f"{name}.{field} must be quoted"
+
+
+def test_the_appvault_name_reaches_the_tenant_namespace_verbatim():
+    """It is operator-written, so the chart must not guess at it.
+
+    The build part's Vault paths are region-substituted, which is safe because
+    they are built from `global.region` a few lines away in values.yaml. Doing
+    that to a free-form name would turn a SHARED AppVault whose name merely
+    contained the region word into a per-region one: the peer would reference a
+    vault that does not exist, and the two regions' sets would stop being
+    byte-identical - which is the property the provision fan-out rests on.
+    """
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert "$appVault := .Values.backup.appVault.name" in configmap
+    assert "tenantVaultKey" not in configmap, "the AppVault name must not be region-substituted"
+    # Per region is spelled with the controller's own token, which the set
+    # carries in both regions identically.
+    ci = yaml.safe_load((CHART / "ci" / "everything-values.yaml").read_text())
+    assert ci["backup"]["appVault"]["name"] == "serverless-{{region}}"
+
+
+def test_a_name_helm_would_not_render_is_refused_rather_than_shipped():
+    """values.yaml is not a template, so `{{ .Values.global.region }}` in a name
+    reaches the Schedule as literal braces - reported by Trident Protect on an
+    object in a namespace nobody watches, if at all."""
+    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    assert 'contains "{{" (replace $token "" .Values.backup.appVault.name)' in helpers
+
+
+def test_a_schedules_time_fields_must_be_set_not_merely_present():
+    """`minute: ""` is how NetApp's own examples write a field a granularity does
+    not use. Accepting it as "present" renders a Schedule with no time to fire
+    at, and `dig`'s default covers the absent case in the same expression.
+
+    The same rule reads the overrides, where `default` would have been wrong the
+    other way round: a `snapshotRetention` of 0 is a value, not an unset field.
+    """
+    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    assert 'dig $field "" $schedule | toString' in helpers
+    assert 'dig "backupRetention" "" $schedule' in helpers
+    assert "hasKey" not in configmap, "a present-but-empty field must not be emitted"
+    assert "default $.Values.backup" not in configmap, "`default` swallows a 0 override"
+
+
+def test_the_schedules_never_declare_whether_they_are_enabled():
+    """`spec.enabled` defaults to true, and Trident Protect switches it off for
+    the duration of an in-place restore. Declared here it would be the tenant
+    controller's field, and the next converge would turn the schedules back on
+    underneath the restore."""
+    configmap = (TEMPLATES / "tenant-controller" / "configmap-backup.yaml").read_text()
+    body = configmap.split("85-backup-schedules.yaml: |")[1]
+    assert "enabled" not in body
+
+
+def test_backups_are_off_until_an_operator_names_an_appvault():
+    """The chart can supply neither prerequisite - the CRDs and an AppVault - so
+    a default install renders no Schedule at all, rather than one writing
+    nowhere."""
+    backup = _values()["backup"]
+    assert backup["enabled"] is False
+    assert backup["appVault"]["name"] == ""
+    helpers = (TEMPLATES / "_helpers.tpl").read_text()
+    assert "backup.appVault.name is required" in helpers
+
+
 def test_nothing_of_the_template_set_renders_without_the_controller():
     """The set exists only to be mounted by the controller's pod.
 

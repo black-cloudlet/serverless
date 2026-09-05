@@ -80,18 +80,24 @@ class _Cluster:
     name = "central-0"
     registry = _Registry()
 
-    def __init__(self, namespaces=None, objects=None, fail_apply_at=None):
+    def __init__(self, namespaces=None, objects=None, fail_apply_at=None, unserved=()):
         self._namespaces = namespaces or []
         # {(kind, namespace): [obj]} - what a labeled list returns per kind.
         self._objects = objects or {}
+        # Kinds this cluster's apiserver does not have (an optional CRD).
+        self._unserved = frozenset(unserved)
         self.applied = []  # (manifest, namespace, field_manager)
         self.deleted = []  # (kind, name, namespace)
         self.lists = []  # (kind, namespace) per get, to count LIST round trips
         self._fail_apply_at = fail_apply_at
         self._applies = 0
 
+    def serves(self, kind):
+        return kind not in self._unserved
+
     def get(self, kind, name=None, label_selector=None, *, namespace):
         assert label_selector == TENANT_CONTROLLER_SELECTOR
+        assert self.serves(kind), f"{kind.kind} is not served by this cluster"
         self.lists.append((kind, namespace))
         if kind is ResourceKind.NAMESPACE:
             assert namespace is None, "namespaces are cluster-scoped"
@@ -359,6 +365,39 @@ def test_prune_sweeps_kinds_the_set_dropped_entirely():
     converge(cluster, "payments-serverless", "payments", _set())
 
     assert (ResourceKind.ROLE_BINDING, "old-binding", "payments-serverless") in cluster.deleted
+
+
+def test_prune_skips_a_kind_the_cluster_does_not_serve():
+    # Listing an uninstalled CRD is a 404 on the resource itself, not an empty
+    # list, so a prune that asked would fail every converge on every cluster
+    # without the add-on installed. The fake asserts the question is not asked.
+    cluster = _Cluster(
+        unserved=(ResourceKind.TRIDENT_APPLICATION, ResourceKind.TRIDENT_SCHEDULE),
+    )
+
+    converge(cluster, "payments-serverless", "payments", _set())
+
+    swept = {kind for kind, _namespace in cluster.lists}
+    assert ResourceKind.TRIDENT_APPLICATION not in swept
+    assert ResourceKind.TRIDENT_SCHEDULE not in swept
+    # The skip is per kind, not a prune that gives up on the first miss.
+    assert ResourceKind.NETWORK_POLICY in swept
+
+
+def test_prune_collects_backups_left_behind_when_the_set_drops_them():
+    # `backup.enabled` turned off: the Schedules the part applied are the tenant
+    # controller's to collect, since they carry no owner reference and the
+    # namespace outlives the switch.
+    leftover = _leftover("payments-serverless-central-hourly", "Schedule")
+    cluster = _Cluster(objects={(ResourceKind.TRIDENT_SCHEDULE, "payments-serverless"): [leftover]})
+
+    converge(cluster, "payments-serverless", "payments", _set())
+
+    assert (
+        ResourceKind.TRIDENT_SCHEDULE,
+        "payments-serverless-central-hourly",
+        "payments-serverless",
+    ) in cluster.deleted
 
 
 # --------------------------------------------------------------------------- #

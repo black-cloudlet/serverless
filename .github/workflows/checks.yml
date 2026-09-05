@@ -141,16 +141,18 @@ jobs:
       # tenant controller resolves against the cluster it is writing to.
       - name: The tenant template set is region-neutral
         run: |
-          for region in central south; do
-            helm template serverless-api charts/serverless-api --set global.region=$region \
-              | python dev/tenant_templates.py --digest - > "/tmp/digest-$region"
+          for values in "" "-f charts/serverless-api/ci/everything-values.yaml"; do
+            for region in central south; do
+              helm template serverless-api charts/serverless-api $values --set global.region=$region \
+                | python dev/tenant_templates.py --digest - > "/tmp/digest-$region"
+            done
+            if ! diff -q /tmp/digest-central /tmp/digest-south; then
+              echo "::error::the tenant template set differs between regions (values: ${values:-defaults}):"
+              paste /tmp/digest-central /tmp/digest-south
+              exit 1
+            fi
+            echo "both regions render set $(cat /tmp/digest-central) (values: ${values:-defaults})"
           done
-          if ! diff -q /tmp/digest-central /tmp/digest-south; then
-            echo "::error::the tenant template set differs between regions:"
-            paste /tmp/digest-central /tmp/digest-south
-            exit 1
-          fi
-          echo "both regions render set $(cat /tmp/digest-central)"
 
   # Verify the Dockerfile builds and scan the image on every run; this gates
   # publishing (release.yml's push job `needs` this suite), so the pushed image

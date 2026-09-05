@@ -22,6 +22,10 @@ class ResourceKind(Enum):
     EXTERNAL_SECRET = ("external-secrets.io/v1beta1", "ExternalSecret")
     KPACK_IMAGE = ("kpack.io/v1alpha2", "Image")
     KPACK_BUILD = ("kpack.io/v1alpha2", "Build")
+    # Trident Protect (docs/TENANT-CONTROLLER.md - Backups). Optional CRDs: a
+    # cluster without it installed serves neither, which `Cluster.serves` answers.
+    TRIDENT_APPLICATION = ("protect.trident.netapp.io/v1", "Application")
+    TRIDENT_SCHEDULE = ("protect.trident.netapp.io/v1", "Schedule")
 
     @property
     def api_version(self) -> str:
