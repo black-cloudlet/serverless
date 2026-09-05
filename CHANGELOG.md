@@ -163,6 +163,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   name (`build.scc.serviceAccounts`) must list `{workload}-build` instead of
   `fn-{workload}`.
 
+### Fixed (`.env.example`)
+
+- **The sample environment matches the settings again.** It documented
+  `SERVERLESS_PRUNE_ORPHANS`, which no longer exists anywhere in the code, and
+  described the local region as the one place builds are written - which stopped
+  being true when a region began building what it runs. It also omitted
+  `SERVERLESS_PUBLIC_URL`, without which a function's `webhook.url` comes back
+  relative and cannot be pasted into a git provider, the
+  `SERVERLESS_TENANT_NAMESPACES__*` block that decides where workloads are
+  deployed and how the tenant controller is reached, and four stream bounds the
+  chart sets. A test now walks every key in the file down to the field it fills,
+  so a renamed or removed setting fails rather than lingering in a file the
+  README sends contributors to.
+
 ### Fixed (env vars)
 
 - **An over-long env var name is a 400 at accept, not a background apply
