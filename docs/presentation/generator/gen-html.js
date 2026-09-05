@@ -105,19 +105,12 @@ const html = `<title>From Knative to the Portal</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 :root{
+  color-scheme: light only;
   --paper:#FFFFFF; --ink:#1B1F2A; --muted:#667085; --hair:#E4E7EC; --panel:#F4F5F7;
   --accent:#E4572E; --accent-ink:#FFFFFF; --teal:#0B7A75; --teal-soft:#E3F1F0; --ok:#1B8A5A; --bad:#C0392B;
   --edge:#98A2B3; --node-fill:#FFFFFF; --code-bg:#F4F5F7;
   --display:"Fraunces",Georgia,"Times New Roman",serif; --sans:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif; --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;
 }
-@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
-  --paper:#111318; --ink:#F3F4F6; --muted:#9AA3B2; --hair:#262B36; --panel:#181C24;
-  --accent:#FF7A52; --accent-ink:#111318; --teal:#4FB3AE; --teal-soft:#152826; --ok:#4CC38A; --bad:#F26D5B;
-  --edge:#5B6472; --node-fill:#181C24; --code-bg:#181C24; } }
-:root[data-theme="dark"]{
-  --paper:#111318; --ink:#F3F4F6; --muted:#9AA3B2; --hair:#262B36; --panel:#181C24;
-  --accent:#FF7A52; --accent-ink:#111318; --teal:#4FB3AE; --teal-soft:#152826; --ok:#4CC38A; --bad:#F26D5B;
-  --edge:#5B6472; --node-fill:#181C24; --code-bg:#181C24; }
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}

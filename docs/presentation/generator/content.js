@@ -300,8 +300,29 @@ const slides = [
     ], edges: [E("api", "tc"), E("tc", "nc"), E("tc", "ns"), E("tpl", "tc", { dashed: true })] },
     notes: "Privilege separation is the reason: namespace and RBAC creation is cluster-scoped power the internet-facing API must not hold. Namespace per SSO group, identical in both clusters, rendered from region-neutral templates. Provision is called before every deploy and fails closed. Reconcile is local-cluster only so the regions never fight. The stamp protocol makes a converge crash-safe." },
 
+  // ---------------- 25 tenant namespaces are backed up
+  { kind: "content", kicker: "The API · data protection", title: "Backups: Trident Protect", reveal: "paired",
+    lines: [
+      "Trident Protect protects whole namespaces",
+      "One Application object per tenant namespace",
+      "A Schedule runs it unattended",
+      "A Snapshot stays on the storage",
+      "A Backup leaves for object storage",
+      "Restore puts the namespace back",
+    ],
+    visual: { kind: "graph", nodes: [
+      N("ns", 20, 10, 250, 70, "{group}-serverless", "workloads · PVCs · secrets"),
+      N("app", 330, 10, 250, 70, "Application", "what counts as the app", "accent"),
+      N("sched", 330, 125, 250, 66, "Schedule", "recurring, unattended"),
+      N("snap", 20, 125, 250, 66, "Snapshot", "in place, fast"),
+      N("backup", 20, 245, 250, 66, "Backup", "copied to the AppVault"),
+      N("restore", 330, 245, 250, 66, "Restore", "same or a new namespace"),
+    ], edges: [E("ns", "app"), E("app", "sched"), E("sched", "snap"), E("snap", "backup"), E("backup", "restore")] },
+    notes: "The tenant controller creates the namespace; Trident Protect is what protects everything that lands in it. Trident Protect is NetApp's application-aware data protection for Kubernetes, sitting on top of the Trident CSI driver, and its unit is the application rather than the volume: an Application object says which namespace and resources belong together, so a backup captures the workloads, the PVCs and the secrets consistently instead of one volume at a time. A Schedule drives it, so protection is a property of the namespace rather than something anyone remembers to run. A Snapshot is in-place and fast, which covers a bad deploy or a deleted object; a Backup is copied out to the AppVault bucket, which is what survives losing the cluster itself. Restore can put the contents back into the same namespace or into a new one. Confirm the local specifics before presenting: the schedule and retention, which namespaces are enrolled, and where the AppVault bucket lives.",
+  },
+
   // ================ FUNCTIONS & BUILDS
-  // ---------------- 25
+  // ---------------- 26
   { kind: "section", title: "Functions & builds", sub: "'Here is my repo' hides a build." },
   // ---------------- 26
   { kind: "content", kicker: "Functions & builds", title: "Why a function needs a build", reveal: "paired",
