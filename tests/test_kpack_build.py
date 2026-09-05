@@ -2295,6 +2295,70 @@ async def test_an_unchanged_tag_deletes_nothing(monkeypatch):
     assert reclaimed == []
 
 
+async def test_a_tag_that_moved_within_one_repository_reclaims_nothing(monkeypatch):
+    """A same-repository tag move deletes the Image and reclaims nothing."""
+    from api.models.function import FunctionUpdate
+    from tests.factories import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "region-a",
+        {"hello": _ksvc(image=DEPLOYED)},
+        secrets={"hello-git": stored},
+        images={"hello": _kpack_image("reg/acme/payments/hello:main")},
+    )
+    reclaimed = _reclaimed(monkeypatch)
+
+    class _MovedTagBuilder(_RecordingBuilder):
+        def image_ref(self, req, registry=None):
+            return "reg/acme/payments/hello:develop"
+
+    await _function_service({"region-a": cluster}, _MovedTagBuilder()).update(
+        "payments",
+        "hello",
+        FunctionUpdate(gitRepo="https://git.internal/payments/hello.git", runtime="python"),
+        _principal(),
+    )
+
+    assert (ResourceKind.KPACK_IMAGE, "hello") in cluster.deleted
+    assert _applied_kind(cluster, "Image")[0]["spec"]["tag"] == "reg/acme/payments/hello:develop"
+    assert reclaimed == []
+
+
+async def test_changing_the_revision_reclaims_nothing(monkeypatch):
+    """The same case through the real tag derivation: a `PUT` changing `revision`."""
+    from api.models.function import FunctionUpdate
+    from common.config import BuildConfig
+    from tests.conftest import runtime_registry
+    from tests.factories import _applied_kind, _ApplyCluster
+
+    stored = secret_svc.build_git_secret("hello-git", {}, "ghp_stored")
+    cluster = _ApplyCluster(
+        "region-a",
+        {"hello": _ksvc(image="registry.internal/payments/hello@sha256:" + "c" * 64)},
+        secrets={"hello-git": stored},
+        images={"hello": _kpack_image("registry.internal/payments/hello:main")},
+    )
+    reclaimed = _reclaimed(monkeypatch)
+    builder = KpackBackend(BuildConfig(), runtime_registry())
+
+    await _function_service({"region-a": cluster}, builder).update(
+        "payments",
+        "hello",
+        FunctionUpdate(
+            gitRepo="https://git.internal/payments/hello.git",
+            revision="develop",
+            runtime="python",
+        ),
+        _principal(),
+    )
+
+    assert _applied_kind(cluster, "Image")[0]["spec"]["tag"] == (
+        "registry.internal/payments/hello:develop"
+    )
+    assert reclaimed == []
+
+
 async def test_a_function_with_no_image_yet_deletes_nothing(monkeypatch):
     """The create path: there is nothing to replace, and nothing to reclaim."""
     from api.models.function import FunctionCreate
