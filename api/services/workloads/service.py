@@ -574,6 +574,26 @@ class WorkloadService:
         """
         return self.deployer.resolve_targets(None, self.namespace_for(group))
 
+    async def read_local(self, group: str, fn, *args):
+        """Run one blocking read against the local region, in the group's namespace.
+
+        The single-region counterpart to the fan-out reads.
+
+        Args:
+            group: The owning (normalized) group, naming the namespace.
+            fn: The blocking read, called as ``fn(cluster, *args)``.
+            *args: Further arguments for ``fn``.
+
+        Returns:
+            Whatever ``fn`` returns.
+
+        Raises:
+            ServiceUnavailableError: If the read pool is saturated or the read
+                did not finish in time.
+        """
+        cluster = self.deployer.local_cluster(self.namespace_for(group))
+        return await self.deployer.run_read(fn, cluster, *args)
+
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host, validating any custom one.
 

@@ -583,6 +583,13 @@ Only an unusable **token** is ever a `4xx`. Everything else - including a functi
 cannot currently be built - is acknowledged, because a `4xx` would make GitLab disable the
 hook for every later push as well.
 
+The token is checked against the **local region's** copy of the Secret before the workload
+is loaded, and only then against the workload's own state. Loading is a read of every region
+followed by a read of the function's backing Secrets, and the caller has proved nothing at
+that point: a token that was never going to match must not be able to spend it. The local
+region is a shortcut and not a second rule - one that holds no Secret for this function has
+not said "no token", and the delivery falls through to the authoritative check.
+
 A function whose `revision` is a **tag or a commit** therefore ignores every push. That is
 not a special case: the match is "pushed branch equals `revision`", and neither is a
 branch name. Pinning to a tag or a SHA means *stay here*, and no push moves it.

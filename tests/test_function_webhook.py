@@ -22,6 +22,7 @@ from api.models.webhook import GitLabPushEvent, WebhookOutcome
 from api.services.manifests import secrets as secret_svc
 from common.cluster import ResourceKind
 from common.names import same_repository
+from tests.test_kpack_build import _RebuildCluster
 
 pytestmark = pytest.mark.anyio
 
@@ -119,8 +120,45 @@ async def test_the_token_is_compared_in_constant_time():
 
     from api.services import function as function_svc
 
+    assert "hmac.compare_digest" in inspect.getsource(function_svc._token_matches)
+    # and nothing compares the token itself instead of asking that
     source = inspect.getsource(function_svc.FunctionService.accept_webhook)
-    assert "hmac.compare_digest" in source
+    assert source.count("_token_matches") == 2
+
+
+async def test_a_wrong_token_is_refused_before_the_workload_is_loaded():
+    """A bad token costs one local read, not a fan-out over every region."""
+
+    class _Counting:
+        """A peer region that records whether it was read."""
+
+        def __init__(self, region):
+            self._inner = _cluster(region=region)
+            self.region = self.name = region
+            self.reads = 0
+
+        def __getattr__(self, item):
+            return getattr(self._inner, item)
+
+        def get(self, kind, name=None, label_selector=None, namespace=None, field_selector=None):
+            self.reads += 1
+            return self._inner.get(kind, name, label_selector, namespace, field_selector)
+
+    peer = _Counting("region-b")
+    svc = _service({"region-a": _cluster(region="region-a"), "region-b": peer})
+
+    with pytest.raises(UnauthenticatedError):
+        await _deliver(svc, _push(), token="not-the-token")
+
+    assert peer.reads == 0
+
+
+async def test_a_push_authenticates_where_the_local_region_does_not_run_it():
+    """A local region holding no Secret falls through instead of refusing."""
+    peer = _cluster(region="region-b")
+    svc = _service({"region-a": _RebuildCluster(existing={}, region="region-a"), "region-b": peer})
+
+    assert (await _deliver(svc, _push())).commit == SHA
 
 
 # --------------------------------------------------- deliveries that are ignored
