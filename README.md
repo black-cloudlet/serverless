@@ -4,7 +4,7 @@ A self-service **FaaS** (Function as a Service) and **CaaS** (Container as a Ser
 platform that wraps the open-source [Knative](https://knative.dev/) project on OpenShift,
 exposed through a Python / FastAPI REST API.
 
-- **FaaS** - clients provide a Git repo (URL, branch, token); the source is built
+- **FaaS** - clients provide a Git repo (URL, revision, token); the source is built
   in-cluster by kpack with Cloud Native Buildpacks. Runtimes are configurable
   (the chart ships Python, Go, Node; listed on `GET /api/serverless/v1/functions/info`).
 - **CaaS** - clients provide a container image plus registry credentials.
@@ -105,7 +105,5 @@ values are projected from Vault via the External Secrets Operator
 (docs/ARCHITECTURE.md - Secrets Management).
 
 **Status:** implemented end to end - endpoints, auth, multi-region deployer, manifest
-builders, kpack builds and the build controller that rolls each finished digest out -
-with unit/API tests. Not yet implemented: the per-function git webhook that would pin
-a pushed commit SHA to a build; until then a build follows the branch head, and
-`POST .../functions/{name}/build` is the on-demand trigger.
+builders, kpack builds, the per-function git webhook that builds a pushed commit, and
+the build controller that rolls each finished digest out - with unit/API tests.

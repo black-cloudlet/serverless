@@ -230,6 +230,26 @@ along with the rest of the pod and service networks.
 `ClusterBuilder` (this chart) and `ClusterStack`/`ClusterStore` (the kpack chart) are
 managed by Helm/ArgoCD, not by the services - no runtime write permission on them.
 
+### Reaching the API from the git server (webhooks)
+
+A function's git webhook is a push from the git server **to** this API's Route
+(FUNCTIONS.md: Git webhook), which is the opposite direction from everything else the
+platform does - so it is the git server's egress, not a NetworkPolicy here, that has to
+allow it. The API's Route is already reachable by clients; nothing in the chart changes
+for the webhook.
+
+Two things do have to line up:
+
+- `SERVERLESS_PUBLIC_URL` is the origin the API puts in the `webhook.url` it hands
+  callers. The chart derives it from the same expression the Route's `host` uses
+  (`api.route.host`, defaulting to `serverless.{global.baseDomain}`), so the two cannot
+  drift; a test asserts that. Override `api.route.host` and the webhook URL follows.
+- In an **airgapped** install the git server must be allowed to reach that host outbound.
+  That is a rule on the git server's side, held by whoever operates it.
+
+Nothing else is needed: the token authenticating a push is per function, minted by the API
+and stored in the workload's own namespace, so no shared secret has to be provisioned.
+
 ### OpenShift SCC for builds
 
 kpack sets a build pod's `runAsUser` from the builder image's CNB user and an `fsGroup`

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Body, Query, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from api.auth.deps import CurrentUser, StreamUser
+from api.auth.deps import BuildCaller, CurrentUser, StreamUser, WebhookCaller
 from api.dependencies import FunctionDep
 from api.models.common import (
     Group,
@@ -18,7 +18,13 @@ from api.models.common import (
     WorkloadStatsResponse,
     WorkloadSummary,
 )
-from api.models.function import FunctionCreate, FunctionResponse, FunctionUpdate
+from api.models.function import (
+    FunctionCreate,
+    FunctionResponse,
+    FunctionUpdate,
+    WebhookView,
+)
+from api.models.webhook import GitLabPushEvent, WebhookOutcome
 from api.routers import streaming
 
 router = APIRouter(prefix="/groups/{group}/functions", tags=["functions"])
@@ -72,32 +78,80 @@ async def update_function(
     return await svc.accept_update(group, name, spec, user, background)
 
 
-@router.post("/{name}/build", response_model=FunctionResponse, status_code=202)
+@router.post(
+    "/{name}/build",
+    response_model=FunctionResponse,
+    status_code=202,
+    responses={200: {"model": WebhookOutcome, "description": "Delivery ignored (git webhook)"}},
+)
 async def build_function(
     group: Group,
     name: Name,
-    user: CurrentUser,
+    caller: BuildCaller,
     svc: FunctionDep,
     background: BackgroundTasks,
-) -> FunctionResponse:
-    """Rebuild a function from its current source (202), no body.
+    event: Annotated[GitLabPushEvent | None, Body()] = None,
+) -> Response | FunctionResponse:
+    """Build a function again (202), no body - or take a git push that says so.
 
-    The build inputs are the ones already stored - repository, branch, path,
-    runtime, version and the saved git token - so this rebuilds the same
-    definition against today's base image and dependencies. Nothing about the
-    workload's spec changes and the running revision keeps serving.
+    **With a bearer token**, the build inputs are the stored ones - repository,
+    revision, path, runtime, version and the saved git token - so this rebuilds
+    the same definition against today's base image and dependencies, and returns
+    the function to its revision's head by clearing any commit a push pinned.
+    The spec does not change and the running revision keeps serving.
+
+    **With `X-Gitlab-Token`**, this is the function's git webhook. The push
+    builds only if it updated the branch the function's `revision` names, in the
+    repository it builds from; anything else is `200` with `accepted: false`,
+    since a provider disables a hook that keeps failing. A push changes the
+    commit built and nothing else - not the revision, the tag, or the spec
+    (docs/FUNCTIONS.md - Git webhook).
+
+    Args:
+        group: The owning group (from the request path).
+        name: The workload name.
+        caller: The authenticated user, or the git provider (injected).
+        svc: The function service (injected).
+        background: FastAPI background tasks (injected).
+        event: The push payload, when a provider sent one.
+
+    Returns:
+        A Pending response with a ``statusUrl`` to poll for the build outcome,
+        or the outcome of a delivery that started no build.
+    """
+    if isinstance(caller, WebhookCaller):
+        outcome = await svc.accept_webhook(
+            group, name, caller.token, event, caller.event, background
+        )
+        if isinstance(outcome, WebhookOutcome):
+            return JSONResponse(status_code=200, content=outcome.model_dump())
+        return outcome
+    return await svc.accept_build(group, name, caller, background)
+
+
+@router.post("/{name}/webhook/rotate", response_model=WebhookView)
+async def rotate_function_webhook(
+    group: Group, name: Name, user: CurrentUser, svc: FunctionDep
+) -> WebhookView:
+    """Replace this function's webhook token and return the new one (200).
+
+    Every region is written before this answers, so the old token stops working
+    at once and a leaked one does not outlive the request replacing it.
+    Reconfigure the hook with what comes back.
+
+    There is no endpoint to *disable* a hook: a token nothing calls starts no
+    build, so that is done in the git provider.
 
     Args:
         group: The owning group (from the request path).
         name: The workload name.
         user: The authenticated caller (injected).
         svc: The function service (injected).
-        background: FastAPI background tasks (injected).
 
     Returns:
-        A Pending response with a ``statusUrl`` to poll for the build outcome.
+        The new webhook configuration.
     """
-    return await svc.accept_build(group, name, user, background)
+    return await svc.rotate_webhook(group, name, user)
 
 
 @router.get("", response_model=list[WorkloadSummary])

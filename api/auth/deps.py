@@ -9,6 +9,7 @@ request and it is the callable ``dependency_overrides`` keys on.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Annotated
 
@@ -94,6 +95,65 @@ def optional_auth(request: Request) -> Principal | None:
     except UnauthenticatedError:
         return None
 
+
+# What a git provider authenticates a push with. GitLab sends the configured
+# secret verbatim in this header, and names the event kind in the other.
+GITLAB_TOKEN_HEADER = "X-Gitlab-Token"  # noqa: S105 - a header name, not a credential
+GITLAB_EVENT_HEADER = "X-Gitlab-Event"
+
+
+@dataclass(frozen=True)
+class WebhookCaller:
+    """A caller who presented a webhook token instead of a bearer.
+
+    Not a :class:`Principal`: nothing is authorized yet. The token is compared
+    against the one stored for the function the path names, which is what makes
+    it an identity (docs/FUNCTIONS.md - Git webhook).
+    """
+
+    # repr=False: a credential must not ride along into a traceback or a log
+    # line that prints the caller, exactly as for the git token on a spec.
+    token: str = field(repr=False)
+    event: str | None = None
+
+
+def build_caller(
+    request: Request, principal: Annotated[Principal | None, Depends(optional_auth)]
+) -> Principal | WebhookCaller:
+    """Who is asking for a build: an authenticated user, or a git provider.
+
+    A rebuild and a push are the same request, so they share one endpoint and
+    differ only in how the caller proves they may make it; a real bearer wins.
+
+    The *header*, not the resolved principal, decides which credential is in
+    play: with ``auth_enabled`` false the auth component hands back a dev
+    principal unconditionally, so trusting the principal would swallow every
+    push as an anonymous rebuild - building the revision's head instead of the
+    commit that was pushed, silently.
+
+    Args:
+        request: The incoming request, for the credential headers.
+        principal: The caller the Authorization header identifies, if any
+            (injected).
+
+    Returns:
+        The authenticated principal, or the webhook caller.
+
+    Raises:
+        UnauthenticatedError: If neither credential is present.
+        ForbiddenError: If a valid token carries no group membership.
+    """
+    if principal is not None and request.headers.get("Authorization"):
+        return principal
+    token = request.headers.get(GITLAB_TOKEN_HEADER)
+    if token:
+        return WebhookCaller(token=token, event=request.headers.get(GITLAB_EVENT_HEADER))
+    if principal is not None:
+        return principal
+    raise UnauthenticatedError("missing bearer token or webhook token")
+
+
+BuildCaller = Annotated[Principal | WebhookCaller, Depends(build_caller)]
 
 # The library's dependency: ticket first, header second (see stream_auth).
 # The hint is display text derived from settings and bound at import

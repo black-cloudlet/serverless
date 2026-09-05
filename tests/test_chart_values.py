@@ -193,3 +193,45 @@ def test_the_seconds_that_may_be_fractional_are_not_forced_to_integers():
     for name in ("intervalSeconds", "minIntervalSeconds", "maxIntervalSeconds", "heartbeatSeconds"):
         line = next(ln for ln in deployment.splitlines() if f".Values.stream.{name}" in ln)
         assert "int64" not in line, f"stream.{name} is float-typed; int64 would truncate it"
+
+
+def test_the_public_url_is_built_from_the_route_the_api_actually_serves_on():
+    """The webhook URL a caller is handed must reach this API.
+
+    `SERVERLESS_PUBLIC_URL` is the one absolute URL the API states about itself,
+    and a git provider is configured with it. Deriving it from any host but the
+    Route's would hand callers a URL that resolves somewhere else - a hook that
+    silently never fires. Rendered through `printf`, so the generic env/value
+    guard above skips it and this checks the shape instead.
+    """
+    deployment = (CHART / "templates" / "api" / "deployment.yaml").read_text()
+    route = (CHART / "templates" / "api" / "route.yaml").read_text()
+
+    env = re.search(r"- name: SERVERLESS_PUBLIC_URL\n\s*value: (?P<expr>.+)", deployment)
+    assert env, "the API Deployment no longer sets SERVERLESS_PUBLIC_URL"
+    host_expr = re.search(r"^\s*host: (?P<expr>.+)$", route, re.MULTILINE)["expr"]
+    # the Route's host expression, verbatim, inside the URL the API hands out
+    inner = host_expr.strip().removeprefix("{{").removesuffix("}}").replace("| quote", "").strip()
+    assert inner in env["expr"]
+    assert "https://" in env["expr"]
+
+
+def test_a_rendered_public_url_loads_into_settings():
+    """What the chart renders, `Settings` must accept - the seam this file guards."""
+    values = _values()
+    host = values["api"]["route"]["host"] or f"serverless.{values['global']['baseDomain']}"
+
+    settings = Settings(public_url=f"https://{host}")
+
+    assert settings.public_url == f"https://{host}"
+
+
+@pytest.mark.parametrize("bad", ["serverless.example.com", "ftp://x", "//x"])
+def test_a_public_url_that_is_not_an_origin_is_refused(bad):
+    """A bare host would render as a relative URL no provider could POST to."""
+    with pytest.raises(ValueError, match="public_url"):
+        Settings(public_url=bad)
+
+
+def test_a_trailing_slash_is_normalized_away():
+    assert Settings(public_url="https://x.example.com/").public_url == "https://x.example.com"

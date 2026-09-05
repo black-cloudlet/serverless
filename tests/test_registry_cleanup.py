@@ -119,7 +119,7 @@ def test_repository_paths_track_the_reference_convention():
         name="hello",
         group="payments",
         git_url="https://git.internal/payments/hello.git",
-        branch="main",
+        revision="main",
         git_token="ghp_tok",
         runtime="python",
         owner="alice",

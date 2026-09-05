@@ -32,6 +32,7 @@ from cloudlet_apis.logging import get_logger
 from api.core.config import Settings
 from api.core.paths import api_base
 from api.models.common import (
+    ANNOTATION_GIT_COMMIT,
     ANNOTATION_HOST,
     ANNOTATION_PULL_STAMP,
     ANNOTATION_SIZE,
@@ -302,6 +303,52 @@ def _split(
         else:
             statuses.append(result)
     return statuses, reads
+
+
+def _stamp_commit(cluster: NamespacedCluster, name: str, commit: str | None) -> bool:
+    """Record - or clear - the commit a git push pinned, on one region's KSVC.
+
+    ``metadata.annotations`` only, not the template's: a pin says which *source*
+    to compile next, not which image to run, so it must cut no Knative revision.
+    Clearing writes an explicit ``null``, since the annotation is set by a merge
+    patch and an apply that merely omits the key may not remove it.
+
+    Args:
+        cluster: The region to write to.
+        name: The workload name.
+        commit: The commit to pin, or None to clear.
+
+    Returns:
+        True if the workload is here and was stamped; False if it does not run
+        here - not a failure, since the build apply skips it too.
+    """
+    patch = {"metadata": {"annotations": {ANNOTATION_GIT_COMMIT: commit}}}
+    try:
+        cluster.patch(ResourceKind.KNATIVE_SERVICE, name, patch)
+    except NotFoundError:
+        return False
+    return True
+
+
+def _assert_any_region_wrote(statuses: Sequence[RegionStatus], what: str) -> None:
+    """Fail the request when a fan-out write landed in no region at all.
+
+    ``fanout`` records a region's failure on its status instead of raising, so a
+    write whose result is discarded reports success however many regions
+    refused it. Absent is not a failure - the workload does not run there.
+
+    Args:
+        statuses: The per-region results.
+        what: What was being written, for the error.
+
+    Raises:
+        RegionTotalFailure: If every region errored.
+    """
+    if statuses and all(s.message is not None for s in statuses):
+        raise RegionTotalFailure(
+            f"Could not {what} in any region.",
+            details=[{"region": s.region, "message": s.message} for s in statuses],
+        )
 
 
 def _annotation(reads: Sequence[_RegionRead], key: str) -> str | None:
@@ -817,7 +864,8 @@ class WorkloadService:
                 runtime=req.runtime,
                 version=req.version,
                 git_url=req.git_url,
-                branch=req.branch,
+                revision=req.revision,
+                commit=req.commit,
                 path=req.path,
                 ca_config_map=self.settings.ca_bundle.config_map,
                 ca_mount_path=self.settings.ca_bundle.mount_path,
@@ -878,7 +926,16 @@ class WorkloadService:
         """
         return {c.region: c.registry for c in self.deployer.clusters()}
 
-    async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
+    async def apply_build(
+        self,
+        name: str,
+        group: str,
+        plan: BuildPlan,
+        *,
+        trigger: bool = True,
+        commit: str | None = None,
+        had_commit: bool = False,
+    ) -> bool:
         """Re-declare a workload's build in every region that runs it, then ask for one.
 
         The rebuild path, and the one write in the engine that leaves the KSVC
@@ -896,6 +953,15 @@ class WorkloadService:
             group: The owning group.
             plan: The build plan to apply (its git Secret included, so the region
                 that builds can always clone).
+            trigger: Ask kpack for one more build of an unchanged spec. False
+                where the applied spec is itself the change it builds from - a
+                push pinning a commit, or a rebuild clearing one - since a
+                trigger too would make a second build (docs/BUILDING.md -
+                Convergence rules).
+            commit: The commit a push pinned, stamped so later reconstructions
+                carry it. None *clears* any stored pin.
+            had_commit: Whether a pin was stored. Only skips the annotation
+                write when there is neither one to set nor one to clear.
 
         Returns:
             True if an existing build was triggered in any region; False if
@@ -903,20 +969,75 @@ class WorkloadService:
         """
         targets = self.targets_for(group)
         await self.retag_build(targets, plan.manifests_by_region)
+        # The KSVC is the replicated source of truth and the Image is derived
+        # from it, so the pin lands first: a patch surviving a failed apply is
+        # re-composed by the next write, where the reverse leaves a build
+        # nobody can reconstruct.
+        stamp = commit is not None or had_commit
 
         def work(cluster: NamespacedCluster) -> RegionStatus:
             manifests = list(plan.replicated) + plan.manifests_for(cluster.region)
+            if stamp and not _stamp_commit(cluster, name, commit):
+                return RegionStatus(region=cluster.region, status="Absent")
             # Skips a region the workload does not run in, which is also every
             # region the plan does not cover.
             if not region_apply.apply_build_objects(cluster, manifests, name=name):
                 return RegionStatus(region=cluster.region, status="Absent")
-            triggered = self.builder.trigger(cluster, name, group)
+            triggered = trigger and self.builder.trigger(cluster, name, group)
             return RegionStatus(
                 region=cluster.region, status="Building" if triggered else "Pending"
             )
 
         statuses = await self.deployer.fanout(targets, work)
         return any(s.status == "Building" for s in statuses)
+
+    async def clear_commit(self, name: str, group: str) -> None:
+        """Remove the pinned commit from the workload, in every region.
+
+        See :func:`_stamp_commit` for why this is an explicit ``null``.
+
+        Args:
+            name: The workload name.
+            group: The owning group.
+        """
+
+        def work(cluster: NamespacedCluster) -> RegionStatus:
+            found = _stamp_commit(cluster, name, None)
+            return RegionStatus(region=cluster.region, status="Ready" if found else "Absent")
+
+        statuses = await self.deployer.fanout(self.targets_for(group), work)
+        # A pin left behind is read back by the next build and reported on the
+        # next GET, so a silent failure here outlives the request.
+        _assert_any_region_wrote(statuses, f"clear the pinned commit on '{name}'")
+
+    async def apply_owned_secret(self, name: str, group: str, manifest: dict) -> None:
+        """Apply one owned Secret to every region the workload runs in.
+
+        The write behind a credential rotation: no build declared and no KSVC
+        composed, so nothing deploys and no revision is cut. Owner-stamped so it
+        cascades on delete; a region without the workload is skipped.
+
+        Args:
+            name: The workload name, whose KSVC owns the Secret.
+            group: The owning group.
+            manifest: The Secret to apply.
+
+        Raises:
+            RegionTotalFailure: If no region could be written.
+        """
+
+        def work(cluster: NamespacedCluster) -> RegionStatus:
+            if not region_apply.apply_build_objects(cluster, [manifest], name=name):
+                return RegionStatus(region=cluster.region, status="Absent")
+            return RegionStatus(region=cluster.region, status="Ready")
+
+        statuses = await self.deployer.fanout(self.targets_for(group), work)
+        # `fanout` turns a region's error into a status rather than raising, so
+        # a caller that drops the statuses reports success for a write that
+        # landed nowhere. For a rotation that is the worst answer available: the
+        # caller reconfigures the hook with a token no region will accept, while
+        # the one they replaced stays live.
+        _assert_any_region_wrote(statuses, f"rotate the webhook token for '{name}'")
 
     async def retag_build(
         self, targets: list[NamespacedCluster], region_resources: Mapping[str, Sequence[dict]]
@@ -1117,7 +1238,18 @@ class WorkloadService:
         host = _annotation(reads, ANNOTATION_HOST)
         if host is None:
             host = route_svc.host_for(name, group, self.settings.route_domain)
-        spec = await self.deployer.run_read(region_read.describe_spec, rep.cluster, rep.obj)
+
+        # The offering's own extras (a function's webhook token) ride in the
+        # same thread as the spec read: a second `run_read` would be another
+        # round trip and another pool admission, and a saturated pool there
+        # would 503 a GET that had already succeeded.
+        def read_spec(cluster: NamespacedCluster, obj: dict):
+            return (
+                region_read.describe_spec(cluster, obj),
+                offering.read_response_extras(cluster, name, group, self.settings),
+            )
+
+        spec, extras = await self.deployer.run_read(read_spec, rep.cluster, rep.obj)
         common = dict(
             name=name,
             group=group,
@@ -1131,6 +1263,7 @@ class WorkloadService:
             scaling=spec.scaling,
             env=spec.env,
             files=spec.files,
+            **extras,
         )
         return offering.fetched_response(common, rep.obj, spec, rollup.build)
 

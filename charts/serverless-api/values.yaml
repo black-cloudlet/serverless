@@ -113,7 +113,7 @@ buildController:
   # `registry.deleteOnFunctionDelete` is true (the platform-wide "may we
   # delete registry content" switch) and a registry.apiTokens token exists;
   # otherwise the controller logs the GC off and does nothing. Kept per
-  # function: the current branch tag, every tag on the digest still serving,
+  # function: the current revision tag, every tag on the digest still serving,
   # and the `keepBuilds` newest build tags beyond those.
   gc:
     enabled: true
