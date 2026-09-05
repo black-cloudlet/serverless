@@ -533,9 +533,9 @@ is no overlap window, because a hook is reconfigured in seconds. A rotation that
 
 This is the token's **only writer**. A `PUT` does not touch it - it could only re-apply
 what it read, or mint a replacement it has no field to return, silently breaking a hook
-that was already configured. One consequence to know: a function whose regions grow (a
-`PUT` targets every configured region) does not carry its token to the new one, so
-**rotate after widening a function's regions**.
+that was already configured. Nothing else needs to: a workload is created in every
+configured region (ARCHITECTURE.md: Region selection), so the token is written everywhere
+at create and no later write can reach a region that lacks it.
 
 There is **no endpoint to delete a hook**: a token nothing calls starts no build, so
 disabling one is done in GitLab.

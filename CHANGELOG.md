@@ -49,8 +49,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   pin and return the function to its revision's head.
 - The token has exactly one writer, `POST .../{name}/webhook/rotate`. A `PUT`
   does not carry it: it could only re-apply what it read, or mint a replacement
-  it has no field to return, silently breaking a configured hook. Rotate after
-  widening a function's regions, since the new one has no token until then.
+  it has no field to return, silently breaking a configured hook. It needs no
+  other writer - a workload is created in every configured region, so the token
+  is written everywhere at create.
 - Only an unusable token makes a delivery a `4xx`. A function that cannot
   currently be built - no stored git token, a runtime retired from the
   ConfigMap - is an acknowledged, ignored delivery, because a `4xx` would make
