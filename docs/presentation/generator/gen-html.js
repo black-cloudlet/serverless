@@ -1,6 +1,7 @@
 const fs = require("fs");
 const { slides } = require("./content");
 const { anchors } = require("./geom");
+const LOGOS = require("./logos.json");
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const TOTAL = slides.length;
@@ -14,7 +15,8 @@ function A(ctx, k, d) {
 function graphSvg(v, ctx) {
   const byId = Object.fromEntries(v.nodes.map((n) => [n.id, n]));
   const idx = Object.fromEntries(v.nodes.map((n, i) => [n.id, i]));
-  let out = `<svg class="graph" viewBox="0 0 600 440" role="img" aria-label="diagram">
+  const bw = (v.box && v.box[0]) || 600, bh = (v.box && v.box[1]) || 440;
+  let out = `<svg class="graph" viewBox="0 0 ${bw} ${bh}" role="img" aria-label="diagram">
   <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker></defs>`;
   v.edges.forEach((e, i) => {
     const p = anchors(byId[e.from], byId[e.to]);
@@ -24,8 +26,8 @@ function graphSvg(v, ctx) {
   v.nodes.forEach((n, i) => {
     const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
     const a = A(ctx, i, i * 70);
-    const tap = n.yaml && ctx && ctx.clickYaml;
-    const dy = tap ? ` data-yaml="${esc(n.yaml).replace(/\n/g, "&#10;")}" tabindex="0" role="button" aria-label="Show YAML for ${esc(n.label)}"` : "";
+    const tap = (n.yaml || n.desc) && ctx && ctx.clickYaml;
+    const dy = tap ? ` data-key="${esc(n.id)}"${n.yaml ? ` data-yaml="${esc(n.yaml).replace(/\n/g, "&#10;")}"` : ""}${n.desc ? ` data-desc="${esc(n.desc)}"` : ""} tabindex="0" role="button" aria-label="Explain ${esc(n.label)}"` : "";
     out += `<g class="node ${n.tone} ${a.c}${tap ? " tap" : ""}" ${a.a}${dy}>
       <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="8"/>
       <text x="${cx}" y="${n.sub ? cy - 4 : cy + 5}" class="nl">${esc(n.label)}</text>
@@ -37,12 +39,14 @@ function graphSvg(v, ctx) {
 function visual(v, ctx) {
   if (!v) return "";
   switch (v.kind) {
-    case "glyph": { const a = A(ctx, 0, 0); return `<div class="glyph ${a.c}" ${a.a}><div class="g">${esc(v.text)}</div><div class="gs">${esc(v.sub)}</div></div>`; }
+    case "glyph": { const a = A(ctx, 0, 0); return `<div class="glyph${v.text.length > 12 ? " long" : ""} ${a.c}" ${a.a}><div class="g">${esc(v.text)}</div><div class="gs">${esc(v.sub)}</div></div>`; }
     case "graph": return graphSvg(v, ctx);
     case "stack": return `<div class="stack">${v.layers.map(([t, s, tone], i) => { const a = A(ctx, i, i * 80); return `<div class="layer ${tone || ""} ${a.c}" ${a.a}><b>${esc(t)}</b><span>${esc(s)}</span></div>`; }).join("")}</div>`;
-    case "table": return `<table class="cmp"><thead><tr>${v.head.map((h, i) => `<th class="${i === 2 && !v.plain ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r, i) => { const a = A(ctx, i, i * 70); return `<tr class="${a.c}" ${a.a}>${r.map((c, j) => `<td class="${j === 0 ? "k" : j === 2 && !v.plain ? "acc" : v.plain ? "pl" : ""}">${esc(c)}</td>`).join("")}</tr>`; }).join("")}</tbody></table>`;
+    case "table": { const h0 = A(ctx, 0, 0); return `<table class="cmp"><thead><tr class="${h0.c}" ${h0.a}>${v.head.map((h, i) => `<th class="${i === 2 && !v.plain ? "acc" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>${v.rows.map((r, i) => { const a = A(ctx, i, i * 70); return `<tr class="${a.c}" ${a.a}>${r.map((c, j) => `<td class="${j === 0 ? "k" : j === 2 && !v.plain ? "acc" : v.plain ? "pl" : ""}">${esc(c)}</td>`).join("")}</tr>`; }).join("")}</tbody></table>`; }
     case "stats": return `<div class="stats">${v.items.map(([b, s], i) => { const a = A(ctx, i, i * 90); return `<div class="stat ${a.c}" ${a.a}><div class="big" data-n="${esc(b)}">${esc(b)}</div><div class="sm">${esc(s)}</div></div>`; }).join("")}</div>`;
-    case "code": { const a = A(ctx, 0, 0); return `<pre class="code ${a.c}" ${a.a}>${v.lines.map(([t, tone]) => `<span class="${tone}">${esc(t)}</span>`).join("\n")}</pre>`; }
+    case "code": { const a = A(ctx, 0, 0);
+      const fs = ctx && ctx.wide ? Math.min(1.5, 34.5 / (v.lines.length * 1.62)) : 0;
+      return `<pre class="code ${a.c}"${fs ? ` style="font-size:${fs.toFixed(2)}cqw"` : ""} ${a.a}>${v.lines.map(([t, tone]) => `<span class="${tone}">${esc(t)}</span>`).join("\n")}</pre>`; }
     case "lifecycle": {
       const ap = (k, d) => A(ctx, k, d);
       const nP = v.phases.length;
@@ -84,14 +88,16 @@ function slideHtml(s, i) {
       <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
   }
   const wide = s.wide || !s.lines.length;
-  const ctx = { reveal: s.reveal || "auto", nLines: s.lines.length, clickYaml: !!s.clickYaml };
+  const ctx = { reveal: s.reveal || "auto", nLines: s.lines.length, clickYaml: !!s.clickYaml, wide };
+  const logo = s.logo && LOGOS[s.logo] ? `<img class="logo" src="${LOGOS[s.logo].data}" alt="" aria-hidden="true">` : "";
+  const hint = s.hint ? `<p class="hint">${esc(s.hint)}</p>` : "";
   return `<section class="slide content${wide ? " wide" : ""}" data-i="${i}">
     <div class="kicker">${esc(s.kicker)}</div>
-    <h1>${esc(s.title)}</h1>
+    <h1>${esc(s.title)}</h1>${logo}
     <div class="body">
-      ${wide ? "" : `<ul class="lines">${s.lines.map((l, k) => `<li class="build" data-step="${k + 1}">${esc(l)}</li>`).join("")}</ul>`}
+      ${wide ? "" : `<ul class="lines${s.textSize ? " " + s.textSize : ""}">${s.lines.map((l, k) => `<li class="build" data-step="${k + 1}">${esc(l)}</li>`).join("")}</ul>`}
       <div class="visual">${visual(s.visual, ctx)}</div>
-    </div>
+    </div>${hint}
     <div class="foot"><span class="mono">${num} / ${TOTAL}</span></div>${notes}</section>`;
 }
 
@@ -127,6 +133,15 @@ h1{font-family:var(--display);font-variation-settings:"opsz" 96;font-weight:800;
 .lines li{font-size:2.05cqw;line-height:1.3;font-weight:500;padding-left:2.2cqw;position:relative;text-wrap:pretty}
 .lines li::before{content:"";position:absolute;left:0;top:.5em;width:.8cqw;height:.8cqw;background:var(--accent);border-radius:2px}
 .visual{align-self:center;width:100%}
+.lines.lede{gap:3.4cqh;margin-top:2cqh}
+.lines.lede li{font-size:3cqw;line-height:1.28;font-weight:600;padding-left:2.6cqw}
+.lines.lede li::before{top:.55em;width:1cqw;height:1cqw}
+.lines.small li{font-size:1.72cqw;line-height:1.42}
+.logo{position:absolute;right:5.5cqw;top:4.5cqh;height:8.5cqh;width:auto;object-fit:contain}
+.hint{position:absolute;left:14cqw;bottom:4cqh;margin:0;font-family:var(--mono);font-size:1.15cqw;color:var(--muted);letter-spacing:.04em}
+.hint::before{content:"› ";color:var(--accent)}
+.content.wide .visual{display:flex;justify-content:center}
+.content.wide .graph{width:auto;height:60cqh;max-width:100%}
 .graph .build{opacity:0;transform:scale(.92);transform-box:fill-box;transform-origin:center;transition:opacity .4s ease,transform .45s cubic-bezier(.2,.9,.25,1.25)}
 .graph .build.on{opacity:1;transform:none}
 tr.build{opacity:0;transform:translateX(-1cqw);transition:opacity .4s ease,transform .5s cubic-bezier(.2,.9,.25,1.15)}
@@ -134,8 +149,10 @@ tr.build.on{opacity:1;transform:none}
 .node.tap{cursor:pointer}
 .node.tap:hover rect,.node.tap:focus-visible rect{stroke-width:3.2}
 .content.wide .code{font-size:1.5cqw;line-height:1.62}
-.yamlpop{position:absolute;right:5cqw;bottom:5cqh;max-width:44cqw;background:var(--code-bg);border:1px solid var(--hair);border-radius:.7cqw;padding:1.6cqh 1.6cqw;font-family:var(--mono);font-size:1.2cqw;line-height:1.6;white-space:pre;overflow:auto;max-height:56cqh;z-index:6;box-shadow:0 1cqh 3cqh rgba(0,0,0,.18)}
-.yamlpop b{display:block;font-family:var(--sans);font-size:1.15cqw;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:.9cqh}
+.yamlpop{position:absolute;right:4cqw;bottom:4cqh;width:52cqw;max-width:52cqw;background:var(--code-bg);border:1px solid var(--hair);border-radius:.7cqw;padding:1.6cqh 1.6cqw;font-family:var(--mono);font-size:1.42cqw;line-height:1.62;white-space:pre;overflow:auto;max-height:70cqh;z-index:6;box-shadow:0 1cqh 3cqh rgba(0,0,0,.18);animation:pop .22s ease both}
+.yamlpop .desc{font-family:var(--sans);font-size:1.5cqw;line-height:1.45;color:var(--ink);white-space:normal;margin-bottom:1.2cqh}
+.yamlpop .desc + div{border-top:1px solid var(--hair);padding-top:1.2cqh}
+.yamlpop b{display:block;font-family:var(--sans);font-size:1.3cqw;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:.9cqh}
 .content.wide .body{grid-template-columns:1fr}
 .content.wide .cmp{font-size:2.2cqw}
 .content.wide .cmp th{font-size:1.5cqw;padding-bottom:2cqh}
@@ -180,6 +197,7 @@ tr.build.on{opacity:1;transform:none}
 /* visuals */
 .glyph{text-align:center;padding:4cqh 0}
 .glyph .g{font-family:var(--display);font-weight:800;font-size:9cqw;letter-spacing:-.02em;color:var(--teal)}
+.glyph.long .g{font-size:5.4cqw;line-height:1.12}
 .glyph .gs{font-family:var(--mono);font-size:1.6cqw;color:var(--muted);margin-top:1cqh}
 .graph{width:100%;height:auto;overflow:visible}
 .graph .node rect{fill:var(--node-fill);stroke:var(--teal);stroke-width:1.6}
@@ -281,14 +299,18 @@ button:focus-visible,.stage:focus-visible{outline:2px solid var(--accent);outlin
   function closePop(){ if(pop&&pop.parentNode){pop.parentNode.removeChild(pop);} pop=null; }
   stage.addEventListener('click',function(e){
     var t=e.target&&e.target.closest?e.target.closest('.node.tap'):null;
-    if(t&&t.getAttribute('data-yaml')){
-      e.stopPropagation(); e.preventDefault(); closePop();
-      pop=document.createElement('div'); pop.className='yamlpop';
-      var b=document.createElement('b'); var nl=t.querySelector('.nl');
-      b.textContent=nl?nl.textContent:'YAML'; pop.appendChild(b);
-      var body=document.createElement('div'); body.textContent=t.getAttribute('data-yaml'); pop.appendChild(body);
-      slides[cur].appendChild(pop);
-    }
+    if(!t)return;
+    var yaml=t.getAttribute('data-yaml'), desc=t.getAttribute('data-desc');
+    if(!yaml&&!desc)return;
+    e.stopPropagation(); e.preventDefault();
+    var same=pop&&pop.dataset.for===t.dataset.key;
+    closePop(); if(same)return;
+    pop=document.createElement('div'); pop.className='yamlpop'; pop.dataset.for=t.dataset.key;
+    var b=document.createElement('b'); var nl=t.querySelector('.nl');
+    b.textContent=nl?nl.textContent:'detail'; pop.appendChild(b);
+    if(desc){var d=document.createElement('div'); d.className='desc'; d.textContent=desc; pop.appendChild(d);}
+    if(yaml){var body=document.createElement('div'); body.textContent=yaml; pop.appendChild(body);}
+    slides[cur].appendChild(pop);
   },true);
   stage.addEventListener('click',function(e){ if(e.clientX<window.innerWidth*0.2){prev();}else{next();} });
   var tx=null;stage.addEventListener('touchstart',function(e){tx=e.touches[0].clientX},{passive:true});

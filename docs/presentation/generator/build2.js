@@ -3,6 +3,7 @@
 const pptxgen = require("pptxgenjs");
 const { slides } = require("./content");
 const { anchors } = require("./geom");
+const LOGOS = require("./logos.json");
 
 const C = { paper: "FFFFFF", ink: "1B1F2A", muted: "667085", hair: "E4E7EC", panel: "F4F5F7", accent: "E4572E", teal: "0B7A75", tealSoft: "E3F1F0", ok: "1B8A5A", bad: "C0392B", edge: "98A2B3" };
 const FD = "Century Schoolbook", FB = "Calibri", FM = "Courier New";
@@ -29,7 +30,8 @@ function title(s, t, o) { txt(s, t, Object.assign({ x: ML, y: 0.9, w: 11.5, h: 1
 
 // visual box: 600x440 units → 5.9 x 4.33 in at (6.75, 2.25)
 const VX = 6.75, VY = 2.2, K = 5.9 / 600;
-const vx = (u) => VX + u * K, vy = (u) => VY + u * K, vs = (u) => u * K;
+let gx = VX, gy = VY, gk = K;
+const vx = (u) => gx + u * gk, vy = (u) => gy + u * gk, vs = (u) => u * gk;
 
 function mkNm(ctx) {
   let auto = 0;
@@ -43,8 +45,9 @@ function mkNm(ctx) {
 function node(s, n, nm, k) {
   const acc = n.tone === "accent";
   s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: vx(n.x), y: vy(n.y), w: vs(n.w), h: vs(n.h), fill: { color: C.paper }, line: { color: acc ? C.accent : C.teal, width: acc ? 1.75 : 1.25 }, rectRadius: 0.08 }, nm(k, "wipeD")));
-  const runs = [{ text: n.label, options: { fontSize: 12, bold: true, color: C.ink, breakLine: !!n.sub } }];
-  if (n.sub) runs.push({ text: n.sub, options: { fontSize: 8.5, color: C.muted, fontFace: FM } });
+  const big = gk > K;
+  const runs = [{ text: n.label, options: { fontSize: big ? 13 : 12, bold: true, color: C.ink, breakLine: !!n.sub } }];
+  if (n.sub) runs.push({ text: n.sub, options: { fontSize: big ? 9.5 : 8.5, color: C.muted, fontFace: FM } });
   s.addText(runs, Object.assign({ x: vx(n.x), y: vy(n.y), w: vs(n.w), h: vs(n.h), fontFace: FB, align: "center", valign: "middle", margin: 0.04, isTextBox: true }, nm(k, "wipeD")));
 }
 function edge(s, a, b, dashed, nm, k) {
@@ -61,14 +64,18 @@ function visual(s, v, ctx) {
   const wide = !!(ctx && ctx.wide);
   switch (v.kind) {
     case "glyph":
-      txt(s, v.text, Object.assign({ x: VX, y: VY + 0.9, w: 5.9, h: 1.4, fontFace: FD, fontSize: 44, bold: true, color: C.teal, align: "center", valign: "middle" }, nm(0, "zoom")));
+      txt(s, v.text, Object.assign({ x: VX, y: VY + 0.9, w: 5.9, h: 1.4, fontFace: FD, fontSize: v.text.length > 12 ? 30 : 44, bold: true, color: C.teal, align: "center", valign: "middle" }, nm(0, "zoom")));
       txt(s, v.sub, Object.assign({ x: VX, y: VY + 2.3, w: 5.9, h: 0.4, fontFace: FM, fontSize: 11, color: C.muted, align: "center" }, nm(0, "fade")));
       break;
     case "graph": {
+      const bw = (v.box && v.box[0]) || 600, bh = (v.box && v.box[1]) || 440;
+      if (wide) { gk = Math.min(4.5 / bh, 11.9 / bw); gx = (W - bw * gk) / 2; gy = 2.3; }
+      else { gk = 5.9 / bw; gy = VY; gx = VX; }
       const byId = Object.fromEntries(v.nodes.map((n) => [n.id, n]));
       const idx = Object.fromEntries(v.nodes.map((n, i) => [n.id, i]));
       v.edges.forEach((e) => edge(s, byId[e.from], byId[e.to], e.dashed, nm, Math.max(idx[e.from], idx[e.to])));
       v.nodes.forEach((n, i) => node(s, n, nm, i));
+      gx = VX; gy = VY; gk = K;
       break;
     }
     case "stack": {
@@ -86,10 +93,10 @@ function visual(s, v, ctx) {
       const X0 = wide ? ML : VX, TW = wide ? 11.9 : 5.9, FS = wide ? 17 : 12.5;
       let y = wide ? 2.3 : VY + 0.2;
       const xs = [X0, X0 + cols[0], X0 + cols[0] + cols[1]];
-      if (!v.plain) s.addShape(pres.shapes.RECTANGLE, { x: xs[2] - 0.1, y: y + 0.35, w: cols[2] + 0.1, h: rh * v.rows.length + 0.05, fill: { color: C.tealSoft }, line: { color: C.tealSoft, width: 0 } });
-      v.head.forEach((h, i) => { if (h) txt(s, h.toUpperCase(), { x: xs[i], y, w: cols[i], h: 0.3, fontFace: FM, fontSize: wide ? 11 : 9, charSpacing: 2, color: i === 2 && !v.plain ? C.teal : C.muted }); });
+      v.head.forEach((h, i) => { if (h) txt(s, h.toUpperCase(), Object.assign({ x: xs[i], y, w: cols[i], h: 0.3, fontFace: FM, fontSize: wide ? 11 : 9, charSpacing: 2, color: i === 2 && !v.plain ? C.teal : C.muted }, nm(0, "fade"))); });
       y += wide ? 0.55 : 0.4;
       v.rows.forEach((r, k) => {
+        if (!v.plain) s.addShape(pres.shapes.RECTANGLE, Object.assign({ x: xs[2] - 0.1, y, w: cols[2] + 0.1, h: rh, fill: { color: C.tealSoft }, line: { color: C.tealSoft, width: 0 } }, nm(k, "fade")));
         r.forEach((c, i) => txt(s, c, Object.assign({ x: xs[i] + (i ? 0.05 : 0), y, w: cols[i] - 0.1, h: rh, fontSize: FS, bold: i === 0, color: i === 1 && !v.plain ? C.muted : C.ink, valign: "middle" }, nm(k, "wipeL"))));
         if (k) s.addShape(pres.shapes.LINE, Object.assign({ x: X0, y, w: TW, h: 0, line: { color: C.hair, width: 0.5 } }, nm(k, "wipeL")));
         y += rh;
@@ -105,11 +112,16 @@ function visual(s, v, ctx) {
       break;
     }
     case "code": {
-      const X0 = wide ? ML : VX, W2 = wide ? 11.9 : 5.9, FS = wide ? 12 : 11.5;
-      const Y0 = wide ? 2.25 : VY + 0.2, H2 = wide ? 4.55 : 3.6;
+      const X0 = wide ? ML : VX, W2 = wide ? 11.9 : 5.9;
+      const Y0 = wide ? 2.25 : VY + 0.2, HMAX = wide ? 4.55 : 3.6;
+      const mult = wide ? 1.18 : 1.35;
+      // fit the block to the panel: rendered line height is about fontSize * 1.2 * mult
+      const FS = Math.min(wide ? 12 : 11.5, Math.floor(((HMAX - 0.45) * 72) / (v.lines.length * 1.2 * mult) * 2) / 2);
+      // and then pull the panel in around a short block
+      const H2 = wide ? Math.min(HMAX, (v.lines.length * FS * 1.2 * mult) / 72 + 0.5) : HMAX;
       s.addShape(pres.shapes.ROUNDED_RECTANGLE, Object.assign({ x: X0, y: Y0, w: W2, h: H2, fill: { color: C.panel }, line: { color: C.panel, width: 0 }, rectRadius: 0.1 }, nm(0, "fade")));
       const runs = v.lines.map(([t, tone], i) => ({ text: t || " ", options: { color: tone === "accent" ? C.accent : tone === "ink" ? C.ink : C.muted, bold: tone === "accent", breakLine: i < v.lines.length - 1 } }));
-      s.addText(runs, Object.assign({ x: X0 + 0.25, y: Y0 + 0.2, w: W2 - 0.5, h: H2 - 0.4, fontFace: FM, fontSize: FS, margin: 0, valign: "top", isTextBox: true, lineSpacingMultiple: wide ? 1.22 : 1.35 }, nm(0, "fade")));
+      s.addText(runs, Object.assign({ x: X0 + 0.25, y: Y0 + 0.2, w: W2 - 0.5, h: H2 - 0.4, fontFace: FM, fontSize: FS, margin: 0, valign: "top", isTextBox: true, lineSpacingMultiple: mult }, nm(0, "fade")));
       break;
     }
     case "lifecycle": {
@@ -199,11 +211,16 @@ slides.forEach((sd, i) => {
     return;
   }
   kicker(s, sd.kicker); title(s, sd.title);
-  const n = sd.lines.length, lh = n ? Math.min(0.72, 4.3 / n) : 0;
+  if (sd.logo && LOGOS[sd.logo]) {
+    const g = LOGOS[sd.logo], lh2 = 0.95, lw = lh2 * (g.w / g.h);
+    s.addImage({ data: g.data, x: W - ML - lw, y: 0.5, w: lw, h: lh2, objectName: "auto:99:fade" });
+  }
+  const n = sd.lines.length, lede = sd.textSize === "lede", small = sd.textSize === "small";
+  const lh = n ? Math.min(lede ? 1.35 : 0.72, 4.3 / n) : 0;
   sd.lines.forEach((l, k) => {
     const y = 2.3 + k * lh;
-    s.addShape(pres.shapes.RECTANGLE, Object.assign({ x: ML, y: y + lh / 2 - 0.07, w: 0.13, h: 0.13, fill: { color: C.accent }, line: { color: C.accent, width: 0 } }, step(k + 1)));
-    txt(s, l, Object.assign({ x: ML + 0.35, y, w: 5.45, h: lh, fontSize: n > 5 ? 17 : 19, valign: "middle", bold: false }, step(k + 1)));
+    s.addShape(pres.shapes.RECTANGLE, Object.assign({ x: ML, y: lede ? y + 0.22 : y + lh / 2 - 0.07, w: lede ? 0.16 : 0.13, h: lede ? 0.16 : 0.13, fill: { color: C.accent }, line: { color: C.accent, width: 0 } }, step(k + 1)));
+    txt(s, l, Object.assign({ x: ML + (lede ? 0.45 : 0.35), y, w: lede ? 5.35 : 5.45, h: lh, fontSize: lede ? 24 : small ? 15 : n > 5 ? 17 : 19, valign: lede ? "top" : "middle", lineSpacingMultiple: lede ? 1.12 : 1.0, bold: false }, step(k + 1)));
   });
   visual(s, sd.visual, { reveal: sd.reveal || "auto", nLines: n, wide: !!(sd.wide || !n) });
   foot(s, i);

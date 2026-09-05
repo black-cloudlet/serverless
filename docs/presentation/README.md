@@ -1,7 +1,8 @@
 # Team presentation: Serverless on Cloudlet
 
-Thirty-four slides explaining the platform end to end, following the 7×7 rule
-(at most seven lines per slide, at most seven words per line). The detail lives
+Thirty-nine slides explaining the platform end to end, following the 7×7 rule
+(at most seven lines per slide, at most seven words per line) except where a
+slide sets `textSize` to say one or two full sentences instead. The detail lives
 in the speaker notes.
 
 | File | What it is |
@@ -26,4 +27,11 @@ npm run build      # deck.html, deck-raw.pptx, serverless-platform.pptx
 `gen-html.js` renders the web deck, `build2.js` renders the PowerPoint, and
 `animate.js` injects the animations into the PowerPoint XML (every shape named
 `step:N` fades in on the Nth click). Edit the palette and type at the top of
-`gen-html.js` and `build2.js`.
+`gen-html.js` and `build2.js`. `logos.json` holds the project logos as inline
+data URIs, so neither renderer needs the network.
+
+Slide fields worth knowing: `reveal` picks how the visual builds (`auto`,
+`paired`, `rows`, `after`), `wide` drops the text column so the visual takes the
+slide, `textSize` switches the bullets to `lede` or `small`, `logo` names a key
+in `logos.json`, and `clickYaml` makes each node of a graph open its `desc` and
+`yaml` in the web deck.
