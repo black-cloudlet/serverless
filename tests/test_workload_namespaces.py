@@ -156,6 +156,39 @@ def _boom_factory(**_kwargs):
     raise AssertionError("a second AsyncClient was constructed")
 
 
+async def test_the_client_is_closed_at_shutdown(monkeypatch):
+    """The lifespan closes the process-wide pool; a later call rebuilds it."""
+
+    class _Closeable:
+        def __init__(self):
+            self.is_closed = False
+
+        async def aclose(self):
+            self.is_closed = True
+
+    client = _Closeable()
+    monkeypatch.setattr(tenant_namespace, "_client", client)
+
+    await tenant_namespace.close_client()
+
+    assert client.is_closed
+    assert tenant_namespace._client is None
+    await tenant_namespace.close_client()  # idempotent: nothing left to close
+
+
+async def test_a_client_that_cannot_be_built_says_what_to_check(monkeypatch):
+    """An unreadable CA bundle still fails closed, naming what to check."""
+
+    def _no_ca(**_kwargs):
+        raise OSError("[Errno 2] No such file or directory: '/etc/ssl/certs/ca-bundle.crt'")
+
+    monkeypatch.setattr(tenant_namespace.httpx, "AsyncClient", _no_ca)
+    monkeypatch.setattr(tenant_namespace, "_client", None)
+
+    with pytest.raises(ServiceUnavailableError, match="CA bundle"):
+        await provision_namespace("payments", _config())
+
+
 async def test_no_controller_configured_skips_the_call(monkeypatch):
     """A dev cluster has no tenant controller; the namespace is whatever was made by hand."""
     _Client(response=_ok()).install(monkeypatch)

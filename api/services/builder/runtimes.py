@@ -120,6 +120,11 @@ def load_runtimes(path: str) -> RuntimeRegistry:
     except (OSError, yaml.YAMLError) as exc:
         raise RuntimeConfigError(f"runtimes file {path} could not be read: {exc}") from exc
 
+    if raw is not None and not isinstance(raw, dict):
+        raise RuntimeConfigError(
+            f"runtimes file {path} is malformed: it must be a mapping with a "
+            f"`runtimes` list, not a {type(raw).__name__}"
+        )
     items = (raw or {}).get("runtimes") or []
     if not items:
         raise RuntimeConfigError(
