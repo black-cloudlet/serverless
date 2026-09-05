@@ -99,7 +99,9 @@ class BaseInfo(BaseModel):
 
     Attributes:
         version: The running API version.
-        regions: The configured region names a workload can target.
+        regions: The configured region names. Every workload is deployed to all of
+            them; this names the regions a response's ``regions[]`` can carry, not a
+            set a request may choose from.
         sizes: The resource t-shirt sizes.
         scaling: The per-metric autoscaling options and their bounds.
         routeDomain: The base domain; a custom host must be one label under it.

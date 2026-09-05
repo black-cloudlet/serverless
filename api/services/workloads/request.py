@@ -32,7 +32,6 @@ class ApplyRequest:
         scaling: Autoscaling settings.
         size: Resource t-shirt size.
         hostname: Optional custom host; None takes the default.
-        regions: Target region names, or None for all.
         port: The container port to stamp. Always set; both offerings default
             it to 8080.
         created: True for a create - enables the absence check and the
@@ -77,7 +76,6 @@ class ApplyRequest:
     scaling: object
     size: str
     hostname: str | None
-    regions: list[str] | None
     port: int
     created: bool
     pull_secret_name: str | None = None

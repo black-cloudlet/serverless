@@ -304,7 +304,7 @@ class FunctionService(OfferingService):
         """
         req = self._build_request(name, group, existing, user)
         # Every configured region; apply_build skips the ones not running it.
-        registries = self._engine.target_registries(None)
+        registries = self._engine.target_registries()
         await self._engine.apply_build(name, group, self._plan(req, user, registries))
 
     async def create(
@@ -325,7 +325,7 @@ class FunctionService(OfferingService):
         """
         # A region builds what it runs, so the plan covers exactly the targets
         # (docs/BUILDING.md - A region builds what it runs).
-        registries = self._engine.target_registries(spec.regions)
+        registries = self._engine.target_registries()
         plan = self._plan(
             BuildRequest(
                 name=spec.name,
@@ -358,7 +358,6 @@ class FunctionService(OfferingService):
                 scaling=spec.scaling,
                 size=spec.size,
                 hostname=spec.hostname,
-                regions=spec.regions,
                 port=spec.port,
                 # Pulled with the same credential kpack pushed with. The Secret is the
                 # chart's, shared by every function, so it is referenced, never applied.
@@ -495,7 +494,7 @@ class FunctionService(OfferingService):
         # now is a revision of the code already running. Kept per region, since
         # each region runs what its own build pushed.
         images = dict(existing.get("images") or {})
-        registries = self._engine.target_registries(None)
+        registries = self._engine.target_registries()
         plan = None
         if token is not None:
             plan = self._plan_update(name, group, spec, token, user, registries)
@@ -516,7 +515,6 @@ class FunctionService(OfferingService):
                 scaling=spec.scaling,
                 size=spec.size,
                 hostname=spec.hostname,
-                regions=None,
                 # Replaced like every other non-secret field: omitting it returns
                 # the function to 8080, as omitting `version` returns it to the
                 # platform's default runtime version.

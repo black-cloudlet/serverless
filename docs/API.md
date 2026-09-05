@@ -176,8 +176,7 @@ OpenShift object name is `{name}`; the offering is a label, not part of the name
     "metric": "concurrency",            // concurrency | rps | cpu | memory
     "target": 100
   },
-  "size": "small",                      // optional; small | medium | large (default small)
-  "regions": ["central", "south"]       // optional; default = all regions (HA)
+  "size": "small"                       // optional; small | medium | large (default small)
 }
 ```
 
