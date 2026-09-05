@@ -21,7 +21,9 @@ from api.models.common import ANNOTATION_GIT_COMMIT
 from api.models.webhook import GitLabPushEvent, WebhookOutcome
 from api.services.manifests import secrets as secret_svc
 from common.cluster import ResourceKind
+from common.errors import NotFoundError
 from common.names import same_repository
+from tests.test_kpack_build import _RebuildCluster
 
 pytestmark = pytest.mark.anyio
 
@@ -592,6 +594,68 @@ async def test_a_rotation_that_reached_no_region_is_not_reported_as_success():
         await svc.rotate_webhook(
             "payments", "hello", Principal(subject="u", username="alice", groups=["payments"])
         )
+
+
+async def test_a_rotation_that_only_reached_regions_without_the_workload_fails_too():
+    """One region absent and one refusing the write stores the token nowhere."""
+    from common.errors import RegionTotalFailure
+
+    class _Broken:
+        """A region that reads fine but refuses every write."""
+
+        def __init__(self, region):
+            self._inner = _cluster(region=region)
+            self.region = self.name = region
+
+        def __getattr__(self, item):
+            return getattr(self._inner, item)
+
+        def apply(self, manifest, namespace=None):
+            raise RuntimeError("region down")
+
+    # region-a has no workload at all (a partial deploy, or a region added
+    # since); region-b has it and cannot be written to.
+    empty = _RebuildCluster(existing={}, region="region-a")
+    svc = _service({"region-a": empty, "region-b": _Broken("region-b")})
+
+    with pytest.raises(RegionTotalFailure):
+        await svc.rotate_webhook(
+            "payments", "hello", Principal(subject="u", username="alice", groups=["payments"])
+        )
+
+
+async def test_a_pin_that_could_be_cleared_nowhere_is_not_reported_as_cleared():
+    """The same rule on the other write that uses the guard."""
+    from common.errors import RegionTotalFailure
+
+    class _Absent:
+        """A region without the workload: the patch 404s."""
+
+        def __init__(self, region):
+            self._inner = _RebuildCluster(existing={}, region=region)
+            self.region = self.name = region
+
+        def __getattr__(self, item):
+            return getattr(self._inner, item)
+
+        def patch(self, kind, name, body, namespace=None):
+            raise NotFoundError(f"{kind.kind} '{name}' not found")
+
+    class _Unpatchable:
+        def __init__(self, region):
+            self._inner = _cluster(region=region, commit=SHA)
+            self.region = self.name = region
+
+        def __getattr__(self, item):
+            return getattr(self._inner, item)
+
+        def patch(self, kind, name, body, namespace=None):
+            raise RuntimeError("region down")
+
+    svc = _service({"region-a": _Absent("region-a"), "region-b": _Unpatchable("region-b")})
+
+    with pytest.raises(RegionTotalFailure):
+        await svc._engine.clear_commit("hello", "payments")
 
 
 async def test_an_unbuildable_function_ignores_a_push_instead_of_failing_it():
