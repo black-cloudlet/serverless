@@ -7,6 +7,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed (region selection)
+
+- **BREAKING: `regions` is gone from the create body** of both offerings. A
+  workload is deployed to every configured region, on create and on `PUT`
+  alike. The field only ever applied to the one fan-out that created the
+  workload: nothing persisted the choice, so the first update - which never
+  accepted `regions` - converged the workload onto every region anyway. A
+  subset was therefore not a placement a client could keep, and `PUT` could
+  not have honoured it without storing desired placement and tearing down the
+  regions dropped from it. Clients still sending the field are unaffected:
+  it is ignored, not rejected. The API-side plumbing that carried the choice
+  (`ApplyRequest.regions`, the parameters of `targets_for` and
+  `target_registries`) is gone with it; `Deployer.resolve_targets` keeps its
+  own `requested` argument.
+
 ### Changed (tenant namespaces)
 
 - **BREAKING: workloads now deploy into one namespace per SSO group**

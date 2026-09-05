@@ -749,11 +749,15 @@ async def test_every_region_builds_and_every_region_gets_the_credential():
     assert len(_git_secrets(remote)) == 1
 
 
-async def test_a_region_that_runs_no_copy_of_the_function_does_not_build_one():
-    """A region builds what it runs, so a non-target region gets nothing to build with.
+async def test_every_region_runs_the_function_and_so_every_region_builds_it():
+    """A region builds what it runs, and a create reaches every configured region.
 
-    This is what retires the unowned-build-object path: an ownerReference must
-    name an owner in the same cluster, and now every Image has a KSVC beside it.
+    Placement is not a client choice (docs/ARCHITECTURE.md - Region selection),
+    so there is no non-target region to leave without an Image. What the
+    colocation buys still holds and is what this pins: an ownerReference must
+    name an owner in the same cluster, so every Image has a KSVC beside it, in
+    the same region, and the git token lands beside both so either region can
+    rebuild after a switchover.
     """
     from tests.factories import _applied_kind, _ApplyCluster
 
@@ -762,21 +766,51 @@ async def test_a_region_that_runs_no_copy_of_the_function_does_not_build_one():
     svc = _function_service(
         {"region-a": local, "region-b": remote}, _RecordingBuilder(), local_region="region-a"
     )
-    spec = _create_spec()
-    spec.regions = ["region-b"]  # the local region is not a target
+    await svc.create("payments", _create_spec(), _principal())
+
+    for cluster in (local, remote):
+        assert len(_applied_kind(cluster, "Image")) == 1
+        assert len(_applied_kind(cluster, "Service")) == 1
+        assert len(_applied_kind(cluster, "DomainMapping")) == 1
+        assert len(_git_secrets(cluster)) == 1
+
+
+async def test_a_create_cannot_be_scoped_to_a_subset_of_regions():
+    """`regions` is not part of a create: an update could not have honoured it.
+
+    Placement was write-once - nothing persisted it, so the first update
+    converged the workload onto every region anyway. The field is gone rather
+    than silently obeyed-then-dropped; an old client still sending it is
+    ignored (pydantic's default), not refused.
+    """
+    from api.models.container import ContainerCreate
+    from api.models.function import FunctionCreate
+    from tests.factories import _applied_kind, _ApplyCluster
+
+    assert "regions" not in FunctionCreate.model_fields
+    assert "regions" not in ContainerCreate.model_fields
+
+    local = _ApplyCluster("region-a", {})
+    remote = _ApplyCluster("region-b", {})
+    svc = _function_service(
+        {"region-a": local, "region-b": remote}, _RecordingBuilder(), local_region="region-a"
+    )
+    # An old client's body still parses; the extra key is dropped, not obeyed.
+    spec = FunctionCreate.model_validate(
+        {
+            "name": "hello",
+            "gitRepo": "https://git.internal/payments/hello.git",
+            "gitToken": "ghp_tok",
+            "runtime": "python",
+            "regions": ["region-b"],
+        }
+    )
+    assert not hasattr(spec, "regions")
     await svc.create("payments", spec, _principal())
 
-    assert _applied_kind(local, "Image") == []
-    assert _applied_kind(local, "Service") == []
-    assert _applied_kind(local, "DomainMapping") == []
-    assert len(_applied_kind(remote, "Image")) == 1
+    # region-a was excluded by that body and is deployed to regardless.
+    assert len(_applied_kind(local, "Service")) == 1
     assert len(_applied_kind(remote, "Service")) == 1
-    # The token follows the workload too, now that it is the regions running it
-    # that build. It still lands on every region the function is deployed to,
-    # which is what a switchover needs; a region the function was never on has
-    # nothing to rebuild.
-    assert _git_secrets(local) == []
-    assert len(_git_secrets(remote)) == 1
 
 
 async def test_an_update_keeps_each_regions_own_image_rather_than_one_regions():

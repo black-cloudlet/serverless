@@ -216,9 +216,9 @@ clear it, or the GC could never collect.
 ## Namespace GC
 
 A group's namespace is created on demand, but nothing else ever removes one. A group that
-deletes its last workload - or stops using a region, since `"regions": ["central"]` leaves
-the peer's namespace legitimately empty - would otherwise hold its namespace, policies and
-credentials forever. The GC is slow and loud, modeled on the build controller's tag GC.
+deletes its last workload - or one whose namespace a region holds without workloads, as a
+region added to the platform after that group's last deploy does - would otherwise hold its
+namespace, policies and credentials forever. The GC is slow and loud, modeled on the build controller's tag GC.
 
 | Rule | Behaviour |
 |---|---|

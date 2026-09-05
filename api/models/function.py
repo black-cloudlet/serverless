@@ -48,7 +48,6 @@ class FunctionCreate(BaseModel):
     files: list[FileMount] = Field(default_factory=list)
     scaling: Scaling = Field(default_factory=Scaling)
     size: WorkloadSize = "small"  # resource size; see services.ksvc
-    regions: list[str] | None = None
     # Optional custom external host; defaults to {name}-{group}.{route_domain}.
     hostname: Hostname | None = None
     # Container port the built app listens on, with the same rules and default a

@@ -512,17 +512,20 @@ class WorkloadService:
         """
         return self.settings.tenant_namespaces.namespace_for(group)
 
-    def targets_for(self, group: str, regions: list[str] | None = None) -> list[NamespacedCluster]:
+    def targets_for(self, group: str) -> list[NamespacedCluster]:
         """The clusters a request for ``group`` fans out to, namespace-bound.
+
+        Every configured region, always: placement is not a client choice, so a
+        create and an update reach the same set (docs/ARCHITECTURE.md - Region
+        selection).
 
         Args:
             group: The owning (normalized) group.
-            regions: The regions the caller asked for; None means all.
 
         Returns:
-            One bound view per target region.
+            One bound view per configured region.
         """
-        return self.deployer.resolve_targets(regions, self.namespace_for(group))
+        return self.deployer.resolve_targets(None, self.namespace_for(group))
 
     def host_for(self, name: str, hostname: str | None, group: str) -> str:
         """Resolve the external host, validating any custom one.
@@ -634,7 +637,7 @@ class WorkloadService:
         Args:
             offering: The offering being created.
             group: The owning group (from the request path).
-            spec: The create request (carries name/regions/hostname/env/files).
+            spec: The create request (carries name/hostname/env/files).
             user: The authenticated caller.
             background: FastAPI background tasks to schedule the deploy on.
             work: The offering's background create coroutine, run as
@@ -645,7 +648,7 @@ class WorkloadService:
             A Pending response with a ``statusUrl`` to poll.
         """
         self.assert_group(user, group)
-        targets = self.targets_for(group, spec.regions)
+        targets = self.targets_for(group)
         host = self.host_for(spec.name, spec.hostname, group)
         # Validate synchronously (400) before the 202, so bad input never reaches the
         # background deploy.
@@ -747,7 +750,7 @@ class WorkloadService:
             The response body and HTTP status code.
         """
         self.assert_group(req.user, req.group)
-        targets = self.targets_for(req.group, req.regions)
+        targets = self.targets_for(req.group)
         host = self.host_for(req.name, req.hostname, req.group)
 
         # Re-checked here, immediately before the mutation, and not trusted from
@@ -863,19 +866,17 @@ class WorkloadService:
         )
         return offering.applied_response(common, req), status_code_for(overall, created=req.created)
 
-    def target_registries(self, requested: list[str] | None) -> dict[str, RegistryConfig]:
-        """The registry each targeted region builds into, keyed by region name.
+    def target_registries(self) -> dict[str, RegistryConfig]:
+        """The registry each configured region builds into, keyed by region name.
 
         What a build plan needs, read off the resolved clusters, so a region's
-        registry has one source.
-
-        Args:
-            requested: Explicit region names, or None for all configured regions.
+        registry has one source. Every region, matching :meth:`targets_for`: a
+        function builds wherever it runs.
 
         Returns:
-            ``{region: registry}`` for the targets.
+            ``{region: registry}`` for every configured region.
         """
-        return {c.region: c.registry for c in self.deployer.clusters(requested)}
+        return {c.region: c.registry for c in self.deployer.clusters()}
 
     async def apply_build(self, name: str, group: str, plan: BuildPlan) -> bool:
         """Re-declare a workload's build in every region that runs it, then ask for one.
