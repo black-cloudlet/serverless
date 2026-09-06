@@ -75,6 +75,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - New setting `SERVERLESS_PUBLIC_URL` (chart: derived from the API Route's own
   host), the origin in the webhook URL handed to callers.
 
+### Changed (git webhook)
+
+- **A push is authenticated against the local region before the workload is
+  loaded.** The build endpoint's webhook half is unauthenticated by design, and
+  it loaded the function - a read of every region, then a read of its backing
+  Secrets - *before* comparing the token, so anyone who could reach the API
+  could spend that repeatedly on a token that was never going to match. The
+  token is now compared against the local region's copy of the Secret first,
+  and only a delivery the local region cannot answer for falls through to the
+  full load, which stays the authoritative check. No answer changes: a region
+  that holds no Secret for the function has not refused the token.
+
 ### Changed (function source)
 
 - **BREAKING: a function's `branch` is now `revision`.** The value has always been

@@ -6,7 +6,7 @@ import hmac
 from collections.abc import Mapping
 
 from cloudlet_apis.auth import Principal
-from cloudlet_apis.errors import UnauthenticatedError
+from cloudlet_apis.errors import APIError, UnauthenticatedError
 from cloudlet_apis.logging import get_logger
 from pydantic import ValidationError as PydanticValidationError
 
@@ -22,6 +22,7 @@ from api.services.builder.runtimes import RuntimeRegistry
 from api.services.manifests import secrets as secret_svc
 from api.services.offering import FUNCTION
 from api.services.offering_service import OfferingService
+from api.services.regions import region_read
 from api.services.state import describe as describe_svc
 from api.services.workloads import ApplyRequest, WorkloadService
 from api.services.workloads.service import run_background
@@ -54,6 +55,22 @@ def _with_webhook_token(create, token: str):
         return await create(group, spec, user, webhook_token=token)
 
     return create_function
+
+
+def _token_matches(stored: str | None, presented: str) -> bool:
+    """Whether the presented webhook token is the stored one.
+
+    Compared as bytes, since ``compare_digest`` raises on a non-ASCII ``str``
+    and the header is caller-controlled.
+
+    Args:
+        stored: The token stored for the function, or None if there is none.
+        presented: The token the caller sent.
+
+    Returns:
+        True if they match. Nothing stored matches nothing.
+    """
+    return bool(stored) and hmac.compare_digest(stored.encode(), presented.encode())
 
 
 class FunctionService(OfferingService):
@@ -453,6 +470,29 @@ class FunctionService(OfferingService):
             return "the payload carries no usable commit"
         return None
 
+    async def _local_webhook_token(self, group: str, name: str) -> str | None:
+        """The stored token as the local region holds it, or None if it cannot say.
+
+        None means no answer - no Secret here, or an unreadable one - and never
+        a match; the caller falls through to the authoritative check.
+
+        Args:
+            group: The owning group.
+            name: The workload name.
+
+        Returns:
+            The token this region stores, or None if it holds or can read none.
+        """
+
+        def read(cluster) -> str | None:
+            stored = region_read.secret_text(cluster, secret_svc.webhook_secret_name(name))
+            return stored.get(secret_svc.WEBHOOK_TOKEN_KEY)
+
+        try:
+            return await self._engine.read_local(group, read)
+        except APIError:
+            return None  # unreadable, saturated, or no namespace to read in
+
     async def accept_webhook(
         self,
         group: str,
@@ -486,17 +526,21 @@ class FunctionService(OfferingService):
             ValidationError: If the stored state cannot describe a build.
         """
         principal = self._webhook_principal(group)
+        # The local region's copy first, so a wrong token costs one read rather
+        # than a fan-out and every backing Secret (docs/FUNCTIONS.md - Git webhook).
+        local = await self._local_webhook_token(group, name)
+        if local is not None and not _token_matches(local, token):
+            raise UnauthenticatedError("invalid webhook token")
+
         try:
             existing = await self._engine.load_existing(name, FUNCTION, principal, group)
         except NotFoundError as exc:
             # Absent and not-yours give the same answer, and neither is a 404.
             raise UnauthenticatedError("invalid webhook token") from exc
 
-        stored = existing.get("webhook_token")
-        # Compared as bytes: `compare_digest` raises on a non-ASCII str, and the
-        # header is caller-controlled, so a str compare turns a junk token into
-        # a 500 instead of the 401 it is.
-        if not stored or not hmac.compare_digest(stored.encode(), token.encode()):
+        # The authoritative check, and the only one when the local region could
+        # not answer above.
+        if not _token_matches(existing.get("webhook_token"), token):
             raise UnauthenticatedError("invalid webhook token")
 
         reason = self._ignored(event, event_kind, existing)
