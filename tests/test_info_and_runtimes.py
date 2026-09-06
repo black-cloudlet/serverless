@@ -51,6 +51,18 @@ def test_a_malformed_runtimes_file_is_fatal(tmp_path):
         load_runtimes(str(f))
 
 
+def test_a_runtimes_file_that_is_not_a_mapping_is_fatal(tmp_path):
+    """A bare list is a config error, not an AttributeError from `.get`."""
+    import pytest
+
+    from api.services.builder.runtimes import RuntimeConfigError
+
+    f = tmp_path / "runtimes.yaml"
+    f.write_text("- name: python\n")  # the list, without the mapping around it
+    with pytest.raises(RuntimeConfigError, match="must be a mapping"):
+        load_runtimes(str(f))
+
+
 def test_startup_fails_when_the_runtimes_file_is_missing(monkeypatch, tmp_path):
     """The lifespan loads it, so a broken mount never reaches readiness."""
     import pytest

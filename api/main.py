@@ -26,6 +26,7 @@ from api.core.paths import api_base
 from api.dependencies import get_runtimes, get_stream_capacity, get_workload_service
 from api.routers import containers, functions, info, streams
 from api.services.regions.deployer import Deployer
+from api.services.tenant_namespace import close_client
 
 logger = get_logger(__name__)
 
@@ -84,6 +85,7 @@ async def lifespan(app: FastAPI):
     # the next line, so the followers stop before those clients go away.
     get_stream_capacity().shutdown()
     service.deployer.close()  # release per-region cluster HTTP clients
+    await close_client()  # the tenant controller's connection pool
 
 
 def create_app() -> FastAPI:

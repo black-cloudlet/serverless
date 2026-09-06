@@ -165,6 +165,23 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   provision with a 4xx surfaces as `PROVISIONING_REJECTED` (config mismatch
   between the two ends), no longer as a retryable 503.
 
+### Fixed (startup and shutdown)
+
+- **A runtimes file that is not a mapping fails with the message every other
+  bad one gets.** `- name: python` at the top level - the list without the
+  mapping around it - reached `.get` on a list and raised `AttributeError`, so
+  the operator got a traceback where every other malformed file names itself
+  and says what shape it should have. The pod failed to start either way, which
+  is right; only the diagnosis was missing.
+- **The tenant controller's connection pool is closed at shutdown**, beside the
+  stream pool and the cluster clients. It is a process-wide client built on
+  first use, so nothing else was ever going to end it.
+- **A CA bundle that cannot be read is reported as configuration, not an
+  outage.** Building the client failed inside the same handler as a refused
+  connection, so a missing mount answered every create with "retry shortly" -
+  which sends an operator hunting an outage instead of a path. It still fails
+  closed; it now says what to check.
+
 ### Added (namespace GC)
 
 - **Empty tenant namespaces are collected, slowly and loudly.** The tenant

@@ -45,6 +45,18 @@ async def _shared_client(config: TenantNamespaceConfig, verify: str | bool) -> h
     return _client
 
 
+async def close_client() -> None:
+    """Close the process-wide client, at shutdown.
+
+    Idempotent; a later call rebuilds it, since the client is created on demand.
+    """
+    global _client  # noqa: PLW0603 - the singleton this module owns
+    async with _client_lock:
+        client, _client = _client, None
+    if client is not None and not client.is_closed:
+        await client.aclose()
+
+
 async def provision_namespace(
     group: str, config: TenantNamespaceConfig, verify: str | bool = True
 ) -> None:
@@ -76,6 +88,16 @@ async def provision_namespace(
     headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
     try:
         client = await _shared_client(config, verify)
+    except Exception as exc:  # noqa: BLE001 - a CA bundle that is missing or unreadable
+        # Configuration, not an outage, so the message names what to check
+        # rather than telling the caller to retry.
+        logger.error("could not build the tenant-controller client (verify=%r): %s", verify, exc)
+        raise ServiceUnavailableError(
+            f"the client for the tenant controller could not be built ({exc}); "
+            "check the CA bundle mount"
+        ) from exc
+
+    try:
         response = await client.put(url, headers=headers)
         response.raise_for_status()
         body = response.json()
