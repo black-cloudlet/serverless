@@ -247,16 +247,28 @@ region per write). Three things follow:
 
 - **The new `Image` has no prior `Build`, so it builds immediately.** Changing the layout and
   sending any `PUT` is the whole migration.
-- **The old repository and its cache are reclaimed** through the same Quay API the delete
-  path uses (BUILDING.md: Registry cleanup on delete). Without this each function would leak
-  a repository pair permanently. The reclaim is skipped when the old reference is on a
+- **The old repository and its cache are reclaimed - but only when the repository is what
+  moved.** Quay deletes a repository whole, so the reclaim runs on the *repository* half of
+  the previous tag and only when the new tag names a different one, through the same Quay API
+  the delete path uses (BUILDING.md: Registry cleanup on delete). Without it a layout change
+  would leak a repository pair permanently. It is skipped when the old reference is on a
   different **host**: this token addresses one registry, and a same-named path elsewhere is
   somebody else's repository.
 - **Build history resets.** `Build`s are owned by the `Image`, so deleting it collects them.
 
-The workload keeps serving its existing digest throughout, and the old repository is not
-reclaimed before the new build lands: the reclaim runs against the *previous* tag only after
-the `Image` has been replaced, and the running pods already hold their image.
+The workload keeps serving its existing digest throughout: the reclaim runs against the
+*previous* repository, which the current digest has already been pushed out of, and the
+running pods hold their image regardless.
+
+### A tag that moved inside one repository
+
+Changing a function's **`revision`** moves the tag too - the tag is the revision projected
+onto one repository - so an ordinary `PUT` that switches branches takes the delete-and-
+recreate path above. It reclaims **nothing**, and must not: that one repository still holds
+the digest the `KSVC` is serving (which a scale-from-zero has to pull again) and is where the
+next build pushes. What it leaves behind is one abandoned revision tag, which the build
+controller's tag GC collects on its own schedule - it protects the current revision tag and
+the serving digest, and nothing else (BUILD-CONTROLLER.md: Registry tag GC).
 
 ## Airgapped Mirror Inventory
 

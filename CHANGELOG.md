@@ -7,6 +7,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed (registry reclaim)
+
+- **Changing a function's `revision` no longer deletes its registry
+  repository.** The image tag is the revision projected onto one repository, so
+  switching branches moves the tag - and since a moved tag cannot be applied
+  over an immutable `spec.tag`, that already took the delete-and-recreate path.
+  What it must not take is the *reclaim* beside it: that derives a repository
+  from the previous tag and Quay deletes a repository whole, so an ordinary
+  `PUT` reclaimed the repository the function was still running out of, taking
+  every built digest - the one the `KSVC` was serving included - and the build
+  cache with it, and leaving the workload unable to pull until the new build
+  landed. The reclaim now runs only when the *repository* moved, which is the
+  registry-layout change it was written for; a tag that moved inside one
+  repository leaves an abandoned revision tag, which the build controller's tag
+  GC already collects.
+
 ### Changed (region selection)
 
 - **BREAKING: `regions` is gone from the create body** of both offerings. A

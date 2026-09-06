@@ -81,6 +81,7 @@ from common.errors import (
     RegionTotalFailure,
     ServiceUnavailableError,
 )
+from common.names import repository_of
 
 logger = get_logger(__name__)
 
@@ -105,7 +106,10 @@ async def run_background(fn, *args) -> None:
 
 
 async def _retag_region(cluster: NamespacedCluster, manifests: Sequence[dict]) -> None:
-    """Re-tag one region's Image, reclaiming the repository it leaves behind.
+    """Re-tag one region's Image, reclaiming any repository it leaves behind.
+
+    ``spec.tag`` is immutable, so a moved tag deletes and recreates the Image.
+    The repositories are reclaimed only when the repository itself moved.
 
     Args:
         cluster: The region to re-tag in.
@@ -127,6 +131,9 @@ async def _retag_region(cluster: NamespacedCluster, manifests: Sequence[dict]) -
             return None
         cluster.delete(ResourceKind.KPACK_IMAGE, name)
         logger.info("Image '%s' re-tagged from '%s' to '%s' in %s", name, had, want, cluster.region)
+        # A tag that moved inside one repository leaves nothing to reclaim.
+        if not want or repository_of(had) == repository_of(want):
+            return None
         return had
 
     try:
