@@ -337,24 +337,42 @@ def _stamp_commit(cluster: NamespacedCluster, name: str, commit: str | None) -> 
     return True
 
 
+def _wrote(status: RegionStatus) -> bool:
+    """Whether this region stored the write.
+
+    False for a region that failed (its reason is on ``message``) and for one
+    the workload does not run in (``Absent``).
+
+    Args:
+        status: One region's row.
+
+    Returns:
+        True if the write landed here.
+    """
+    return status.message is None and status.status != "Absent"
+
+
 def _assert_any_region_wrote(statuses: Sequence[RegionStatus], what: str) -> None:
     """Fail the request when a fan-out write landed in no region at all.
 
     ``fanout`` records a region's failure on its status instead of raising, so a
     write whose result is discarded reports success however many regions
-    refused it. Absent is not a failure - the workload does not run there.
+    refused it. Absent counts as no write, not as no failure.
 
     Args:
         statuses: The per-region results.
         what: What was being written, for the error.
 
     Raises:
-        RegionTotalFailure: If every region errored.
+        RegionTotalFailure: If no region stored the write.
     """
-    if statuses and all(s.message is not None for s in statuses):
+    if statuses and not any(_wrote(s) for s in statuses):
         raise RegionTotalFailure(
             f"Could not {what} in any region.",
-            details=[{"region": s.region, "message": s.message} for s in statuses],
+            details=[
+                {"region": s.region, "message": s.message or "the workload is not deployed here"}
+                for s in statuses
+            ],
         )
 
 

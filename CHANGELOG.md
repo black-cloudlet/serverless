@@ -90,6 +90,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   is now `commit`, which is what the git webhook pins). Pre-GA, so there is no
   compatibility shim: clients send `revision`.
 
+### Fixed (multi-region writes)
+
+- **A write that reached no region is no longer reported as success.** The
+  guard behind `POST .../webhook/rotate` and the pin-clearing write asked
+  whether *every* region had failed. A region the workload does not run in
+  fails nothing - it is `Absent` and carries no error - so one absent region
+  beside one that refused the write passed the check: the caller was handed a
+  new webhook token and told the rotation was done, while every region kept the
+  old one, and a cleared pin could silently survive to be built again. The
+  guard now asks whether any region actually *wrote*, which is the question it
+  was always meant to ask, and the error names the absent regions instead of
+  listing a null.
+
 ### Changed (tenant namespaces)
 
 - **BREAKING: workloads now deploy into one namespace per SSO group**
